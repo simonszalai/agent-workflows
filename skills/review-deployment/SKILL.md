@@ -1,0 +1,147 @@
+---
+name: review-deployment
+description: Deployment verification checklist with SQL queries and rollback plans. Used by deployment-verification-agent agent. Portable to Cursor.
+---
+
+# Deployment Review Standards
+
+Standards for deployment verification. Apply these to create Go/No-Go checklists for risky data deployments.
+
+## Core Verification Goals
+
+Given a PR that touches production data:
+
+1. **Identify data invariants** - What must remain true before/after deploy
+2. **Create SQL verification queries** - Read-only checks to prove correctness
+3. **Document destructive steps** - Backfills, batching, lock requirements
+4. **Define rollback behavior** - Can we roll back? What data needs restoring?
+5. **Plan post-deploy monitoring** - Metrics, logs, dashboards, alert thresholds
+
+## Go/No-Go Checklist Template
+
+### 1. Define Invariants
+
+```
+Example invariants:
+- [ ] All existing Brief emails remain selectable in briefs
+- [ ] No records have NULL in both old and new columns
+- [ ] Count of status=active records unchanged
+- [ ] Foreign key relationships remain valid
+```
+
+### 2. Pre-Deploy Audits (Read-Only)
+
+SQL queries to run BEFORE deployment:
+
+```sql
+-- Baseline counts (save these values)
+SELECT status, COUNT(*) FROM records GROUP BY status;
+
+-- Check for data that might cause issues
+SELECT COUNT(*) FROM records WHERE required_field IS NULL;
+
+-- Verify mapping data exists
+SELECT id, name, type FROM lookup_table ORDER BY id;
+```
+
+**Expected Results:**
+
+- Document expected values and tolerances
+- Any deviation from expected = STOP deployment
+
+### 3. Migration/Backfill Steps
+
+| Step | Command              | Estimated Runtime | Batching  | Rollback       |
+| ---- | -------------------- | ----------------- | --------- | -------------- |
+| 1    | `db:migrate`         | < 1 min           | N/A       | Drop column    |
+| 2    | `rake data:backfill` | ~10 min           | 1000 rows | Restore backup |
+| 3    | Enable flag          | Instant           | N/A       | Disable flag   |
+
+### 4. Post-Deploy Verification (Within 5 Minutes)
+
+```sql
+-- Verify migration completed
+SELECT COUNT(*) FROM records WHERE new_column IS NULL AND old_column IS NOT NULL;
+-- Expected: 0
+
+-- Verify no data corruption
+SELECT old_column, new_column, COUNT(*)
+FROM records WHERE old_column IS NOT NULL
+GROUP BY old_column, new_column;
+-- Expected: Each old_column maps to exactly one new_column
+
+-- Compare counts with pre-deploy baseline
+SELECT status, COUNT(*) FROM records GROUP BY status;
+```
+
+### 5. Rollback Plan
+
+**Can we roll back?**
+
+- [ ] Yes - dual-write kept legacy column populated
+- [ ] Yes - have database backup from before migration
+- [ ] Partial - can revert code but data needs manual fix
+- [ ] No - irreversible change (document why acceptable)
+
+**Rollback Steps:**
+
+1. Deploy previous commit
+2. Run rollback migration (if applicable)
+3. Restore data from backup (if needed)
+4. Verify with post-rollback queries
+
+### 6. Post-Deploy Monitoring (First 24 Hours)
+
+| Metric/Log   | Alert Condition | Dashboard Link    |
+| ------------ | --------------- | ----------------- |
+| Error rate   | > 1% for 5 min  | /dashboard/errors |
+| Missing data | > 0 for 5 min   | /dashboard/data   |
+| User reports | Any report      | Support queue     |
+
+## Complete Checklist Format
+
+```markdown
+# Deployment Checklist: [PR Title]
+
+## 🔴 Pre-Deploy (Required)
+
+- [ ] Run baseline SQL queries
+- [ ] Save expected values
+- [ ] Verify staging test passed
+- [ ] Confirm rollback plan reviewed
+
+## 🟡 Deploy Steps
+
+1. [ ] Deploy commit [sha]
+2. [ ] Run migration
+3. [ ] Enable feature flag
+
+## 🟢 Post-Deploy (Within 5 Minutes)
+
+- [ ] Run verification queries
+- [ ] Compare with baseline
+- [ ] Check error dashboard
+- [ ] Spot check in console
+
+## 🔵 Monitoring (24 Hours)
+
+- [ ] Set up alerts
+- [ ] Check metrics at +1h, +4h, +24h
+- [ ] Close deployment ticket
+
+## 🔄 Rollback (If Needed)
+
+1. [ ] Disable feature flag
+2. [ ] Deploy rollback commit
+3. [ ] Run data restoration
+4. [ ] Verify with post-rollback queries
+```
+
+## When to Use
+
+- PR touches database migrations with data changes
+- PR modifies data processing logic
+- PR involves backfills or data transformations
+- Any change that could silently corrupt/lose data
+
+Be thorough. Be specific. Produce executable checklists.
