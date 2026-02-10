@@ -1,6 +1,9 @@
 #!/bin/bash
-# claude-sync-hook — post-commit hook
+# claude-sync-hook — pre-commit hook
 # Syncs user-level agents/skills/commands into .claude/ for cloud compatibility.
+# Runs before the commit is created so synced files are staged naturally,
+# avoiding the fragile post-commit --amend pattern that breaks rebases.
+#
 # Respects project-level items: if a name exists at project level and wasn't
 # put there by this script, it's left alone.
 #
@@ -101,6 +104,5 @@ done
 
 if $changed; then
   git add .claude/
-  git commit --amend --no-edit --no-verify
-  echo "[claude-sync] Synced user-level config into .claude/"
+  echo "[claude-sync] Staged synced user-level config into .claude/"
 fi
