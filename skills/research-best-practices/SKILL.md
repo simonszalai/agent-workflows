@@ -1,6 +1,6 @@
 ---
 name: research-best-practices
-description: Research methodology for external best practices, community standards, and documentation. Used by investigator-research agent.
+description: Research methodology for external best practices, community standards, and documentation. Used by researcher agent.
 ---
 
 # Best Practices Research Methodology

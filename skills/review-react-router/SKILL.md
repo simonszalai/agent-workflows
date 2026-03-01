@@ -17,6 +17,13 @@ loading, form handling, and common pitfalls.
 
 ## Server/Client Module Boundaries
 
+### Module Top-Level Safety
+
+- [ ] No throwing expressions (`invariant`, `assert`) at module top level in route files — they
+      run during route init and crash the entire app if they fail
+- [ ] No `process.env` checks with `invariant()` at module scope — move inside `loader`/`action`
+- [ ] Only pure, non-throwing code at module top level (schemas, type defs, function declarations)
+
 ### .server.ts Import Rules
 
 - [ ] No client component imports from `.server.ts` files (even pure functions)
@@ -156,3 +163,4 @@ indicators during navigation.
 | Dialog forms     | `<fetcher.Form>` not `fetcher.submit()`               |
 | Loading spinners | One strategy (global or local), not both              |
 | Route patterns   | `resources.*` for fetchers, `api.*` for external only |
+| Module top-level | No invariant/throw at module scope in routes           |

@@ -327,5 +327,5 @@ closed/      -> Complete with conclusion.md
 | Command                | Purpose                      |
 | ---------------------- | ---------------------------- |
 | `/heal-workflows`      | Audit workflow components    |
-| `/heal-knowledge-base` | Audit knowledge organization |
+| `/heal-knowledge`      | Audit and consolidate knowledge |
 | `/heal-work-items`     | Audit work item consistency  |

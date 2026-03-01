@@ -209,10 +209,39 @@ Focus on:
 - Common issues in this area of codebase
 - Process improvements suggested
 
+## OpenMemory Search (Complementary)
+
+Past work insights are also captured in OpenMemory as implementation and debug memories:
+
+```
+search-memory(
+    query="<similar feature/bug> implementation approach",
+    project_id="<from CLAUDE.md>",
+    memory_types=["implementation"]
+)
+search-memory(
+    query="<similar area> debugging fix resolution",
+    project_id="<from CLAUDE.md>",
+    memory_types=["debug"]
+)
+```
+
+**Cross-project learnings:**
+
+```
+search-memory(query="<pattern> implementation", user_preference=true)
+```
+
+OpenMemory captures insights that may not have been written into work_items/ (informal
+corrections, quick fixes, architectural decisions made during implementation). Especially
+important for learnings from cloud sessions where file changes were ephemeral.
+
+If OpenMemory MCP is unavailable, mention once and continue with file-based search only.
+
 ## Key Insight
 
-Past work items are a calibrated knowledge base of what actually happened, not what was predicted.
-Use them to:
+Past work items are a calibrated knowledge base of what actually happened, not what was
+predicted. Use them to:
 
 - Avoid reinventing approaches that failed
 - Reuse patterns that succeeded

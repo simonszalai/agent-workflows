@@ -1,93 +1,71 @@
-# Claude Shared Config
+# Agent Workflows
 
-User-level Claude Code agents, skills, and commands — version-controlled and synced to project repos for cloud compatibility.
+Shared Claude Code agents, skills, and commands for all projects.
 
-## How it works
+## Contents
 
-```
-┌─────────────────────────────────┐
-│  This repo (claude-shared-config)│
-│  agents/  skills/  commands/     │
-└──────────┬──────────────────────┘
-           │
-     setup.sh (once)
-           │
-           ▼
-┌──────────────────────────────────┐
-│  ~/.claude/                       │
-│  agents → symlink to this repo    │
-│  skills → symlink to this repo    │
-│  commands → symlink to this repo  │
-│  settings.json (untouched)        │
-│  logs/ (untouched)                │
-└──────────────────────────────────┘
-           │
-     post-commit hook (per project repo)
-           │
-           ▼
-┌──────────────────────────────────┐
-│  any-project/.claude/             │
-│  agents/   ← synced copies       │
-│  skills/   ← synced copies       │
-│  commands/ ← synced copies       │
-│  settings.json (project's own)    │
-└──────────────────────────────────┘
-```
+- **Agents** - Specialized agent roles (reviewer-code, planner, researcher, etc.)
+- **Commands** - Workflow orchestration (/build, /review, /plan, /lfg, etc.)
+- **Skills** - Methodology and knowledge (review patterns, research methods, etc.)
 
-**Locally:** You work at user level via symlinks. Claude Code sees everything.
+## Distribution
 
-**In cloud (Claude Code Web):** The project repo carries synced copies in `.claude/`, so the sandbox has access too.
+| Environment     | Mechanism                              | Direction |
+| --------------- | -------------------------------------- | --------- |
+| Local dev       | `~/.claude/` symlinks to this checkout | Two-way   |
+| Claude Code web | SessionStart hook clones + copies      | One-way   |
+| NanoClaw        | Volume mount into container            | Two-way   |
 
-**Collision handling:** Project-level items always win. If a project already has `.claude/agents/code-reviewer.md`, the sync skips it. Synced items are tracked with `.synced-from-user` markers so the hook knows what it owns.
-
-## Setup
-
-### 1. Clone and symlink (once per machine)
+### Local setup (once per machine)
 
 ```bash
-git clone git@github.com:youruser/claude-shared-config.git ~/claude-shared-config
-cd ~/claude-shared-config
-bash setup.sh
+git clone git@github.com:simonszalai/agent-workflows.git ~/dev/agent-workflows
+ln -s ~/dev/agent-workflows/agents ~/.claude/agents
+ln -s ~/dev/agent-workflows/commands ~/.claude/commands
+ln -s ~/dev/agent-workflows/skills ~/.claude/skills
 ```
 
-### 2. Install the hook (once per project repo)
+### Cloud setup (automatic)
 
-```bash
-cd /path/to/your-project
-bash ~/claude-shared-config/install-hook.sh
+Each project's `deploy/cloud-setup.sh` handles cloning this repo and copying files into
+`~/.claude/` when `$CLAUDE_CODE_REMOTE=true`. The Claude GitHub app must be installed on
+this repo for the clone to work.
+
+### NanoClaw setup
+
+Mount this repo's directories into the container at `~/.claude/`:
+
+```yaml
+volumes:
+  - source: /path/to/agent-workflows/agents
+    target: /home/user/.claude/agents
+  - source: /path/to/agent-workflows/commands
+    target: /home/user/.claude/commands
+  - source: /path/to/agent-workflows/skills
+    target: /home/user/.claude/skills
 ```
 
-Now every commit in that project will sync your user-level config into `.claude/`.
+## Resolution precedence
 
-### 3. Add your agents, skills, commands
+Claude Code checks project `.claude/` first, then user `~/.claude/`. Project-specific
+agents/skills/commands override shared ones of the same name.
 
-Put them in this repo as usual:
+## Adding items
 
-```
-agents/my-agent.md
-skills/my-skill/SKILL.md
-commands/my-command.md
-```
+Put new agents, skills, and commands directly in this repo. They become available
+immediately in all projects (locally via symlinks, cloud on next session start).
 
-They're immediately available locally (via symlinks) and will sync to project repos on next commit.
+## Project-specific items
 
-## Updating agents from cloud
+Items that only make sense for one project stay in that project's `.claude/`:
 
-If Claude edits a synced agent in a cloud session (changes land on a branch), pull the branch and run:
+- Project-specific agents (e.g., `investigator-prefect.md` in ts-prefect)
+- Project-specific commands (e.g., `/deploy` in ts-prefect)
+- Project-specific skills (e.g., `tool-prefect` in ts-prefect)
 
-```bash
-# From the project repo, after pulling cloud changes
-cp .claude/agents/my-agent.md ~/claude-shared-config/agents/
-cd ~/claude-shared-config && git add -A && git commit -m "Update from cloud"
-```
+## Two-way updates
 
-## .gitignore for project repos
+Locally, symlinks mean edits to `~/.claude/skills/` directly modify this repo. When
+`/compound` updates a shared skill, the change propagates to agent-workflows automatically.
 
-Add to each project's `.gitignore` if you want to hide the sync markers:
-
-```
-.claude/**/.synced-from-user
-.claude/**/.synced-from-user.*
-```
-
-Or commit them — they're harmless and help the hook track ownership.
+In cloud sessions, file changes are ephemeral. Learnings persist via OpenMemory instead.

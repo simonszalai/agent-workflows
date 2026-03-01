@@ -1,20 +1,22 @@
 ---
 name: retrospect-methodology
-description: Post-incident analysis methodology for identifying workflow gaps. Used by retrospector agent.
+description: Post-incident analysis and remediation methodology. Identifies workflow gaps AND applies fixes. Used by retrospector agent.
 ---
 
 # Retrospect Methodology
 
-Standards for conducting post-incident retrospectives to identify gaps in the development workflow
-that allowed bugs or issues to reach production.
+Standards for conducting post-incident retrospectives that identify gaps in the development
+workflow AND apply concrete fixes. This is not a reporting methodology - it produces actionable
+fix recommendations.
 
 ## Purpose
 
-When a bug reaches production, the goal is NOT just to fix it, but to understand:
+When a bug reaches production, the goal is NOT just to fix it, but to:
 
 1. **Where the workflow failed** - Which stage should have caught this?
 2. **Why it failed** - What was missing from that stage?
-3. **How to prevent recurrence** - What to add to the workflow?
+3. **What test was missing** - What test would have caught this before production?
+4. **Fix the workflow** - Apply concrete changes so this can't happen again
 
 ## Workflow Stages to Analyze
 
@@ -24,6 +26,7 @@ Examine each stage in reverse order (closest to production first):
 | ----------------------- | ---------------------- | ------------------------------------------- |
 | Production Verification | verification-report.md | Did we verify the right scenarios?          |
 | Local Verification      | (test output)          | Were integration tests sufficient?          |
+| Tests                   | test files             | What test scenario is missing?              |
 | Review                  | review_todos/          | Did reviewers check the right dimensions?   |
 | Implementation          | git diff, code         | Did code match plan? Quality issues?        |
 | Build Todos             | build_todos/           | Were implementation steps complete?         |
@@ -160,10 +163,40 @@ Examine each stage in reverse order (closest to production first):
    - Other gaps may be contributing factors
    - Focus recommendations on the primary gap
 
-5. **Recommend improvements**
-   - Concrete additions to workflow artifacts
-   - New knowledge docs if needed
-   - Process changes if pattern is recurring
+5. **Identify test gap**
+   - What test (unit, integration, e2e) would have caught this?
+   - Does that test type exist for this area?
+   - What specific scenario is missing?
+
+6. **Produce fix recommendations**
+   - Each fix must be concrete: specific file, specific content to add
+   - The orchestrator will apply these fixes with user approval
+
+## Fix Recommendation Format
+
+Each recommended fix must be actionable by the orchestrator:
+
+```markdown
+#### Fix: [Brief title]
+**Target:** [file path]
+**Type:** [new_file | add_content | update_content]
+**Content:**
+[Exact content to add or create]
+**Why:** [How this prevents recurrence]
+```
+
+## Fix Target Reference
+
+| Gap Found | Fix Target |
+|---|---|
+| Missing knowledge | `.claude/knowledge/gotchas/` or `solutions/` or `references/` |
+| Rule violated repeatedly | `AGENTS.md` |
+| Plan didn't research | `.claude/skills/plan-methodology/SKILL.md` |
+| Build todos missed pattern | `.claude/skills/build-plan-methodology/SKILL.md` |
+| Review didn't catch | `.claude/skills/review-*/SKILL.md` |
+| Test missing | Test scenario documented for implementation |
+| Verification missed | Verify command or verification docs |
+| Workflow step missing | `.claude/commands/*.md` |
 
 ## Output Template
 

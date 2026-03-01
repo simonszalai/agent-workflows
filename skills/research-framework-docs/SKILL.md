@@ -1,6 +1,6 @@
 ---
 name: research-framework-docs
-description: Documentation gathering methodology for frameworks and libraries (Python and TypeScript/React). Used by investigator-research agent.
+description: Documentation gathering methodology for frameworks and libraries (Python and TypeScript/React). Used by researcher agent.
 ---
 
 # Framework Documentation Research Methodology

@@ -222,5 +222,5 @@ Full report: .claude/reports/workflow-health-20260201.md
 | Command                | Purpose                      |
 | ---------------------- | ---------------------------- |
 | `/heal-workflows`      | Audit workflow components    |
-| `/heal-knowledge-base` | Audit knowledge organization |
+| `/heal-knowledge`      | Audit and consolidate knowledge |
 | `/heal-work-items`     | Audit work item consistency  |

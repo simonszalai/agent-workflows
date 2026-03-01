@@ -100,6 +100,36 @@ Check project rules:
 - Document which rules affect this step
 - Note specific requirements (e.g., "no Any types", "use TEXT not VARCHAR")
 
+### 5. OpenMemory Research (REQUIRED)
+
+Search for accumulated implementation learnings and user preferences:
+
+```
+search-memory(
+    query="<feature area> implementation patterns",
+    project_id="<from CLAUDE.md>",
+    memory_types=["implementation", "component"]
+)
+search-memory(
+    query="<technology/area> gotchas pitfalls",
+    project_id="<from CLAUDE.md>",
+    memory_types=["debug"]
+)
+search-memory(
+    query="implementation style preferences",
+    user_preference=true,
+    memory_types=["user_preference"]
+)
+```
+
+**Document in each build todo:**
+
+- Relevant implementation memories found
+- User preferences that apply to this step
+- Past debug learnings for this area
+
+If OpenMemory MCP is unavailable, mention once and continue with other research.
+
 ## Build Todo Creation Process
 
 1. **Read plan.md** - Understand the architecture
@@ -107,10 +137,10 @@ Check project rules:
 3. **Pre-flight knowledge base audit (MANDATORY):**
    a. List ALL files in `.claude/knowledge/gotchas/` and `.claude/knowledge/references/`
    b. For each build todo's affected area (database, migrations, encryption, API, etc.),
-      search for matching gotchas with grep
+   search for matching gotchas with grep
    c. Read the most relevant 2-3 gotchas/references in full
    d. If a build todo involves database schema changes, ALWAYS read
-      `references/database-migrations-*.md` and ALL `gotchas/migration-*.md` files
+   `references/database-migrations-*.md` and ALL `gotchas/migration-*.md` files
    e. Document findings in each build todo's "Discovered Patterns" section
 4. **For each step:**
    a. Research knowledge base for gotchas/standards
@@ -146,6 +176,10 @@ Every build todo MUST include a "Discovered Patterns" section:
 **From CLAUDE.md:**
 
 - [Specific rule and how to comply]
+
+**From OpenMemory:**
+
+- [Memory title]: [How it informs this step]
 ```
 
 ### Implementation Details Section
@@ -179,6 +213,7 @@ Use `depends_on` field to make dependencies explicit.
 Before finalizing each build todo:
 
 - [ ] Searched ALL knowledge base folders (references, gotchas, solutions)
+- [ ] Searched OpenMemory for implementation patterns and debug learnings
 - [ ] EVERY build todo has "From knowledge base" subsection (even if "none applicable")
 - [ ] For database changes: migration gotchas were read and referenced
 - [ ] For field modifications: all consumers of modified fields were audited
@@ -198,9 +233,15 @@ When feature involves infrastructure changes, include these steps:
 
 If schema changes are needed:
 
-1. Create a build todo for the migration file
+1. Create a **dedicated build todo** for the migration file -- never bundle migration
+   creation into a code change step
 2. Include both upgrade AND downgrade functions
 3. Document rollback procedure in the todo
+4. **CRITICAL:** After ANY schema file modification (schema.prisma, models.py, etc.),
+   always create a migration (`bun run migrate`, `alembic revision --autogenerate`, etc.).
+   Never rely on `prisma db push` or equivalent tools alone -- they only sync the local
+   dev database. Deployed environments run migrations, so a missing migration = column not
+   found at runtime. See `.claude/knowledge/references/prisma-migration-process.md`.
 
 ### Environment Variables
 

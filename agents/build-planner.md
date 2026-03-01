@@ -24,6 +24,32 @@ code follows all project conventions correctly.
 
 For each step you create, you MUST research:
 
+### 0. Discover Framework/Technology Skills
+
+Detect the project's tech stack and load matching skills for framework-specific patterns:
+
+```bash
+# Check tech stack indicators
+ls package.json pyproject.toml Cargo.toml go.mod 2>/dev/null
+# Read package.json dependencies (JS/TS projects)
+cat package.json 2>/dev/null | head -50
+```
+
+Then search for skills matching the detected technologies:
+
+```
+Glob: skills/*-framework-mode/*.md
+Glob: skills/review-*/*.md
+```
+
+Read any skills that match the project's stack. These contain framework-specific patterns,
+conventions, and gotchas that MUST inform your build todos. For example:
+- React Router project -> load `react-router-framework-mode` for loader/action patterns
+- Next.js project -> load any `nextjs-*` skills
+- Python/Django project -> load any `django-*` skills
+
+**Include framework skill guidance in the "Discovered Patterns" section of each build todo.**
+
 ### 1. Knowledge Base (search exhaustively)
 
 ```bash

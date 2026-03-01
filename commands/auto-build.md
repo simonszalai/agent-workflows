@@ -33,15 +33,16 @@ summary report.
 ## Process Overview
 
 ```
-1. Setup        -> Create branch, verify environment
-2. Build Todos  -> /create-build-todos (deep research)
-3. Build        -> /build (implement each step)
-4. Review       -> /review (parallel review agents)
-5. Resolve      -> Auto-resolve p1/p2 findings
-6. Learn        -> Analyze findings, apply workflow improvements
-7. Deploy Guide -> /create-deployment-guide (deployment instructions)
-8. Verify       -> /verify-local (test execution)
-9. Report       -> Generate summary, create PR
+1.  Setup        -> Create branch, verify environment
+2.  Build Todos  -> /create-build-todos (deep research)
+3.  Build        -> /build (implement each step)
+4.  Write Tests  -> /write-tests (test coverage for new code)
+5.  Review       -> /review (parallel review agents)
+6.  Resolve      -> Auto-resolve p1/p2 findings
+7.  Compound     -> /compound (learn from review, apply improvements)
+8.  Deploy Guide -> /create-deployment-guide (deployment instructions)
+9.  Verify       -> /verify-local (test execution)
+10. Create PR    -> /create-pr (summary + PR + link)
 ```
 
 ## Detailed Process
@@ -86,10 +87,27 @@ Run `/build` internally for each build todo:
 **On test failure:**
 
 1. Attempt automatic fix (up to 2 retries)
-2. If still failing: Log details, continue to review phase
+2. If still failing: Log details, continue to write tests phase
 3. Review will flag remaining issues
 
-### Phase 4: Review
+### Phase 4: Write Tests
+
+Run `/write-tests {work-item-id}` internally:
+
+1. Analyze all code changes from the build phase
+2. Classify changed code: pure logic, DB operations, API routes, user flows
+3. Write tests at the appropriate level:
+   - **Unit tests** (vitest) for data transformations, business logic, validators
+   - **Integration tests** (vitest + DB) for model functions with query logic
+   - **E2E tests** (playwright) for multi-step user flows
+4. Run all new tests to verify they pass
+5. Run full test suite to verify no regressions
+
+**Test scope:** Only test code written in Phase 3. Don't test unrelated code.
+
+**On failure:** Log details, continue to review phase. Review will catch test gaps.
+
+### Phase 5: Review
 
 Run `/review` internally:
 
@@ -101,7 +119,7 @@ Run `/review` internally:
 
 **If `--review-pause`:** Stop here, notify user, wait for decisions.
 
-### Phase 5: Resolve Review Findings
+### Phase 6: Resolve Review Findings
 
 For each finding in `review_todos/`:
 
@@ -115,45 +133,25 @@ For each finding in `review_todos/`:
 - Re-run affected tests
 - Run type checker
 
-### Phase 6: Learn from Review
+### Phase 7: Compound Learnings
 
-Analyze resolved findings to prevent recurrence and improve the workflow.
+Run `/compound` in **autonomous mode** to learn from the build and review process.
 
-**Load skill:** `.claude/skills/learn-from-review/SKILL.md`
+1. Analyze resolved review findings for upstream gaps
+2. Identify improvements to knowledge docs, skills, and workflows
+3. Auto-apply all improvements (no user approval needed in auto-build)
+4. Store all learnings in OpenMemory (critical for cloud persistence)
+5. Report what was changed
 
-1. **Gather resolved findings:**
-   - Read all files in `review_todos/` with status: resolved
-   - Analyze all priorities (p1, p2, p3)
-
-2. **Analyze each finding for upstream gaps:**
-
-   | Gap Type          | Question                                      | Fix Target                          |
-   | ----------------- | --------------------------------------------- | ----------------------------------- |
-   | Knowledge Gap     | Should this have been a documented gotcha?    | `.claude/knowledge/gotchas/`        |
-   | Plan Gap          | Should plan have identified this constraint?  | `.claude/skills/plan-methodology/`  |
-   | Build Todos Gap   | Should build todos have referenced a pattern? | `.claude/skills/build-plan-method/` |
-   | Review Prompt Gap | Should a review skill check for this?         | `.claude/skills/review-*/`          |
-   | Implementation    | One-off mistake? (no systemic fix needed)     | None                                |
-
-3. **Prioritize improvements:**
-   - P1: 3+ findings from same gap, or security/data integrity
-   - P2: 2 findings from same gap, or significant time wasted
-   - P3: Single finding, low impact (document but defer)
-
-4. **Apply improvements:**
-   - Create knowledge docs with proper YAML frontmatter
-   - Update skill checklists and research requirements
-   - Add rules to AGENTS.md only for repeated violations
-
-5. **Generate learning report:**
-   - Create `learning-report.md` in work item folder
-   - Summarize gaps found and improvements applied
+**Cloud note:** In cloud environments, file-based changes from /compound are ephemeral.
+OpenMemory saves are the **persistent** knowledge channel. The compound-methodology skill
+handles this automatically via its "Store in OpenMemory" step.
 
 **On no findings:** Skip this phase (nothing to learn from).
 
-**On error:** Log details, continue to verification (non-blocking).
+**On error:** Log details, continue to deployment guide (non-blocking).
 
-### Phase 7: Create Deployment Guide
+### Phase 8: Create Deployment Guide
 
 Run `/create-deployment-guide` internally:
 
@@ -180,7 +178,7 @@ Run `/create-deployment-guide` internally:
 
 **On error:** Log details, continue to verification (non-blocking).
 
-### Phase 8: Local Verification
+### Phase 9: Local Verification
 
 **Unless `--skip-verify`:**
 
@@ -198,89 +196,24 @@ Run `/verify-local` internally:
 2. Include in final report
 3. PR will be marked as "needs attention"
 
-### Phase 9: Report and PR
+### Phase 10: Create PR
 
-1. **Generate summary report** (`auto-build-report.md`):
+Run `/create-pr {work-item-id}` internally:
 
-   ```markdown
-   # Auto-Build Report: {work-item-id}
-
-   **Branch:** auto-build/{work-item-id}
-   **Status:** {COMPLETE|NEEDS_ATTENTION}
-   **Date:** YYYY-MM-DD
-
-   ## Build Summary
-
-   - Build todos completed: N/N
-   - Tests passing: X/Y
-   - Type check: PASS/FAIL
-
-   ## Review Summary
-
-   - Findings: N total (X p1, Y p2, Z p3)
-   - Auto-resolved: N
-   - Deferred: N
-
-   ## Learning Summary
-
-   - Findings analyzed: N
-   - Workflow improvements: N
-   - Knowledge docs created: N
-   - [Link to learning-report.md]
-
-   ## Deployment Guide
-
-   - Status: GENERATED/SKIPPED
-   - [Link to deployment-guide.md]
-   - Key steps: {summary of deployment steps}
-
-   ## Verification Summary
-
-   - Status: PASS/FAIL/SKIPPED
-   - Scenarios tested: N
-   - [Link to verification-report.md]
-
-   ## Files Changed
-
-   | File            | Change      |
-   | --------------- | ----------- |
-   | path/to/file.py | description |
-
-   ## Issues Requiring Attention
-
-   - [List any unresolved issues]
-
-   ## Next Steps
-
-   - [ ] Review PR
-   - [ ] Merge to main
-   - [ ] Deploy and verify in production
-   ```
-
-2. **Commit all changes:**
-
-   ```bash
-   git add -A
-   git commit -m "Auto-build {work-item-id}: {title}
-
-   - Completed N build steps
-   - Resolved N review findings
-   - Local verification: {status}
-
-   Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-   ```
-
-3. **Push and create PR:**
-
-   ```bash
-   git push -u origin auto-build/{work-item-id}
-   ```
-
-   Create PR with:
-
-   ```
-   gh pr create --title "{work-item-id}: {title}" --body "$(cat auto-build-report.md)"
-   ```
+1. Collects all work item artifacts (plan.md, build_todos/, review_todos/,
+   deployment-guide.md, verification-report.md, etc.)
+2. Runs tests and collects results
+3. Generates standardized summary with:
+   - What was done (implementation details)
+   - Test results (counts by type, pass/fail)
+   - Verification status
+   - Review findings resolved
+   - Deployment notes
+   - Files changed
+4. Commits all changes
+5. Pushes to `auto-build/{work-item-id}` branch
+6. Creates PR with summary as body
+7. Outputs the PR link
 
 ## Error Handling
 
@@ -291,10 +224,12 @@ Run `/verify-local` internally:
 | Build Todos  | Agent failure            | STOP, report                            |
 | Build        | Test failure             | Retry 2x, then continue                 |
 | Build        | Type error               | Attempt fix, continue                   |
+| Write Tests  | Test creation fails      | Log, continue to review (non-blocking)  |
+| Write Tests  | New tests fail           | Fix tests, retry once, then continue    |
 | Review       | Agent failure            | Log, continue with partial review       |
 | Resolve      | Fix introduces new error | Revert fix, mark as deferred            |
-| Learn        | Analysis failure         | Log, continue (non-blocking)            |
-| Learn        | Improvement write fails  | Log, continue (non-blocking)            |
+| Compound     | Analysis failure         | Log, continue (non-blocking)            |
+| Compound     | Improvement write fails  | Log, continue (non-blocking)            |
 | Deploy Guide | Generation failure       | Log, continue (non-blocking)            |
 | Verify       | Test failure             | Log details, mark PR as needs attention |
 | PR           | Push failure             | Report, provide manual instructions     |
@@ -314,25 +249,46 @@ Run `/verify-local` internally:
 
 ### On Success
 
-- Feature branch with all changes
-- `auto-build-report.md` in work item folder
-- `deployment-guide.md` in work item folder
-- `verification-report.md` (unless skipped)
-- PR ready for review
-- Notification: "Auto-build complete for {id}. PR: {url}"
+```
+Auto-build complete!
+
+PR: https://github.com/org/repo/pull/456
+
+Summary:
+- Implemented {feature description}
+- Tests: 15 passing / 15 total (8 unit, 5 integration, 2 e2e)
+- Verification: PASS
+- Review: 4 findings resolved
+
+Work item: F007-feature-name
+```
 
 ### On Partial Success
 
-- Branch with partial changes
-- Report documenting what succeeded/failed
-- PR marked "needs attention"
-- Notification: "Auto-build needs attention: {issues}"
+```
+Auto-build needs attention!
+
+PR: https://github.com/org/repo/pull/456 (marked needs attention)
+
+Summary:
+- Implemented {feature description}
+- Tests: 14 passing / 15 total
+- Verification: FAIL (1 scenario)
+- Review: 3 findings resolved, 1 P3 remaining
+
+Work item: F007-feature-name
+```
 
 ### On Failure
 
-- No PR created
-- Detailed error report
-- Notification: "Auto-build failed: {reason}"
+```
+Auto-build failed at: {phase}
+
+Reason: {error description}
+
+Work item: F007-feature-name
+See: work_items/active/F007-feature-name/ for partial progress
+```
 
 ## Work Log Entry
 

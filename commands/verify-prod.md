@@ -87,7 +87,7 @@ Identify:
 
 ### Phase 2: Launch Parallel Verification Agents
 
-Spawn multiple specialized subagents to verify different aspects simultaneously:
+Spawn `verifier-production` agent(s) to verify different aspects simultaneously:
 
 ```
 +-------------------------------------------------------------+
@@ -96,7 +96,7 @@ Spawn multiple specialized subagents to verify different aspects simultaneously:
 |                                                              |
 |  +--------------+  +--------------+  +--------------+       |
 |  | Service      |  | DB State     |  | Data Quality |       |
-|  | Monitor      |  | Checker      |  | Agent        |       |
+|  | Health       |  | Verification |  | Validation   |       |
 |  +--------------+  +--------------+  +--------------+       |
 |  | - Failed runs|  | - New tables |  | - Row counts |       |
 |  | - Error logs |  | - New columns|  | - Data shape |       |
@@ -106,7 +106,7 @@ Spawn multiple specialized subagents to verify different aspects simultaneously:
 +-------------------------------------------------------------+
 ```
 
-**Agent 1: Service Health Monitor**
+**Focus 1: Service Health**
 
 ```
 Check service runs for affected processes:
@@ -116,7 +116,7 @@ Check service runs for affected processes:
 - Calculate success rate percentage
 ```
 
-**Agent 2: Database State Checker**
+**Focus 2: Database State**
 
 ```
 Verify expected database changes exist:
@@ -126,7 +126,7 @@ Verify expected database changes exist:
 - Check for orphaned records or constraint violations
 ```
 
-**Agent 3: Data Quality Agent**
+**Focus 3: Data Quality**
 
 ```
 Validate the quality of new data:
@@ -136,11 +136,52 @@ Validate the quality of new data:
 - Compare against historical patterns
 ```
 
+### Phase 2b: Re-Evaluate Original Hypotheses (Bug Fixes Only)
+
+For bug-fix work items (NNN or BNNN) that have a `hypothesis-evaluation/` folder, re-evaluate
+the confirmed hypothesis against **post-deployment** production data to verify the fix actually
+addressed the root cause.
+
+**When to run:**
+
+| Condition | Run Phase 2b? |
+|---|---|
+| `hypothesis-evaluation/` exists with CONFIRMED hypothesis | **Yes** |
+| Bug fix without hypothesis evaluation | No |
+| Feature work item (FNNN) | No |
+
+**Process:**
+
+1. Read the original confirmed hypothesis from `hypothesis-evaluation/`
+2. Spawn `hypothesis-evaluator` agent in parallel with Phase 2 agents:
+
+   ```
+   Task(subagent_type="hypothesis-evaluator", prompt="
+   Post-deployment re-evaluation of previously confirmed hypothesis:
+
+   Original hypothesis: [H1 statement]
+   Original verdict: CONFIRMED
+   Original evidence: [summary of what was found]
+
+   Fix deployed: [brief description of what was changed]
+   Deployment time: [timestamp or 'unknown']
+
+   Verify that the root cause is NO LONGER present in production:
+   - The original symptom should be gone
+   - The testable prediction should now show the FIXED state
+   - No new related failures should appear
+
+   Return verdict: RESOLVED | STILL_PRESENT | INCONCLUSIVE with evidence.
+   ")
+   ```
+
+3. Include result in the synthesis report as a "Root Cause Resolution" section.
+
 ### Phase 3: Synthesize Results
 
 Collect results from all agents and produce a unified report:
 
-| Agent          | Status | Key Finding                         |
+| Focus          | Status | Key Finding                         |
 | -------------- | ------ | ----------------------------------- |
 | Service Health | PASS   | 847 runs, 0 failures (100% success) |
 | Database State | PASS   | New table has 23 new rows           |
@@ -233,13 +274,13 @@ Feature is working as designed. Recommend moving to closed.
 
 ## Agent Dispatch
 
-The verify command spawns multiple Task agents in parallel:
+The verify command spawns `verifier-production` agents in parallel with different focus areas:
 
-| Agent Type            | Subagent | Purpose                               | Tools Used                    |
-| --------------------- | -------- | ------------------------------------- | ----------------------------- |
-| Investigator agents   | haiku    | Check service status                  | Project-specific CLI          |
-| Database investigator | haiku    | Query database state                  | Production database MCP       |
-| Verifier              | sonnet   | Synthesize results and produce report | Both CLI and database MCP     |
+| Agent                   | Focus          | Purpose                               | Tools Used                    |
+| ----------------------- | -------------- | ------------------------------------- | ----------------------------- |
+| `verifier-production`   | Service health | Check service status and logs         | Project-specific CLI          |
+| `verifier-production`   | Database state | Query database state and schema       | Production database MCP       |
+| `verifier-production`   | Data quality   | Validate data correctness             | Production database MCP       |
 
 ## On Verification PASS
 

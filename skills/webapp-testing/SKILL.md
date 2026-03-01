@@ -8,6 +8,8 @@ license: Complete terms in LICENSE.txt
 
 To test local web applications, write native Python Playwright scripts.
 
+**See also:** `browser-testing` skill for agent-browser CLI testing (used by `verifier-local`).
+
 **Helper Scripts Available**:
 - `scripts/with_server.py` - Manages server lifecycle (supports multiple servers)
 

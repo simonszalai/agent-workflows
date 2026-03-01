@@ -1,11 +1,12 @@
 ---
-description: Investigate production bugs to find workflow gaps. Spawns retrospector agent, produces retrospective.md with recommendations.
+description: Production incident post-mortem. Identifies workflow and test gaps, then fixes them.
 ---
 
 # Retrospect Command
 
-Analyze why a bug reached production by examining agent workflows, prompts, skills, commands, and
-tools at every stage. Identifies what's missing from the workflow.
+A bug reached production. Analyze the entire workflow pipeline to find which stage failed, then
+actually fix the workflows, knowledge, and tests so it can't happen again. This is NOT a
+reporting tool - it applies changes.
 
 ## Usage
 
@@ -18,13 +19,18 @@ tools at every stage. Identifies what's missing from the workflow.
 
 ## When to Use
 
-| Situation                    | Use `/retrospect`? | Instead Use      |
-| ---------------------------- | ------------------ | ---------------- |
-| Bug reached production       | Yes                | -                |
-| Want to prevent similar bugs | Yes                | -                |
-| Incident post-mortem         | Yes                | -                |
-| Bug not yet in production    | **No**             | Fix directly     |
-| New feature planning         | **No**             | `/plan` directly |
+| Situation | Use `/retrospect`? | Instead Use |
+|---|---|---|
+| Bug reached production | Yes | - |
+| Want to prevent similar bugs | Yes | - |
+| Incident post-mortem | Yes | - |
+| User correction or learning moment | **No** | `/compound` |
+| Bug not yet in production | **No** | Fix directly |
+| After review findings resolved | **No** | `/compound` |
+
+**Key difference from `/compound`:** Retrospect examines the ENTIRE pipeline (plan → build →
+review → test → verify → deploy) for a specific production failure. Compound is lighter and
+broader, triggered after any learning moment.
 
 ## Work Item Lookup
 
@@ -36,31 +42,23 @@ tools at every stage. Identifies what's missing from the workflow.
 find work_items -maxdepth 2 -type d -name "*{id}*"
 ```
 
-**If only description given:** Search for related work items by keyword, or create a new incident
-work item:
+**If only description given:** Search for related work items by keyword, or create a new
+incident work item in `work_items/active/NNN-retrospect-slug/`.
 
-1. Search: `find work_items -maxdepth 2 -type d -name "*keyword*"`
-2. If found: Use that work item
-3. If not found: Create `work_items/active/NNN-retrospect-slug/` with next available number
+## Process
 
-## Analysis Stages
+### Phase 1: Gather Context
 
-The retrospective examines each workflow stage:
+1. Find and read all work item artifacts (plan.md, build_todos/, review_todos/, etc.)
+2. Get git history for related commits
+3. Read the bug report or incident description
+4. Check production state if tools available (DB, logs, metrics)
 
-| Stage                   | Artifact               | Question                                    |
-| ----------------------- | ---------------------- | ------------------------------------------- |
-| Investigation (bugs)    | investigation.md       | Was root cause analysis thorough?           |
-| Plan                    | plan.md                | Did plan identify the constraint/edge case? |
-| Build Todos             | build_todos/           | Were implementation steps complete?         |
-| Implementation          | git diff               | Did code match plan? Quality issues?        |
-| Review                  | review_todos/          | Did reviewers check right dimensions?       |
-| Local Verification      | test output            | Were integration tests sufficient?          |
-| Production Verification | verification-report.md | Did we verify the right scenarios?          |
-| Knowledge               | .claude/knowledge/     | Should there be a gotcha/reference?         |
+### Phase 2: Spawn Analysis Agents
 
-## Agent Dispatch
+Spawn agents in parallel based on what's needed:
 
-Spawn the `retrospector` agent with full context:
+**Always spawn:** `retrospector` agent with full context:
 
 ```
 Task(subagent_type="retrospector", prompt="
@@ -71,11 +69,12 @@ Work item (if found): [path or 'none']
 Context from conversation: [any additional context]
 
 Analyze which workflow stage should have caught this bug.
+Identify specific gaps in workflows, knowledge, and tests.
 Return analysis following the retrospect-methodology template.
 ")
 ```
 
-**Optional:** For deeper code analysis, also spawn `researcher` agent:
+**Optional - deeper code analysis:** Spawn `researcher` agent in parallel:
 
 ```
 Task(subagent_type="researcher", prompt="
@@ -89,63 +88,129 @@ Find:
 ")
 ```
 
-## Process
+**Optional - verify suspected root cause:** When the root cause is disputed or unclear, spawn
+`hypothesis-evaluator` agent in parallel to verify against production data:
 
-1. **Parse input** - Extract bug description and work item reference
-2. **Find work item** - Locate existing work item or create incident folder
-3. **Gather context** - Read all work item artifacts
-4. **Spawn retrospector** - Analyze workflow gaps
-5. **Spawn researcher** (optional) - Deep dive on code history
-6. **Synthesize findings** - Write `retrospective.md` to work item folder
-7. **Create action items** - Identify specific workflow improvements
+```
+Task(subagent_type="hypothesis-evaluator", prompt="
+Post-mortem hypothesis evaluation for: [bug description]
+
+Hypothesis: [suspected root cause from bug report or Phase 1 context]
+Evidence so far: [what we know from the incident]
+Testable prediction: [what production data should show if this is the cause]
+
+Work item: [path]
+
+Verify this root cause hypothesis using production data, metrics, and logs.
+Return verdict: CONFIRMED | REFUTED | INCONCLUSIVE with evidence.
+")
+```
+
+**When to include hypothesis-evaluator:**
+
+| Situation | Include? | Why |
+|---|---|---|
+| Root cause is uncertain or debated | **Yes** | Evidence-backed conclusions |
+| Multiple possible root causes | **Yes** | Disambiguate before applying fixes |
+| Root cause is obvious (stack trace, clear error) | No | Don't over-verify the obvious |
+| Production data/logs are unavailable | No | Agent can't verify without data |
+
+### Phase 3: Synthesize Analysis
+
+From the agent results, identify:
+
+1. **Primary gap** - The main workflow stage that should have caught this
+2. **Secondary gaps** - Contributing factors
+3. **Test gap** - What test would have caught this before production?
+
+### Phase 4: Apply Fixes
+
+This is where retrospect differs from the old version. Don't just write a report - actually
+fix things.
+
+For each identified gap, apply the appropriate fix:
+
+| Gap Type | Fix Action |
+|---|---|
+| Missing knowledge | Create gotcha/solution/reference in `.claude/knowledge/` |
+| Missing AGENTS.md rule | Add rule to `AGENTS.md` |
+| Plan didn't research this | Add research requirement to `plan-methodology` skill |
+| Build todos missed pattern | Add pattern search to `build-plan-methodology` skill |
+| Review didn't catch this | Add checklist item to appropriate `review-*` skill |
+| Test didn't cover this | Add test scenario to testing strategy documentation |
+| Verification missed scenario | Add verification step to `verify-local` or `verify-prod` docs |
+| Workflow step missing | Add step to relevant command |
+
+**Present each proposed fix to the user for approval before applying.** Unlike `/compound`
+in autonomous mode, retrospect always confirms - production incidents deserve careful attention.
+
+### Phase 5: Write Retrospective
+
+Write `retrospective.md` to the work item folder with:
+
+```markdown
+# Retrospective: [Work Item ID]
+
+**Date:** YYYY-MM-DD
+**Bug:** [Brief description]
+**Impact:** [What happened in production]
+
+## Root Cause
+
+[What caused the bug]
+
+## Primary Gap
+
+**Stage:** [Which workflow stage failed]
+**What was missing:** [Specific gap]
+**Evidence:** [Why we know this stage should have caught it]
+
+## Secondary Gaps
+
+- [Contributing factor 1]
+- [Contributing factor 2]
+
+## Test Gap
+
+**What test would have caught this:**
+[Specific test scenario description]
+
+## Fixes Applied
+
+| Target | Change |
+|---|---|
+| [file path] | [what was added/changed] |
+
+## Prevention
+
+This bug cannot recur because:
+- [Specific workflow improvement 1]
+- [Specific knowledge addition 1]
+- [Specific test addition 1]
+```
+
+## Analysis Stages
+
+The retrospective examines each workflow stage in reverse order (closest to production first):
+
+| Stage | Artifact | Key Question |
+|---|---|---|
+| Production Verification | verification-report.md | Did we verify the right scenarios? |
+| Local Verification | test output | Were integration tests sufficient? |
+| Review | review_todos/ | Did reviewers check the right dimensions? |
+| Implementation | git diff, code | Did code match plan? Quality issues? |
+| Build Todos | build_todos/ | Were implementation steps complete? |
+| Plan | plan.md | Did plan identify the constraint/edge case? |
+| Investigation (bugs) | investigation.md | Was root cause analysis thorough? |
+| Knowledge | .claude/knowledge/ | Should there be a gotcha/reference? |
+| Tests | test files | What test scenario is missing? |
 
 ## Output
 
-Write `retrospective.md` to work item folder with:
+- `retrospective.md` in work item folder (always created)
+- Knowledge docs created/updated (if knowledge gap found)
+- Skill files updated (if workflow gap found)
+- Command files updated (if process gap found)
+- Test scenarios documented (if test gap found)
 
-- Primary gap identified (the main failure point)
-- Secondary gaps (contributing factors)
-- Evidence from artifacts and git history
-- Specific recommendations for workflow improvement
-- Action items checklist
-
-## Examples
-
-**Bug: "Items missing required associations"**
-
-1. Find related work item (search for association keywords)
-2. Read plan.md - Did it mention association logic?
-3. Read build_todos/ - Were there steps for association handling?
-4. Check review_todos/ - Did reviewers check data integrity?
-5. Check verification - Was association verified?
-6. Primary gap likely: Missing verification step for data associations
-
-**Bug: "Migration failed on downgrade"**
-
-1. Find related work item (search for migration)
-2. Read plan.md - Did it mention constraint naming?
-3. Check .claude/knowledge/gotchas/ - Is constraint naming documented?
-4. Primary gap likely: Missing gotcha, or gotcha not referenced in plan
-
-## Gap Remediation
-
-After identifying gaps, take action:
-
-| Gap Type           | Remediation                                                            |
-| ------------------ | ---------------------------------------------------------------------- |
-| Missing plan step  | Update plan checklist or skill                                         |
-| Missing build todo | Update build-plan-methodology skill                                    |
-| Missing review     | Update review skill checklists                                         |
-| Missing verify     | Update verify-flow skill or add scenario                               |
-| Missing knowledge  | Use `/compound gotcha`, `/compound reference`, or `/compound solution` |
-| Process issue      | Update AGENTS.md or relevant command                                   |
-
-## Workflow Improvement Loop
-
-The retrospective is part of a continuous improvement loop:
-
-```
-Bug found -> /retrospect -> Identify gap -> Fix workflow -> Prevent similar bugs
-```
-
-Each retrospective should result in at least one concrete workflow change.
+Each retrospective results in at least one concrete change to prevent recurrence.

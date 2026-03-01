@@ -80,3 +80,14 @@ Structure analysis as:
 - Cross-cutting changes that affect multiple components
 - Changes that create new dependencies between layers
 - API changes that affect external consumers
+
+### Cross-Service Integration Contracts (Critical)
+
+- [ ] **Protocol compatibility**: If a service contract changed (request/response schema),
+  verify ALL callers in ALL repos send the correct fields
+- [ ] **No phantom integrations**: If code claims to integrate with an external service, verify
+  the integration actually works by tracing the full request/response flow
+- [ ] **Shared secrets match**: When services authenticate to each other, verify both sides use
+  the same env var names and values
+- [ ] **Cross-repo changes are atomic**: If a change requires updates in multiple repos, verify
+  all repos were updated together

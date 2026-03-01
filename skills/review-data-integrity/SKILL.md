@@ -1,6 +1,6 @@
 ---
 name: review-data-integrity
-description: Data integrity and migration safety checklist. Used by data-integrity-guardian agent. Portable to Cursor.
+description: Data integrity and migration safety checklist. Used by reviewer-data agent. Portable to Cursor.
 ---
 
 # Data Integrity Review Standards
@@ -11,6 +11,12 @@ Standards for data integrity review. Apply these when reviewing database migrati
 
 ### 1. Database Migration Analysis
 
+- **Schema-migration sync (CRITICAL):** If the schema file was modified (schema.prisma,
+  models.py, etc.), verify a NEW migration exists that covers ALL schema changes. Tools like
+  `prisma db push` or `prisma generate` sync the local dev DB and client directly from the
+  schema -- but deployed databases run migrations only. A missing migration means the column
+  exists in the ORM/client but not in the production database, causing runtime crashes.
+  Flag as **p1** if schema changes lack a corresponding migration.
 - Check for reversibility and rollback safety
 - Identify potential data loss scenarios
 - Verify handling of NULL values and defaults

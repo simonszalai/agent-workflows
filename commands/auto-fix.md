@@ -50,9 +50,9 @@ report.
 7. Build             -> Implement fix (branch-based)
 8. Review            -> Parallel review agents
 9. Resolve           -> Auto-resolve findings
-10. Learn            -> Compound workflow improvements
+10. Compound         -> /compound (learn + apply improvements)
 11. Verify           -> Local verification (optional)
-12. Report & PR      -> Create PR with summary
+12. Create PR        -> /create-pr (summary + PR + link)
 ```
 
 ## Detailed Process
@@ -238,16 +238,14 @@ For each finding in `review_todos/`:
 
 **On fix causing new error:** Revert fix, mark as deferred.
 
-### Phase 10: Learn from Review
+### Phase 10: Compound Learnings
 
-Run `/learn-from-review` internally:
+Run `/compound` in **autonomous mode**:
 
-1. **Analyze resolved findings** for upstream gaps
-2. **Apply improvements** to workflow:
-   - Knowledge docs (gotchas, references)
-   - Skill updates (checklists, research requirements)
-   - AGENTS.md rules (if repeatedly violated)
-3. **Create learning-report.md**
+1. Analyze resolved review findings and the bug fix for upstream gaps
+2. Identify improvements to knowledge docs, skills, and workflows
+3. Auto-apply all improvements (no user approval needed in auto-fix)
+4. Report what was changed
 
 **On error:** Log details, continue (non-blocking).
 
@@ -269,109 +267,63 @@ Run `/verify-local` internally:
 2. Include in final report
 3. PR will be marked as "needs attention"
 
-### Phase 12: Report and PR
+### Phase 12: Create PR
 
-1. **Generate auto-fix-report.md:**
+Run `/create-pr BNNN` internally:
 
-   ```markdown
-   # Auto-Fix Report: BNNN - {Title}
+1. Collects all work item artifacts (source.md, investigation.md, hypothesis-evaluation/,
+   plan.md, build_todos/, review_todos/, learning-report.md, etc.)
+2. Runs tests and collects results
+3. Generates standardized summary with:
+   - Root cause analysis (hypothesis verdicts table)
+   - What was fixed and how
+   - Test results (counts by type, pass/fail)
+   - Verification status
+   - Review findings resolved
+   - Learnings captured
+   - Files changed
+4. Commits all changes
+5. Pushes to `auto-fix/BNNN` branch
+6. Creates PR with summary as body
+7. Outputs the PR link
 
-   **Branch:** auto-fix/BNNN
-   **Status:** COMPLETE | NEEDS_ATTENTION | PARTIAL
-   **Date:** YYYY-MM-DD
+**Reply format** (depends on outcome):
 
-   ## Root Cause Analysis
+**Success:**
 
-   | ID  | Hypothesis | Verdict   | Confidence |
-   | --- | ---------- | --------- | ---------- |
-   | H1  | [Name]     | CONFIRMED | High       |
-   | H2  | [Name]     | REFUTED   | Medium     |
+```
+Fixed! PR: {pr_url}
 
-   **Confirmed Root Cause:**
-   [Summary of what was confirmed and evidence]
+**Root cause:** {confirmed hypothesis summary}
+**Fix:** {what the fix does}
+**Tests:** {N passing} / {N total}
 
-   ## Changes Made
+Work item: BNNN-slug
+```
 
-   | File            | Change              |
-   | --------------- | ------------------- |
-   | path/to/file.py | [brief description] |
+**Needs attention:**
 
-   **Fix Approach:**
-   [Summary of how the fix addresses the root cause]
+```
+Partial fix ready: {pr_url}
 
-   ## Verification
+**Root cause:** {confirmed or best hypothesis}
+**Fix:** {what was implemented}
+**Tests:** {N passing} / {N total}
+**Attention needed:** {what needs manual review}
 
-   **Status:** PASS | FAIL | SKIPPED
-   [Evidence or reason]
+Work item: BNNN-slug
+```
 
-   ## Learnings Captured
+**Failed:**
 
-   - Knowledge docs created: N
-   - Workflow improvements: N
-   - [Link to learning-report.md]
+```
+Could not auto-fix this issue.
 
-   ## Next Steps
+**Investigation:** {summary of findings}
+**Blocking issue:** {what prevented the fix}
 
-   - [ ] Review PR
-   - [ ] Merge to main
-   - [ ] Monitor in production
-   ```
-
-2. **Commit all changes:**
-
-   ```bash
-   git add -A
-   git commit -m "Auto-fix BNNN: {title}
-
-   Root cause: {confirmed hypothesis}
-   Fix: {brief description}
-
-   Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-   ```
-
-3. **Push and create PR:**
-
-   ```bash
-   git push -u origin auto-fix/BNNN
-
-   gh pr create --title "Auto-fix BNNN: {title}" --body "$(cat auto-fix-report.md)"
-   ```
-
-4. **Reply format** (depends on outcome):
-
-   **Success:**
-
-   ```
-   Fixed! PR: https://github.com/.../pull/123
-
-   **Root cause:** {confirmed hypothesis summary}
-   **Fix:** {what the fix does}
-
-   Work item: BNNN-slug
-   ```
-
-   **Needs attention:**
-
-   ```
-   Partial fix ready: https://github.com/.../pull/123
-
-   **Root cause:** {confirmed or best hypothesis}
-   **Fix:** {what was implemented}
-   **Attention needed:** {what needs manual review}
-
-   Work item: BNNN-slug
-   ```
-
-   **Failed:**
-
-   ```
-   Could not auto-fix this issue.
-
-   **Investigation:** {summary of findings}
-   **Blocking issue:** {what prevented the fix}
-
-   Work item: BNNN-slug (investigation.md has details)
-   ```
+Work item: BNNN-slug (investigation.md has details)
+```
 
 ## Error Handling
 
@@ -385,7 +337,7 @@ Run `/verify-local` internally:
 | Build         | Test failure            | Retry 2x, continue to review   |
 | Review        | Agent failure           | Continue with partial review   |
 | Resolve       | Fix causes new error    | Revert, mark needs attention   |
-| Learn         | Write fails             | Log, continue (non-blocking)   |
+| Compound      | Write fails             | Log, continue (non-blocking)   |
 | Verify        | Failure                 | Log, mark PR needs attention   |
 | PR            | Push fails              | Report, provide manual steps   |
 
@@ -418,8 +370,9 @@ work_items/active/B001-service-oom/
 | `/build`             | Called internally in branch mode             |
 | `/review`            | Called internally after build                |
 | `/resolve-review`    | Called internally for all findings           |
-| `/learn-from-review` | Called internally for workflow improvements  |
+| `/compound`          | Called internally for workflow improvements  |
 | `/verify-local`      | Called internally (optional)                 |
+| `/create-pr`         | Called internally for PR creation            |
 | `/auto-build`        | Sibling command for features (not bugs)      |
 
 ## Example Workflow
@@ -461,6 +414,8 @@ Fixed! PR: https://github.com/org/repo/pull/456
 
 **Root cause:** Memory exhaustion on large batches (>500 items)
 **Fix:** Added batch size limit of 200 items with chunked processing
+**Tests:** 5 passing / 5 total
+**Verification:** PASS
 
 Work item: B001-processor-oom
 ```

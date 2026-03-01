@@ -57,7 +57,23 @@ similar past implementations. This helps catch recurring patterns proactively.
    - Use `review` skill template for output format
    - Number files starting from the next available index (from step 2)
 
-5. **Update plan.md** work log:
+5. **Store P1/P2 findings in OpenMemory** (persists beyond session):
+   For each P1/P2 finding, store as debug memory so future builds learn from it:
+
+   ```
+   add-memory(
+       title="Review: [finding summary]",
+       content="File: [path], Line: [number]. Issue: [description].
+                Recommendation: [fix]. Priority: [p1/p2].",
+       metadata={memory_types: ["debug"]},
+       project_id="<from CLAUDE.md>"
+   )
+   ```
+
+   This is critical for autonomous workflows (LFG, auto-build) in cloud environments
+   where review findings would otherwise be lost after the session ends.
+
+6. **Update plan.md** work log:
    ```
    | YYYY-MM-DD | review | Ran review agents | N findings (X p1, Y p2, Z p3) |
    ```

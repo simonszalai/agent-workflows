@@ -1,6 +1,6 @@
 ---
 name: review-python-standards
-description: Python coding standards and quality checklist. Used by kieran-python-reviewer agent. Portable to Cursor.
+description: Python coding standards and quality checklist. Used by reviewer-code agent. Portable to Cursor.
 ---
 
 # Python Review Standards

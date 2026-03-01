@@ -41,6 +41,28 @@ Use `researcher` for **general codebase research** when you need to:
 
 Read `AGENTS.md` and `CLAUDE.md` for project-specific structure, conventions, and paths.
 
+## Discover Framework Skills (Before Researching)
+
+Detect the project's tech stack and load matching skills for framework-specific knowledge:
+
+```bash
+# Check tech stack indicators
+ls package.json pyproject.toml Cargo.toml go.mod 2>/dev/null
+cat package.json 2>/dev/null | head -50
+```
+
+Search for skills matching the detected technologies:
+
+```
+Glob: skills/*-framework-mode/*.md
+Glob: skills/review-*/*.md
+```
+
+Read any skills that match the project's stack. These contain authoritative framework patterns
+and conventions that inform your research. For example:
+- React Router project -> load `react-router-framework-mode` for route/loader/action patterns
+- This helps you distinguish correct vs incorrect patterns when researching
+
 ## What to Look For
 
 **Knowledge base (check first):**

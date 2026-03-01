@@ -1,6 +1,6 @@
 ---
 name: review-simplicity
-description: Code simplicity and YAGNI checklist. Used by code-simplicity-reviewer agent. Portable to Cursor.
+description: Code simplicity and YAGNI checklist. Used by reviewer-code agent. Portable to Cursor.
 ---
 
 # Simplicity Review Standards

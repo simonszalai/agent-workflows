@@ -62,11 +62,11 @@ Choose agents based on problem symptoms. Refer to AGENTS.md for available invest
 
 Common patterns:
 
-| Symptoms                                  | Agent Type           | Why                   |
-| ----------------------------------------- | -------------------- | --------------------- |
-| crash, OOM, memory, timeout, deploy       | Infrastructure agent | Infrastructure issues |
-| connection, query, data, records, missing | Database agent       | Database state        |
-| code, bug, why, pattern, history          | `researcher`         | Codebase & knowledge  |
+| Symptoms                                  | Agent                    | Why                   |
+| ----------------------------------------- | ------------------------ | --------------------- |
+| crash, OOM, memory, timeout, deploy       | `investigator-render`    | Infrastructure issues |
+| connection, query, data, records, missing | `investigator-postgres`  | Database state        |
+| code, bug, why, pattern, history          | `researcher`             | Codebase & knowledge  |
 
 **Spawn only what's needed.** Most bugs need 2-3 agents, not all available agents.
 
@@ -83,16 +83,16 @@ Common patterns:
 ## Examples
 
 **"Service crashing with OOM"**
--> Infrastructure agent (memory metrics) + Service agent (crash details)
+-> `investigator-render` (memory metrics, crash details)
 
 **"Missing data in database"**
--> Database agent (data state) + Service agent (processing status)
+-> `investigator-postgres` (data state) + `investigator-render` (processing status)
 
 **"Why is this bug happening?"**
 -> `researcher` (code analysis) + relevant investigator
 
 **"Everything broke at 2pm"**
--> All available investigator agents (unknown root cause)
+-> All investigator agents in parallel (unknown root cause)
 
 ## Output
 
@@ -169,15 +169,57 @@ Add to `investigation.md` after Root Causes section:
 | **Medium** | Circumstantial evidence (timing correlation, similar past issue) |
 | **Low**    | Speculative (process of elimination, theoretical possibility)    |
 
-### Next Steps After Hypothesis Generation
+### Phase 6: Hypothesis Evaluation (Optional)
 
-For BNNN work items, the `/auto-fix` workflow will:
+After generating hypotheses, optionally evaluate them to provide verified root causes.
 
-1. Spawn `hypothesis-evaluator` agent to verify each hypothesis
-2. Use confirmed hypotheses to inform `/plan`
-3. Create `hypothesis-evaluation/` folder with evaluation documents
+**When to evaluate:**
 
-For manual NNN work items, suggest:
+| Context | Evaluate? | Why |
+|---|---|---|
+| Running inside `/auto-fix` | Yes (auto-fix handles it) | Full autonomous pipeline |
+| Standalone with uncertain root cause | **Yes** | Verified root cause before planning |
+| Standalone with obvious root cause | Skip | Single high-confidence hypothesis is enough |
 
-> Hypotheses generated. Run `/auto-fix` for autonomous verification, or manually verify
-> before proceeding to `/plan`.
+**To evaluate standalone** (when not inside `/auto-fix`):
+
+1. Spawn `hypothesis-evaluator` agent for each hypothesis (in parallel):
+
+   ```
+   Task(subagent_type="hypothesis-evaluator", prompt="
+   Evaluate hypothesis from investigation.md:
+
+   Hypothesis: [H1 statement]
+   Evidence: [supporting evidence]
+   Testable prediction: [what to verify]
+   Evaluation method: [specific queries/checks]
+
+   Work item: [path]
+
+   Verify or refute this hypothesis using production data, metrics, and logs.
+   Return verdict: CONFIRMED | REFUTED | INCONCLUSIVE with evidence.
+   ")
+   ```
+
+2. Collect verdicts and update the hypotheses table in `investigation.md`:
+
+   ```markdown
+   | ID  | Hypothesis             | Confidence | Status     |
+   | --- | ---------------------- | ---------- | ---------- |
+   | H1  | [Name: specific claim] | High       | CONFIRMED  |
+   | H2  | [Name: specific claim] | Medium     | REFUTED    |
+   ```
+
+3. Create `hypothesis-evaluation/` folder with evaluation documents for each hypothesis.
+
+4. Suggest next step based on results:
+
+   | Scenario | Suggestion |
+   |---|---|
+   | One CONFIRMED | "Root cause verified. Run `/plan` to design a fix." |
+   | Multiple CONFIRMED | "Multiple root causes confirmed. Run `/plan` to address them." |
+   | None CONFIRMED | "No hypothesis confirmed. Consider expanding investigation scope." |
+   | All REFUTED | "All hypotheses refuted. Re-investigate with broader scope." |
+
+**For BNNN work items inside `/auto-fix`:** The auto-fix workflow handles evaluation
+automatically in its Phase 4. Do not duplicate it here.

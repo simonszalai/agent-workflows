@@ -1,6 +1,6 @@
 ---
 name: research-git-history
-description: Git history analysis methodology for understanding code evolution and patterns. Used by investigator-research agent.
+description: Git history analysis methodology for understanding code evolution and patterns. Used by researcher agent.
 ---
 
 # Git History Research Methodology

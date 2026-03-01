@@ -86,6 +86,33 @@ grep -r "keyword" .claude/knowledge/solutions/
 - Step-by-step fix documentation
 - Workarounds and their rationale
 
+## OpenMemory Search (Complementary)
+
+In addition to file-based knowledge search, search OpenMemory for accumulated learnings.
+OpenMemory captures cross-session insights, user preferences, and learnings that may not
+have been written into knowledge files.
+
+**Search project knowledge:**
+
+```
+search-memory(query="<topic> gotchas pitfalls", project_id="<from CLAUDE.md>")
+search-memory(query="<topic> architecture patterns", project_id="<from CLAUDE.md>")
+```
+
+**Search user preferences:**
+
+```
+search-memory(query="<topic> debugging investigation preferences", user_preference=true)
+```
+
+**When to use OpenMemory vs file-based:**
+
+- File-based: Structured, curated knowledge with YAML frontmatter (deterministic grep)
+- OpenMemory: Semantic discovery, cross-session insights, user preferences
+- **Always search both** - they capture different types of knowledge
+
+If OpenMemory MCP is unavailable, mention once and continue with file-based search only.
+
 ## Output
 
 When knowledge base findings are relevant:
@@ -100,4 +127,8 @@ When knowledge base findings are relevant:
 **Related solution:** `.claude/knowledge/solutions/oom-fix-20260110.md`
 
 - [Summary of past fix and whether it applies]
+
+**From OpenMemory:**
+
+- [Memory title]: [How it applies to current investigation]
 ```

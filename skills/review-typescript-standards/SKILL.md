@@ -1,6 +1,6 @@
 ---
 name: review-typescript-standards
-description: TypeScript coding standards and quality checklist. Used by kieran-typescript-reviewer agent. Portable to Cursor.
+description: TypeScript coding standards and quality checklist. Used by reviewer-code agent. Portable to Cursor.
 ---
 
 # TypeScript Review Standards

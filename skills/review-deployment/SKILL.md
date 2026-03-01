@@ -1,6 +1,6 @@
 ---
 name: review-deployment
-description: Deployment verification checklist with SQL queries and rollback plans. Used by deployment-verification-agent agent. Portable to Cursor.
+description: Deployment verification checklist with SQL queries and rollback plans. Used by reviewer-data agent. Portable to Cursor.
 ---
 
 # Deployment Review Standards

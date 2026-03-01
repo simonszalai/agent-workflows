@@ -1,6 +1,6 @@
 ---
 name: review-patterns
-description: Design patterns, anti-patterns, and code quality checklist. Used by pattern-recognition-specialist agent. Portable to Cursor.
+description: Design patterns, anti-patterns, and code quality checklist. Used by reviewer-code agent. Portable to Cursor.
 ---
 
 # Pattern Review Standards

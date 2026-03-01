@@ -1,6 +1,6 @@
 ---
 name: research-repo-patterns
-description: Repository research methodology for structure, documentation, and patterns. Used by investigator-research agent.
+description: Repository research methodology for structure, documentation, and patterns. Used by researcher agent.
 ---
 
 # Repository Research Methodology

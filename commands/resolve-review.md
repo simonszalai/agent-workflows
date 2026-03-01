@@ -45,9 +45,9 @@ Work through review findings and implement accepted fixes.
    - Mark status: skipped
 
 5. **Capture learnings:**
-   - Search `.claude/knowledge/` for existing docs on the topic (avoid duplicates)
-   - Run `/compound` for significant fixes worth documenting
-   - Document gotchas, patterns, solutions that aren't already captured
+   - After all findings are resolved, run `/compound` to analyze the fixes
+   - `/compound` will propose improvements to knowledge docs AND workflows
+   - In interactive mode, it will ask for approval before applying
 
 6. **Apply process improvement recommendations:**
 
@@ -78,7 +78,7 @@ Work through review findings and implement accepted fixes.
    | Build todo research requirement | `.claude/skills/build-plan-methodology/SKILL.md`   |
    | Build verification step         | `.claude/commands/build.md`                        |
 
-   Use `/compound` to create knowledge docs with proper YAML frontmatter.
+   `/compound` handles all of these updates when run after resolve-review.
 
 7. **Run linter and type checker (REQUIRED after every fix):**
    - Run project's linter - fix any linting errors

@@ -1,6 +1,6 @@
 ---
 name: review-migrations
-description: Data migration safety and ID mapping validation. Used by data-migration-expert agent. Portable to Cursor.
+description: Data migration safety and ID mapping validation. Used by reviewer-data agent. Portable to Cursor.
 ---
 
 # Migration Review Standards

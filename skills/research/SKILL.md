@@ -1,6 +1,6 @@
 ---
 name: research
-description: Research output format, zone partitioning, and synthesis methodology. Used by research orchestrator.
+description: Research output format, zone partitioning, and synthesis methodology. Used by /research command.
 ---
 
 # Research Methodology
@@ -23,13 +23,16 @@ Research MUST be exhaustive. Every relevant file must be examined. This is achie
 
 ## Zone Definitions
 
-| Zone       | Glob Pattern                                 | Contents                      |
-| ---------- | -------------------------------------------- | ----------------------------- |
-| Routes     | `app/routes/**/*.{ts,tsx}`                   | Loaders, actions, page views  |
-| Components | `app/components/**/*.{ts,tsx}`               | UI components, local hooks    |
-| Models     | `app/models/**/*.{ts,tsx}`                   | Database access, Prisma       |
-| Core       | `app/lib/**`, `app/hooks/**`, `app/types/**` | Utils, hooks, type defs       |
-| Config     | `*.config.*`, `prisma/**`, `.claude/**`      | Project configuration         |
+Zones are project-specific. Check AGENTS.md for the project's zone definitions. A typical
+partitioning divides the codebase into 3-6 non-overlapping zones based on architectural layers:
+
+| Zone Example | Typical Contents                          |
+| ------------ | ----------------------------------------- |
+| Routes/API   | Request handlers, endpoints, page views   |
+| Components   | UI components, shared widgets             |
+| Models/Data  | Database access, schemas, repositories    |
+| Core/Lib     | Utilities, hooks, type definitions        |
+| Config       | Project configuration, infrastructure     |
 
 ## Sub-Agent Behavior (CRITICAL)
 
@@ -98,7 +101,7 @@ When combining findings from zone agents:
 
 Use the template at `templates/research.md` for output format.
 
-**Formatting:** Limit lines to 100 chars (tables exempt). See AGENTS.md.
+**Formatting:** Limit lines to 100 chars (tables exempt).
 
 ## Research Process
 

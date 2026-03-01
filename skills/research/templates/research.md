@@ -57,59 +57,9 @@ inconsistencies: 0
 
 ## Zone Findings
 
-### Routes (`app/routes/`)
+<!-- Repeat this section for each zone defined in AGENTS.md -->
 
-**Files searched:** {count}
-**Matches found:** {count}
-
-| File | Line | Pattern | Notes |
-| ---- | ---- | ------- | ----- |
-| {file} | {line} | {pattern} | {notes} |
-
-**Zone summary:** [Key observations for this zone]
-
----
-
-### Components (`app/components/`)
-
-**Files searched:** {count}
-**Matches found:** {count}
-
-| File | Line | Pattern | Notes |
-| ---- | ---- | ------- | ----- |
-| {file} | {line} | {pattern} | {notes} |
-
-**Zone summary:** [Key observations for this zone]
-
----
-
-### Models (`app/models/`)
-
-**Files searched:** {count}
-**Matches found:** {count}
-
-| File | Line | Pattern | Notes |
-| ---- | ---- | ------- | ----- |
-| {file} | {line} | {pattern} | {notes} |
-
-**Zone summary:** [Key observations for this zone]
-
----
-
-### Core (`app/lib/`, `app/hooks/`, `app/types/`)
-
-**Files searched:** {count}
-**Matches found:** {count}
-
-| File | Line | Pattern | Notes |
-| ---- | ---- | ------- | ----- |
-| {file} | {line} | {pattern} | {notes} |
-
-**Zone summary:** [Key observations for this zone]
-
----
-
-### Config (root, `prisma/`, `.claude/`)
+### {Zone Name} (`{zone_path}`)
 
 **Files searched:** {count}
 **Matches found:** {count}

@@ -1,80 +1,73 @@
 ---
-description: Add knowledge docs (solutions, gotchas, references) with YAML frontmatter.
+description: Learn from what just happened and apply improvements to knowledge and workflows.
+skills:
+  - compound-methodology
+  - research-knowledge-base
 ---
 
 # Compound Command
 
-Capture learnings as knowledge documents with user approval.
+Analyze what just happened - a fix, a correction, a review - and apply improvements so the same
+mistake can't happen again. Updates knowledge docs AND workflow files (skills, agents, commands).
+
+## Usage
+
+```
+/compound                    # Analyze recent context, propose improvements
+/compound "topic or context" # Compound learnings about a specific topic
+```
+
+## When to Use
+
+| Trigger                        | Example                                                     |
+| ------------------------------ | ----------------------------------------------------------- |
+| User corrected Claude          | "No, do X not Y", "That's wrong", "You should have..."      |
+| After a fix is verified        | Bug fix landed, tests pass, want to prevent recurrence      |
+| After review findings resolved | `/resolve-review` completed, want systemic improvements     |
+| Explicit invocation            | User says "compound", "document this", "save this learning" |
+| Inside autonomous workflows    | Called by `/auto-build`, `/lfg`, `/auto-fix` in auto mode   |
+
+## Modes
+
+| Mode                      | When                                      | Behavior                           |
+| ------------------------- | ----------------------------------------- | ---------------------------------- |
+| **Interactive** (default) | Direct user invocation                    | Propose changes, wait for approval |
+| **Autonomous**            | Inside `/auto-build`, `/lfg`, `/auto-fix` | Auto-apply all improvements        |
+
+When called autonomously, skip the proposal step and apply all improvements directly. Report
+what was changed at the end.
+
+## What Gets Updated
+
+This is the key difference from the old `/compound` - it updates **everything**, not just
+knowledge docs.
+
+| Target                                           | When                               | Example                           |
+| ------------------------------------------------ | ---------------------------------- | --------------------------------- |
+| `.claude/knowledge/gotchas/`                     | New pitfall discovered             | Gotcha about API timeout behavior |
+| `.claude/knowledge/solutions/`                   | Problem resolution worth capturing | How to fix deadlock scenario      |
+| `.claude/knowledge/references/`                  | Pattern worth documenting          | Reference for batch processing    |
+| `AGENTS.md`                                      | Rule repeatedly violated           | "Always use TEXT not VARCHAR"     |
+| `.claude/skills/review-*/SKILL.md`               | Review should have caught this     | New checklist item                |
+| `.claude/skills/plan-methodology/SKILL.md`       | Plan should have researched this   | New research req                  |
+| `.claude/skills/build-plan-methodology/SKILL.md` | Build todos should have found this | New pattern search                |
+| `.claude/commands/*.md`                          | Workflow step was missing          | Add verification step             |
 
 ## 2-Tier Knowledge System
 
-Knowledge is stored in two tiers based on how often it needs to be applied:
+| Tier       | Location             | Purpose                                 | Always in Context? |
+| ---------- | -------------------- | --------------------------------------- | ------------------ |
+| **Tier 1** | `AGENTS.md`          | Critical rules that keep being violated | Yes                |
+| **Tier 2** | `.claude/knowledge/` | Detailed references, gotchas, solutions | No (searched)      |
 
-| Tier       | Location             | Purpose                                       | Always in Context? |
-| ---------- | -------------------- | --------------------------------------------- | ------------------ |
-| **Tier 1** | `AGENTS.md`          | Critical rules that agents keep getting wrong | Yes                |
-| **Tier 2** | `.claude/knowledge/` | Detailed references, gotchas, solutions       | No (searched)      |
-
-### Tier 1: AGENTS.md Rules
-
-Add to AGENTS.md when:
+### Tier 1 Signals (promote to AGENTS.md)
 
 - User says "you keep getting this wrong" or "you made this mistake again"
 - User says "always remember" or "critical rule" or "never forget"
 - A gotcha has been violated multiple times
 - The rule is simple and can be stated in 1-2 sentences
 
-**Format for AGENTS.md rules:**
-
-```markdown
-## [Section Name]
-
-- **[Rule name]**: [One-sentence explanation]
-```
-
-### Tier 2: .claude/knowledge/ Docs
-
-Add to `.claude/knowledge/` when:
-
-- The knowledge needs detailed explanation with code examples
-- It's a solution to a specific problem (searchable for future reference)
-- It's a reference document for deeper research
-- It's a gotcha that needs full context to understand
-
-## Usage
-
-```
-/compound                    # Interactive: analyzes recent context
-/compound solution           # Propose solution doc
-/compound gotcha             # Propose gotcha doc
-/compound reference          # Propose reference doc
-/compound rule               # Propose AGENTS.md rule addition
-/compound "topic or context" # Propose docs related to topic
-```
-
-## Document Types
-
-| Type      | Purpose                                   | Location                        |
-| --------- | ----------------------------------------- | ------------------------------- |
-| rule      | Critical rules agents keep violating      | `AGENTS.md`                     |
-| solution  | Problem resolution, debugging steps       | `.claude/knowledge/solutions/`  |
-| gotcha    | Common pitfalls and their solutions       | `.claude/knowledge/gotchas/`    |
-| reference | Architecture, patterns, deployment guides | `.claude/knowledge/references/` |
-
-## Tier Detection Signals
-
-**Promote to Tier 1 (AGENTS.md) when user says:**
-
-- "you keep getting this wrong"
-- "you made this mistake again"
-- "always remember this"
-- "critical rule"
-- "never forget"
-- "add this to your rules"
-- "you keep forgetting"
-- Any indication of repeated violations
-
-**Keep in Tier 2 (.claude/knowledge/) when:**
+### Tier 2 (keep in .claude/knowledge/)
 
 - First occurrence of a gotcha/solution
 - Needs detailed code examples
@@ -83,70 +76,137 @@ Add to `.claude/knowledge/` when:
 
 ## Process
 
-### Step 1: Research and Propose
+### Step 1: Gather Context
 
-1. **Gather context:**
-   - Review recent conversation for learnings
-   - Check existing knowledge docs to avoid duplicates
-   - **Detect tier signals** in user's language
-   - Identify what's worth documenting
+1. **Review recent conversation** for what went wrong or what was learned
+2. **If review findings exist** (`review_todos/` with resolved items):
+   - Read all resolved findings
+   - Classify each: code quality, logic error, missing case, pattern violation
+3. **If user correction**: Extract what was wrong and what the correct approach is
+4. **Check existing knowledge** to avoid duplicates:
+   - Search `.claude/knowledge/` for related docs
+   - Check `AGENTS.md` for existing rules
+   - Check relevant skills for existing checklist items
 
-2. **Present proposals** with clear numbering:
+### Step 2: Analyze Gaps
 
-   ```
-   ## Proposed Knowledge Additions
+For each learning, determine the upstream gap:
 
-   ### 1. [Type] Title
-   **Location:** [AGENTS.md | .claude/knowledge/[type]/filename.md]
-   **Tier:** [1 - Always in context | 2 - Searchable reference]
-   **Summary:** Brief description of what will be documented
-   **Tags:** tag1, tag2
+| Gap Type           | Question                                         | Fix Target                     |
+| ------------------ | ------------------------------------------------ | ------------------------------ |
+| Knowledge Gap      | Should this be a documented gotcha/reference?    | `.claude/knowledge/`           |
+| Rule Gap           | Is this a simple rule being repeatedly violated? | `AGENTS.md`                    |
+| Plan Gap           | Should planning have researched this?            | `plan-methodology` skill       |
+| Build Todos Gap    | Should build todos have found this pattern?      | `build-plan-methodology` skill |
+| Review Gap         | Should a reviewer have caught this?              | `review-*` skills              |
+| Workflow Gap       | Is a command missing a step?                     | `commands/*.md`                |
+| Implementation Gap | One-off mistake, no systemic fix needed          | None                           |
 
-   ### 2. [Type] Title
-   **Location:** .claude/knowledge/[type]/filename.md
-   **Tier:** 2 - Searchable reference
-   **Summary:** Brief description of what will be documented
-   **Tags:** tag1, tag2
-   ```
+### Step 3: Propose Changes (Interactive Mode)
 
-3. **Wait for approval:**
-   - User responds with numbers (e.g., "1, 3" or "all" or "none")
+Present all proposed changes with clear numbering:
 
-### Step 2: Write Approved Docs
+```
+## Proposed Improvements
 
-1. **Create only approved documents:**
+### 1. [Knowledge] Gotcha: API timeout defaults
+**Target:** .claude/knowledge/gotchas/api-timeout-defaults-YYYYMMDD.md
+**Summary:** Document that API X defaults to 30s timeout, not 60s
 
-   **For Tier 1 (AGENTS.md):** Append rule to appropriate section:
+### 2. [Workflow] Review checklist: timeout handling
+**Target:** .claude/skills/review-typescript-standards/SKILL.md
+**Change:** Add checklist item "Verify timeout configuration for external APIs"
 
-   ```markdown
-   ## [Existing Section]
+### 3. [Rule] Always check API timeout defaults
+**Target:** AGENTS.md
+**Change:** Add rule to API Integration section
+```
 
-   - **[New rule]**: [One-sentence explanation]
-   ```
+Wait for approval: user responds with numbers ("1, 3" or "all" or "none").
 
-   **For Tier 2 (.claude/knowledge/):** Create file with YAML frontmatter:
+### Step 4: Apply Changes
 
-   ```markdown
-   ---
-   title: [Descriptive title]
-   created: YYYY-MM-DD
-   tags: [tag1, tag2]
-   ---
+Apply only approved changes (or all in autonomous mode):
 
-   # [Title]
+**For knowledge docs** - Create with YAML frontmatter:
 
-   [Content following template for type]
-   ```
+```markdown
+---
+title: [Descriptive title]
+created: YYYY-MM-DD
+tags: [tag1, tag2]
+---
 
-2. **Report what was written:**
-   ```
-   Created:
-   - AGENTS.md: Added rule "[rule name]" to [section]
-   - .claude/knowledge/solutions/example-solution.md
-   - .claude/knowledge/references/example-reference.md
-   ```
+# [Title]
 
-## Templates by Type
+[Content following template for type]
+```
+
+**For AGENTS.md rules** - Append to appropriate section:
+
+```markdown
+- **[Rule name]**: [One-sentence explanation]
+```
+
+**For skill updates** - Add checklist items or research requirements:
+
+```markdown
+- [ ] [New check based on what was learned]
+```
+
+**For command updates** - Add workflow steps or verification items.
+
+### Step 4b: Store in OpenMemory
+
+For each applied improvement, also store in OpenMemory so it persists across sessions
+(critical for cloud environments where file changes are ephemeral):
+
+- Knowledge gaps → `add-memory(memory_types: ["debug"], project_id=...)`
+- User corrections → `add-memory(memory_types: ["user_preference"], user_preference=true)`
+- Pattern discoveries → `add-memory(memory_types: ["implementation"], project_id=...)`
+
+If OpenMemory MCP is unavailable, skip this step (file-based improvements still apply).
+
+### Step 4c: Commit User-Level Changes
+
+If any applied changes modified **user-level files** (files in `~/.claude/` which are symlinked
+to `agent-workflows`), commit and push them so the improvements propagate to all environments:
+
+```bash
+cd ~/dev/agent-workflows  # or wherever agent-workflows is checked out
+git add -A
+git commit -m "compound: <brief description of improvements>"
+git push origin main
+```
+
+**When to do this:**
+
+- Shared skill updated (e.g., `~/.claude/skills/review-*/SKILL.md`)
+- Shared agent updated (e.g., `~/.claude/agents/*.md`)
+- Shared command updated (e.g., `~/.claude/commands/*.md`)
+- User-level CLAUDE.md updated (e.g., `~/.claude/CLAUDE.md`)
+
+**When NOT to do this:**
+
+- Only project-level files changed (`.claude/knowledge/`, project CLAUDE.md)
+- Only OpenMemory saves were made
+- Running in cloud (`$CLAUDE_CODE_REMOTE=true`) — file changes are ephemeral anyway
+
+### Step 5: Report
+
+```
+## Applied Improvements
+
+- AGENTS.md: Added rule "Always verify API timeout defaults" to API section
+- .claude/knowledge/gotchas/api-timeout-defaults-20260210.md: Created
+- .claude/skills/review-typescript-standards/SKILL.md: Added checklist item
+
+## Skipped
+
+- Implementation gap: One-off typo in variable name (no systemic fix)
+```
+
+## Knowledge Templates
 
 ### Solution
 
@@ -224,8 +284,22 @@ tags: [area, technology]
 [Practical examples]
 ```
 
-## Output
+## Autonomous Mode Behavior
 
-- Numbered proposals for user approval
-- Tier 1 rules added to `AGENTS.md`
-- Tier 2 documents written to `.claude/knowledge/`
+When called from `/auto-build`, `/lfg`, or `/auto-fix`:
+
+1. Skip proposal step - apply all improvements directly
+2. Prioritize by impact:
+   - P1: 3+ findings from same gap, or security/data integrity → always apply
+   - P2: 2 findings from same gap → always apply
+   - P3: Single finding, low impact → apply knowledge doc, skip workflow updates
+3. Report all changes made at the end
+
+## Relation to Other Commands
+
+| Command           | Relationship                                                          |
+| ----------------- | --------------------------------------------------------------------- |
+| `/retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
+| `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
+| `/auto-build`     | Calls `/compound` in autonomous mode after review resolution          |
+| `/heal-knowledge` | Audits/reorganizes existing knowledge. `/compound` adds new knowledge |

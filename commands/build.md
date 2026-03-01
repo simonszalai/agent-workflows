@@ -121,7 +121,16 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
    | Tests failing | Debug, fix, document |
    | Approach doesn't work | Revise plan.md, document changes |
 
-7. **Parallel execution (optional):**
+7. **Write tests for new code:**
+   - After all build steps are complete, run `/write-tests {work-item-id}`
+   - This analyzes all code changes and writes appropriate tests:
+     - Unit tests for pure logic and business rules
+     - Integration tests for database operations
+     - E2E tests for multi-step user flows
+   - Run all new tests to verify they pass
+   - Run full test suite to check for regressions
+
+8. **Parallel execution (optional):**
    - If the plan has truly independent pieces of work (e.g., changes in separate repos, unrelated modules), spawn parallel subagents to speed up execution
    - Good candidates for parallelization:
      - Work in different repositories
@@ -134,7 +143,7 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
 
    > **When in doubt, build sequentially.** If independence isn't clear, don't take risks. Sequential execution is safer and easier to debug. Only parallelize when you're confident the work is truly independent.
 
-8. **Final:**
+9. **Final:**
    - Run full test suite
    - Run type checker - fix any type errors before completing
    - Add completion summary to `plan.md` (see format below)
