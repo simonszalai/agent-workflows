@@ -187,7 +187,46 @@ for item in items:
 - Is there a transactional invariant (e.g., "X must succeed before Y is considered done") that
   the ordering violates?
 
-## 14. Core Philosophy
+## 14. Raw SQL text() Parameter Type Casts
+
+**Critical for asyncpg + SQLAlchemy `text()` queries.**
+
+asyncpg infers parameter types from query context. In complex expressions (CASE branches,
+INTERVAL arithmetic, comparisons with computed values), inference fails and defaults to `text`,
+causing runtime errors like `operator does not exist: double precision > text`.
+
+**Rule:** Every named parameter in a `text()` query that appears in a CASE branch, INTERVAL
+expression, or comparison with a computed value MUST have an explicit `CAST()`.
+
+**FAIL — asyncpg defaults params to text:**
+
+```python
+raw_sql = """
+    ... > CASE
+        WHEN posted_at >= :cutoff - INTERVAL '10 days'
+            THEN :threshold
+    END
+"""
+```
+
+**PASS — explicit types:**
+
+```python
+raw_sql = """
+    ... > CASE
+        WHEN posted_at >= CAST(:cutoff AS timestamptz) - INTERVAL '10 days'
+            THEN CAST(:threshold AS double precision)
+    END
+"""
+```
+
+**When fixing one parameter, audit ALL parameters in the same query** — this bug class has
+recurred when only the first failing parameter was fixed while others in the same expression
+were left uncast.
+
+See: `.claude/knowledge/gotchas/asyncpg-text-param-type-inference-20260302.md`
+
+## 15. Core Philosophy
 
 - **Explicit > Implicit**: "Readability counts" - follow the Zen of Python
 - **Duplication > Complexity**: Simple, duplicated code is BETTER than complex DRY abstractions
