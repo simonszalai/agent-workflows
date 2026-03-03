@@ -13,7 +13,7 @@ mistake can't happen again. Updates knowledge docs AND workflow files (skills, a
 ## Usage
 
 ```
-/compound                    # Analyze recent context, propose improvements
+/compound                    # Analyze recent context, apply improvements
 /compound "topic or context" # Compound learnings about a specific topic
 ```
 
@@ -27,15 +27,12 @@ mistake can't happen again. Updates knowledge docs AND workflow files (skills, a
 | Explicit invocation            | User says "compound", "document this", "save this learning" |
 | Inside autonomous workflows    | Called by `/auto-build`, `/lfg`, `/auto-fix` in auto mode   |
 
-## Modes
+## Behavior
 
-| Mode                      | When                                      | Behavior                           |
-| ------------------------- | ----------------------------------------- | ---------------------------------- |
-| **Interactive** (default) | Direct user invocation                    | Propose changes, wait for approval |
-| **Autonomous**            | Inside `/auto-build`, `/lfg`, `/auto-fix` | Auto-apply all improvements        |
-
-When called autonomously, skip the proposal step and apply all improvements directly. Report
-what was changed at the end.
+All improvements are **self-reviewed and auto-applied**. No user approval step. The AI evaluates
+each proposed improvement against the value criteria below, discards low-value noise, and applies
+the rest to both local knowledge files and OpenMemory. A final report shows what was applied and
+what was skipped with reasoning.
 
 ## What Gets Updated
 
@@ -102,31 +99,33 @@ For each learning, determine the upstream gap:
 | Workflow Gap       | Is a command missing a step?                     | `commands/*.md`                |
 | Implementation Gap | One-off mistake, no systemic fix needed          | None                           |
 
-### Step 3: Propose Changes (Interactive Mode)
+### Step 3: Self-Review for Value
 
-Present all proposed changes with clear numbering:
+For each candidate improvement, evaluate against these criteria. **Apply** if it passes,
+**skip** if it doesn't. No user input needed.
 
-```
-## Proposed Improvements
+**Value criteria — an improvement adds value when ANY of these are true:**
 
-### 1. [Knowledge] Gotcha: API timeout defaults
-**Target:** .claude/knowledge/gotchas/api-timeout-defaults-YYYYMMDD.md
-**Summary:** Document that API X defaults to 30s timeout, not 60s
+- Prevents a mistake that wasted significant time or caused a bug
+- Documents a non-obvious gotcha that someone would hit again
+- Fills a gap in a review checklist for a class of issues (not a one-off)
+- Captures a pattern that exists but isn't documented anywhere
+- Addresses a user correction (always high value — user explicitly said what's wrong)
+- Security or data integrity concern
 
-### 2. [Workflow] Review checklist: timeout handling
-**Target:** .claude/skills/review-typescript-standards/SKILL.md
-**Change:** Add checklist item "Verify timeout configuration for external APIs"
+**Skip when ALL of these are true:**
 
-### 3. [Rule] Always check API timeout defaults
-**Target:** AGENTS.md
-**Change:** Add rule to API Integration section
-```
+- One-off mistake unlikely to recur
+- Already documented elsewhere (duplicate)
+- Too vague to be actionable ("be more careful with X")
+- Overly specific to one instance (not generalizable)
+- Trivial (typo, formatting, naming in one place)
 
-Wait for approval: user responds with numbers ("1, 3" or "all" or "none").
+For each improvement, write a one-line rationale: "APPLY: [reason]" or "SKIP: [reason]".
 
 ### Step 4: Apply Changes
 
-Apply only approved changes (or all in autonomous mode):
+Apply all improvements that passed self-review:
 
 **For knowledge docs** - Create with YAML frontmatter:
 
@@ -158,12 +157,16 @@ tags: [tag1, tag2]
 
 ### Step 4b: Store in OpenMemory
 
-For each applied improvement, also store in OpenMemory so it persists across sessions
+For **every** applied improvement, also store in OpenMemory so it persists across sessions
 (critical for cloud environments where file changes are ephemeral):
 
 - Knowledge gaps → `add-memory(memory_types: ["debug"], project_id=...)`
 - User corrections → `add-memory(memory_types: ["user_preference"], user_preference=true)`
 - Pattern discoveries → `add-memory(memory_types: ["implementation"], project_id=...)`
+- Review/workflow gap fixes → `add-memory(memory_types: ["implementation"], project_id=...)`
+
+Both local files AND OpenMemory must be updated. One is not a substitute for the other — local
+files are searchable in context, OpenMemory persists across sessions and environments.
 
 If OpenMemory MCP is unavailable, skip this step (file-based improvements still apply).
 
@@ -195,15 +198,22 @@ git push origin main
 ### Step 5: Report
 
 ```
-## Applied Improvements
+## Compound Results
 
-- AGENTS.md: Added rule "Always verify API timeout defaults" to API section
-- .claude/knowledge/gotchas/api-timeout-defaults-20260210.md: Created
-- .claude/skills/review-typescript-standards/SKILL.md: Added checklist item
+### Applied (N improvements)
 
-## Skipped
+| # | Type       | Target                                  | Rationale                        |
+|---|------------|-----------------------------------------|----------------------------------|
+| 1 | Knowledge  | .claude/knowledge/gotchas/api-timeout.. | Non-obvious timeout default      |
+| 2 | Review     | review-typescript-standards/SKILL.md    | Class of missing error handling  |
+| 3 | OpenMemory | debug: API timeout handling             | Persisted for cloud sessions     |
 
-- Implementation gap: One-off typo in variable name (no systemic fix)
+### Skipped (M items)
+
+| # | Type           | Reason                                    |
+|---|----------------|-------------------------------------------|
+| 1 | Implementation | One-off typo, unlikely to recur           |
+| 2 | Knowledge      | Already documented in gotchas/api-retry.. |
 ```
 
 ## Knowledge Templates
@@ -284,22 +294,11 @@ tags: [area, technology]
 [Practical examples]
 ```
 
-## Autonomous Mode Behavior
-
-When called from `/auto-build`, `/lfg`, or `/auto-fix`:
-
-1. Skip proposal step - apply all improvements directly
-2. Prioritize by impact:
-   - P1: 3+ findings from same gap, or security/data integrity → always apply
-   - P2: 2 findings from same gap → always apply
-   - P3: Single finding, low impact → apply knowledge doc, skip workflow updates
-3. Report all changes made at the end
-
 ## Relation to Other Commands
 
 | Command           | Relationship                                                          |
 | ----------------- | --------------------------------------------------------------------- |
 | `/retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
 | `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
-| `/auto-build`     | Calls `/compound` in autonomous mode after review resolution          |
+| `/auto-build`     | Calls `/compound` after review resolution                             |
 | `/heal-knowledge` | Audits/reorganizes existing knowledge. `/compound` adds new knowledge |

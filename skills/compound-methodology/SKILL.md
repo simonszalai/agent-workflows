@@ -146,66 +146,86 @@ Multiple items may point to the same gap. Consolidate:
 - Create single improvement for related items
 - Check existing knowledge/skills to avoid duplicates
 
-### Step 3: Prioritize
+### Step 3: Self-Review for Value
 
-| Priority | Criteria                   | Action                                     |
-| -------- | -------------------------- | ------------------------------------------ |
-| **P1**   | 3+ items from same gap     | Apply immediately                          |
-| **P1**   | Security or data integrity | Apply immediately                          |
-| **P2**   | 2 items from same gap      | Apply                                      |
-| **P2**   | Significant time wasted    | Apply                                      |
-| **P3**   | Single item, low impact    | Apply knowledge doc, skip workflow updates |
+Evaluate each candidate improvement autonomously. No user approval needed — the AI decides
+what adds value and what doesn't.
 
-### Step 4: Apply Improvements
+**Value criteria — APPLY when ANY of these are true:**
 
-For each prioritized improvement:
+| Criterion                  | Example                                              |
+| -------------------------- | ---------------------------------------------------- |
+| Prevented wasted time      | Spent 30min debugging a known asyncpg quirk          |
+| Non-obvious gotcha         | TEXT vs VARCHAR in Postgres, timeout defaults         |
+| Class of issues            | "All external API calls need timeout handling"        |
+| Undocumented pattern       | Pattern used in 5 files but never written down       |
+| User correction            | User explicitly said what's wrong — always high value |
+| Security/data integrity    | Missing auth check, SQL injection risk               |
 
-1. **Knowledge docs** - Create with YAML frontmatter
-2. **Skill updates** - Add to checklist or research requirements
-3. **AGENTS.md rules** - Only for repeatedly violated simple rules
-4. **Command updates** - Add workflow steps or verification items
+**Skip criteria — SKIP when ALL of these are true:**
 
-### Step 5: Store in OpenMemory
+| Criterion                   | Example                                           |
+| --------------------------- | ------------------------------------------------- |
+| One-off, won't recur        | Typo in a variable name                           |
+| Already documented          | Gotcha already exists in knowledge base            |
+| Too vague to be actionable  | "Be more careful with error handling"              |
+| Not generalizable           | Specific to one function, no broader lesson        |
+| Trivial                     | Formatting, single naming choice                   |
 
-After applying file-based improvements, also store the learning in OpenMemory so it persists
-across sessions (critical for cloud environments where file changes are ephemeral):
+**For each candidate, write a one-line verdict:**
 
-**For knowledge/debug learnings (project facts):**
+- `APPLY: [specific reason this adds value]`
+- `SKIP: [specific reason this is noise]`
 
+### Step 4: Apply Improvements (Dual-Write)
+
+For each improvement that passed self-review, write to BOTH local files AND OpenMemory.
+One is not a substitute for the other.
+
+#### 4a: Local Knowledge Files
+
+**Knowledge docs** — Create with YAML frontmatter:
+
+```markdown
+---
+title: [Descriptive title]
+created: YYYY-MM-DD
+tags: [tag1, tag2]
+---
+
+# [Title]
+
+[Content following template for type]
 ```
-add-memory(
-    title="[Gap Type]: [Brief description]",
-    content="[What went wrong, root cause, and prevention strategy]",
-    metadata={memory_types: ["debug"]},
-    project_id="<from CLAUDE.md>"
-)
+
+**AGENTS.md rules** — Append to appropriate section:
+
+```markdown
+- **[Rule name]**: [One-sentence explanation]
 ```
 
-**For implementation pattern discoveries:**
+**Skill updates** — Add checklist items or research requirements:
 
-```
-add-memory(
-    title="Pattern: [Description]",
-    content="[Pattern details, where it applies, how to follow it]",
-    metadata={memory_types: ["implementation"]},
-    project_id="<from CLAUDE.md>"
-)
+```markdown
+- [ ] [New check based on what was learned]
 ```
 
-**For user preference corrections:**
+**Command updates** — Add workflow steps or verification items.
 
-```
-add-memory(
-    title="[Preference Type]: [Description]",
-    content="[What the user corrected and the correct approach]",
-    metadata={memory_types: ["user_preference"]},
-    user_preference=true
-)
-```
+#### 4b: OpenMemory
+
+Store every applied improvement in OpenMemory for cross-session persistence:
+
+| Gap Type            | Memory Pattern                                                        |
+| ------------------- | --------------------------------------------------------------------- |
+| Knowledge gap       | `add-memory(memory_types: ["debug"], project_id=...)`                 |
+| User correction     | `add-memory(memory_types: ["user_preference"], user_preference=true)` |
+| Pattern discovery   | `add-memory(memory_types: ["implementation"], project_id=...)`        |
+| Review/workflow gap | `add-memory(memory_types: ["implementation"], project_id=...)`        |
 
 If OpenMemory MCP is unavailable, skip this step (file-based improvements still apply).
 
-### Step 6: Commit User-Level Changes
+### Step 5: Commit User-Level Changes
 
 If any applied improvements modified **user-level files** (files resolved via `~/.claude/`
 symlinks to `agent-workflows`), commit and push so improvements propagate to all environments:
@@ -228,6 +248,7 @@ Before finalizing improvements:
 - [ ] Targets the root cause, not the symptom
 - [ ] Written concisely (one-liners preferred for checklists)
 - [ ] Skill/command updates don't break existing functionality
+- [ ] Both local file AND OpenMemory updated for each improvement
 
 ## Example Analysis
 
@@ -238,11 +259,12 @@ Before finalizing improvements:
 - Type: Pattern violation (wrong column type)
 - Upstream gap: Knowledge Gap + possible Rule Gap
 - Check: Is this already in CLAUDE.md? → Yes, "Always use TEXT instead of VARCHAR"
-- Conclusion: Rule exists but was violated → promote to AGENTS.md for project-level emphasis
+- Self-review: `APPLY: User correction, and rule exists but was violated — needs promotion`
 
 **Improvement:**
 
 1. Add to AGENTS.md: "Always use TEXT for string columns - never VARCHAR (see CLAUDE.md)"
+2. Store in OpenMemory as user_preference
 
 ---
 
@@ -253,6 +275,7 @@ Before finalizing improvements:
 - Type: Missing case (error handling) - 3 occurrences
 - Upstream gap: Plan Gap + Knowledge Gap
 - Check: Any gotcha for API timeout? → No
+- Self-review: `APPLY: 3 occurrences of same gap, class of issues, not documented`
 
 **Improvements:**
 
@@ -260,3 +283,14 @@ Before finalizing improvements:
 2. Add to plan-methodology: "When planning external API integrations, research timeout/retry
    requirements"
 3. Add to review-typescript-standards: "[ ] External API calls have timeout and error handling"
+4. Store all three in OpenMemory with appropriate memory types
+
+---
+
+**One-off typo fix:** Variable named `reponse` instead of `response`
+
+**Analysis:**
+
+- Type: Code quality (typo)
+- Upstream gap: Implementation Gap
+- Self-review: `SKIP: One-off typo, trivial, not generalizable`
