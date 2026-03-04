@@ -111,3 +111,13 @@ For each issue:
 - **Fix** - Specific code change needed
 
 **Refuse approval until there is a written verification + rollback plan.**
+
+
+### Post-Merge Head Check (Branch Merges)
+
+When merging main into a feature branch (or vice versa), both branches may have added
+migrations, creating multiple Alembic heads. CI will fail with "Multiple heads are present".
+
+- [ ] After `git merge origin/main`, run `alembic heads` — must show exactly 1 head
+- [ ] If multiple heads: `alembic merge heads -m "merge <branch1> and <branch2>"`
+- [ ] Verify single head before pushing: `alembic heads` shows 1 result
