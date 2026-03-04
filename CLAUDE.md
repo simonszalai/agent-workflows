@@ -50,7 +50,6 @@ between parallel subagents within a single session). It is gitignored and dispos
 - Prefer Pydantic models over dataclass (Python projects)
 - Always return structured types from functions, never complex dicts
 - Imports only at top of file (exception: circular imports with comment)
-- Always use TEXT instead of VARCHAR for string columns (PostgreSQL)
 - All timestamps need server_default with CURRENT_TIMESTAMP
 
 ## What I Mean by "Agent Workflows"
