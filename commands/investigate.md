@@ -56,6 +56,31 @@ Features should NOT use `/investigate`. Tell the user:
 4. **Pad to 3 digits** (e.g., 3 -> `003`, 42 -> `042`, 100 -> `100`)
 5. Create folder: `work_items/active/NNN-slug/`
 
+## Environment Detection
+
+Parse the environment from the user's prompt. Look for keywords:
+
+| Keyword                          | Environment | Default |
+| -------------------------------- | ----------- | ------- |
+| "in staging", "staging"          | staging     |         |
+| "in prod", "production"          | prod        | Yes     |
+| "in local", "locally", "dev"     | local       |         |
+
+**If no environment keyword is found, default to `prod`.**
+
+**Pass the environment explicitly to every sub-agent** in the Task prompt. Example:
+
+```
+**Environment: staging**
+Use staging tools/endpoints:
+- Prefect: PREFECT_API_URL=https://ts-prefect-server-staging.onrender.com/api
+- Postgres: mcp__postgres_staging__ tools (NOT mcp__postgres_prod__)
+- Render: filter services by staging names
+```
+
+**CRITICAL:** Never let agents default to production when the user asked for a different
+environment. The environment must appear in every agent's Task prompt.
+
 ## Agent Selection
 
 Choose agents based on problem symptoms. Refer to AGENTS.md for available investigator agents.

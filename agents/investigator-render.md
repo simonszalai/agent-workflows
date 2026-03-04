@@ -11,6 +11,19 @@ skills:
 
 You are an infrastructure investigator using Render MCP tools.
 
+## Environment Selection (CRITICAL)
+
+Your Task prompt will specify the target environment. When listing services, filter by
+environment:
+
+| Environment | Service naming pattern      |
+| ----------- | --------------------------- |
+| Production  | `ts-prefect-worker`, etc.   |
+| Staging     | `*-staging` suffix          |
+
+**If the prompt says "Environment: staging", only investigate staging services.** Use
+`mcp__render__list_services` and filter results by name to find the correct service IDs.
+
 ## Project Context
 
 Read `AGENTS.md` for project-specific service information including service names, IDs, and
@@ -20,7 +33,7 @@ you need.
 ## Discovering Services
 
 Use `mcp__render__list_services` to get current service IDs, then focus on the services
-relevant to the investigation.
+relevant to the investigation and the specified environment.
 
 ## What to Look For
 

@@ -1,12 +1,12 @@
 ---
-description: Let's Fucking Go - Autonomous end-to-end workflow from GitHub issue to PR.
+description: Let's Fucking Go - Autonomous end-to-end workflow from GitHub issue or conversation to PR.
 max_turns: 300
 ---
 
 # LFG Command
 
-Let's Fucking Go. The ultimate autonomous workflow that takes a GitHub issue and delivers a
-complete PR. Auto-build on steroids.
+Let's Fucking Go. The ultimate autonomous workflow that takes a GitHub issue **or conversation
+context** and delivers a complete PR. Auto-build on steroids.
 
 ## Usage
 
@@ -14,34 +14,49 @@ complete PR. Auto-build on steroids.
 /lfg #123                    # GitHub issue number
 /lfg 123                     # Same thing
 /lfg https://github.com/org/repo/issues/123   # Full URL
+/lfg                         # Use current conversation as input
 /lfg --skip-verify           # Skip local verification step
 ```
 
 ## When to Use
 
 - Triggered from a GitHub issue (via Claude Code web or CLI)
+- Triggered from a conversation thread where the user describes what they want
 - You want fully autonomous end-to-end execution
-- Issue is well-defined with clear acceptance criteria
+- Requirements are clear (from issue or conversation)
 - You trust the workflow to make decisions
+
+## Input Detection
+
+LFG detects its input source automatically:
+
+| Invocation             | Input Source  | Behavior                            |
+| ---------------------- | ------------- | ----------------------------------- |
+| `/lfg #123` or number  | GitHub issue  | Fetch issue, extract requirements   |
+| `/lfg` (no args)       | Conversation  | Extract requirements from thread    |
 
 ## Process Overview
 
 ```
-1.  Parse Issue         -> Extract type (bug/feature), requirements, context
-2.  Create Work Item    -> Feature (FNNN) or Bug (BNNN) folder
+1.  Parse Input          -> Extract type (bug/feature), requirements from issue OR conversation
+2.  Create Work Item     -> Feature (FNNN) or Bug (BNNN) folder
 3.  Research/Investigate -> /research for features, /investigate for bugs
-4.  Plan                -> /plan creates plan.md with approach
-5.  Build Todos         -> /create-build-todos for detailed steps
-6.  Build               -> /build implements each step
-7.  Write Tests         -> /write-tests (test coverage for new code)
-8.  Review Loop         -> /review + /resolve-review until no P1/P2
-9.  Compound            -> /compound in autonomous mode (learn + apply improvements)
-10. Create PR           -> /create-pr (summary + PR + link)
+4.  Plan                 -> /plan creates plan.md with approach
+5.  Build Todos          -> /create-build-todos for detailed steps
+6.  Build                -> /build implements each step
+7.  Write Tests          -> /write-tests (test coverage for new code)
+8.  Review Loop          -> /review + /resolve-review until no P1/P2
+9.  Compound             -> /compound in autonomous mode (learn + apply improvements)
+10. Create PR            -> /create-pr (summary + PR + link)
 ```
 
 ## Detailed Process
 
-### Phase 1: Parse GitHub Issue
+### Phase 1: Parse Input
+
+Determine input source and extract requirements.
+
+**Source A: GitHub Issue** (when invoked with issue number/URL)
 
 1. **Fetch issue details:**
 
@@ -62,6 +77,39 @@ complete PR. Auto-build on steroids.
    - Title -> work item title
    - Body -> acceptance criteria, context
    - Labels -> tags for work item
+
+**Source B: Conversation** (when invoked without args)
+
+1. **Extract from conversation thread:**
+   - Scan the full conversation history for the user's request
+   - Identify: what they want built/fixed, any constraints, acceptance criteria
+   - Determine type: bug (error reports, "fix this") vs feature (new functionality)
+
+2. **Determine issue type:**
+
+   | Conversation signals                          | Type    | Command        |
+   | --------------------------------------------- | ------- | -------------- |
+   | Error reports, "fix", "broken", "not working" | Bug     | `/investigate` |
+   | "Add", "build", "create", "implement"         | Feature | `/research`    |
+   | Refactoring, cleanup, improvement              | Feature | `/research`    |
+   | (ambiguous)                                    | Feature | `/research`    |
+
+3. **Extract requirements:**
+   - Synthesize a clear title from the conversation
+   - Collect all stated requirements and constraints
+   - Infer acceptance criteria from the discussion
+
+4. **If context is insufficient:**
+
+   ```markdown
+   I need more detail to proceed. Please provide:
+
+   - What should be built or fixed
+   - Expected behavior / acceptance criteria
+   - Any constraints or preferences
+   ```
+
+   Then STOP and wait for user response before continuing.
 
 ### Phase 2: Create Work Item
 
@@ -84,6 +132,8 @@ complete PR. Auto-build on steroids.
 2. **Create folder:** `work_items/active/{id}-{slug}/`
 
 3. **Create source.md:**
+
+   **For GitHub issue input:**
 
    ```markdown
    ---
@@ -111,6 +161,32 @@ complete PR. Auto-build on steroids.
    {Extracted from issue body or inferred}
    ```
 
+   **For conversation input:**
+
+   ```markdown
+   ---
+   title: { Synthesized title }
+   type: { bug|feature }
+   status: active
+   created: YYYY-MM-DD
+   source: conversation
+   ---
+
+   # {Synthesized Title}
+
+   ## Context
+
+   {Summary of conversation that triggered this work}
+
+   ## Requirements
+
+   {Requirements extracted from conversation}
+
+   ## Acceptance Criteria
+
+   {Criteria extracted or inferred from conversation}
+   ```
+
 ### Phase 3: Research or Investigate
 
 **For Features (type: feature):**
@@ -126,7 +202,7 @@ Run `/research` internally:
 
 Run `/investigate` internally:
 
-- Analyze error context from issue
+- Analyze error context from issue or conversation
 - Generate hypotheses
 - Document root cause in investigation.md
 
@@ -254,7 +330,15 @@ handles this automatically via its "Store in OpenMemory" step.
 
 ### Phase 10: Create PR
 
-Run `/create-pr {work-item-id} --issue {issue_number}` internally:
+**For GitHub issue input:**
+
+Run `/create-pr {work-item-id} --issue {issue_number}` internally.
+
+**For conversation input:**
+
+Run `/create-pr {work-item-id}` internally (no issue to link).
+
+Steps:
 
 1. Collects all work item artifacts (source.md, plan.md, build_todos/, review_todos/, etc.)
 2. Runs tests and collects results
@@ -267,20 +351,21 @@ Run `/create-pr {work-item-id} --issue {issue_number}` internally:
 4. Commits all changes
 5. Pushes to `lfg/{work-item-id}` branch
 6. Creates PR with summary as body
-7. Links PR to GitHub issue
+7. Links PR to GitHub issue (if source was a GitHub issue)
 8. Outputs the PR link
 
 ## Error Handling
 
 | Phase        | Error                  | Action                          |
 | ------------ | ---------------------- | ------------------------------- |
-| Parse Issue  | Can't fetch issue      | STOP, report error              |
+| Parse Input  | Can't fetch issue      | STOP, report error              |
+| Parse Input  | Insufficient context   | Ask user for details, then STOP |
 | Work Item    | Creation fails         | STOP, report error              |
 | Research/Inv | Partial failure        | Continue with available info    |
 | Plan         | Agent failure          | STOP, report error              |
 | Build Todos  | Agent failure          | STOP, report error              |
-| Build        | Test failure           | Retry 2x, continue to review    |
-| Write Tests  | Test creation fails    | Log, continue to review loop    |
+| Build        | Test failure           | Retry 2x, continue to review   |
+| Write Tests  | Test creation fails    | Log, continue to review loop   |
 | Write Tests  | New tests fail         | Fix tests, retry once, continue |
 | Review Loop  | Max iterations reached | Continue, document in report    |
 | Compound     | Write failure          | Log, continue (non-blocking)    |
@@ -288,31 +373,31 @@ Run `/create-pr {work-item-id} --issue {issue_number}` internally:
 
 ## Differences from /auto-build
 
-| Aspect          | /auto-build           | /lfg                        |
-| --------------- | --------------------- | --------------------------- |
-| Trigger         | Plan approval         | GitHub issue                |
-| Starting point  | Existing plan.md      | No artifacts exist          |
-| Research phase  | None                  | Full research/investigation |
-| Plan approval   | Required              | Auto-approved               |
-| Review handling | Single pass + resolve | Loop until no P1/P2         |
-| Compound        | Not included          | Autonomous mode             |
-| Scope           | Features with plans   | Any issue (bug or feature)  |
+| Aspect          | /auto-build           | /lfg                                  |
+| --------------- | --------------------- | ------------------------------------- |
+| Trigger         | Plan approval         | GitHub issue or conversation          |
+| Starting point  | Existing plan.md      | No artifacts exist                    |
+| Research phase  | None                  | Full research/investigation           |
+| Plan approval   | Required              | Auto-approved                         |
+| Review handling | Single pass + resolve | Loop until no P1/P2                   |
+| Compound        | Not included          | Autonomous mode                       |
+| Scope           | Features with plans   | Any issue or request (bug or feature) |
 
 ## Differences from /auto-fix
 
-| Aspect          | /auto-fix             | /lfg                 |
-| --------------- | --------------------- | -------------------- |
-| Trigger         | Error report/thread   | GitHub issue         |
-| Focus           | Bugs only             | Bugs and features    |
-| Investigation   | Deep with hypothesis  | Adapts to issue type |
-| Review handling | Single pass + resolve | Loop until no P1/P2  |
-| Compound        | Autonomous mode       | Autonomous mode      |
+| Aspect          | /auto-fix             | /lfg                          |
+| --------------- | --------------------- | ----------------------------- |
+| Trigger         | Error report/thread   | GitHub issue or conversation  |
+| Focus           | Bugs only             | Bugs and features             |
+| Investigation   | Deep with hypothesis  | Adapts to issue type          |
+| Review handling | Single pass + resolve | Loop until no P1/P2           |
+| Compound        | Autonomous mode       | Autonomous mode               |
 
 ## Work Item Structure
 
 ```
 work_items/active/F042-user-dashboard/
-  source.md                    # Issue context
+  source.md                    # Issue or conversation context
   research.md                  # (features) Codebase research
   investigation.md             # (bugs) Root cause analysis
   plan.md                      # Implementation approach
@@ -333,7 +418,7 @@ work_items/active/F042-user-dashboard/
 LFG complete!
 
 PR: https://github.com/org/repo/pull/456
-Issue: #123
+Issue: #123                              # Only shown if source was GitHub issue
 
 Summary:
 - Implemented user dashboard feature
@@ -350,7 +435,7 @@ Work item: F042-user-dashboard
 LFG needs attention!
 
 PR: https://github.com/org/repo/pull/456 (marked needs attention)
-Issue: #123
+Issue: #123                              # Only shown if source was GitHub issue
 
 Summary:
 - Implemented user dashboard feature
@@ -366,14 +451,16 @@ Work item: F042-user-dashboard
 ```
 LFG failed at: {phase}
 
-Issue: #123
+Issue: #123                              # Only shown if source was GitHub issue
 Reason: {error description}
 
 Work item created: F042-user-dashboard
 See: work_items/active/F042-user-dashboard/ for partial progress
 ```
 
-## Example Flow
+## Example Flows
+
+### Example A: From GitHub Issue
 
 **GitHub Issue #123:**
 
@@ -391,7 +478,7 @@ Should integrate with existing analytics.
 
 **LFG execution:**
 
-1. Parse: type=feature, title="Add user activity dashboard"
+1. Parse: source=github, type=feature, title="Add user activity dashboard"
 2. Create: `work_items/active/F042-user-activity-dashboard/`
 3. Research: Find analytics patterns, component structure
 4. Plan: Dashboard component + API routes + DB queries
@@ -402,21 +489,42 @@ Should integrate with existing analytics.
    - Iteration 2: 0 P1, 1 P2, 4 P3 -> resolve
    - Iteration 3: 0 P1, 0 P2, 4 P3 -> exit loop
 8. Compound: Created gotcha about analytics caching
-9. PR: Created with full report
+9. PR: Created with full report, linked to #123
+
+### Example B: From Conversation
+
+**Conversation:**
+
+```
+User: "I want to add a bulk export button to the invoices list. It should let
+users select multiple invoices and download them as a single ZIP of PDFs. Only
+finalized invoices should be exportable."
+```
+
+**LFG execution:**
+
+1. Parse: source=conversation, type=feature, title="Bulk invoice PDF export"
+2. Create: `work_items/active/F043-bulk-invoice-pdf-export/`
+3. Research: Find invoice list patterns, PDF generation, ZIP utilities
+4. Plan: Selection UI + export API route + ZIP generation
+5. Build todos: 5 steps identified
+6. Build: Implement all steps
+7. Review loop: 2 iterations, all resolved
+8. Compound: Noted pattern for bulk operations
+9. PR: Created with full report (no issue link)
 
 **Output:**
 
 ```
 LFG complete!
 
-PR: https://github.com/org/repo/pull/789
-Issue: #123
+PR: https://github.com/org/repo/pull/790
 
 Summary:
-- Implemented user activity dashboard
-- Tests: 8 passing / 8 total (3 unit, 4 integration, 1 e2e)
+- Implemented bulk invoice PDF export
+- Tests: 6 passing / 6 total (2 unit, 3 integration, 1 e2e)
 - Verification: PASS
-- 3 review iterations, all P1/P2 resolved
+- 2 review iterations, all P1/P2 resolved
 
-Work item: F042-user-activity-dashboard
+Work item: F043-bulk-invoice-pdf-export
 ```

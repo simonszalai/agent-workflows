@@ -17,6 +17,11 @@ Standards for data integrity review. Apply these when reviewing database migrati
   schema -- but deployed databases run migrations only. A missing migration means the column
   exists in the ORM/client but not in the production database, causing runtime crashes.
   Flag as **p1** if schema changes lack a corresponding migration.
+- **Raw SQL column validation (CRITICAL):** For every `$queryRaw` / raw SQL query, verify that
+  ALL referenced columns exist in the current schema. Raw SQL bypasses ORM type safety entirely
+  — a typo or reference to a not-yet-migrated column compiles fine but crashes at runtime with
+  "column X does not exist". Cross-reference column names against schema.prisma / models.
+  Flag as **p1** if raw SQL references columns not in the schema.
 - Check for reversibility and rollback safety
 - Identify potential data loss scenarios
 - Verify handling of NULL values and defaults
