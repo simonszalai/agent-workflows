@@ -79,6 +79,9 @@ Consider extracting to a separate module when you see multiple of these:
 - Use context managers (`with` statements) for resource management
 - Prefer list/dict comprehensions over explicit loops (when readable)
 - Use dataclasses or Pydantic models for structured data
+- FAIL: Functions returning tuples with 4+ values — use a Pydantic `BaseModel` instead.
+  Long tuples are fragile: adding a field requires updating every return path and caller,
+  and missing a value causes runtime `ValueError` with no static analysis warning (B026).
 - FAIL: Getter/setter methods (this isn't Java)
 - PASS: Properties with `@property` decorator when needed
 
@@ -246,6 +249,7 @@ When reviewing Python code:
 6. Check for stale docstrings referencing old work items
 7. **Check for pgvector/NumPy truthiness bugs** (see section 12)
 8. **Check exception handler control flow** for append-before-confirm anti-pattern (see section 13)
+9. **Check for long tuple returns** (4+ values) — flag for refactoring to Pydantic model
 9. Evaluate testability and clarity
 10. Suggest specific improvements with examples
 11. Be strict on existing code modifications, pragmatic on new isolated code
