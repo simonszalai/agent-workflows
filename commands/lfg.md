@@ -44,7 +44,7 @@ LFG detects its input source automatically:
 4.  Plan                 -> /plan creates plan.md with approach
 5.  Build Todos          -> /create-build-todos for detailed steps
 6.  Build                -> /build implements each step
-7.  Write Tests          -> /write-tests (test coverage for new code)
+7.  Write Tests          -> /write-tests (MANDATORY — never skip)
 8.  Review Loop          -> /review + /resolve-review until no P1/P2
 9.  Compound             -> /compound in autonomous mode (learn + apply improvements)
 10. Create PR            -> /create-pr (summary + PR + link)
@@ -118,7 +118,7 @@ Determine input source and extract requirements.
    For bugs:
 
    ```bash
-   find work_items -maxdepth 2 -type d -name "B[0-9][0-9][0-9]-*" | \
+   find work_items/flow_failures -maxdepth 2 -type d -name "B[0-9][0-9][0-9]-*" | \
      sed 's/.*B\([0-9]*\).*/\1/' | sort -n | tail -1
    ```
 
@@ -129,7 +129,7 @@ Determine input source and extract requirements.
      sed 's/.*F\([0-9]*\).*/\1/' | sort -n | tail -1
    ```
 
-2. **Create folder:** `work_items/active/{id}-{slug}/`
+2. **Create folder:** `work_items/active/{id}-{slug}/` (or `work_items/flow_failures/ongoing/{id}-{slug}/` for BNNN)
 
 3. **Create source.md:**
 
@@ -267,22 +267,30 @@ Run `/create-build-todos` internally:
 1. Attempt automatic fix (up to 2 retries)
 2. If still failing: Log details, continue to review phase
 
-### Phase 7: Write Tests
+### Phase 7: Write Tests (MANDATORY - NEVER SKIP)
+
+**This phase is NON-NEGOTIABLE.** Every LFG run MUST write tests for new code paths before
+proceeding to review. Skipping this phase means bugs ship untested. The review loop (Phase 8)
+does NOT substitute for tests — reviewers check code quality, not runtime behavior.
 
 Run `/write-tests {work-item-id}` internally:
 
 1. Analyze all code changes from the build phase
 2. Classify changed code: pure logic, DB operations, API routes, user flows
 3. Write tests at the appropriate level:
-   - **Unit tests** (vitest) for data transformations, business logic, validators
-   - **Integration tests** (vitest + DB) for model functions with query logic
-   - **E2E tests** (playwright) for multi-step user flows
+   - **Unit tests** for data transformations, business logic, validators, mappings
+   - **Integration tests** (DB) for model functions with query logic, new DB methods
+   - **E2E tests** for multi-step user flows
 4. Run all new tests to verify they pass
 5. Run full test suite to verify no regressions
 
 **Test scope:** Only test code written in Phase 6. Don't test unrelated code.
 
-**On failure:** Log details, continue to review loop. Review will catch test gaps.
+**Minimum bar:** At least one test per new public function/method. New constants and mappings
+that affect control flow deserve tests. Result handlers that write to DB deserve tests
+(mock the DB, verify call args and return values).
+
+**On failure:** Fix tests, retry once, then continue to review loop.
 
 ### Phase 8: Review Loop
 
