@@ -160,6 +160,7 @@ beforeAll(async () => {
 | Sequential tests that share state | Isolated parallel tests |
 | `waitForTimeout(5000)` in e2e | `waitForSelector` or `waitForLoadState` |
 | Browser tests for API behavior | API-level integration tests |
+| Assuming error behavior without reading code | Read implementation to verify: raises vs returns None vs logs |
 
 ## Test Naming
 

@@ -124,6 +124,7 @@ Before finishing, check each test:
 - [ ] Deterministic (no timing dependencies, random values in assertions)
 - [ ] Independent (can run in any order, parallel with any other test)
 - [ ] Test name is a sentence describing what broke
+- [ ] Error/edge case assertions match actual implementation (read the code to check raises vs returns)
 
 ## Output
 
