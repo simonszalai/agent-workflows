@@ -46,6 +46,8 @@ Every learning stems from one of these upstream gaps:
 - `.claude/knowledge/references/` - Document the pattern
 - `.claude/knowledge/solutions/` - Document the resolution
 - `AGENTS.md` - Add rule if repeatedly violated
+- **The codebase itself** - If the gotcha identifies existing violations, fix them (or create a
+  work item). Documenting a rule without fixing the known violation means the bug will recur.
 
 ### 2. Plan Gap
 
