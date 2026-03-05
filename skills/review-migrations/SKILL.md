@@ -27,6 +27,9 @@ Standards for reviewing data migrations, backfills, and data transformations. Ap
 - [ ] Are `UPDATE ... WHERE ...` clauses scoped narrowly?
 - [ ] Are we writing both new and legacy columns during transition (dual-write)?
 - [ ] Are there foreign keys or indexes that need updating?
+- [ ] **Lock contention**: Does DDL (`DROP COLUMN`, `RENAME COLUMN`, `ALTER TYPE`) target
+  tables with active workloads? These require `AccessExclusiveLock` and can deadlock with
+  running queries. `ADD COLUMN` (nullable) is safe. Flag high-traffic tables.
 
 ### 2a. Constraint Naming (Critical)
 
