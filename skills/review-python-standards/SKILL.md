@@ -229,7 +229,51 @@ were left uncast.
 
 See: `.claude/knowledge/gotchas/asyncpg-text-param-type-inference-20260302.md`
 
-## 15. Core Philosophy
+## 15. Broad except Exception Masking Critical Errors
+
+**Critical for multi-layer async code with error handling at each level.**
+
+When broad `except Exception` handlers return graceful defaults (empty list, default wait time,
+continue loop), critical errors can be silently swallowed at every layer. The combined effect
+across layers creates total error suppression — flows complete with COMPLETED status despite
+producing zero results.
+
+**FAIL — Critical error silently swallowed:**
+
+```python
+try:
+    result = await call_external_api()
+except Exception as e:
+    logger.error(f"Error: {e}")
+    return default_value
+```
+
+**PASS — Critical errors propagate, transient errors degrade gracefully:**
+
+```python
+try:
+    result = await call_external_api()
+except (AuthError, UsageCapExceeded, ConfigMissing):
+    raise  # Critical: fail fast for visibility
+except Exception as e:
+    logger.error(f"Transient error: {e}")
+    return default_value
+```
+
+**Checklist for broad except handlers:**
+
+- Does this handler catch exceptions that won't resolve with retries (auth, quota, config)?
+- Are there multiple layers of `except Exception` in the call chain? (Each layer compounds the
+  suppression)
+- If ALL items fail silently, does the flow still report COMPLETED?
+- Is there a cleanup/retention policy that would delete evidence of the silent failure?
+
+**Key distinction:** Will retrying help? Monthly usage cap won't reset with retries — it's
+critical. A network timeout might resolve on retry — it's transient.
+
+See: `.claude/knowledge/gotchas/broad-except-masks-critical-errors-20260305.md`
+
+## 16. Core Philosophy
 
 - **Explicit > Implicit**: "Readability counts" - follow the Zen of Python
 - **Duplication > Complexity**: Simple, duplicated code is BETTER than complex DRY abstractions
@@ -250,7 +294,8 @@ When reviewing Python code:
 7. **Check for pgvector/NumPy truthiness bugs** (see section 12)
 8. **Check exception handler control flow** for append-before-confirm anti-pattern (see section 13)
 9. **Check for long tuple returns** (4+ values) — flag for refactoring to Pydantic model
-9. Evaluate testability and clarity
-10. Suggest specific improvements with examples
-11. Be strict on existing code modifications, pragmatic on new isolated code
-12. Always explain WHY something doesn't meet the bar
+10. **Check for broad `except Exception` masking critical errors** (see section 15)
+11. Evaluate testability and clarity
+12. Suggest specific improvements with examples
+13. Be strict on existing code modifications, pragmatic on new isolated code
+14. Always explain WHY something doesn't meet the bar
