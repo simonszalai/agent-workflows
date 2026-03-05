@@ -82,12 +82,12 @@ Unable to parse error context. Please provide:
 1. **Find next B number:**
 
    ```bash
-   find work_items -maxdepth 2 -type d -name "B[0-9][0-9][0-9]-*" | \
+   find work_items/flow_failures -maxdepth 2 -type d -name "B[0-9][0-9][0-9]-*" | \
      sed 's/.*B\([0-9]*\).*/\1/' | sort -n | tail -1
    # Add 1, pad to 3 digits
    ```
 
-2. **Create folder:** `work_items/active/BNNN-slug/`
+2. **Create folder:** `work_items/flow_failures/ongoing/BNNN-slug/`
 
 3. **Create source.md:**
 
@@ -344,7 +344,7 @@ Work item: BNNN-slug (investigation.md has details)
 ## Work Item Structure
 
 ```
-work_items/active/B001-service-oom/
+work_items/flow_failures/ongoing/B001-service-oom/
   source.md                    # Error context + details
   investigation.md             # Root cause analysis + hypotheses
   hypothesis-evaluation/       # Experimental verification
@@ -394,7 +394,7 @@ Error: Process killed (exit code -9)
 **Claude runs /auto-fix:**
 
 1. Parses: service=main-processor, time=14:23 UTC, type=OOM, hint="large batches"
-2. Creates: `work_items/active/B001-processor-oom/`
+2. Creates: `work_items/flow_failures/ongoing/B001-processor-oom/`
 3. Investigates: Finds memory spike at 14:23, batch had 650 items
 4. Hypotheses:
    - H1: Memory exhaustion on batches >500 items (High confidence)

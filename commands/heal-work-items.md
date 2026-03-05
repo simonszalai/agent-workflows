@@ -55,8 +55,8 @@ find work_items -type d -name "[0-9]*-*" | \
 find work_items -type d -name "F[0-9]*-*" | \
   sed 's/.*\///; s/F//; s/-.*//' | sort | uniq -d
 
-# Check for duplicate auto-fix bug numbers
-find work_items -type d -name "B[0-9]*-*" | \
+# Check for duplicate flow failure numbers
+find work_items/flow_failures -type d -name "B[0-9]*-*" | \
   sed 's/.*\///; s/B//; s/-.*//' | sort | uniq -d
 ```
 
@@ -137,7 +137,8 @@ Checks:
 
 ```bash
 # Collect all work items (including legacy locations)
-find work_items -type d \( -name "[0-9]*-*" -o -name "F[0-9]*-*" -o -name "B[0-9]*-*" \)
+find work_items -type d \( -name "[0-9]*-*" -o -name "F[0-9]*-*" \)
+find work_items/flow_failures -type d -name "B[0-9]*-*"
 ```
 
 ### Phase 2: Check for Duplicates FIRST
@@ -148,7 +149,7 @@ This is the most critical check - do it before anything else:
 # Extract all IDs and check for duplicates
 find work_items -type d -name "[0-9]*-*" | sed 's/.*\///; s/-.*//' | sort | uniq -d
 find work_items -type d -name "F[0-9]*-*" | sed 's/.*\///; s/F//; s/-.*//' | sort | uniq -d
-find work_items -type d -name "B[0-9]*-*" | sed 's/.*\///; s/B//; s/-.*//' | sort | uniq -d
+find work_items/flow_failures -type d -name "B[0-9]*-*" | sed 's/.*\///; s/B//; s/-.*//' | sort | uniq -d
 ```
 
 If duplicates found, report them immediately as CRITICAL.

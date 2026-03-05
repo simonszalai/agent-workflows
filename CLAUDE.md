@@ -238,7 +238,7 @@ work_items/
 
 - Bugs: `NNN-kebab-title` (e.g., `042-fix-duplicate-alerts`)
 - Features: `FNNN-kebab-title` (e.g., `F003-add-user-dashboard`)
-- Auto-fix bugs: `BNNN-kebab-title` (e.g., `B001-oom-fix`)
+- Flow failures: `BNNN-kebab-title` (e.g., `B001-oom-fix`) — in `work_items/flow_failures/{ongoing,resolved}/`
 
 ### Work Item Numbering (CRITICAL)
 

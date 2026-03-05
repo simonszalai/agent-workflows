@@ -130,3 +130,15 @@ When identifying issues:
 ## Reminder
 
 In production, data integrity issues can be catastrophic. Be thorough, be cautious, and always consider the worst-case scenario.
+
+### 3a. Upsert Staleness Check
+
+For any `ON CONFLICT DO NOTHING` or partial `ON CONFLICT DO UPDATE`:
+
+- **Is the data code-synced?** If code defines the values (tag descriptions, schema metadata,
+  child key lists) and they could change across deployments, `DO NOTHING` causes stale data.
+  Flag as **p1** — should use `DO UPDATE` with all evolving columns.
+- **Litmus test:** "If someone changes the Python/TS code that defines this value and the
+  task/service runs again, should the DB reflect the new value?" If yes → needs `DO UPDATE`.
+- **Partial update trap:** `DO UPDATE` that only syncs some columns (e.g., `tag_hint` but not
+  `attrs`) leaves other columns stale. Verify ALL code-defined columns are in the `set_` dict.
