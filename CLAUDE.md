@@ -7,7 +7,8 @@ Shared conventions for all projects using Claude Code agent workflows.
 - Never commit/push without explicit user approval (except during /resolve-review final step)
 - Never create markdown files unless explicitly instructed
 - Never deploy or run production operations without explicit instruction
-- Never create database migrations without explicit instruction
+- Always create database migrations when schema changes require them (they are auto-deployed
+  by CI on merge). Omitting a migration means the column won't exist at runtime.
 - **Never put work item artifacts in `.context/`** - see File Storage Rules below
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace
   that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`). The
