@@ -132,6 +132,12 @@ Create the PR summary with this structure:
 |---|---|
 | `path/to/file` | {brief description} |
 
+{If pyproject.toml, Dockerfile, or requirements.txt changed (check with git diff --name-only main...HEAD):}
+## Dependency Changes
+
+> **Manual Render deploy required.** Dependencies changed ({list files}), which requires
+> rebuilding the worker image. Trigger a manual deploy on Render after merging.
+
 {If deployment guide exists:}
 ## Deployment Notes
 
