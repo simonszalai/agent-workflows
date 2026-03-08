@@ -32,6 +32,14 @@ Scan for code smells and anti-patterns:
   fails instead of raising an error (e.g., flipping `is_existing = False` when lookup fails).
   This masks the real failure and creates invisible failure chains. Flag any pattern where
   failure silently alters control flow rather than surfacing an error.
+- **Success-only timestamp update**: A scheduling timestamp (e.g., `last_checked_at`) that
+  gates "is this item due for processing?" but is only updated inside the success path of a
+  try block. When processing fails, the timestamp is never advanced, causing the item to be
+  reprocessed on every scheduler cycle (e.g., every minute) instead of its configured interval
+  (e.g., every 7 hours). At scale this is catastrophic — expensive API calls (LLM searches,
+  external providers) run on every cycle before hitting the same error, burning costs in a
+  tight loop. **Fix:** Update the scheduling timestamp AFTER the try/except, unconditionally.
+  Separate "last checked" (always update) from "last cursor position" (update on success).
 
 ### 3. Naming Convention Analysis
 
