@@ -22,6 +22,9 @@ Standards for reviewing data migrations, backfills, and data transformations. Ap
 
 ### 2. Validate Migration Code
 
+- [ ] **Correct module prefix**: `sa.Column()` not `op.Column()` — `alembic.op` has no
+  `Column` attribute. Same for `sa.Text()`, `sa.Integer()`, etc. The `op` module provides
+  DDL operations only (`add_column`, `create_table`), NOT type constructors.
 - [ ] Are `up` and `down` reversible or documented as irreversible?
 - [ ] Does migration run in chunks, batched transactions, or with throttling?
 - [ ] Are `UPDATE ... WHERE ...` clauses scoped narrowly?
