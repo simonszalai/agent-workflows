@@ -273,7 +273,54 @@ critical. A network timeout might resolve on retry — it's transient.
 
 See: `.claude/knowledge/gotchas/broad-except-masks-critical-errors-20260305.md`
 
-## 16. Core Philosophy
+## 16. Catch-and-Warn on Must-Succeed Operations
+
+**Critical for setup/initialization code where failure makes the rest of the operation
+pointless.**
+
+When an exception handler catches a failure in a prerequisite operation but only logs a
+warning and continues, downstream code runs in an invalid state. This wastes resources
+(network, compute, time) and produces misleading results — the operation "succeeds" with
+zero useful output.
+
+**FAIL — Catch-and-warn on prerequisite:**
+
+```python
+async def inject_cookies(context, cookies):
+    try:
+        await context.add_cookies(cookies)
+    except Exception as e:
+        logger.warning(f"Failed to inject cookies: {e}")
+        # Continues! Scraper runs without auth cookies, hits paywalls
+```
+
+**PASS — Fail fast when prerequisite fails:**
+
+```python
+async def inject_cookies(context, cookies):
+    try:
+        await context.add_cookies(cookies)
+    except Exception as e:
+        raise RuntimeError(f"Cookie injection failed: {e}") from e
+        # Caller sees the failure immediately, no wasted work
+```
+
+**Checklist for exception handlers:**
+
+- Is this operation a **prerequisite** for everything that follows? (auth setup, connection
+  init, config load, schema validation)
+- If this fails, does the rest of the function produce **meaningful results**?
+- Would a caller know to check for partial failure, or would they assume success?
+- Is the warning visible to the caller, or only in internal logs?
+
+**Common must-succeed operations:**
+
+- Cookie/auth token injection (without auth, scraping is pointless)
+- Database connection setup (without DB, no data flows)
+- Configuration loading (without config, behavior is undefined)
+- Schema validation (invalid data corrupts downstream)
+
+## 17. Core Philosophy
 
 - **Explicit > Implicit**: "Readability counts" - follow the Zen of Python
 - **Duplication > Complexity**: Simple, duplicated code is BETTER than complex DRY abstractions
@@ -298,4 +345,5 @@ When reviewing Python code:
 11. Evaluate testability and clarity
 12. Suggest specific improvements with examples
 13. Be strict on existing code modifications, pragmatic on new isolated code
-14. Always explain WHY something doesn't meet the bar
+14. **Check for catch-and-warn on must-succeed operations** (see section 16)
+15. Always explain WHY something doesn't meet the bar
