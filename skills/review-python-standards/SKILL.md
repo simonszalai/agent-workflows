@@ -346,4 +346,6 @@ When reviewing Python code:
 12. Suggest specific improvements with examples
 13. Be strict on existing code modifications, pragmatic on new isolated code
 14. **Check for catch-and-warn on must-succeed operations** (see section 16)
-15. Always explain WHY something doesn't meet the bar
+15. **Check for `str()` on rich objects** (HTTP responses, DB results, API clients) — use the
+    explicit content accessor (`.body`, `.text`, `.content`) instead of relying on `__str__`
+16. Always explain WHY something doesn't meet the bar
