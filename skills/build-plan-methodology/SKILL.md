@@ -198,12 +198,43 @@ Be specific:
 - Estimate lines changed per file
 - Note if creating new files
 
+## Elimination Build Todos (CRITICAL)
+
+When the plan includes a "What We're Eliminating" section, create a **dedicated build todo**
+for the elimination step. This is NOT optional — it is as mandatory as a migration step.
+
+**The elimination todo must include:**
+
+1. **Migrate all consumers** — list every call site from the plan's consumer grep, with the
+   new code each should use
+2. **Delete old files** — list every file/module being removed
+3. **Verification commands:**
+   ```bash
+   # Verify zero imports of old system remain
+   grep -r "OldSystem\|old_module" src/ --include="*.py" | grep -v __pycache__
+   # Expected: no output
+
+   # Verify old files are gone
+   ls src/old/path/ 2>/dev/null
+   # Expected: "No such file or directory"
+
+   # Run type checker — catches any remaining broken references
+   uv run pyright  # or project's type checker
+   ```
+4. **Position in build order:** Elimination comes AFTER all new code is wired up but BEFORE
+   writing tests. Never leave elimination as the last step — it must be verified before the
+   build is considered complete.
+
+**Rule:** If a plan replaces system X with system Y, and the build todos don't include an
+elimination step for X, the build todos are incomplete.
+
 ## Step Dependencies
 
 Order steps by dependencies:
 
 - Steps that create new files come first
 - Steps that modify existing code come after
+- Elimination steps come after all migrations are done
 - Steps that add tests come last
 
 Use `depends_on` field to make dependencies explicit.
@@ -224,6 +255,9 @@ Before finalizing each build todo:
 - [ ] Implementation details follow discovered patterns
 - [ ] Test requirements match existing test patterns
 - [ ] Verification commands included
+- [ ] **Elimination step included:** If plan has "What We're Eliminating" section, there is
+      a dedicated build todo for deleting old code with grep verification of zero remaining
+      imports
 
 ## Infrastructure Checklist
 

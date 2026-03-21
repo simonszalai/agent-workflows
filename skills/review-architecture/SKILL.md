@@ -43,6 +43,9 @@ Verify changes against these principles:
 - **Dependency rule violations** - Wrong direction of dependencies
 - **Inconsistent patterns** - Same problem solved differently in different places
 - **Missing boundaries** - No clear separation between concerns
+- **Parallel systems (P1)** - New system added alongside old system it was meant to replace.
+  If both exist and call sites still use the old one, the replacement is incomplete. This is
+  always P1 — the old system must be deleted in the same PR that wires up the new one.
 
 ## Analysis Output Format
 

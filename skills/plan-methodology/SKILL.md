@@ -28,6 +28,7 @@ Use the template at `templates/plan.md` for plan output.
 **Architecture-focused, NOT implementation-focused:**
 
 - What we're building (high-level description)
+- What we're eliminating (old code/systems being replaced — see Elimination Audit below)
 - How it works (architectural approach)
 - Why this approach (reasoning, alternatives)
 - Tradeoffs (what we're optimizing for vs sacrificing)
@@ -143,6 +144,14 @@ new API integrations, changes to alert/notification logic
 - Answer: What will exist after this that doesn't exist now?
 - NO code, NO file paths
 
+**What We're Eliminating (if applicable):**
+
+- Every file, class, and module being replaced or deleted
+- All consumer call sites that must be migrated
+- Answer: What will be GONE after this that exists now?
+- If nothing is being eliminated, explicitly state "No code elimination required"
+- **If this section is missing from a replacement plan, the plan is incomplete**
+
 **How It Works:**
 
 - Architectural flow description
@@ -206,6 +215,25 @@ Before designing, verify data flow is complete:
 - [ ] **Where does that data come from?** - Identify upstream sources/pipelines
 - [ ] **Is that data available?** - Verify sources are configured and populated
 - [ ] **Is the data sufficient?** - Check content quality matches use case needs
+
+
+### Elimination Audit (CRITICAL)
+
+When a feature replaces, supersedes, or eliminates an existing system:
+
+- [ ] **List what gets deleted:** Enumerate every file, class, and module the new system
+      replaces. This list goes into plan.md under "What We're Eliminating"
+- [ ] **Find all consumers:** `grep -r "OldSystem\|old_module" src/` — every import and
+      call site must be migrated or removed
+- [ ] **Verify zero remaining references:** After migration, grep must return 0 results
+      for the old system's imports
+- [ ] **Deletion is part of the plan, not a follow-up:** The plan must include elimination
+      as a required step, not a "nice to have" or separate PR. Adding a replacement without
+      removing the old system is an incomplete plan.
+
+**Rule:** If the plan says "replace X with Y", the deliverable is: Y is wired up at all
+call sites AND X is deleted. If the plan only covers adding Y, it is incomplete — send it
+back for revision.
 
 ### Database Changes
 

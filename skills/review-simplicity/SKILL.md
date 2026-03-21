@@ -60,13 +60,41 @@ Question the necessity of each line of code. If it doesn't directly contribute t
 - Simplify data structures to match actual usage
 - Make the common case obvious
 
+## Dead System Detection (P1 — CRITICAL)
+
+When reviewing a PR that adds a new system, **actively check whether an old system it
+replaces is still present.** This is the single most important simplicity check.
+
+**Process:**
+
+1. Read the PR description and plan.md — does it mention "replace", "eliminate", "migrate",
+   "supersede", or "new system for"?
+2. If yes: identify the old system being replaced
+3. Grep for imports/usage of the old system across the entire codebase
+4. If ANY imports of the old system remain AND no call sites use it: **P1 finding**
+5. If some call sites still use the old system (partial migration): **P1 finding** — the
+   migration is incomplete
+
+**This is always P1, never P3.** Leaving a dead system in the codebase after its replacement
+ships is not a style issue — it's dead code that will confuse every future reader and
+maintainer. It doubles the surface area for bugs and makes the replacement look optional.
+
+**Example finding:**
+```
+- [p1] src/prompts/builder.py — Old PromptBuilder system (945 lines) still exists after
+  PipelineContract replacement was added. All 19 flow call sites still use the old system.
+  The new system was added but never wired up. Delete builder.py, tags.py, protocols.py,
+  groups/, and migrate all call sites to use PipelineContract.
+```
+
 ## Review Process
 
 1. First, identify the core purpose of the code
-2. List everything that doesn't directly serve that purpose
-3. For each complex section, propose a simpler alternative
-4. Create a prioritized list of simplification opportunities
-5. Estimate the lines of code that can be removed
+2. **Check for dead/replaced systems** (see Dead System Detection above)
+3. List everything that doesn't directly serve that purpose
+4. For each complex section, propose a simpler alternative
+5. Create a prioritized list of simplification opportunities
+6. Estimate the lines of code that can be removed
 
 ## Output Format
 
@@ -115,3 +143,5 @@ Recommended action: [Proceed with simplifications/Minor tweaks only/Already mini
 - **Perfect is the enemy of good** - Stop when it works
 - **Every line is a liability** - Bugs, maintenance, cognitive load
 - **Orders of magnitude first** - Can we eliminate (100%)? Then reduce 10x? Only then 2x
+- **Replacement means deletion** - Adding a new system without removing the old one is adding
+  code, not replacing it. Always verify the old system is gone.

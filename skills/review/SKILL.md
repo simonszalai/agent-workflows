@@ -17,7 +17,7 @@ Use the template at `templates/review-todo.md` for output format.
 
 | Priority | Meaning                                          | Examples                               |
 | -------- | ------------------------------------------------ | -------------------------------------- |
-| **p1**   | Must fix - correctness, security, data integrity | Bugs, vulnerabilities, data loss risk  |
+| **p1**   | Must fix - correctness, security, data integrity | Bugs, vulnerabilities, data loss risk, old system not deleted after replacement added |
 | **p2**   | Should fix - maintainability, performance        | YAGNI violations, complexity, patterns |
 | **p3**   | Nice to have - style, minor improvements         | Naming, documentation, clarity         |
 

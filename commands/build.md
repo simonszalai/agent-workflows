@@ -107,6 +107,9 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
      # Must match expected count
      ```
    - **Delete verification:** If todo says "delete file X," verify it no longer exists
+   - **Elimination verification:** If the plan has a "What We're Eliminating" section, grep
+     for imports of the old system after ALL build steps complete. Zero results required.
+     This is a build blocker — do not proceed to tests or review until verified.
    - Run tests (project's test suite)
    - Run type checker (project's type checker)
    - Run linter (project's linter)
