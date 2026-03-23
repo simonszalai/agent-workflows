@@ -146,7 +146,22 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
 
    > **When in doubt, build sequentially.** If independence isn't clear, don't take risks. Sequential execution is safer and easier to debug. Only parallelize when you're confident the work is truly independent.
 
-9. **Final:**
+9. **Migration parity check (REQUIRED after model changes):**
+   - After all build steps, check if any model files were modified:
+     ```bash
+     git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20
+     ```
+   - If model files changed, verify a migration exists in this branch:
+     ```bash
+     git diff --name-only main -- migrations/versions/ | grep '\.py$'
+     ```
+   - **If models changed but no migration exists: STOP.** Create one before proceeding:
+     ```bash
+     uv run alembic revision --autogenerate -m 'description'
+     ```
+   - This is a build blocker — missing migrations cause production failures.
+
+10. **Final:**
    - Run full test suite
    - Run type checker - fix any type errors before completing
    - Add completion summary to `plan.md` (see format below)

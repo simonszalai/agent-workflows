@@ -29,6 +29,13 @@ Spawn these agents **in parallel** (single message, multiple Task tool calls):
 | -------------------------------- | ------------- | ------------------------------------------------------------------------------- |
 | Database/model/migration changes | reviewer-data | review-data-integrity, review-migrations, review-deployment, research-past-work |
 
+**CRITICAL: reviewer-data spawn rule.** Always check for model file changes explicitly:
+```bash
+git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' migrations/versions/
+```
+If ANY model or migration files appear, spawn reviewer-data. Do NOT rely on build_todos
+or plan.md to determine this — check the actual diff. Missing migrations are a p1 finding.
+
 **All reviewers** now include `research-past-work` skill to find and reference issues caught in
 similar past implementations. This helps catch recurring patterns proactively.
 
