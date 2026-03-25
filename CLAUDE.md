@@ -106,8 +106,6 @@ Shared agents, commands, skills, and this CLAUDE.md live in `simonszalai/agent-w
 | Shared skill/agent/command       | `~/.claude/` (→ agent-workflows)          | Available everywhere |
 | User-level CLAUDE.md conventions | `~/.claude/CLAUDE.md` (→ agent-workflows) | Shared rules         |
 | Knowledge gotcha/reference       | `.claude/knowledge/` in project           | Project-specific     |
-| Cross-session learning           | OpenMemory (via add-memory)               | Persists in cloud    |
-| User correction/preference       | OpenMemory (user_preference)              | Cross-project        |
 
 ### Committing User-Level Changes (Critical)
 
@@ -125,9 +123,6 @@ only exists locally and won't reach cloud sessions or other machines.
 
 **Project-level changes** (files in the project's `.claude/` directory or `work_items/`)
 do NOT need this — they are committed as part of normal project workflow.
-
-**Cloud sessions:** File changes to `~/.claude/` are ephemeral. Learnings MUST be saved
-to OpenMemory to persist. The `/compound` command handles this automatically.
 
 ## Proactive Command & Agent Triggers
 
