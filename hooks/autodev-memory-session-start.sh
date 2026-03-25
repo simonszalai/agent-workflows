@@ -43,7 +43,7 @@ if [[ ! -f "$CLAUDE_MD" ]]; then
 fi
 
 # Look for <!-- mem:project=X repo=Y -->
-MEM_LINE=$(grep -o '<!-- mem:project=[^ ]* repo=[^ ]* -->' "$CLAUDE_MD" 2>/dev/null || true)
+MEM_LINE=$(grep -o '<!-- mem:project=[^ ]* repo=[^ ]* -->' "$CLAUDE_MD"  || true)
 if [[ -z "$MEM_LINE" ]]; then
   # No mem stub — this project doesn't use the memory system
   exit 0
@@ -66,9 +66,9 @@ if [[ -z "$MEM_TOKEN" ]]; then
 fi
 
 # --- Fetch topology ---
-TOPOLOGY=$(curl -sf --max-time 5 \
+TOPOLOGY=$(curl -sS --max-time 5 \
   -H "Authorization: Bearer $MEM_TOKEN" \
-  "$MEM_URL/topology?project=$MEM_PROJECT" 2>/dev/null || true)
+  "$MEM_URL/topology?project=$MEM_PROJECT"  || true)
 
 if [[ -z "$TOPOLOGY" ]]; then
   echo "mem-session-start: could not fetch topology (service down?), continuing without memory" >&2
@@ -79,7 +79,7 @@ else
   TOPOLOGY_DESC=$(echo "$TOPOLOGY" | jq -r '
     "Project: " + .project + " — " + .project_description + "\nRepos:\n" +
     ([.repos[] | "  - " + .repo_name + ": " + .repo_description] | join("\n"))
-  ' 2>/dev/null || echo "(topology parse error)")
+  '  || echo "(topology parse error)")
 fi
 
 # --- Persist env vars for subsequent hooks ---

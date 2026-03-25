@@ -66,7 +66,7 @@ Subagent description: $AGENT_DESC
 Subagent prompt:
 $(echo "$AGENT_PROMPT" | head -c 3000)"
 
-QUERIES=$(echo "$QUERY_PROMPT" | claude -p --model haiku --output-format json 2>/dev/null || echo "[]")
+QUERIES=$(echo "$QUERY_PROMPT" | claude -p --model haiku --output-format json  || echo "[]")
 
 if ! echo "$QUERIES" | jq -e 'type == "array"' >/dev/null 2>&1; then
   exit 0
@@ -84,15 +84,15 @@ SEARCH_BODY=$(jq -n \
   --arg project "$MEM_PROJECT" \
   '{searches: $searches, project: $project, limit: 5}')
 
-SEARCH_RESULT=$(curl -sf --max-time 5 \
+SEARCH_RESULT=$(curl -sS --max-time 5 \
   -X POST \
   -H "Authorization: Bearer $MEM_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Hook-Source: pre_tool_use" \
   -d "$SEARCH_BODY" \
-  "$MEM_URL/search" 2>/dev/null || echo '{"results":[]}')
+  "$MEM_URL/search"  || echo '{"results":[]}')
 
-RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null || echo "0")
+RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length'  || echo "0")
 
 if [[ "$RESULT_COUNT" -eq 0 ]]; then
   exit 0

@@ -37,19 +37,19 @@ if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
     [.[] | select(.type == "human" or .type == "assistant")]
     | .[-5:]
     | [.[] | {type, content: (.content[:500])}]
-  ' "$TRANSCRIPT_PATH" 2>/dev/null || echo "[]")
+  ' "$TRANSCRIPT_PATH"  || echo "[]")
 fi
 
 CLASSIFY_TEMPLATE=$(cat "$HOOK_DIR/prompts/classify-and-extract.md")
 CLASSIFY_PROMPT="$CLASSIFY_TEMPLATE
 
 Recent conversation:
-$(echo "$RECENT" | jq -r '.[] | .type + ": " + (.content // "")' 2>/dev/null | tail -c 4000)
+$(echo "$RECENT" | jq -r '.[] | .type + ": " + (.content // "")'  | tail -c 4000)
 
 User message to classify:
 $PROMPT"
 
-CLASSIFICATION=$(echo "$CLASSIFY_PROMPT" | claude -p --output-format json 2>/dev/null || echo '{"type":"skip"}')
+CLASSIFICATION=$(echo "$CLASSIFY_PROMPT" | claude -p --output-format json  || echo '{"type":"skip"}')
 
 CLASS_TYPE=$(echo "$CLASSIFICATION" | jq -r '.type // "skip"')
 if [[ "$CLASS_TYPE" != "correction" ]]; then
@@ -68,12 +68,12 @@ fi
 
 # --- Step 2: Fetch KB entry index ---
 
-INDEX_RESULT=$(curl -sf --max-time 5 \
+INDEX_RESULT=$(curl -sS --max-time 5 \
   -H "Authorization: Bearer $MEM_TOKEN" \
   -H "X-Hook-Source: correction_detect" \
-  "$MEM_URL/entries/index?project=$MEM_PROJECT" 2>/dev/null || echo '{"entries":[]}')
+  "$MEM_URL/entries/index?project=$MEM_PROJECT"  || echo '{"entries":[]}')
 
-INDEX_COUNT=$(echo "$INDEX_RESULT" | jq '.entries | length' 2>/dev/null || echo "0")
+INDEX_COUNT=$(echo "$INDEX_RESULT" | jq '.entries | length'  || echo "0")
 
 # --- Step 3a: Pick candidates ---
 
@@ -91,18 +91,18 @@ $KNOWLEDGE
 ENTRY INDEX:
 $(echo "$INDEX_RESULT" | jq -r '.entries[] | "- " + .id + " | " + .title + " | key=" + (.canonical_key // "none") + " | " + (.summary // "no summary")')"
 
-  CANDIDATES=$(echo "$MATCH_PROMPT" | claude -p --output-format json 2>/dev/null || echo '{"candidates":[]}')
+  CANDIDATES=$(echo "$MATCH_PROMPT" | claude -p --output-format json  || echo '{"candidates":[]}')
 fi
 
-CANDIDATE_IDS=$(echo "$CANDIDATES" | jq -r '.candidates // [] | .[]' 2>/dev/null)
+CANDIDATE_IDS=$(echo "$CANDIDATES" | jq -r '.candidates // [] | .[]' )
 
 # --- Step 3b: Fetch candidate full content ---
 
 CANDIDATE_ENTRIES=""
 for CID in $CANDIDATE_IDS; do
-  ENTRY=$(curl -sf --max-time 3 \
+  ENTRY=$(curl -sS --max-time 3 \
     -H "Authorization: Bearer $MEM_TOKEN" \
-    "$MEM_URL/entries/$CID?project=$MEM_PROJECT" 2>/dev/null || true)
+    "$MEM_URL/entries/$CID?project=$MEM_PROJECT"  || true)
   if [[ -n "$ENTRY" ]]; then
     TITLE=$(echo "$ENTRY" | jq -r '.title // "untitled"')
     CONTENT=$(echo "$ENTRY" | jq -r '.content // ""')
@@ -129,7 +129,7 @@ $KNOWLEDGE
 CANDIDATE ENTRIES:
 ${CANDIDATE_ENTRIES:-No candidates found — this appears to be new knowledge.}"
 
-DECISION=$(echo "$DECIDE_PROMPT" | claude -p --output-format json 2>/dev/null || echo '{"action":"skip","reason":"decision call failed"}')
+DECISION=$(echo "$DECIDE_PROMPT" | claude -p --output-format json  || echo '{"action":"skip","reason":"decision call failed"}')
 
 ACTION=$(echo "$DECISION" | jq -r '.action // "skip"')
 if [[ "$ACTION" == "skip" ]]; then
@@ -240,12 +240,12 @@ case "$ACTION" in
 esac
 
 # Execute the store
-STORE_RESULT=$(curl -sf --max-time 5 \
+STORE_RESULT=$(curl -sS --max-time 5 \
   -X POST \
   -H "Authorization: Bearer $MEM_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Hook-Source: correction_detect" \
   -d "$STORE_BODY" \
-  "$MEM_URL/store" 2>/dev/null || echo '{"status":"error"}')
+  "$MEM_URL/store"  || echo '{"status":"error"}')
 
 echo "mem-correction-detect: action=$ACTION result=$(echo "$STORE_RESULT" | jq -r '.status // "unknown"')" >&2

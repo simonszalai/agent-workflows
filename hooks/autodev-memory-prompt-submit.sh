@@ -54,7 +54,7 @@ if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
     [.[] | select(.type == "human" or .type == "assistant")]
     | .[-3:]
     | [.[] | if .type == "assistant" then .content = (.content[:200] + "...") else . end]
-  ' "$TRANSCRIPT_PATH" 2>/dev/null || echo "[]")
+  ' "$TRANSCRIPT_PATH"  || echo "[]")
 fi
 
 # --- Correction detection regex gate (fork to background if match) ---
@@ -82,12 +82,12 @@ Project repos:
 $TOPOLOGY_DESC
 
 Recent conversation:
-$(echo "$RECENT" | jq -r '.[] | .type + ": " + (.content // "" | tostring)[:500]' 2>/dev/null | tail -c 3000)
+$(echo "$RECENT" | jq -r '.[] | .type + ": " + (.content // "" | tostring)[:500]'  | tail -c 3000)
 
 Current message: $PROMPT"
 
 # Generate search queries via Haiku
-QUERIES=$(echo "$QUERY_PROMPT" | claude -p --model haiku --output-format json 2>/dev/null || echo "[]")
+QUERIES=$(echo "$QUERY_PROMPT" | claude -p --model haiku --output-format json  || echo "[]")
 
 # Validate we got a JSON array
 if ! echo "$QUERIES" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -106,16 +106,16 @@ SEARCH_BODY=$(jq -n \
   '{searches: $searches, project: $project, limit: 5}')
 
 # Call the search endpoint
-SEARCH_RESULT=$(curl -sf --max-time 5 \
+SEARCH_RESULT=$(curl -sS --max-time 5 \
   -X POST \
   -H "Authorization: Bearer $MEM_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Hook-Source: user_prompt" \
   -d "$SEARCH_BODY" \
-  "$MEM_URL/search" 2>/dev/null || echo '{"results":[]}')
+  "$MEM_URL/search"  || echo '{"results":[]}')
 
 # Extract results
-RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null || echo "0")
+RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length'  || echo "0")
 
 if [[ "$RESULT_COUNT" -eq 0 ]]; then
   exit 0
