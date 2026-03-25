@@ -140,12 +140,12 @@ Run `/compound` in **autonomous mode** to learn from the build and review proces
 1. Analyze resolved review findings for upstream gaps
 2. Identify improvements to knowledge docs, skills, and workflows
 3. Auto-apply all improvements (no user approval needed in auto-build)
-4. Store all learnings in OpenMemory (critical for cloud persistence)
+4. Store all learnings in memory service (critical for cloud persistence)
 5. Report what was changed
 
 **Cloud note:** In cloud environments, file-based changes from /compound are ephemeral.
-OpenMemory saves are the **persistent** knowledge channel. The compound-methodology skill
-handles this automatically via its "Store in OpenMemory" step.
+Memory service saves are the **persistent** knowledge channel. The compound-methodology skill
+handles this automatically via its "Store in Memory Service" step.
 
 **On no findings:** Skip this phase (nothing to learn from).
 

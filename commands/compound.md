@@ -31,7 +31,7 @@ mistake can't happen again. Updates knowledge docs AND workflow files (skills, a
 
 All improvements are **self-reviewed and auto-applied**. No user approval step. The AI evaluates
 each proposed improvement against the value criteria below, discards low-value noise, and applies
-the rest to both local knowledge files and OpenMemory. A final report shows what was applied and
+the rest to both local knowledge files and the memory service. A final report shows what was applied and
 what was skipped with reasoning.
 
 ## What Gets Updated
@@ -155,20 +155,15 @@ tags: [tag1, tag2]
 
 **For command updates** - Add workflow steps or verification items.
 
-### Step 4b: Store in OpenMemory
+### Step 4b: Store in Memory Service
 
-For **every** applied improvement, also store in OpenMemory so it persists across sessions
-(critical for cloud environments where file changes are ephemeral):
+For **every** applied improvement, also store in the memory service so it persists across
+sessions. The compound-methodology skill has the full API details for storing entries.
 
-- Knowledge gaps → `add-memory(memory_types: ["debug"], project_id=...)`
-- User corrections → `add-memory(memory_types: ["user_preference"], user_preference=true)`
-- Pattern discoveries → `add-memory(memory_types: ["implementation"], project_id=...)`
-- Review/workflow gap fixes → `add-memory(memory_types: ["implementation"], project_id=...)`
+Both local files AND memory service must be updated. One is not a substitute for the other —
+local files are searchable in context, memory service persists across sessions and environments.
 
-Both local files AND OpenMemory must be updated. One is not a substitute for the other — local
-files are searchable in context, OpenMemory persists across sessions and environments.
-
-If OpenMemory MCP is unavailable, skip this step (file-based improvements still apply).
+If $MEM_BEARER_TOKEN is unset, skip this step (file-based improvements still apply).
 
 ### Step 4c: Commit User-Level Changes
 
@@ -192,7 +187,7 @@ git push origin main
 **When NOT to do this:**
 
 - Only project-level files changed (`.claude/knowledge/`, project CLAUDE.md)
-- Only OpenMemory saves were made
+- Only memory service saves were made
 - Running in cloud (`$CLAUDE_CODE_REMOTE=true`) — file changes are ephemeral anyway
 
 ### Step 5: Report
@@ -206,7 +201,7 @@ git push origin main
 |---|------------|-----------------------------------------|----------------------------------|
 | 1 | Knowledge  | .claude/knowledge/gotchas/api-timeout.. | Non-obvious timeout default      |
 | 2 | Review     | review-typescript-standards/SKILL.md    | Class of missing error handling  |
-| 3 | OpenMemory | debug: API timeout handling             | Persisted for cloud sessions     |
+| 3 | Mem svc    | gotcha: API timeout handling             | Persisted for cloud sessions     |
 
 ### Skipped (M items)
 

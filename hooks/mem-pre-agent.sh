@@ -33,8 +33,8 @@ if [[ -z "$MEM_PROJECT" ]]; then
   exit 0
 fi
 
-MEM_URL="${MEM_SERVICE_URL:-http://localhost:8000}"
-MEM_TOKEN="${MEM_BEARER_TOKEN:-}"
+MEM_URL="${AUTODEV_MEMORY_API_URL:-http://localhost:8475}"
+MEM_TOKEN="${AUTODEV_MEMORY_API_TOKEN:-}"
 if [[ -z "$MEM_TOKEN" ]]; then
   exit 0
 fi

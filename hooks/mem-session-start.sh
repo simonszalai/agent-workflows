@@ -57,11 +57,11 @@ if [[ -z "$MEM_PROJECT" || -z "$MEM_REPO" ]]; then
 fi
 
 # --- Check service availability ---
-MEM_URL="${MEM_SERVICE_URL:-http://localhost:8000}"
-MEM_TOKEN="${MEM_BEARER_TOKEN:-}"
+MEM_URL="${AUTODEV_MEMORY_API_URL:-http://localhost:8475}"
+MEM_TOKEN="${AUTODEV_MEMORY_API_TOKEN:-}"
 
 if [[ -z "$MEM_TOKEN" ]]; then
-  echo "mem-session-start: MEM_BEARER_TOKEN not set, skipping" >&2
+  echo "mem-session-start: AUTODEV_MEMORY_API_TOKEN not set, skipping" >&2
   exit 0
 fi
 

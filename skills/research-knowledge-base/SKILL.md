@@ -86,32 +86,34 @@ grep -r "keyword" .claude/knowledge/solutions/
 - Step-by-step fix documentation
 - Workarounds and their rationale
 
-## OpenMemory Search (Complementary)
+## Memory Service Search (Complementary)
 
-In addition to file-based knowledge search, search OpenMemory for accumulated learnings.
-OpenMemory captures cross-session insights, user preferences, and learnings that may not
-have been written into knowledge files.
+In addition to file-based knowledge, the memory service (autodev-memory) stores accumulated
+learnings, corrections, gotchas, and patterns with hybrid vector + BM25 search.
 
-**Search project knowledge:**
+**How it works:**
 
+- **Automatic (via hooks):** The `UserPromptSubmit` and `PreToolUse[Agent]` hooks auto-search
+  the memory service on every prompt and agent dispatch. Results are injected as
+  `additionalContext` — no manual action needed for reads.
+- **Automatic correction capture:** When users correct Claude, the hooks detect it and store
+  the correction in the memory service automatically.
+- **Explicit search** (when you need targeted queries beyond what hooks provide):
+
+```bash
+curl -sf -X POST \
+  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"searches": [{"query": "<topic> gotchas pitfalls"}], "project": "<project>", "limit": 5}' \
+  "$MEM_SERVICE_URL/search"
 ```
-search-memory(query="<topic> gotchas pitfalls", project_id="<from CLAUDE.md>")
-search-memory(query="<topic> architecture patterns", project_id="<from CLAUDE.md>")
-```
 
-**Search user preferences:**
-
-```
-search-memory(query="<topic> debugging investigation preferences", user_preference=true)
-```
-
-**When to use OpenMemory vs file-based:**
+**When to use file-based vs memory service:**
 
 - File-based: Structured, curated knowledge with YAML frontmatter (deterministic grep)
-- OpenMemory: Semantic discovery, cross-session insights, user preferences
-- **Always search both** - they capture different types of knowledge
-
-If OpenMemory MCP is unavailable, mention once and continue with file-based search only.
+- Memory service: Semantic discovery, cross-session insights, user corrections
+- Hooks handle the memory service automatically — only use explicit search when hooks don't
+  provide enough context for a specific subtopic
 
 ## Output
 
@@ -128,7 +130,7 @@ When knowledge base findings are relevant:
 
 - [Summary of past fix and whether it applies]
 
-**From OpenMemory:**
+**From memory service (auto-injected or explicit search):**
 
-- [Memory title]: [How it applies to current investigation]
+- [Entry title]: [How it applies to current investigation]
 ```

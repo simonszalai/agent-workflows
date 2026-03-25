@@ -100,35 +100,30 @@ Check project rules:
 - Document which rules affect this step
 - Note specific requirements (e.g., "no Any types", "use TEXT not VARCHAR")
 
-### 5. OpenMemory Research (REQUIRED)
+### 5. Memory Service Research (REQUIRED)
 
-Search for accumulated implementation learnings and user preferences:
+The memory service hooks auto-inject relevant knowledge as `additionalContext` on every
+prompt and agent dispatch. Check the injected context first. For targeted queries beyond
+what was auto-injected:
 
-```
-search-memory(
-    query="<feature area> implementation patterns",
-    project_id="<from CLAUDE.md>",
-    memory_types=["implementation", "component"]
-)
-search-memory(
-    query="<technology/area> gotchas pitfalls",
-    project_id="<from CLAUDE.md>",
-    memory_types=["debug"]
-)
-search-memory(
-    query="implementation style preferences",
-    user_preference=true,
-    memory_types=["user_preference"]
-)
+```bash
+curl -sf -X POST \
+  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"searches": [
+    {"query": "<feature area> implementation patterns"},
+    {"query": "<technology/area> gotchas pitfalls"}
+  ], "project": "<project>", "limit": 5}' \
+  "$MEM_SERVICE_URL/search"
 ```
 
 **Document in each build todo:**
 
-- Relevant implementation memories found
+- Relevant memories found (auto-injected or explicitly searched)
 - User preferences that apply to this step
 - Past debug learnings for this area
 
-If OpenMemory MCP is unavailable, mention once and continue with other research.
+If $MEM_BEARER_TOKEN is unset, mention once and continue with other research.
 
 ## Build Todo Creation Process
 
@@ -177,9 +172,9 @@ Every build todo MUST include a "Discovered Patterns" section:
 
 - [Specific rule and how to comply]
 
-**From OpenMemory:**
+**From memory service (auto-injected or explicit search):**
 
-- [Memory title]: [How it informs this step]
+- [Entry title]: [How it informs this step]
 ```
 
 ### Implementation Details Section
@@ -244,7 +239,7 @@ Use `depends_on` field to make dependencies explicit.
 Before finalizing each build todo:
 
 - [ ] Searched ALL knowledge base folders (references, gotchas, solutions)
-- [ ] Searched OpenMemory for implementation patterns and debug learnings
+- [ ] Checked memory service results (auto-injected + explicit search if needed)
 - [ ] EVERY build todo has "From knowledge base" subsection (even if "none applicable")
 - [ ] For database changes: migration gotchas were read and referenced
 - [ ] For field modifications: all consumers of modified fields were audited

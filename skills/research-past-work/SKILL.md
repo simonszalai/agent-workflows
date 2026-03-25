@@ -209,34 +209,27 @@ Focus on:
 - Common issues in this area of codebase
 - Process improvements suggested
 
-## OpenMemory Search (Complementary)
+## Memory Service Search (Complementary)
 
-Past work insights are also captured in OpenMemory as implementation and debug memories:
+The memory service hooks auto-inject relevant knowledge as `additionalContext` on every
+prompt and agent dispatch. For targeted past-work queries beyond what was auto-injected:
 
-```
-search-memory(
-    query="<similar feature/bug> implementation approach",
-    project_id="<from CLAUDE.md>",
-    memory_types=["implementation"]
-)
-search-memory(
-    query="<similar area> debugging fix resolution",
-    project_id="<from CLAUDE.md>",
-    memory_types=["debug"]
-)
-```
-
-**Cross-project learnings:**
-
-```
-search-memory(query="<pattern> implementation", user_preference=true)
+```bash
+curl -sf -X POST \
+  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"searches": [
+    {"query": "<similar feature/bug> implementation approach"},
+    {"query": "<similar area> debugging fix resolution"}
+  ], "project": "<project>", "limit": 5}' \
+  "$MEM_SERVICE_URL/search"
 ```
 
-OpenMemory captures insights that may not have been written into work_items/ (informal
-corrections, quick fixes, architectural decisions made during implementation). Especially
-important for learnings from cloud sessions where file changes were ephemeral.
+The memory service captures insights that may not have been written into work_items/
+(informal corrections, quick fixes, architectural decisions made during implementation).
+Especially important for learnings from cloud sessions where file changes were ephemeral.
 
-If OpenMemory MCP is unavailable, mention once and continue with file-based search only.
+If $MEM_BEARER_TOKEN is unset, mention once and continue with file-based search only.
 
 ## Key Insight
 

@@ -181,8 +181,8 @@ what adds value and what doesn't.
 
 ### Step 4: Apply Improvements (Dual-Write)
 
-For each improvement that passed self-review, write to BOTH local files AND OpenMemory.
-One is not a substitute for the other.
+For each improvement that passed self-review, write to BOTH local files AND the memory
+service. One is not a substitute for the other.
 
 #### 4a: Local Knowledge Files
 
@@ -214,18 +214,56 @@ tags: [tag1, tag2]
 
 **Command updates** — Add workflow steps or verification items.
 
-#### 4b: OpenMemory
+#### 4b: Memory Service
 
-Store every applied improvement in OpenMemory for cross-session persistence:
+Store every applied improvement in the memory service for cross-session persistence.
+The project identity comes from the `<!-- mem:project=X repo=Y -->` comment in CLAUDE.md.
 
-| Gap Type            | Memory Pattern                                                        |
-| ------------------- | --------------------------------------------------------------------- |
-| Knowledge gap       | `add-memory(memory_types: ["debug"], project_id=...)`                 |
-| User correction     | `add-memory(memory_types: ["user_preference"], user_preference=true)` |
-| Pattern discovery   | `add-memory(memory_types: ["implementation"], project_id=...)`        |
-| Review/workflow gap | `add-memory(memory_types: ["implementation"], project_id=...)`        |
+**Store via the REST API:**
 
-If OpenMemory MCP is unavailable, skip this step (file-based improvements still apply).
+```bash
+curl -sf -X POST \
+  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "new",
+    "entry": {
+      "title": "<1-sentence search-friendly summary>",
+      "summary": "<1-sentence summary>",
+      "content": "<full knowledge content — 200-800 tokens target>",
+      "canonical_key": "<kebab-case-key>",
+      "type": "<gotcha|pattern|preference|correction|reference|solution>",
+      "source": "captured",
+      "project": "<project from CLAUDE.md>"
+    }
+  }' \
+  "$MEM_SERVICE_URL/store"
+```
+
+**Check for duplicates first** using find-related:
+
+```bash
+curl -sf -X POST \
+  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "<knowledge content>",
+    "suggested_key": "<canonical-key>",
+    "project": "<project>"
+  }' \
+  "$MEM_SERVICE_URL/find-related"
+```
+
+If find-related returns matches, use action `supersede` or `append` instead of `new`.
+
+| Gap Type            | Entry Type   |
+| ------------------- | ------------ |
+| Knowledge gap       | `gotcha`     |
+| User correction     | `correction` |
+| Pattern discovery   | `pattern`    |
+| Review/workflow gap | `pattern`    |
+
+If $MEM_BEARER_TOKEN is unset, skip this step (file-based improvements still apply).
 
 ### Step 5: Commit User-Level Changes
 
@@ -238,7 +276,7 @@ symlinks to `agent-workflows`), commit and push so improvements propagate to all
 4. `git push origin main`
 
 **Applies to:** Shared skills, agents, commands, user-level CLAUDE.md.
-**Does NOT apply to:** Project `.claude/knowledge/`, project CLAUDE.md, OpenMemory-only saves.
+**Does NOT apply to:** Project `.claude/knowledge/`, project CLAUDE.md, memory-service-only saves.
 **Skip in cloud:** `$CLAUDE_CODE_REMOTE=true` means file changes are ephemeral anyway.
 
 ## Quality Checks
@@ -250,7 +288,7 @@ Before finalizing improvements:
 - [ ] Targets the root cause, not the symptom
 - [ ] Written concisely (one-liners preferred for checklists)
 - [ ] Skill/command updates don't break existing functionality
-- [ ] Both local file AND OpenMemory updated for each improvement
+- [ ] Both local file AND memory service updated for each improvement
 
 ## Example Analysis
 
@@ -266,7 +304,7 @@ Before finalizing improvements:
 **Improvement:**
 
 1. Add to AGENTS.md: "Always use TEXT for string columns - never VARCHAR (see CLAUDE.md)"
-2. Store in OpenMemory as user_preference
+2. Store in memory service as type `correction`
 
 ---
 
@@ -285,7 +323,7 @@ Before finalizing improvements:
 2. Add to plan-methodology: "When planning external API integrations, research timeout/retry
    requirements"
 3. Add to review-typescript-standards: "[ ] External API calls have timeout and error handling"
-4. Store all three in OpenMemory with appropriate memory types
+4. Store all three in memory service with appropriate entry types
 
 ---
 

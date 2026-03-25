@@ -64,21 +64,31 @@ similar past implementations. This helps catch recurring patterns proactively.
    - Use `review` skill template for output format
    - Number files starting from the next available index (from step 2)
 
-5. **Store P1/P2 findings in OpenMemory** (persists beyond session):
-   For each P1/P2 finding, store as debug memory so future builds learn from it:
+5. **Store P1/P2 findings in memory service** (persists beyond session):
+   For each P1/P2 finding, store via the memory service so future builds learn from it:
 
-   ```
-   add-memory(
-       title="Review: [finding summary]",
-       content="File: [path], Line: [number]. Issue: [description].
-                Recommendation: [fix]. Priority: [p1/p2].",
-       metadata={memory_types: ["debug"]},
-       project_id="<from CLAUDE.md>"
-   )
+   ```bash
+   curl -sf -X POST \
+     -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "action": "new",
+       "entry": {
+         "title": "Review: [finding summary]",
+         "summary": "[1-sentence summary]",
+         "content": "File: [path], Line: [number]. Issue: [description]. Recommendation: [fix]. Priority: [p1/p2].",
+         "canonical_key": "review-[area]-[issue]",
+         "type": "gotcha",
+         "source": "captured",
+         "project": "<project from CLAUDE.md>"
+       }
+     }' \
+     "$MEM_SERVICE_URL/store"
    ```
 
    This is critical for autonomous workflows (LFG, auto-build) in cloud environments
    where review findings would otherwise be lost after the session ends.
+   If $MEM_BEARER_TOKEN is unset, skip this step.
 
 6. **Update plan.md** work log:
    ```

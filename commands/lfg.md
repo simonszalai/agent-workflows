@@ -215,14 +215,8 @@ Then evaluate hypotheses (same as `/auto-fix` Phase 4):
 
 **On failure:** Log error, continue to planning with available info.
 
-**OpenMemory save:** Store key research findings (root causes, architecture patterns found):
-
-```
-add-memory(title="Research: [key finding]",
-    content="[Finding details and implications]",
-    metadata={memory_types: ["implementation"]},
-    project_id="<from CLAUDE.md>")
-```
+**Memory service save:** Store key research findings (root causes, architecture patterns found)
+via the memory service store API (see compound-methodology skill for full API details).
 
 ### Phase 4: Plan
 
@@ -329,12 +323,12 @@ Run `/compound` in **autonomous mode**:
 1. Analyze the build and review process for upstream gaps
 2. Identify improvements to knowledge docs, skills, and workflows
 3. Auto-apply all improvements (no user approval needed in lfg)
-4. Store all learnings in OpenMemory (critical for cloud persistence)
+4. Store all learnings in memory service (critical for cloud persistence)
 5. Report what was changed
 
 **Cloud note:** In cloud environments, file-based changes from /compound are ephemeral.
-OpenMemory saves are the **persistent** knowledge channel. The compound-methodology skill
-handles this automatically via its "Store in OpenMemory" step.
+Memory service saves are the **persistent** knowledge channel. The compound-methodology skill
+handles this automatically via its "Store in Memory Service" step.
 
 ### Phase 10: Create PR
 

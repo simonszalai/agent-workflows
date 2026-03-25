@@ -68,4 +68,5 @@ Items that only make sense for one project stay in that project's `.claude/`:
 Locally, symlinks mean edits to `~/.claude/skills/` directly modify this repo. When
 `/compound` updates a shared skill, the change propagates to agent-workflows automatically.
 
-In cloud sessions, file changes are ephemeral. Learnings persist via OpenMemory instead.
+In cloud sessions, file changes are ephemeral. Learnings persist via the memory service
+(autodev-memory) instead.
