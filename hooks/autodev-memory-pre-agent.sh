@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# mem-pre-agent.sh — PreToolUse[Agent] hook for memory system
+# autodev-memory-pre-agent.sh — PreToolUse[Agent] hook for memory system
 # =============================================================================
 #
 # When Claude spawns a subagent, search for task-specific knowledge based on
@@ -13,7 +13,7 @@
 #     "matcher": "Agent",
 #     "hooks": [{
 #       "type": "command",
-#       "command": "~/.claude/hooks/mem-pre-agent.sh",
+#       "command": "~/.claude/hooks/autodev-memory-pre-agent.sh",
 #       "timeout": 10
 #     }]
 #   }]

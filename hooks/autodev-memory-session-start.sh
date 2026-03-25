@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# mem-session-start.sh — SessionStart hook for memory system
+# autodev-memory-session-start.sh — SessionStart hook for memory system
 # =============================================================================
 #
 # Parses project identity from CLAUDE.md stub, fetches topology from the mem
@@ -14,7 +14,7 @@
 #   "SessionStart": [{
 #     "hooks": [{
 #       "type": "command",
-#       "command": "~/.claude/hooks/mem-session-start.sh",
+#       "command": "~/.claude/hooks/autodev-memory-session-start.sh",
 #       "timeout": 15
 #     }]
 #   }]

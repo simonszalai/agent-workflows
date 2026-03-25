@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# mem-correction-detect.sh — Background correction detection pipeline
+# autodev-memory-correction-detect.sh — Background correction detection pipeline
 # =============================================================================
 #
 # Called by mem-prompt-submit.sh when the regex gate matches. Runs entirely in

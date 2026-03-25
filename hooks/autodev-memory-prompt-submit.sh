@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# mem-prompt-submit.sh — UserPromptSubmit hook for memory system
+# autodev-memory-prompt-submit.sh — UserPromptSubmit hook for memory system
 # =============================================================================
 #
 # On every user message:
@@ -11,7 +11,7 @@
 #   "UserPromptSubmit": [{
 #     "hooks": [{
 #       "type": "command",
-#       "command": "~/.claude/hooks/mem-prompt-submit.sh",
+#       "command": "~/.claude/hooks/autodev-memory-prompt-submit.sh",
 #       "timeout": 10
 #     }]
 #   }]
@@ -63,7 +63,7 @@ CORRECTION_REGEX='^(no[,.\s!]|nah\b|actually\b|wait[,.\s!]|but\s|not\s|that'\''?
 PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]')
 if echo "$PROMPT_LOWER" | grep -qEi "$CORRECTION_REGEX"; then
   # Fork correction detection into background (fire-and-forget)
-  "$HOOK_DIR/mem-correction-detect.sh" \
+  "$HOOK_DIR/autodev-memory-correction-detect.sh" \
     "$MEM_PROJECT" "$MEM_REPO" "$MEM_URL" "$MEM_TOKEN" \
     "$PROMPT" "$TRANSCRIPT_PATH" &
   disown
