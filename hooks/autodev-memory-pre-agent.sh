@@ -13,16 +13,24 @@ set -euo pipefail
 
 # --- Recursion guard ---
 if [[ "${_MEM_HOOK_ACTIVE:-}" == "1" ]]; then
+  echo '{}'
   exit 0
 fi
 export _MEM_HOOK_ACTIVE=1
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/mem-err-trap.sh"
 
 INPUT=$(cat)
 
-# --- Parse mem config (dies on misconfiguration) ---
+# --- Parse mem config (errors caught by mem-err-trap EXIT handler) ---
+MEM_ENV_SKIP=""
 source "$HOOK_DIR/mem-env.sh" "$INPUT"
+
+if [[ -n "$MEM_ENV_SKIP" ]]; then
+  echo '{}'
+  exit 0
+fi
 
 # --- Extract subagent info ---
 AGENT_PROMPT=$(echo "$INPUT" | jq -r '.tool_input.prompt // empty')
@@ -30,6 +38,7 @@ AGENT_DESC=$(echo "$INPUT" | jq -r '.tool_input.description // empty')
 AGENT_TYPE=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // "general"')
 
 if [[ -z "$AGENT_PROMPT" || ${#AGENT_PROMPT} -lt 30 ]]; then
+  echo '{}'
   exit 0
 fi
 
@@ -75,6 +84,7 @@ fi
 
 QUERY_COUNT=$(echo "$PARSED" | jq 'length')
 if [[ "$QUERY_COUNT" -eq 0 ]]; then
+  echo '{}'
   exit 0
 fi
 
@@ -99,6 +109,7 @@ fi
 
 RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null)
 if [[ -z "$RESULT_COUNT" || "$RESULT_COUNT" -eq 0 ]]; then
+  echo '{}'
   exit 0
 fi
 
