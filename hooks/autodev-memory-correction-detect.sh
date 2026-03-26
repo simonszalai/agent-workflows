@@ -21,12 +21,28 @@ set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+report() {
+  local status="$1" message="$2"
+  echo "[$status] $message"
+}
+
+trap 'report "error" "correction-detect crashed at line $LINENO"' ERR
+
 MEM_PROJECT="$1"
 MEM_REPO="$2"
 MEM_URL="$3"
 MEM_TOKEN="$4"
 PROMPT="$5"
 TRANSCRIPT_PATH="${6:-}"
+
+# --- Detect forced trigger (!!! or ???) ---
+FORCE_COMPOUND=false
+if echo "$PROMPT" | grep -qF '!!!'; then
+  FORCE_COMPOUND=true
+fi
+if echo "$PROMPT" | grep -qF '???'; then
+  FORCE_COMPOUND=true
+fi
 
 # --- Step 1: Classify + Extract ---
 
@@ -41,6 +57,13 @@ if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
 fi
 
 CLASSIFY_TEMPLATE=$(cat "$HOOK_DIR/prompts/classify-and-extract.md")
+if [[ "$FORCE_COMPOUND" == "true" ]]; then
+  CLASSIFY_TEMPLATE="The user explicitly marked this message for knowledge capture (!!!).
+Treat this as a CORRECTION — do NOT skip. Extract the knowledge the user wants to save.
+Strip the !!! from the content before extracting.
+
+$CLASSIFY_TEMPLATE"
+fi
 CLASSIFY_PROMPT="$CLASSIFY_TEMPLATE
 
 Recent conversation:
@@ -52,7 +75,8 @@ $PROMPT"
 CLASSIFICATION=$(echo "$CLASSIFY_PROMPT" | claude -p --output-format json  || echo '{"type":"skip"}')
 
 CLASS_TYPE=$(echo "$CLASSIFICATION" | jq -r '.type // "skip"')
-if [[ "$CLASS_TYPE" != "correction" ]]; then
+if [[ "$CLASS_TYPE" != "correction" && "$FORCE_COMPOUND" != "true" ]]; then
+  report "skipped" "Step 1 classify: type=$CLASS_TYPE (not a correction)"
   exit 0
 fi
 
@@ -60,9 +84,10 @@ fi
 SUMMARY=$(echo "$CLASSIFICATION" | jq -r '.summary // empty')
 KNOWLEDGE=$(echo "$CLASSIFICATION" | jq -r '.knowledge // empty')
 ENTRY_TYPE=$(echo "$CLASSIFICATION" | jq -r '.entry_type // "correction"')
-SUGGESTED_KEY=$(echo "$CLASSIFICATION" | jq -r '.suggested_key // empty')
+SUGGESTED_TAGS=$(echo "$CLASSIFICATION" | jq -c '.suggested_tags // []')
 
 if [[ -z "$KNOWLEDGE" ]]; then
+  report "skipped" "Step 1 extract: classification returned empty knowledge"
   exit 0
 fi
 
@@ -84,12 +109,12 @@ if [[ "$INDEX_COUNT" -gt 0 ]]; then
 
 EXTRACTED KNOWLEDGE:
 Summary: $SUMMARY
-Key: $SUGGESTED_KEY
+Tags: $SUGGESTED_TAGS
 Content:
 $KNOWLEDGE
 
 ENTRY INDEX:
-$(echo "$INDEX_RESULT" | jq -r '.entries[] | "- " + .id + " | " + .title + " | key=" + (.canonical_key // "none") + " | " + (.summary // "no summary")')"
+$(echo "$INDEX_RESULT" | jq -r '.entries[] | "- " + .id + " | " + .title + " | tags=" + ((.tags // []) | join(",")) + " | " + (.summary // "no summary")')"
 
   CANDIDATES=$(echo "$MATCH_PROMPT" | claude -p --output-format json  || echo '{"candidates":[]}')
 fi
@@ -121,7 +146,7 @@ DECIDE_PROMPT="$DECIDE_TEMPLATE
 
 EXTRACTED KNOWLEDGE:
 Summary: $SUMMARY
-Suggested key: $SUGGESTED_KEY
+Suggested tags: $SUGGESTED_TAGS
 Type: $ENTRY_TYPE
 Content:
 $KNOWLEDGE
@@ -134,7 +159,7 @@ DECISION=$(echo "$DECIDE_PROMPT" | claude -p --output-format json  || echo '{"ac
 ACTION=$(echo "$DECISION" | jq -r '.action // "skip"')
 if [[ "$ACTION" == "skip" ]]; then
   REASON=$(echo "$DECISION" | jq -r '.reason // "no reason"')
-  echo "mem-correction-detect: skipped — $REASON" >&2
+  report "skipped" "Step 3c decide: action=skip reason=$REASON"
   exit 0
 fi
 
@@ -148,7 +173,6 @@ case "$ACTION" in
       --arg title "$SUMMARY" \
       --arg summary "$(echo "$DECISION" | jq -r '.summary // empty')" \
       --arg content "$KNOWLEDGE" \
-      --arg canonical_key "$SUGGESTED_KEY" \
       --arg type "$ENTRY_TYPE" \
       --arg project "$MEM_PROJECT" \
       '{
@@ -157,7 +181,7 @@ case "$ACTION" in
           title: $title,
           summary: $summary,
           content: $content,
-          canonical_key: $canonical_key,
+          tags: [],
           type: $type,
           source: "captured",
           project: $project
@@ -171,7 +195,6 @@ case "$ACTION" in
       --arg title "$(echo "$DECISION" | jq -r '.summary // empty')" \
       --arg summary "$(echo "$DECISION" | jq -r '.summary // empty')" \
       --arg content "$(echo "$DECISION" | jq -r '.new_content')" \
-      --arg canonical_key "$SUGGESTED_KEY" \
       --arg type "$ENTRY_TYPE" \
       --arg project "$MEM_PROJECT" \
       '{
@@ -181,7 +204,7 @@ case "$ACTION" in
           title: $title,
           summary: $summary,
           content: $content,
-          canonical_key: $canonical_key,
+          tags: [],
           type: $type,
           source: "captured",
           project: $project
@@ -210,7 +233,6 @@ case "$ACTION" in
       --arg new_title "$(echo "$DECISION" | jq -r '.new_title')" \
       --arg new_summary "$(echo "$DECISION" | jq -r '.new_summary // empty')" \
       --arg new_content "$(echo "$DECISION" | jq -r '.new_content')" \
-      --arg new_key "$(echo "$DECISION" | jq -r '.new_key // empty')" \
       '{
         action: $action,
         target_id: $target_id,
@@ -219,7 +241,7 @@ case "$ACTION" in
         new_title: $new_title,
         new_summary: $new_summary,
         new_content: $new_content,
-        new_key: $new_key
+        new_tags: []
       }')
     ;;
   deprecate)
@@ -234,7 +256,7 @@ case "$ACTION" in
       }')
     ;;
   *)
-    echo "mem-correction-detect: unknown action '$ACTION'" >&2
+    report "error" "Step 4: unknown action '$ACTION'"
     exit 0
     ;;
 esac
@@ -248,4 +270,10 @@ STORE_RESULT=$(curl -sS --max-time 5 \
   -d "$STORE_BODY" \
   "$MEM_URL/store"  || echo '{"status":"error"}')
 
-echo "mem-correction-detect: action=$ACTION result=$(echo "$STORE_RESULT" | jq -r '.status // "unknown"')" >&2
+STORE_STATUS=$(echo "$STORE_RESULT" | jq -r '.status // "unknown"')
+if [[ "$STORE_STATUS" == "ok" || "$STORE_STATUS" == "success" ]]; then
+  ENTRY_ID=$(echo "$STORE_RESULT" | jq -r '.entry_id // .id // "unknown"')
+  report "success" "action=$ACTION entry=$ENTRY_ID summary=$SUMMARY"
+else
+  report "error" "Step 4 store failed: action=$ACTION status=$STORE_STATUS body=$(echo "$STORE_RESULT" | head -c 200)"
+fi
