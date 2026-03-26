@@ -173,7 +173,7 @@ When the user mentions these activities, proactively use the corresponding comma
 | User says                               | Action            |
 | --------------------------------------- | ----------------- |
 | "auto-build", "build it end to end"     | Run `/auto-build` |
-| "auto-fix", "fix this bug autonomously" | Run `/auto-fix`   |
+| "auto-fix", "fix this bug autonomously" | Run `/lfg`        |
 
 ### Learning & Correction Detection
 
@@ -341,7 +341,7 @@ unambiguous link back to the original work item.
 ### Autonomous Workflows
 
 - `/auto-build`: Steps 2-8 + creates PR (for features with approved plans)
-- `/auto-fix`: Investigate -> hypothesize -> fix -> review -> PR (for bugs)
+- `/lfg`: Also handles bugs — investigate -> hypothesize -> fix -> review -> PR
 
 ## 2-Tier Knowledge System
 

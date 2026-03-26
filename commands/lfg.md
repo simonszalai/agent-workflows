@@ -1,12 +1,13 @@
 ---
-description: Let's Fucking Go - Autonomous end-to-end workflow from GitHub issue or conversation to PR.
+description: Let's Fucking Go - Autonomous end-to-end workflow from GitHub issue, error report, or conversation to PR.
 max_turns: 300
 ---
 
 # LFG Command
 
-Let's Fucking Go. The ultimate autonomous workflow that takes a GitHub issue **or conversation
-context** and delivers a complete PR. Auto-build on steroids.
+Let's Fucking Go. The ultimate autonomous workflow that takes a GitHub issue, error report,
+**or conversation context** and delivers a complete PR. Handles both features and bugs
+(including production incidents with hypothesis-driven root cause analysis).
 
 ## Usage
 
@@ -15,6 +16,7 @@ context** and delivers a complete PR. Auto-build on steroids.
 /lfg 123                     # Same thing
 /lfg https://github.com/org/repo/issues/123   # Full URL
 /lfg                         # Use current conversation as input
+/lfg B001                    # Resume existing bug work item
 /lfg --skip-verify           # Skip local verification step
 ```
 
@@ -22,6 +24,7 @@ context** and delivers a complete PR. Auto-build on steroids.
 
 - Triggered from a GitHub issue (via Claude Code web or CLI)
 - Triggered from a conversation thread where the user describes what they want
+- Triggered from an error report or production incident
 - You want fully autonomous end-to-end execution
 - Requirements are clear (from issue or conversation)
 - You trust the workflow to make decisions
@@ -33,6 +36,7 @@ LFG detects its input source automatically:
 | Invocation             | Input Source  | Behavior                            |
 | ---------------------- | ------------- | ----------------------------------- |
 | `/lfg #123` or number  | GitHub issue  | Fetch issue, extract requirements   |
+| `/lfg B001`            | Existing bug  | Resume existing BNNN work item      |
 | `/lfg` (no args)       | Conversation  | Extract requirements from thread    |
 
 ## Process Overview
@@ -90,16 +94,26 @@ Determine input source and extract requirements.
    | Conversation signals                          | Type    | Command        |
    | --------------------------------------------- | ------- | -------------- |
    | Error reports, "fix", "broken", "not working" | Bug     | `/investigate` |
+   | Service failures, OOM, crashes, timeouts      | Bug     | `/investigate` |
    | "Add", "build", "create", "implement"         | Feature | `/research`    |
    | Refactoring, cleanup, improvement              | Feature | `/research`    |
    | (ambiguous)                                    | Feature | `/research`    |
 
-3. **Extract requirements:**
+3. **For bugs — extract error context** (when available):
+   - **Service name** — which service failed
+   - **Error type** — crash, timeout, OOM, validation error
+   - **Timestamp** — when it failed (UTC)
+   - **Error message** — actual error text if available
+   - **User hints** — additional context from the triggering comment
+
+4. **Extract requirements:**
    - Synthesize a clear title from the conversation
    - Collect all stated requirements and constraints
    - Infer acceptance criteria from the discussion
 
-4. **If context is insufficient:**
+5. **If context is insufficient:**
+
+   For features:
 
    ```markdown
    I need more detail to proceed. Please provide:
@@ -109,7 +123,24 @@ Determine input source and extract requirements.
    - Any constraints or preferences
    ```
 
+   For bugs:
+
+   ```markdown
+   I need more detail to proceed. Please provide:
+
+   - Service name
+   - Approximate time of failure (e.g., "around 2pm UTC")
+   - Error type or message if known
+   ```
+
    Then STOP and wait for user response before continuing.
+
+**Source C: Resume existing work item** (when invoked with BNNN)
+
+1. Read the existing work item from `work_items/flow_failures/ongoing/{id}-*/`
+2. Load `source.md` for context
+3. Check which phases are already complete (investigation.md, plan.md, build_todos/, etc.)
+4. Resume from the next incomplete phase
 
 ### Phase 2: Create Work Item
 
@@ -161,12 +192,12 @@ Determine input source and extract requirements.
    {Extracted from issue body or inferred}
    ```
 
-   **For conversation input:**
+   **For conversation input (features):**
 
    ```markdown
    ---
    title: { Synthesized title }
-   type: { bug|feature }
+   type: feature
    status: active
    created: YYYY-MM-DD
    source: conversation
@@ -187,6 +218,36 @@ Determine input source and extract requirements.
    {Criteria extracted or inferred from conversation}
    ```
 
+   **For conversation input (bugs/incidents):**
+
+   ```markdown
+   ---
+   title: { Synthesized title }
+   type: bug
+   status: active
+   created: YYYY-MM-DD
+   source: conversation
+   service: {service name, if known}
+   error_time: {timestamp, if known}
+   ---
+
+   # {Service Name} - {Error Type}
+
+   ## Error Context
+
+   **Service:** {name}
+   **Time:** {timestamp}
+   **Error Type:** {crash/timeout/OOM/etc.}
+
+   ## Error Message
+
+   {Error text from notification or conversation}
+
+   ## User Context
+
+   {Any hints or context from the user's comment}
+   ```
+
 ### Phase 3: Research or Investigate
 
 **For Features (type: feature):**
@@ -200,18 +261,36 @@ Run `/research` internally:
 
 **For Bugs (type: bug):**
 
-Run `/investigate` internally:
+Run `/investigate` internally with hypothesis generation enabled:
 
-- Analyze error context from issue or conversation
-- Generate hypotheses
-- Document root cause in investigation.md
+1. **Select agents** based on error type (when error context is available):
 
-Then evaluate hypotheses (same as `/auto-fix` Phase 4):
+   | Error Type | Primary Agents                        |
+   | ---------- | ------------------------------------- |
+   | OOM/Crash  | Infrastructure agent + Service agent  |
+   | Timeout    | Infrastructure agent + Database agent |
+   | Data error | Database agent + researcher           |
+   | Unknown    | All available investigator agents     |
 
-- Spawn `hypothesis-evaluator` agent for each hypothesis
-- Collect verdicts: CONFIRMED | REFUTED | INCONCLUSIVE
-- Create `hypothesis-evaluation/` folder with evaluation documents
-- Use confirmed hypotheses to inform the plan phase
+2. **Spawn agents in parallel**
+
+3. **Synthesize findings** into `investigation.md` with root causes, evidence, and
+   hypotheses table
+
+Then evaluate hypotheses:
+
+1. Spawn `hypothesis-evaluator` agent for each hypothesis
+2. Collect verdicts: CONFIRMED | REFUTED | INCONCLUSIVE
+3. Create `hypothesis-evaluation/` folder with evaluation documents
+
+**Decision logic:**
+
+| Scenario           | Action                                |
+| ------------------ | ------------------------------------- |
+| One CONFIRMED      | Use as root cause for plan            |
+| Multiple CONFIRMED | Prioritize by severity, document all  |
+| None CONFIRMED     | Use highest-confidence INCONCLUSIVE   |
+| All REFUTED        | Return to investigation, expand scope |
 
 **On failure:** Log error, continue to planning with available info.
 
@@ -342,13 +421,16 @@ Run `/create-pr {work-item-id}` internally (no issue to link).
 
 Steps:
 
-1. Collects all work item artifacts (source.md, plan.md, build_todos/, review_todos/, etc.)
+1. Collects all work item artifacts (source.md, plan.md, build_todos/, review_todos/,
+   investigation.md, hypothesis-evaluation/, learning-report.md, etc.)
 2. Runs tests and collects results
 3. Generates standardized summary with:
    - What was done (research/investigation + implementation)
+   - Root cause analysis and hypothesis verdicts (for bugs)
    - Test results (counts by type, pass/fail)
    - Verification status
    - Review iterations and findings resolved
+   - Learnings captured
    - Files changed
 4. Commits all changes
 5. Pushes to `lfg/{work-item-id}` branch
@@ -364,12 +446,14 @@ Steps:
 | Parse Input  | Insufficient context   | Ask user for details, then STOP |
 | Work Item    | Creation fails         | STOP, report error              |
 | Research/Inv | Partial failure        | Continue with available info    |
+| Hypothesis   | No data available      | Mark INCONCLUSIVE               |
 | Plan         | Agent failure          | STOP, report error              |
 | Build Todos  | Agent failure          | STOP, report error              |
 | Build        | Test failure           | Retry 2x, continue to review   |
 | Write Tests  | Test creation fails    | Log, continue to review loop   |
 | Write Tests  | New tests fail         | Fix tests, retry once, continue |
 | Review Loop  | Max iterations reached | Continue, document in report    |
+| Resolve      | Fix causes new error   | Revert, mark needs attention    |
 | Compound     | Write failure          | Log, continue (non-blocking)    |
 | PR           | Push fails             | Report, provide manual steps    |
 
@@ -377,7 +461,7 @@ Steps:
 
 | Aspect          | /auto-build           | /lfg                                  |
 | --------------- | --------------------- | ------------------------------------- |
-| Trigger         | Plan approval         | GitHub issue or conversation          |
+| Trigger         | Plan approval         | GitHub issue, error report, or convo  |
 | Starting point  | Existing plan.md      | No artifacts exist                    |
 | Research phase  | None                  | Full research/investigation           |
 | Plan approval   | Required              | Auto-approved                         |
@@ -385,23 +469,14 @@ Steps:
 | Compound        | Not included          | Autonomous mode                       |
 | Scope           | Features with plans   | Any issue or request (bug or feature) |
 
-## Differences from /auto-fix
-
-| Aspect          | /auto-fix             | /lfg                          |
-| --------------- | --------------------- | ----------------------------- |
-| Trigger         | Error report/thread   | GitHub issue or conversation  |
-| Focus           | Bugs only             | Bugs and features             |
-| Investigation   | Deep with hypothesis  | Adapts to issue type          |
-| Review handling | Single pass + resolve | Loop until no P1/P2           |
-| Compound        | Autonomous mode       | Autonomous mode               |
-
 ## Work Item Structure
+
+**For features:**
 
 ```
 work_items/active/F042-user-dashboard/
   source.md                    # Issue or conversation context
-  research.md                  # (features) Codebase research
-  investigation.md             # (bugs) Root cause analysis
+  research.md                  # Codebase research
   plan.md                      # Implementation approach
   build_todos/                 # Implementation steps
     01-create-component.md
@@ -409,6 +484,25 @@ work_items/active/F042-user-dashboard/
   review_todos/                # Review findings (across iterations)
     01-finding.md
     02-finding.md
+  lfg-report.md                # Final summary for PR
+```
+
+**For bugs:**
+
+```
+work_items/flow_failures/ongoing/B001-service-oom/
+  source.md                    # Error context + details
+  investigation.md             # Root cause analysis + hypotheses
+  hypothesis-evaluation/       # Experimental verification
+    hypothesis-01-memory.md    # Verdict: CONFIRMED
+    hypothesis-02-timeout.md   # Verdict: REFUTED
+  plan.md                      # Fix architecture
+  build_todos/                 # Implementation steps
+    01-add-batch-limit.md
+    02-add-chunking.md
+  review_todos/                # Review findings
+    01-finding.md
+  learning-report.md           # Workflow gap analysis
   lfg-report.md                # Final summary for PR
 ```
 
@@ -529,4 +623,44 @@ Summary:
 - 2 review iterations, all P1/P2 resolved
 
 Work item: F043-bulk-invoice-pdf-export
+```
+
+### Example C: Bug Fix from Error Report
+
+**Conversation:**
+
+```
+User: "Fix this - seeing OOM on large batches lately. Service main-processor
+failed at 14:23 UTC with exit code -9"
+```
+
+**LFG execution:**
+
+1. Parse: source=conversation, type=bug, service=main-processor, error=OOM
+2. Create: `work_items/flow_failures/ongoing/B001-processor-oom/`
+3. Investigate: Finds memory spike at 14:23, batch had 650 items
+4. Hypotheses:
+   - H1: Memory exhaustion on batches >500 items (High confidence)
+   - H2: Memory leak in client (Medium confidence)
+5. Evaluate: H1 CONFIRMED, H2 REFUTED
+6. Plan: Add batch size limit of 200 with chunked processing
+7. Build: Implement limit + chunking
+8. Write tests: Verify chunking logic + large batch handling
+9. Review loop: No critical findings
+10. Compound: Added gotcha about batch sizing
+11. PR: Created with root cause report
+
+**Output:**
+
+```
+LFG complete!
+
+PR: https://github.com/org/repo/pull/456
+
+Root cause: Memory exhaustion on large batches (>500 items)
+Fix: Added batch size limit of 200 items with chunked processing
+Tests: 5 passing / 5 total
+Verification: PASS
+
+Work item: B001-processor-oom
 ```

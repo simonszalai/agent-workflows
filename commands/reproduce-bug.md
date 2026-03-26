@@ -145,7 +145,7 @@ EOF
 
 - `/investigate` for deeper root cause analysis
 - `/plan` to design a fix
-- `/auto-fix` for autonomous fix workflow
+- `/lfg` for autonomous fix workflow
 
 ## Integration with Existing Workflows
 

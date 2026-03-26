@@ -2,7 +2,7 @@ A user correction was detected. Pick candidate entries that may cover the same t
 
 You have:
 - EXTRACTED KNOWLEDGE: what the user wants remembered
-- ENTRY INDEX: titles, summaries, and canonical keys of ALL active entries in this project
+- ENTRY INDEX: titles, summaries, and tags of ALL active entries in this project
 
 Select all entries whose summaries suggest they cover the same topic or closely related
 ground. These will be fetched in full for the next step.

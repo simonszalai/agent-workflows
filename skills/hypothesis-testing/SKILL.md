@@ -21,7 +21,7 @@ Bug investigations often identify multiple possible causes. This methodology ens
 
 - After `/investigate` generates initial hypotheses
 - Before `/plan` to confirm the root cause
-- In autonomous `/auto-fix` workflows
+- In autonomous `/lfg` workflows (bug path)
 
 ## Hypothesis Quality Criteria
 
@@ -303,9 +303,9 @@ After all evaluations:
 3. **None confirmed:** Use highest-confidence INCONCLUSIVE
 4. **All refuted:** Return to investigation phase
 
-## Integration with Auto-Fix
+## Integration with LFG
 
-In `/auto-fix` workflow:
+In `/lfg` bug path:
 
 ```
 /investigate -> generates hypotheses -> hypothesis-evaluator agent -> verdicts

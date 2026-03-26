@@ -2,13 +2,13 @@
 description: Learn from what just happened and apply improvements to knowledge and workflows.
 skills:
   - compound-methodology
-  - research-knowledge-base
 ---
 
 # Compound Command
 
 Analyze what just happened - a fix, a correction, a review - and apply improvements so the same
-mistake can't happen again. Updates knowledge docs AND workflow files (skills, agents, commands).
+mistake can't happen again. Investigates root causes, stores knowledge in the memory service via
+MCP, and updates workflow files (skills, agents, commands).
 
 ## Usage
 
@@ -25,37 +25,35 @@ mistake can't happen again. Updates knowledge docs AND workflow files (skills, a
 | After a fix is verified        | Bug fix landed, tests pass, want to prevent recurrence      |
 | After review findings resolved | `/resolve-review` completed, want systemic improvements     |
 | Explicit invocation            | User says "compound", "document this", "save this learning" |
-| Inside autonomous workflows    | Called by `/auto-build`, `/lfg`, `/auto-fix` in auto mode   |
+| Inside autonomous workflows    | Called by `/auto-build` and `/lfg` in auto mode             |
 
 ## Behavior
 
 All improvements are **self-reviewed and auto-applied**. No user approval step. The AI evaluates
 each proposed improvement against the value criteria below, discards low-value noise, and applies
-the rest to both local knowledge files and the memory service. A final report shows what was applied and
-what was skipped with reasoning.
+the rest to the memory service and workflow files. A final report shows what was applied and what
+was skipped with reasoning.
 
 ## What Gets Updated
 
-This is the key difference from the old `/compound` - it updates **everything**, not just
-knowledge docs.
+| Target                                           | When                                | Example                           |
+| ------------------------------------------------ | ----------------------------------- | --------------------------------- |
+| **Memory service** (via MCP)                     | Every applied knowledge improvement | Gotcha, solution, pattern, etc.   |
+| `AGENTS.md`                                      | Rule repeatedly violated            | "Always use TEXT not VARCHAR"      |
+| `.claude/skills/review-*/SKILL.md`               | Review should have caught this      | New checklist item                 |
+| `.claude/skills/plan-methodology/SKILL.md`       | Plan should have researched this    | New research req                   |
+| `.claude/skills/build-plan-methodology/SKILL.md` | Build todos should have found this  | New pattern search                 |
+| `.claude/commands/*.md`                           | Workflow step was missing           | Add verification step              |
 
-| Target                                           | When                               | Example                           |
-| ------------------------------------------------ | ---------------------------------- | --------------------------------- |
-| `.claude/knowledge/gotchas/`                     | New pitfall discovered             | Gotcha about API timeout behavior |
-| `.claude/knowledge/solutions/`                   | Problem resolution worth capturing | How to fix deadlock scenario      |
-| `.claude/knowledge/references/`                  | Pattern worth documenting          | Reference for batch processing    |
-| `AGENTS.md`                                      | Rule repeatedly violated           | "Always use TEXT not VARCHAR"     |
-| `.claude/skills/review-*/SKILL.md`               | Review should have caught this     | New checklist item                |
-| `.claude/skills/plan-methodology/SKILL.md`       | Plan should have researched this   | New research req                  |
-| `.claude/skills/build-plan-methodology/SKILL.md` | Build todos should have found this | New pattern search                |
-| `.claude/commands/*.md`                          | Workflow step was missing          | Add verification step             |
+**Knowledge is NOT stored in local `.claude/knowledge/` files.** The memory service is the single
+source of truth for gotchas, solutions, references, patterns, and corrections.
 
 ## 2-Tier Knowledge System
 
-| Tier       | Location             | Purpose                                 | Always in Context? |
-| ---------- | -------------------- | --------------------------------------- | ------------------ |
-| **Tier 1** | `AGENTS.md`          | Critical rules that keep being violated | Yes                |
-| **Tier 2** | `.claude/knowledge/` | Detailed references, gotchas, solutions | No (searched)      |
+| Tier       | Location                 | Purpose                                 | Always in Context? |
+| ---------- | ------------------------ | --------------------------------------- | ------------------ |
+| **Tier 1** | `AGENTS.md`              | Critical rules that keep being violated | Yes                |
+| **Tier 2** | Memory service (via MCP) | Detailed references, gotchas, solutions | No (searched)      |
 
 ### Tier 1 Signals (promote to AGENTS.md)
 
@@ -64,7 +62,7 @@ knowledge docs.
 - A gotcha has been violated multiple times
 - The rule is simple and can be stated in 1-2 sentences
 
-### Tier 2 (keep in .claude/knowledge/)
+### Tier 2 (keep in memory service)
 
 - First occurrence of a gotcha/solution
 - Needs detailed code examples
@@ -81,25 +79,44 @@ knowledge docs.
    - Classify each: code quality, logic error, missing case, pattern violation
 3. **If user correction**: Extract what was wrong and what the correct approach is
 4. **Check existing knowledge** to avoid duplicates:
-   - Search `.claude/knowledge/` for related docs
+   - Search memory service via `mcp__autodev-memory__search` for related entries
    - Check `AGENTS.md` for existing rules
    - Check relevant skills for existing checklist items
 
-### Step 2: Analyze Gaps
+### Step 2: Investigate Root Cause
+
+Before classifying gaps, investigate **why** the mistake happened. The conversation often shows
+symptoms but not the underlying cause.
+
+1. **Spawn a researcher or explorer agent** to dig into the actual root cause:
+   - Read relevant source code, configs, and dependencies
+   - Check documentation for the technology involved
+   - Look at git history for when/how patterns were established
+   - Test hypotheses about why the behavior occurred
+2. **Distinguish symptom from cause**: "Prisma rejected the query" is a symptom.
+   "The Prisma client caches its DMMF at startup and doesn't pick up schema changes via HMR"
+   is the root cause.
+3. **Document the full causal chain**: What triggered it -> what went wrong at each step ->
+   what the actual fix is. This is what gets stored in the memory service.
+
+**Skip investigation when**: The root cause is already obvious from context (e.g., user says
+"don't use X, use Y" — no investigation needed, the correction is self-explanatory).
+
+### Step 3: Analyze Gaps
 
 For each learning, determine the upstream gap:
 
-| Gap Type           | Question                                         | Fix Target                     |
-| ------------------ | ------------------------------------------------ | ------------------------------ |
-| Knowledge Gap      | Should this be a documented gotcha/reference?    | `.claude/knowledge/`           |
-| Rule Gap           | Is this a simple rule being repeatedly violated? | `AGENTS.md`                    |
-| Plan Gap           | Should planning have researched this?            | `plan-methodology` skill       |
-| Build Todos Gap    | Should build todos have found this pattern?      | `build-plan-methodology` skill |
-| Review Gap         | Should a reviewer have caught this?              | `review-*` skills              |
-| Workflow Gap       | Is a command missing a step?                     | `commands/*.md`                |
-| Implementation Gap | One-off mistake, no systemic fix needed          | None                           |
+| Gap Type           | Question                                          | Fix Target                     |
+| ------------------ | ------------------------------------------------- | ------------------------------ |
+| Knowledge Gap      | Should this be a documented gotcha/reference?     | Memory service                 |
+| Rule Gap           | Is this a simple rule being repeatedly violated?  | `AGENTS.md`                    |
+| Plan Gap           | Should planning have researched this?             | `plan-methodology` skill       |
+| Build Todos Gap    | Should build todos have found this pattern?       | `build-plan-methodology` skill |
+| Review Gap         | Should a reviewer have caught this?               | `review-*` skills              |
+| Workflow Gap       | Is a command missing a step?                      | `commands/*.md`                |
+| Implementation Gap | One-off mistake, no systemic fix needed           | None                           |
 
-### Step 3: Self-Review for Value
+### Step 4: Self-Review for Value
 
 For each candidate improvement, evaluate against these criteria. **Apply** if it passes,
 **skip** if it doesn't. No user input needed.
@@ -123,55 +140,63 @@ For each candidate improvement, evaluate against these criteria. **Apply** if it
 
 For each improvement, write a one-line rationale: "APPLY: [reason]" or "SKIP: [reason]".
 
-### Step 4: Apply Changes
+### Step 5: Apply Changes
 
-Apply all improvements that passed self-review:
+#### 5a: Store Knowledge in Memory Service (MCP)
 
-**For knowledge docs** - Create with YAML frontmatter:
+For every applied knowledge improvement, store via `mcp__autodev-memory__add_entry`.
 
-```markdown
----
-title: [Descriptive title]
-created: YYYY-MM-DD
-tags: [tag1, tag2]
----
+**Before adding**, search for duplicates with `mcp__autodev-memory__search`. If a related entry
+exists, use `mcp__autodev-memory__update_entry` to supersede or append instead of creating a
+duplicate.
 
-# [Title]
+**Required parameters:**
 
-[Content following template for type]
-```
+| Parameter        | Description                                                   |
+| ---------------- | ------------------------------------------------------------- |
+| `project`        | From `<!-- mem:project=X -->` in CLAUDE.md                    |
+| `title`          | 1-sentence search-friendly summary                            |
+| `content`        | Full knowledge content (200-800 tokens target)                |
+| `entry_type`     | `gotcha`, `pattern`, `correction`, `solution`, `reference`    |
+| `summary`        | 1-sentence summary                                            |
+| `tags`           | Array of topical tags for semantic search (e.g., `["css", "flexbox"]`) |
+| `source`         | `captured`                                                    |
+| `caller_context` | JSON with `skill`, `reason`, `action_rationale`, `trigger`    |
 
-**For AGENTS.md rules** - Append to appropriate section:
+**Entry type mapping:**
+
+| Gap Type            | Entry Type   |
+| ------------------- | ------------ |
+| Knowledge gap       | `gotcha`     |
+| User correction     | `correction` |
+| Pattern discovery   | `pattern`    |
+| Solution/fix        | `solution`   |
+| Review/workflow gap  | `pattern`    |
+| Reference/standard  | `reference`  |
+
+#### 5b: Update Workflow Files
+
+**For AGENTS.md rules** — Append to appropriate section:
 
 ```markdown
 - **[Rule name]**: [One-sentence explanation]
 ```
 
-**For skill updates** - Add checklist items or research requirements:
+**For skill updates** — Add checklist items or research requirements:
 
 ```markdown
 - [ ] [New check based on what was learned]
 ```
 
-**For command updates** - Add workflow steps or verification items.
+**For command updates** — Add workflow steps or verification items.
 
-### Step 4b: Store in Memory Service
-
-For **every** applied improvement, also store in the memory service so it persists across
-sessions. The compound-methodology skill has the full API details for storing entries.
-
-Both local files AND memory service must be updated. One is not a substitute for the other —
-local files are searchable in context, memory service persists across sessions and environments.
-
-If $MEM_BEARER_TOKEN is unset, skip this step (file-based improvements still apply).
-
-### Step 4c: Commit User-Level Changes
+#### 5c: Commit User-Level Changes
 
 If any applied changes modified **user-level files** (files in `~/.claude/` which are symlinked
 to `agent-workflows`), commit and push them so the improvements propagate to all environments:
 
 ```bash
-cd ~/dev/agent-workflows  # or wherever agent-workflows is checked out
+cd ~/dev/agent-workflows
 git add -A
 git commit -m "compound: <brief description of improvements>"
 git push origin main
@@ -186,11 +211,10 @@ git push origin main
 
 **When NOT to do this:**
 
-- Only project-level files changed (`.claude/knowledge/`, project CLAUDE.md)
 - Only memory service saves were made
 - Running in cloud (`$CLAUDE_CODE_REMOTE=true`) — file changes are ephemeral anyway
 
-### Step 5: Report
+### Step 6: Report
 
 ```
 ## Compound Results
@@ -199,94 +223,16 @@ git push origin main
 
 | # | Type       | Target                                  | Rationale                        |
 |---|------------|-----------------------------------------|----------------------------------|
-| 1 | Knowledge  | .claude/knowledge/gotchas/api-timeout.. | Non-obvious timeout default      |
+| 1 | Knowledge  | mem: gotcha "API timeout default"       | Non-obvious timeout default      |
 | 2 | Review     | review-typescript-standards/SKILL.md    | Class of missing error handling  |
-| 3 | Mem svc    | gotcha: API timeout handling             | Persisted for cloud sessions     |
+| 3 | Rule       | AGENTS.md                               | Repeated violation, promoted     |
 
 ### Skipped (M items)
 
 | # | Type           | Reason                                    |
 |---|----------------|-------------------------------------------|
 | 1 | Implementation | One-off typo, unlikely to recur           |
-| 2 | Knowledge      | Already documented in gotchas/api-retry.. |
-```
-
-## Knowledge Templates
-
-### Solution
-
-```markdown
----
-title: [Problem] Resolution
-created: YYYY-MM-DD
-tags: [area, technology]
----
-
-# [Problem] Resolution
-
-## Problem
-
-[What went wrong]
-
-## Root Cause
-
-[Why it happened]
-
-## Solution
-
-[How it was fixed]
-
-## Prevention
-
-[How to avoid in future]
-```
-
-### Gotcha
-
-```markdown
----
-title: [Pitfall Title]
-created: YYYY-MM-DD
-tags: [area, technology]
----
-
-# [Pitfall Title]
-
-## The Gotcha
-
-[What catches people off guard]
-
-## Why It Happens
-
-[Underlying cause]
-
-## The Fix
-
-[How to handle it correctly]
-```
-
-### Reference
-
-```markdown
----
-title: [Topic] Guide
-created: YYYY-MM-DD
-tags: [area, technology]
----
-
-# [Topic] Guide
-
-## Overview
-
-[What this covers]
-
-## [Section]
-
-[Content]
-
-## Examples
-
-[Practical examples]
+| 2 | Knowledge      | Already in memory service (key: api-retry)|
 ```
 
 ## Relation to Other Commands

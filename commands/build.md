@@ -35,9 +35,9 @@ ls work_items/*/[id]*/build_todos/*.md 2>/dev/null | head -1
 test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
 ```
 
-### Branch Mode (Cloud/Auto-Fix)
+### Branch Mode (Cloud)
 
-When `CLAUDE_CODE_REMOTE=true` or invoked from `/auto-fix`:
+When `CLAUDE_CODE_REMOTE=true`:
 
 ```bash
 # 1. Check we're on a feature branch (not main)
@@ -70,10 +70,10 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
    - Verify current directory is a worktree, not the main repo
    - If not in worktree, instruct user to create one
 
-   **Branch Mode (Cloud/Auto-Fix):**
-   - Detected when `CLAUDE_CODE_REMOTE=true` or invoked from `/auto-fix`
+   **Branch Mode (Cloud):**
+   - Detected when `CLAUDE_CODE_REMOTE=true`
    - In branch mode, worktrees are not available - use feature branches instead
-   - If on main: Create branch with `git checkout -b auto-build/{id}` or `git checkout -b auto-fix/{id}`
+   - If on main: Create branch with `git checkout -b auto-build/{id}` or `git checkout -b lfg/{id}`
    - All operations happen in current directory on the feature branch
    - This mode is used for cloud execution where worktrees aren't practical
 

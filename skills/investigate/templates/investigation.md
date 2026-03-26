@@ -121,7 +121,7 @@ evidence_sources: []
 ## Hypotheses for Verification
 
 > **Note:** Hypotheses are generated when root cause is uncertain and needs experimental
-> verification. Required for BNNN work items (autonomous bug fixes via `/auto-fix`).
+> verification. Required for BNNN work items (autonomous bug fixes via `/lfg`).
 
 | ID  | Hypothesis             | Confidence | Status  |
 | --- | ---------------------- | ---------- | ------- |

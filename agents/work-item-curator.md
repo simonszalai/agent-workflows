@@ -78,7 +78,7 @@ work_items/
    find work_items -type d -name "F[0-9]*-*" 2>/dev/null | \
      sed 's/.*\///; s/F//; s/-.*//' | sort -n | tail -1
 
-   # For auto-fix bugs - find highest BNNN across ALL locations, add 1
+   # For bugs - find highest BNNN across ALL locations, add 1
    find work_items -type d -name "B[0-9]*-*" 2>/dev/null | \
      sed 's/.*\///; s/B//; s/-.*//' | sort -n | tail -1
    ```

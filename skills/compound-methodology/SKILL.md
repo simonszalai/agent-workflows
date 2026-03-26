@@ -42,9 +42,7 @@ Every learning stems from one of these upstream gaps:
 
 **Fix targets:**
 
-- `.claude/knowledge/gotchas/` - Document the pitfall
-- `.claude/knowledge/references/` - Document the pattern
-- `.claude/knowledge/solutions/` - Document the resolution
+- Memory service via `mcp__autodev-memory__add_entry` — store the gotcha, pattern, or solution
 - `AGENTS.md` - Add rule if repeatedly violated
 - **The codebase itself** - If the gotcha identifies existing violations, fix them (or create a
   work item). Documenting a rule without fixing the known violation means the bug will recur.
@@ -60,7 +58,7 @@ Every learning stems from one of these upstream gaps:
 **Fix targets:**
 
 - `.claude/skills/plan-methodology/SKILL.md` - Add research requirement
-- `.claude/knowledge/gotchas/` - Document the missed constraint
+- Memory service — store the missed constraint as a gotcha
 
 ### 3. Build Todos Gap
 
@@ -73,7 +71,7 @@ Every learning stems from one of these upstream gaps:
 **Fix targets:**
 
 - `.claude/skills/build-plan-methodology/SKILL.md` - Add research step
-- `.claude/knowledge/references/` - Document the pattern to reference
+- Memory service — store the pattern as a reference
 
 ### 4. Review Gap
 
@@ -128,27 +126,54 @@ For each item to analyze, determine:
    - User correction (Claude did X, should have done Y)
 
 2. **Which upstream gap?**
-   - Could plan have identified this? → Plan Gap
-   - Should build todos have specified this? → Build Todos Gap
-   - Is this a known gotcha? → Knowledge Gap
-   - Should review prompt check for this? → Review Gap
-   - Is a workflow step missing? → Workflow Gap
-   - One-off mistake? → Implementation Gap (no systemic fix)
+   - Could plan have identified this? -> Plan Gap
+   - Should build todos have specified this? -> Build Todos Gap
+   - Is this a known gotcha? -> Knowledge Gap
+   - Should review prompt check for this? -> Review Gap
+   - Is a workflow step missing? -> Workflow Gap
+   - One-off mistake? -> Implementation Gap (no systemic fix)
 
 3. **What's the fix target?**
    - Identify specific file and section to update
-   - Draft the addition (checklist item, gotcha doc, etc.)
+   - Draft the addition (checklist item, memory entry, etc.)
 
-### Step 2: Aggregate and Deduplicate
+### Step 2: Investigate Root Cause
+
+Before aggregating and applying fixes, investigate **why** the mistake happened. The
+conversation often shows symptoms but not the underlying cause.
+
+**When to investigate:**
+
+- The root cause is not obvious from the conversation alone
+- Multiple failed attempts suggest a deeper misunderstanding
+- The fix involved trial-and-error rather than a direct solution
+
+**How to investigate:**
+
+1. **Spawn a researcher or explorer agent** to dig into the actual root cause:
+   - Read relevant source code, configs, and dependencies
+   - Check documentation for the technology involved
+   - Look at git history for when/how patterns were established
+   - Test hypotheses about why the behavior occurred
+2. **Distinguish symptom from cause**: "Prisma rejected the query" is a symptom.
+   "The Prisma client caches its DMMF at startup and doesn't pick up schema changes via HMR"
+   is the root cause.
+3. **Document the full causal chain**: What triggered it -> what went wrong at each step ->
+   what the actual fix is. This chain becomes the knowledge entry content.
+
+**Skip investigation when**: The root cause is already obvious (e.g., a user correction like
+"don't use X, use Y" is self-explanatory and needs no further research).
+
+### Step 3: Aggregate and Deduplicate
 
 Multiple items may point to the same gap. Consolidate:
 
 - Group by gap category
 - Identify root cause patterns
 - Create single improvement for related items
-- Check existing knowledge/skills to avoid duplicates
+- Check memory service via `mcp__autodev-memory__search` to avoid duplicates
 
-### Step 3: Self-Review for Value
+### Step 4: Self-Review for Value
 
 Evaluate each candidate improvement autonomously. No user approval needed — the AI decides
 what adds value and what doesn't.
@@ -169,7 +194,7 @@ what adds value and what doesn't.
 | Criterion                   | Example                                           |
 | --------------------------- | ------------------------------------------------- |
 | One-off, won't recur        | Typo in a variable name                           |
-| Already documented          | Gotcha already exists in knowledge base            |
+| Already documented          | Entry already exists in memory service             |
 | Too vague to be actionable  | "Be more careful with error handling"              |
 | Not generalizable           | Specific to one function, no broader lesson        |
 | Trivial                     | Formatting, single naming choice                   |
@@ -179,93 +204,65 @@ what adds value and what doesn't.
 - `APPLY: [specific reason this adds value]`
 - `SKIP: [specific reason this is noise]`
 
-### Step 4: Apply Improvements (Dual-Write)
+### Step 5: Apply Improvements
 
-For each improvement that passed self-review, write to BOTH local files AND the memory
-service. One is not a substitute for the other.
+#### 5a: Store Knowledge in Memory Service (MCP)
 
-#### 4a: Local Knowledge Files
+For every applied knowledge improvement, store via `mcp__autodev-memory__add_entry`.
 
-**Knowledge docs** — Create with YAML frontmatter:
+**Before adding**, search for duplicates with `mcp__autodev-memory__search`. If a related entry
+exists, use `mcp__autodev-memory__update_entry` to supersede or append instead of creating a
+duplicate.
 
-```markdown
----
-title: [Descriptive title]
-created: YYYY-MM-DD
-tags: [tag1, tag2]
----
+**Required parameters:**
 
-# [Title]
+| Parameter        | Description                                                   |
+| ---------------- | ------------------------------------------------------------- |
+| `project`        | From `<!-- mem:project=X -->` in CLAUDE.md                    |
+| `title`          | 1-sentence search-friendly summary                            |
+| `content`        | Full knowledge content (200-800 tokens target)                |
+| `entry_type`     | `gotcha`, `pattern`, `correction`, `solution`, `reference`    |
+| `summary`        | 1-sentence summary                                            |
+| `tags`           | Array of topical tags for semantic search (e.g., `["css", "flexbox"]`) |
+| `source`         | `captured`                                                    |
+| `caller_context` | JSON with `skill`, `reason`, `action_rationale`, `trigger`    |
 
-[Content following template for type]
-```
+**caller_context fields:**
 
-**AGENTS.md rules** — Append to appropriate section:
+- `skill`: Always `"compound"`
+- `reason`: Extensive explanation of WHY this knowledge is worth persisting
+- `action_rationale`: Why `new` vs `supersede` vs `append` was chosen
+- `trigger`: What triggered the persistence (e.g., "user correction", "review finding",
+  "bug fix investigation")
 
-```markdown
-- **[Rule name]**: [One-sentence explanation]
-```
-
-**Skill updates** — Add checklist items or research requirements:
-
-```markdown
-- [ ] [New check based on what was learned]
-```
-
-**Command updates** — Add workflow steps or verification items.
-
-#### 4b: Memory Service
-
-Store every applied improvement in the memory service for cross-session persistence.
-The project identity comes from the `<!-- mem:project=X repo=Y -->` comment in CLAUDE.md.
-
-**Store via the REST API:**
-
-```bash
-curl -sf -X POST \
-  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action": "new",
-    "entry": {
-      "title": "<1-sentence search-friendly summary>",
-      "summary": "<1-sentence summary>",
-      "content": "<full knowledge content — 200-800 tokens target>",
-      "canonical_key": "<kebab-case-key>",
-      "type": "<gotcha|pattern|preference|correction|reference|solution>",
-      "source": "captured",
-      "project": "<project from CLAUDE.md>"
-    }
-  }' \
-  "$MEM_SERVICE_URL/store"
-```
-
-**Check for duplicates first** using find-related:
-
-```bash
-curl -sf -X POST \
-  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "content": "<knowledge content>",
-    "suggested_key": "<canonical-key>",
-    "project": "<project>"
-  }' \
-  "$MEM_SERVICE_URL/find-related"
-```
-
-If find-related returns matches, use action `supersede` or `append` instead of `new`.
+**Entry type mapping:**
 
 | Gap Type            | Entry Type   |
 | ------------------- | ------------ |
 | Knowledge gap       | `gotcha`     |
 | User correction     | `correction` |
 | Pattern discovery   | `pattern`    |
-| Review/workflow gap | `pattern`    |
+| Solution/fix        | `solution`   |
+| Review/workflow gap  | `pattern`    |
+| Reference/standard  | `reference`  |
 
-If $MEM_BEARER_TOKEN is unset, skip this step (file-based improvements still apply).
+#### 5b: Update Workflow Files
 
-### Step 5: Commit User-Level Changes
+**For AGENTS.md rules** — Append to appropriate section:
+
+```markdown
+- **[Rule name]**: [One-sentence explanation]
+```
+
+**For skill updates** — Add checklist items or research requirements:
+
+```markdown
+- [ ] [New check based on what was learned]
+```
+
+**For command updates** — Add workflow steps or verification items.
+
+### Step 6: Commit User-Level Changes
 
 If any applied improvements modified **user-level files** (files resolved via `~/.claude/`
 symlinks to `agent-workflows`), commit and push so improvements propagate to all environments:
@@ -276,58 +273,66 @@ symlinks to `agent-workflows`), commit and push so improvements propagate to all
 4. `git push origin main`
 
 **Applies to:** Shared skills, agents, commands, user-level CLAUDE.md.
-**Does NOT apply to:** Project `.claude/knowledge/`, project CLAUDE.md, memory-service-only saves.
+**Does NOT apply to:** Memory-service-only saves, project CLAUDE.md.
 **Skip in cloud:** `$CLAUDE_CODE_REMOTE=true` means file changes are ephemeral anyway.
 
 ## Quality Checks
 
 Before finalizing improvements:
 
-- [ ] No duplicate knowledge docs (search existing first)
+- [ ] No duplicate entries (searched memory service first)
 - [ ] Improvement is specific and actionable
 - [ ] Targets the root cause, not the symptom
+- [ ] Root cause was investigated when not obvious from conversation
 - [ ] Written concisely (one-liners preferred for checklists)
 - [ ] Skill/command updates don't break existing functionality
-- [ ] Both local file AND memory service updated for each improvement
+- [ ] Knowledge stored in memory service via MCP tool
 
 ## Example Analysis
 
 **User correction:** "No, don't use VARCHAR - always use TEXT for string columns in Postgres"
 
+**Investigation:** Skipped — correction is self-explanatory.
+
 **Analysis:**
 
 - Type: Pattern violation (wrong column type)
 - Upstream gap: Knowledge Gap + possible Rule Gap
-- Check: Is this already in CLAUDE.md? → Yes, "Always use TEXT instead of VARCHAR"
+- Check: Is this already in CLAUDE.md? -> Yes, "Always use TEXT instead of VARCHAR"
 - Self-review: `APPLY: User correction, and rule exists but was violated — needs promotion`
 
 **Improvement:**
 
 1. Add to AGENTS.md: "Always use TEXT for string columns - never VARCHAR (see CLAUDE.md)"
-2. Store in memory service as type `correction`
+2. Store in memory service via `mcp__autodev-memory__add_entry` as type `correction`
 
 ---
 
-**Review finding:** "Missing error handling for API timeout" (3 similar findings)
+**Bug fix: Prisma schema change not picked up at runtime**
+
+**Investigation:** Spawned explorer agent. Found that:
+- The Prisma schema had `deleted_at` and `prisma generate` ran successfully
+- The generated client files contained `deleted_at` in the DMMF
+- But the running dev server rejected `deleted_at` in WHERE clauses
+- Root cause: Vite's HMR does not re-import the Prisma client binary — the in-memory DMMF
+  remains stale until the dev server process is fully restarted
 
 **Analysis:**
 
-- Type: Missing case (error handling) - 3 occurrences
-- Upstream gap: Plan Gap + Knowledge Gap
-- Check: Any gotcha for API timeout? → No
-- Self-review: `APPLY: 3 occurrences of same gap, class of issues, not documented`
+- Type: Missing case (dev tooling interaction)
+- Upstream gap: Knowledge Gap — non-obvious interaction between Prisma generate and Vite HMR
+- Self-review: `APPLY: Wasted multiple rounds, non-obvious, will recur on any schema change`
 
-**Improvements:**
+**Improvement:**
 
-1. Create gotcha: `.claude/knowledge/gotchas/api-timeout-handling-YYYYMMDD.md`
-2. Add to plan-methodology: "When planning external API integrations, research timeout/retry
-   requirements"
-3. Add to review-typescript-standards: "[ ] External API calls have timeout and error handling"
-4. Store all three in memory service with appropriate entry types
+1. Store in memory service as `gotcha` with key `prisma-schema-change-dev-server-restart`
+2. Content documents the full causal chain and the fix (restart dev server after generate)
 
 ---
 
 **One-off typo fix:** Variable named `reponse` instead of `response`
+
+**Investigation:** Skipped — trivial.
 
 **Analysis:**
 

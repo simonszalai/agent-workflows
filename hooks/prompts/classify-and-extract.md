@@ -9,13 +9,13 @@ If CORRECTION, also extract:
   the topic comes up, not just formal/technical terms)
 - knowledge: full knowledge to store (complete, self-contained, actionable — include WHY)
 - type: gotcha|pattern|preference|correction|reference|solution
-- suggested_key: kebab-case canonical key
+- suggested_tags: array of topical tags for semantic search (e.g., ["css", "flexbox"])
 
 Output JSON:
 {"type": "skip"}
 or
 {"type": "correction", "summary": "...", "knowledge": "...",
- "entry_type": "...", "suggested_key": "..."}
+ "entry_type": "...", "suggested_tags": ["tag1", "tag2"]}
 
 Rules:
 - Skip trivial things (typo fixes, simple file path corrections).

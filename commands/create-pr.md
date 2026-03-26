@@ -5,8 +5,7 @@ description: Generate summary report and create PR from a work item. Collects wh
 # Create PR Command
 
 Generate a summary of all work done, create a commit, push, and open a pull request. This is
-the final step of autonomous workflows (`/lfg`, `/auto-build`, `/auto-fix`) and can also be
-called manually.
+the final step of autonomous workflows (`/lfg`, `/auto-build`) and can also be called manually.
 
 ## Usage
 
@@ -235,12 +234,6 @@ Manual steps:
 - Branch: `auto-build/{work-item-id}`
 - May or may not have GitHub issue
 - Summary includes deployment guide
-
-### From /auto-fix
-
-- Branch: `auto-fix/{work-item-id}`
-- Summary includes root cause analysis and hypothesis verdicts
-- May be triggered from thread (include reply format)
 
 ## When Called Manually
 

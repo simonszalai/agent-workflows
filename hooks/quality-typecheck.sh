@@ -47,6 +47,11 @@
 set -uo pipefail
 # Note: no set -e — we need to capture non-zero exits from type checkers
 
+# Skip when running inside a memory hook's claude -p subprocess
+if [[ "${_MEM_HOOK_ACTIVE:-}" == "1" ]]; then
+  exit 0
+fi
+
 INPUT=$(cat)
 
 # Requires jq for JSON parsing
