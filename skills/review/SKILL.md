@@ -46,6 +46,13 @@ When reviewing code changes:
 - Style preferences without justification
 - Findings without suggested fixes
 
+## Knowledge Persistence
+
+P1/P2 findings are stored in the memory service by the `/review` command orchestrator via
+`mcp__autodev-memory__add_entry`. This ensures future builds learn from past review findings,
+even in ephemeral cloud sessions. Individual reviewer agents do NOT call MCP tools directly —
+the orchestrator handles persistence after collecting all findings.
+
 ## Review Process
 
 1. **Load context** - Read plan.md and changed files

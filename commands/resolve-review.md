@@ -54,31 +54,32 @@ Work through review findings and implement accepted fixes.
    For each finding with Process Improvement Recommendations:
 
    **Plan Phase improvements:**
-   - If recommendation is project-specific - create gotcha in `.claude/knowledge/gotchas/`
+   - If recommendation is project-specific - store via memory service (handled by `/compound`)
    - If recommendation is a general pattern - update `.claude/skills/plan-methodology/SKILL.md`
    - Examples: "Always research error handling patterns before planning async flows"
 
    **Build Todos Phase improvements:**
    - If recommendation adds a research step - update `.claude/skills/build-plan-methodology/SKILL.md`
-   - If recommendation references useful patterns - add to `.claude/knowledge/references/`
+   - If recommendation references useful patterns - store via memory service (handled by `/compound`)
    - Examples: "Search for similar models before defining new ones"
 
    **Build Phase improvements:**
    - If recommendation adds a verification step - update `.claude/commands/build.md` checklist
-   - If recommendation is about testing - add to `.claude/knowledge/gotchas/` for test patterns
+   - If recommendation is about testing - store via memory service (handled by `/compound`)
    - Examples: "Run integration tests against staging data before marking complete"
 
    **Where to apply:**
 
-   | Recommendation Type             | Target Location                                    |
-   | ------------------------------- | -------------------------------------------------- |
-   | Project-specific pitfall        | `.claude/knowledge/gotchas/[topic]-YYYYMMDD.md`    |
-   | Reusable pattern                | `.claude/knowledge/references/[topic]-YYYYMMDD.md` |
-   | Plan research requirement       | `.claude/skills/plan-methodology/SKILL.md`         |
-   | Build todo research requirement | `.claude/skills/build-plan-methodology/SKILL.md`   |
-   | Build verification step         | `.claude/commands/build.md`                        |
+   | Recommendation Type             | Target Location                                     |
+   | ------------------------------- | --------------------------------------------------- |
+   | Project-specific pitfall        | Memory service via `mcp__autodev-memory__add_entry` |
+   | Reusable pattern                | Memory service via `mcp__autodev-memory__add_entry` |
+   | Plan research requirement       | `.claude/skills/plan-methodology/SKILL.md`          |
+   | Build todo research requirement | `.claude/skills/build-plan-methodology/SKILL.md`    |
+   | Build verification step         | `.claude/commands/build.md`                         |
 
-   `/compound` handles all of these updates when run after resolve-review.
+   `/compound` handles all of these updates when run after resolve-review — including
+   MCP calls to persist knowledge in the memory service.
 
 7. **Run linter and type checker (REQUIRED after every fix):**
    - Run project's linter - fix any linting errors
@@ -187,5 +188,4 @@ git push
   - `.claude/skills/plan-methodology/SKILL.md` (plan research requirements)
   - `.claude/skills/build-plan-methodology/SKILL.md` (build todo research requirements)
   - `.claude/commands/build.md` (verification steps)
-  - `.claude/knowledge/gotchas/` (project-specific pitfalls)
-  - `.claude/knowledge/references/` (reusable patterns)
+  - Memory service via MCP (project-specific pitfalls, reusable patterns)

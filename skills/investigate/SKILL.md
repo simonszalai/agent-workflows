@@ -73,6 +73,25 @@ When combining findings from multiple sources:
 
 **Note:** Investigation answers "what happened and why". Solution design happens in `/plan`.
 
+## Knowledge Capture
+
+When an investigation reveals non-obvious root causes, diagnostic patterns, or gotchas, the
+`/investigate` command orchestrator persists them via `mcp__autodev-memory__add_entry`. This
+ensures debugging insights survive beyond the current session.
+
+**Capture criteria** (store when ANY are true):
+- Root cause was non-obvious (future sessions would struggle too)
+- A diagnostic approach proved effective and reusable
+- The bug reveals a recurring pattern or architectural gotcha
+
+**Skip when ALL are true:**
+- Root cause was obvious from error message/stack trace
+- One-off issue with no broader lesson
+- Already covered by an existing memory service entry
+
+Individual investigator sub-agents do NOT call MCP tools — the orchestrator handles persistence
+after synthesizing findings.
+
 ## Closing Investigations
 
 **Auto-close when all "Next Steps" are complete.** When all checkboxes in the investigation.md are

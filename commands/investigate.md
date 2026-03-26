@@ -104,6 +104,7 @@ Common patterns:
 3. **Spawn in parallel** - Single message, multiple Task calls
 4. **Collect findings** - Wait for all agents
 5. **Synthesize** - Write `investigation.md` with root causes and evidence
+6. **Capture knowledge** - Store non-obvious findings in memory service (see below)
 
 ## Examples
 
@@ -118,6 +119,51 @@ Common patterns:
 
 **"Everything broke at 2pm"**
 -> All investigator agents in parallel (unknown root cause)
+
+## Knowledge Capture (Step 6)
+
+After writing `investigation.md`, persist non-obvious findings to the memory service so future
+investigations and builds benefit from them.
+
+**Capture criteria** (store when ANY are true):
+- Root cause was non-obvious (future sessions would struggle too)
+- A diagnostic approach proved effective and reusable
+- The bug reveals a recurring pattern or architectural gotcha
+- The finding is project-specific (not general programming knowledge)
+
+**Skip when ALL are true:**
+- Root cause was obvious from error message/stack trace
+- One-off issue unlikely to recur
+- Already covered by an existing memory service entry
+
+**How to capture:**
+
+```
+# 1. Search for duplicates first
+mcp__autodev-memory__search(
+  queries=["<root cause keywords>"],
+  project="<from <!-- mem:project=X --> in CLAUDE.md>"
+)
+
+# 2. If no duplicate, store the finding
+mcp__autodev-memory__add_entry(
+  project="<from <!-- mem:project=X --> in CLAUDE.md>",
+  title="<1-sentence root cause summary>",
+  content="<Root cause explanation, evidence, and fix direction. 200-800 tokens.>",
+  entry_type="gotcha",  # or "solution" if a fix pattern was identified
+  summary="<1-sentence summary>",
+  tags=["<area>", "<technology>"],
+  source="captured",
+  caller_context={
+    "skill": "investigate",
+    "reason": "<why this is worth persisting>",
+    "action_rationale": "New entry — no existing entry covers this root cause",
+    "trigger": "investigation finding"
+  }
+)
+```
+
+If the MCP tool is unavailable, skip this step silently.
 
 ## Output
 
@@ -137,7 +183,7 @@ After collecting evidence from all agents, generate testable hypotheses:
 
 ### When to Generate Hypotheses
 
-- **Always for BNNN work items** (autonomous bug fixes via `/auto-fix`)
+- **Always for BNNN work items** (autonomous bug fixes via `/lfg`)
 - **Optional for NNN work items** (manual bug fixes) - generate when root cause is uncertain
 - **Never for FNNN work items** (features don't use investigation)
 
@@ -202,11 +248,11 @@ After generating hypotheses, optionally evaluate them to provide verified root c
 
 | Context | Evaluate? | Why |
 |---|---|---|
-| Running inside `/auto-fix` | Yes (auto-fix handles it) | Full autonomous pipeline |
+| Running inside `/lfg` | Yes (lfg handles it) | Full autonomous pipeline |
 | Standalone with uncertain root cause | **Yes** | Verified root cause before planning |
 | Standalone with obvious root cause | Skip | Single high-confidence hypothesis is enough |
 
-**To evaluate standalone** (when not inside `/auto-fix`):
+**To evaluate standalone** (when not inside `/lfg`):
 
 1. Spawn `hypothesis-evaluator` agent for each hypothesis (in parallel):
 
@@ -246,5 +292,5 @@ After generating hypotheses, optionally evaluate them to provide verified root c
    | None CONFIRMED | "No hypothesis confirmed. Consider expanding investigation scope." |
    | All REFUTED | "All hypotheses refuted. Re-investigate with broader scope." |
 
-**For BNNN work items inside `/auto-fix`:** The auto-fix workflow handles evaluation
-automatically in its Phase 4. Do not duplicate it here.
+**For BNNN work items inside `/lfg`:** The LFG workflow handles evaluation
+automatically in its Phase 3 bug path. Do not duplicate it here.

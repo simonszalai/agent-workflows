@@ -132,7 +132,7 @@ For each identified gap, apply the appropriate fix:
 
 | Gap Type | Fix Action |
 |---|---|
-| Missing knowledge | Create gotcha/solution/reference in `.claude/knowledge/` |
+| Missing knowledge | Store via `mcp__autodev-memory__add_entry` (see below) |
 | Missing AGENTS.md rule | Add rule to `AGENTS.md` |
 | Plan didn't research this | Add research requirement to `plan-methodology` skill |
 | Build todos missed pattern | Add pattern search to `build-plan-methodology` skill |
@@ -202,13 +202,44 @@ The retrospective examines each workflow stage in reverse order (closest to prod
 | Build Todos | build_todos/ | Were implementation steps complete? |
 | Plan | plan.md | Did plan identify the constraint/edge case? |
 | Investigation (bugs) | investigation.md | Was root cause analysis thorough? |
-| Knowledge | .claude/knowledge/ | Should there be a gotcha/reference? |
+| Knowledge | Memory service (MCP) | Should there be a gotcha/reference? |
 | Tests | test files | What test scenario is missing? |
+
+## Knowledge Capture via MCP
+
+For "Missing knowledge" gaps, store findings in the memory service:
+
+```
+# 1. Search for duplicates first
+mcp__autodev-memory__search(
+  queries=["<root cause keywords>"],
+  project="<from <!-- mem:project=X --> in CLAUDE.md>"
+)
+
+# 2. If no duplicate, store the finding
+mcp__autodev-memory__add_entry(
+  project="<from <!-- mem:project=X --> in CLAUDE.md>",
+  title="<1-sentence root cause / gotcha summary>",
+  content="<Full explanation: what happened, why, how to prevent. 200-800 tokens.>",
+  entry_type="gotcha",  # or "solution" or "pattern" as appropriate
+  summary="<1-sentence summary>",
+  tags=["retrospect", "<area>", "<technology>"],
+  source="captured",
+  caller_context={
+    "skill": "retrospect",
+    "reason": "<why this is worth persisting>",
+    "action_rationale": "New entry — production incident revealed undocumented gotcha",
+    "trigger": "retrospective knowledge gap"
+  }
+)
+```
+
+If the MCP tool is unavailable, skip this step silently.
 
 ## Output
 
 - `retrospective.md` in work item folder (always created)
-- Knowledge docs created/updated (if knowledge gap found)
+- Memory service entries created/updated (if knowledge gap found)
 - Skill files updated (if workflow gap found)
 - Command files updated (if process gap found)
 - Test scenarios documented (if test gap found)

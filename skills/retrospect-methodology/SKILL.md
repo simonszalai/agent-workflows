@@ -32,7 +32,7 @@ Examine each stage in reverse order (closest to production first):
 | Build Todos             | build_todos/           | Were implementation steps complete?         |
 | Plan                    | plan.md                | Did plan identify edge cases/constraints?   |
 | Investigation (bugs)    | investigation.md       | Was root cause analysis thorough?           |
-| Knowledge               | .claude/knowledge/     | Should there be a gotcha/reference/pattern? |
+| Knowledge               | Memory service (MCP)   | Should there be a gotcha/reference/pattern? |
 
 ## Gap Categories
 
@@ -189,7 +189,7 @@ Each recommended fix must be actionable by the orchestrator:
 
 | Gap Found | Fix Target |
 |---|---|
-| Missing knowledge | `.claude/knowledge/gotchas/` or `solutions/` or `references/` |
+| Missing knowledge | Memory service via `mcp__autodev-memory__add_entry` |
 | Rule violated repeatedly | `AGENTS.md` |
 | Plan didn't research | `.claude/skills/plan-methodology/SKILL.md` |
 | Build todos missed pattern | `.claude/skills/build-plan-methodology/SKILL.md` |
@@ -252,4 +252,4 @@ Use the template at `templates/retrospective.md` for output format.
 **"Missing gotcha" pattern:**
 
 - Known pitfall not documented
-- Fix: Add to .claude/knowledge/gotchas/
+- Fix: Store via `mcp__autodev-memory__add_entry` as type `gotcha`

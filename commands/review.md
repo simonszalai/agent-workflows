@@ -65,30 +65,38 @@ similar past implementations. This helps catch recurring patterns proactively.
    - Number files starting from the next available index (from step 2)
 
 5. **Store P1/P2 findings in memory service** (persists beyond session):
-   For each P1/P2 finding, store via the memory service so future builds learn from it:
+   For each P1/P2 finding, first search for duplicates, then store via MCP:
 
-   ```bash
-   curl -sf -X POST \
-     -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "action": "new",
-       "entry": {
-         "title": "Review: [finding summary]",
-         "summary": "[1-sentence summary]",
-         "content": "File: [path], Line: [number]. Issue: [description]. Recommendation: [fix]. Priority: [p1/p2].",
-         "canonical_key": "review-[area]-[issue]",
-         "type": "gotcha",
-         "source": "captured",
-         "project": "<project from CLAUDE.md>"
-       }
-     }' \
-     "$MEM_SERVICE_URL/store"
    ```
+   # 1. Check for duplicates
+   mcp__autodev-memory__search(
+     queries=["<finding keywords>"],
+     project="<from <!-- mem:project=X --> in CLAUDE.md>"
+   )
+
+   # 2. If no duplicate, store the finding
+   mcp__autodev-memory__add_entry(
+     project="<from <!-- mem:project=X --> in CLAUDE.md>",
+     title="Review: [finding summary]",
+     content="File: [path], Line: [number]. Issue: [description]. Fix: [fix].",
+     entry_type="gotcha",
+     summary="[1-sentence summary]",
+     tags=["review", "[area]"],
+     source="captured",
+     caller_context={
+       "skill": "review",
+       "reason": "P1/P2 review finding that future builds should avoid",
+       "action_rationale": "New entry — no existing entry covers this finding",
+       "trigger": "review finding [p1/p2]"
+     }
+   )
+   ```
+
+   If a related entry exists, use `mcp__autodev-memory__update_entry` to append instead.
 
    This is critical for autonomous workflows (LFG, auto-build) in cloud environments
    where review findings would otherwise be lost after the session ends.
-   If $MEM_BEARER_TOKEN is unset, skip this step.
+   If the MCP tool is unavailable, skip this step silently.
 
 6. **Update plan.md** work log:
    ```
