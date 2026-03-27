@@ -40,6 +40,8 @@ right time:
 |                      | `hooks/autodev-memory-pre-agent.sh`                |
 |                      | `hooks/autodev-memory-session-start.sh`            |
 |                      | `hooks/mem-env.sh`                                 |
+| Hook logging         | `hooks/mem-log.sh`                                 |
+|                      | `~/.config/autodev-memory/hooks.log`               |
 | Correction detection | `hooks/autodev-memory-correction-detect.sh`        |
 |                      | `hooks/prompts/classify-and-extract.md`            |
 |                      | `hooks/prompts/match-entry.md`                     |
@@ -53,6 +55,42 @@ right time:
 | Result formatting    | Hook scripts (jq formatting in prompt-submit/pre-agent) |
 
 ## Data Sources
+
+### 0. Hook Log File (Quick Debug)
+
+All hooks write structured logs to `~/.config/autodev-memory/hooks.log`. This is the
+fastest way to see what hooks are doing — no API calls needed.
+
+```bash
+# Live tail during a session
+tail -f ~/.config/autodev-memory/hooks.log
+
+# Recent activity
+tail -50 ~/.config/autodev-memory/hooks.log
+
+# Errors only
+grep ERROR ~/.config/autodev-memory/hooks.log
+
+# What happened on a specific hook
+grep prompt-submit ~/.config/autodev-memory/hooks.log | tail -20
+
+# See the full additionalContext output (what Claude received)
+grep "output ->" ~/.config/autodev-memory/hooks.log | tail -5
+```
+
+Log format: `YYYY-MM-DD HH:MM:SS [hook-name     ] LEVEL message`
+
+Key events logged per hook:
+- **session-start**: config, glossary fetch count, final output
+- **prompt-submit**: prompt (truncated), triggers (???/!!!/>>>), search decision + reason,
+  query count + display, result count, status line, full additionalContext output
+- **pre-agent**: agent type/desc, query count + body, result count, full output
+- **correction-detect**: each pipeline step (classify, index, candidates, decide, store)
+- **glossary-extract**: term extraction, store result
+- **mem-err-trap**: all error exits with stderr capture
+
+The log auto-rotates at ~1MB. Use this FIRST when diagnosing "Claude didn't show the
+hook result" — check `grep "output ->" hooks.log` to see exactly what was returned.
 
 ### 1. Operation Logs (Primary)
 

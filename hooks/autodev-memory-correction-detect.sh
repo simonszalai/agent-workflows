@@ -20,13 +20,15 @@
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/mem-log.sh"
 
 report() {
   local status="$1" message="$2"
+  mem_log INFO "report: [$status] $message"
   echo "[$status] $message"
 }
 
-trap 'report "error" "correction-detect crashed at line $LINENO"' ERR
+trap 'mem_log ERROR "crashed at line $LINENO"; report "error" "correction-detect crashed at line $LINENO"' ERR
 
 MEM_PROJECT="$1"
 MEM_REPO="$2"
@@ -34,6 +36,8 @@ MEM_URL="$3"
 MEM_TOKEN="$4"
 PROMPT="$5"
 TRANSCRIPT_PATH="${6:-}"
+
+mem_log INFO "start project=$MEM_PROJECT force_trigger=$(echo "$PROMPT" | grep -oF '!!!' || echo "$PROMPT" | grep -oF '???' || echo 'none')"
 
 # --- Detect forced trigger (!!! or ???) ---
 FORCE_COMPOUND=false
@@ -56,6 +60,10 @@ if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
   ' "$TRANSCRIPT_PATH"  || echo "[]")
 fi
 
+if [[ ! -f "$HOOK_DIR/prompts/classify-and-extract.md" ]]; then
+  echo "HOOK ERROR [correction-detect]: classify-and-extract.md not found at $HOOK_DIR/prompts/" >&2
+  exit 1
+fi
 CLASSIFY_TEMPLATE=$(cat "$HOOK_DIR/prompts/classify-and-extract.md")
 if [[ "$FORCE_COMPOUND" == "true" ]]; then
   CLASSIFY_TEMPLATE="The user explicitly marked this message for knowledge capture (!!!).
@@ -75,6 +83,7 @@ $PROMPT"
 CLASSIFICATION=$(echo "$CLASSIFY_PROMPT" | claude -p --output-format json  || echo '{"type":"skip"}')
 
 CLASS_TYPE=$(echo "$CLASSIFICATION" | jq -r '.type // "skip"')
+mem_log INFO "step1 classify: type=$CLASS_TYPE"
 if [[ "$CLASS_TYPE" != "correction" && "$FORCE_COMPOUND" != "true" ]]; then
   report "skipped" "Step 1 classify: type=$CLASS_TYPE (not a correction)"
   exit 0
@@ -99,11 +108,16 @@ INDEX_RESULT=$(curl -sS --max-time 5 \
   "$MEM_URL/entries/index?project=$MEM_PROJECT"  || echo '{"entries":[]}')
 
 INDEX_COUNT=$(echo "$INDEX_RESULT" | jq '.entries | length'  || echo "0")
+mem_log INFO "step2 index: $INDEX_COUNT entries"
 
 # --- Step 3a: Pick candidates ---
 
 CANDIDATES='{"candidates":[]}'
 if [[ "$INDEX_COUNT" -gt 0 ]]; then
+  if [[ ! -f "$HOOK_DIR/prompts/match-entry.md" ]]; then
+    echo "HOOK ERROR [correction-detect]: match-entry.md not found at $HOOK_DIR/prompts/" >&2
+    exit 1
+  fi
   MATCH_TEMPLATE=$(cat "$HOOK_DIR/prompts/match-entry.md")
   MATCH_PROMPT="$MATCH_TEMPLATE
 
@@ -120,6 +134,7 @@ $(echo "$INDEX_RESULT" | jq -r '.entries[] | "- " + .id + " | " + .title + " | t
 fi
 
 CANDIDATE_IDS=$(echo "$CANDIDATES" | jq -r '.candidates // [] | .[]' )
+mem_log INFO "step3a candidates: $CANDIDATE_IDS"
 
 # --- Step 3b: Fetch candidate full content ---
 
@@ -141,6 +156,10 @@ done
 
 # --- Step 3c: Decide action ---
 
+if [[ ! -f "$HOOK_DIR/prompts/decide-action.md" ]]; then
+  echo "HOOK ERROR [correction-detect]: decide-action.md not found at $HOOK_DIR/prompts/" >&2
+  exit 1
+fi
 DECIDE_TEMPLATE=$(cat "$HOOK_DIR/prompts/decide-action.md")
 DECIDE_PROMPT="$DECIDE_TEMPLATE
 
@@ -157,6 +176,7 @@ ${CANDIDATE_ENTRIES:-No candidates found — this appears to be new knowledge.}"
 DECISION=$(echo "$DECIDE_PROMPT" | claude -p --output-format json  || echo '{"action":"skip","reason":"decision call failed"}')
 
 ACTION=$(echo "$DECISION" | jq -r '.action // "skip"')
+mem_log INFO "step3c decide: action=$ACTION"
 if [[ "$ACTION" == "skip" ]]; then
   REASON=$(echo "$DECISION" | jq -r '.reason // "no reason"')
   report "skipped" "Step 3c decide: action=skip reason=$REASON"

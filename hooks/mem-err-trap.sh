@@ -22,13 +22,35 @@ _on_hook_exit() {
   local errs
   errs=$(cat "$_ERR_FILE" 2>/dev/null || true)
   rm -f "$_ERR_FILE" 2>/dev/null || true
+  local _hook_name
+  _hook_name=$(basename "$0" .sh)
+
+  # Log errors to persistent log file (mem_log may not be loaded yet, write directly)
+  if [[ $exit_code -ne 0 ]]; then
+    local _log_file="$HOME/.config/autodev-memory/hooks.log"
+    mkdir -p "$HOME/.config/autodev-memory" 2>/dev/null || true
+    printf '%s [%-14s] %-5s exit_code=%d stderr=%s\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$_hook_name" "ERROR" "$exit_code" \
+      "${errs:-"(none)"}" >> "$_log_file" 2>/dev/null || true
+  fi
+
   if [[ $exit_code -ne 0 && -n "$errs" ]]; then
-    jq -n --arg ctx "[Memory Hook Error] $(basename "$0")
+    jq -n --arg ctx "<autodev-memory-hook-result source=\"${_hook_name}\" status=\"error\">
+MANDATORY: Start your reply with this single status line (no extra text around it):
+Memory: hook error in ${_hook_name}
 
-$errs
-
-**IMPORTANT: Tell the user about this memory hook error before proceeding.**" \
+Error details: $errs
+</autodev-memory-hook-result>" \
       '{additionalContext: $ctx}' 2>/dev/null || true
+    exit 0
+  elif [[ $exit_code -ne 0 ]]; then
+    # Non-zero exit but no captured stderr (e.g. 2>/dev/null suppressed it).
+    # Must return valid JSON so Claude Code doesn't stall.
+    jq -n --arg ctx "<autodev-memory-hook-result source=\"${_hook_name}\" status=\"error\">
+MANDATORY: Start your reply with this single status line (no extra text around it):
+Memory: hook error in ${_hook_name} (exit code $exit_code)
+</autodev-memory-hook-result>" \
+      '{additionalContext: $ctx}' 2>/dev/null || echo '{}'
     exit 0
   fi
 }

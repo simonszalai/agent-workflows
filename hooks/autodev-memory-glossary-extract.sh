@@ -12,19 +12,23 @@
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/mem-log.sh"
 
 report() {
   local status="$1" message="$2"
+  mem_log INFO "report: [$status] $message"
   echo "[$status] $message"
 }
 
-trap 'report "error" "glossary-extract crashed at line $LINENO"' ERR
+trap 'mem_log ERROR "crashed at line $LINENO"; report "error" "glossary-extract crashed at line $LINENO"' ERR
 
 MEM_PROJECT="$1"
 MEM_URL="$2"
 MEM_TOKEN="$3"
 PROMPT="$4"
 TRANSCRIPT_PATH="${5:-}"
+
+mem_log INFO "start project=$MEM_PROJECT prompt=$(echo "$PROMPT" | head -c 100)"
 
 # Strip >>> from prompt
 CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/>>>//g')
@@ -40,6 +44,10 @@ if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
 fi
 
 # --- Call Sonnet to extract term ---
+if [[ ! -f "$HOOK_DIR/prompts/glossary-extract.md" ]]; then
+  echo "HOOK ERROR [glossary-extract]: glossary-extract.md not found at $HOOK_DIR/prompts/" >&2
+  exit 1
+fi
 EXTRACT_TEMPLATE=$(cat "$HOOK_DIR/prompts/glossary-extract.md")
 
 RECENT_TEXT=""
@@ -74,6 +82,7 @@ fi
 PARSED=$(echo "$EXTRACT_TEXT" | sed 's/^```json//; s/^```//; s/```$//' | jq -c '.' 2>/dev/null || echo '{}')
 
 TERM=$(echo "$PARSED" | jq -r '.term // empty')
+mem_log INFO "extracted term=$TERM"
 if [[ -z "$TERM" || "$TERM" == "null" ]]; then
   REASON=$(echo "$PARSED" | jq -r '.reason // "could not identify term"')
   report "skipped" "No term extracted: $REASON"

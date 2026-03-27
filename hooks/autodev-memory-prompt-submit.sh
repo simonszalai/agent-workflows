@@ -25,6 +25,7 @@ export _MEM_HOOK_ACTIVE=1
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOK_DIR/mem-err-trap.sh"
+source "$HOOK_DIR/mem-log.sh"
 
 INPUT=$(cat)
 
@@ -33,6 +34,7 @@ MEM_ENV_SKIP=""
 source "$HOOK_DIR/mem-env.sh" "$INPUT"
 
 if [[ -n "$MEM_ENV_SKIP" ]]; then
+  mem_log INFO "skip (no mem config)"
   echo '{}'
   exit 0
 fi
@@ -40,9 +42,12 @@ fi
 # --- Extract prompt ---
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 if [[ -z "$PROMPT" ]]; then
+  mem_log INFO "skip (empty prompt)"
   echo '{}'
   exit 0
 fi
+
+mem_log INFO "start prompt=$(echo "$PROMPT" | head -c 120)"
 
 # --- Read recent conversation (last 3 user messages + truncated AI responses) ---
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '(.transcript_path // .session.transcript_path) // empty')
@@ -81,6 +86,7 @@ CLEAN_PROMPT="$PROMPT"
 
 # --- WTF trigger: ??? ---
 if echo "$PROMPT" | grep -qF "???"; then
+  mem_log INFO "trigger: ??? WTF"
   CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/???//g')
 
   DETECT_OUTPUT=$("$HOOK_DIR/autodev-memory-correction-detect.sh" \
@@ -114,6 +120,7 @@ Tell them what the correction detection found and that you are beginning the inv
 
 # --- Force-compound: !!! ---
 elif echo "$PROMPT" | grep -qF "!!!"; then
+  mem_log INFO "trigger: !!! force-compound"
   CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/!!!//g')
 
   DETECT_OUTPUT=$("$HOOK_DIR/autodev-memory-correction-detect.sh" \
@@ -129,6 +136,7 @@ Tell them what was captured/stored/skipped and why.**"
 
 # --- Glossary: >>> ---
 elif echo "$PROMPT" | grep -qF ">>>"; then
+  mem_log INFO "trigger: >>> glossary"
   CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/>>>//g')
 
   GLOSSARY_OUTPUT=$("$HOOK_DIR/autodev-memory-glossary-extract.sh" \
@@ -147,6 +155,10 @@ fi
 # Step 2: Search decision — Haiku decides if KB search is warranted
 # =============================================================================
 
+if [[ ! -f "$HOOK_DIR/prompts/search-decision.md" ]]; then
+  echo "HOOK ERROR [prompt-submit]: search-decision.md not found at $HOOK_DIR/prompts/" >&2
+  exit 1
+fi
 DECISION_TEMPLATE=$(cat "$HOOK_DIR/prompts/search-decision.md")
 
 DECISION_PROMPT="$DECISION_TEMPLATE
@@ -161,7 +173,7 @@ $RECENT_TEXT
 Current message: $CLEAN_PROMPT"
 
 DECISION_RAW=$(echo "$DECISION_PROMPT" | claude -p --model haiku --output-format json 2>/dev/null) || true
-DECISION_TEXT=$(echo "$DECISION_RAW" | jq -r '.result // empty' 2>/dev/null)
+DECISION_TEXT=$(echo "$DECISION_RAW" | jq -r '.result // empty' 2>/dev/null || true)
 
 # Parse decision — degrade gracefully if Haiku failed
 SHOULD_SEARCH="false"
@@ -173,22 +185,25 @@ if [[ -n "$DECISION_TEXT" ]]; then
   SEARCH_REASON=$(echo "$DECISION" | jq -r '.reason // "no reason given"')
 fi
 
+mem_log INFO "search decision: should_search=$SHOULD_SEARCH reason=$SEARCH_REASON"
+
 # =============================================================================
 # Step 3: If search warranted, extract queries and search
 # =============================================================================
 
 SEARCH_SECTION=""
+STATUS_LINE=""
 
 if [[ "$SHOULD_SEARCH" == "true" ]]; then
-  QUERIES=$(echo "$DECISION" | jq -c '.queries // []')
-  QUERY_COUNT=$(echo "$QUERIES" | jq 'length')
-  QUERY_DISPLAY=$(echo "$QUERIES" | jq -r '[.[].query] | join(", ")')
+  QUERIES=$(echo "$DECISION" | jq -c '.queries // []' 2>/dev/null || echo '[]')
+  QUERY_COUNT=$(echo "$QUERIES" | jq 'length' 2>/dev/null || echo "0")
+  QUERY_DISPLAY=$(echo "$QUERIES" | jq -r '[.[] | (.keywords // [] | join(", ")) + ": " + (.text // .query // "")] | join(" | ")' 2>/dev/null || echo "(autodev-memory prompt-submit: query format error)")
+
+  mem_log INFO "queries: count=$QUERY_COUNT display=$QUERY_DISPLAY"
 
   if [[ "$QUERY_COUNT" -eq 0 ]]; then
-    SEARCH_SECTION="## KB Search
-Decision: search warranted ($SEARCH_REASON) but no queries generated.
-
-**Tell the user: \"Memory search was warranted but no queries could be generated.\"**"
+    STATUS_LINE="Memory: search warranted but no queries generated"
+    SEARCH_SECTION="Queries: (none generated)"
   else
     # Execute search
     SEARCH_BODY=$(jq -n \
@@ -205,22 +220,19 @@ Decision: search warranted ($SEARCH_REASON) but no queries generated.
       "$MEM_URL/search" 2>&1) || true
 
     if [[ "$SEARCH_RESULT" == curl:* ]]; then
-      SEARCH_SECTION="## KB Search
-Decision: search warranted ($SEARCH_REASON)
-Queries: $QUERY_DISPLAY
-Result: Search API call failed.
-
-**Tell the user: \"Memory search failed (API unreachable). Queries were: $QUERY_DISPLAY\"**"
+      mem_log ERROR "search API unreachable: $SEARCH_RESULT"
+      STATUS_LINE="Memory: search failed (API unreachable)"
+      SEARCH_SECTION="Queries: $QUERY_DISPLAY
+Result: API call failed"
     else
       RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null || echo "0")
 
-      if [[ "$RESULT_COUNT" -eq 0 ]]; then
-        SEARCH_SECTION="## KB Search
-Decision: search warranted ($SEARCH_REASON)
-Queries: $QUERY_DISPLAY
-Result: 0 entries found.
+      mem_log INFO "search results: count=$RESULT_COUNT"
 
-**Tell the user: \"Searched memory for: $QUERY_DISPLAY — no matching entries found.\"**"
+      if [[ "$RESULT_COUNT" -eq 0 ]]; then
+        STATUS_LINE="Memory: searched — 0 results"
+        SEARCH_SECTION="Queries: $QUERY_DISPLAY
+Result: 0 entries found"
       else
         RESULTS_FORMATTED=$(echo "$SEARCH_RESULT" | jq -r '
           [.results[] |
@@ -228,41 +240,41 @@ Result: 0 entries found.
             (if (.tags | length) > 0 then "*Tags: " + (.tags | join(", ")) + "*\n" else "" end) +
             .content + "\n"
           ] | join("\n---\n\n")
-        ')
+        ' 2>/dev/null || echo "(autodev-memory prompt-submit: result formatting failed)")
 
-        SEARCH_SECTION="## KB Search
-Decision: search warranted ($SEARCH_REASON)
-Queries: $QUERY_DISPLAY
-Result: $RESULT_COUNT entries added to context.
-
-**Tell the user: \"Searched memory for: $QUERY_DISPLAY — $RESULT_COUNT entries added to context.\"**
+        STATUS_LINE="Memory: searched — $RESULT_COUNT results added to context"
+        SEARCH_SECTION="Queries: $QUERY_DISPLAY
+Result: $RESULT_COUNT entries
 
 $RESULTS_FORMATTED"
       fi
     fi
   fi
 else
-  SEARCH_SECTION="## KB Search
-Decision: search not warranted.
-Reason: $SEARCH_REASON
-
-**Tell the user: \"No memory search needed — $SEARCH_REASON\"**"
+  STATUS_LINE="Memory: no search needed"
+  SEARCH_SECTION="Reason: $SEARCH_REASON"
 fi
 
 # =============================================================================
 # Assemble final context
 # =============================================================================
 
-CONTEXT="[Memory Hook Report]
-"
+CONTEXT="<autodev-memory-hook-result source=\"prompt-submit\">
+MANDATORY: Start your reply with this single status line (no extra text around it):
+$STATUS_LINE"
 
 if [[ -n "$TRIGGER_SECTION" ]]; then
   CONTEXT="$CONTEXT
-$TRIGGER_SECTION
-"
+
+$TRIGGER_SECTION"
 fi
 
 CONTEXT="$CONTEXT
-$SEARCH_SECTION"
 
-jq -n --arg context "$CONTEXT" '{additionalContext: $context}'
+$SEARCH_SECTION
+</autodev-memory-hook-result>"
+
+OUTPUT=$(jq -n --arg context "$CONTEXT" '{additionalContext: $context}')
+mem_log INFO "done status_line=$STATUS_LINE"
+mem_log_output "$OUTPUT"
+echo "$OUTPUT"

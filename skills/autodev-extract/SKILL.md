@@ -143,19 +143,33 @@ For each unprocessed session, read the JSONL and scan for these knowledge signal
 
 ### Pattern 1: User Corrections
 
-**Signal:** User says something like "no", "that's wrong", "actually", "don't do that",
-"you should have", "the correct way is", "stop doing X"
+**Signal:** The user corrects the assistant's approach, assumption, or output. This is NOT
+limited to explicit phrases — use judgment to detect corrective intent broadly, including:
+
+- Explicit corrections: "no", "that's wrong", "actually", "don't do that"
+- Implicit corrections: user redoes what the assistant just did (differently), user provides
+  context that contradicts what the assistant assumed, user answers a question in a way that
+  reveals the assistant was on the wrong track
+- Behavioral corrections: "we don't do it that way", "that's not how it works here"
+- Preference signals: user consistently rejects a certain approach across the conversation
+- Redirections: user ignores the assistant's suggestion and asks for something different
 
 **Extraction logic:**
-1. Find user messages containing correction language
-2. Capture the assistant's prior message (what was wrong)
-3. Capture the user's correction (what's right)
-4. Generate a `correction` entry
+1. Read the full conversation flow — don't grep for keywords
+2. When the user's message changes the direction of what the assistant was doing, that's a
+   correction even if the user is polite or indirect about it
+3. Capture the assistant's prior approach (what was wrong/rejected)
+4. Capture what the user wanted instead (what's right)
+5. Generate a `diagnosis` entry
 
 **Example:**
 ```
 User: "No, never suppress flow failures. They are intentional observability."
-→ correction entry: "Flow failures are intentional — never suppress"
+→ diagnosis entry: "Flow failures are intentional — never suppress"
+
+Assistant asks: "Should I add error handling around this?"
+User: "it already has error handling, the issue is the selector changed"
+→ diagnosis entry: "Investigate actual root cause before adding error handling"
 ```
 
 ### Pattern 2: Debugging Resolutions
@@ -214,25 +228,26 @@ and arrives at a decision.
    {
      "title": "descriptive title",
      "content": "full knowledge content with context",
-     "entry_type": "gotcha|correction|solution|reference|architecture",
+     "entry_type": "gotcha|diagnosis|solution|reference|architecture",
      "project": "ts",
      "repos": ["ts-prefect"],
-     "canonical_key": "kebab-case-key",
      "source_session": "sessionId",
      "source_timestamp": "ISO-8601",
+     "extraction_pattern": "user_correction|debugging_resolution|repeated_question|
+                            architectural_decision|diff_comment",
+     "project_path": "/Users/simon/dev/ts-prefect",
+     "git_branch": "fix/auth-retry",
      "confidence": "high|medium|low",
      "evidence": "the specific messages that support this"
    }
 5. Filter: only keep candidates with medium or high confidence
-6. Check for duplicates: search existing entries via
-   mcp__autodev-memory__search(queries=[candidate.title], project=project)
-   If similarity > 0.85, skip (already known)
-7. Present candidates to user for review (unless --auto flag)
+6. Present candidates to user for review (unless --auto flag)
+7. Ingest approved candidates sequentially (see Ingestion Loop below)
 ```
 
 ## Review Before Ingestion
 
-By default, show candidates grouped by project/repo and let the user approve:
+Show candidates grouped by project/repo and let the user approve:
 
 ```
 Found 5 knowledge candidates from 23 sessions:
@@ -248,32 +263,33 @@ Found 5 knowledge candidates from 23 sessions:
     Source: session def456 (2026-03-18)
     Evidence: User corrected: "response.text not response.content..."
     → Ingest? [y/n/edit]
-
-...
 ```
 
-When the user approves, ingest via:
+## Ingestion
 
-```
-mcp__autodev-memory__add_entry(
-  title: candidate.title,
-  content: candidate.content,
-  entry_type: candidate.entry_type,
-  project: candidate.project,
-  repos: candidate.repos,
-  source: "captured",
-  canonical_key: candidate.canonical_key,
-  caller_context: {
-    "skill": "autodev-extract",
-    "reason": "Extracted from session log — <pattern type>",
-    "action_rationale": "No existing entry found above 0.85 similarity",
-    "trigger": "session log analysis of {sessionId}"
-  }
-)
-```
+Ingest approved candidates using the **autodev-add-memory** skill. Load that skill and
+follow its procedure for each candidate sequentially, passing:
 
-Note: `source` is `"captured"` (not `"ingested"`) because these entries are derived from
-conversations, not directly copied from files.
+- `source`: `"captured"` (not `"ingested"` — these are derived from conversations)
+- `source_metadata`: rich provenance about where this was extracted from (see table below)
+- `caller_context.skill`: `"autodev-extract"`
+- `caller_context.trigger`: `"session {sessionId}"`
+
+**`source_metadata` fields for captured entries:**
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `session_id` | Yes | Claude Code session UUID or Conductor conversation ID |
+| `extraction_pattern` | Yes | Which pattern matched (`user_correction`, `debugging_resolution`, `repeated_question`, `architectural_decision`, `diff_comment`) |
+| `confidence` | Yes | Extraction confidence (`high`, `medium`, `low`) |
+| `source_timestamp` | Yes | ISO-8601 timestamp of the source message(s) |
+| `project_path` | No | Original project path from the session |
+| `git_branch` | No | Git branch active during the session |
+| `conductor_workspace` | No | Conductor workspace name (for Conductor-sourced entries) |
+| `message_range` | No | Approximate message indices containing the knowledge (e.g., `"42-58"`) |
+
+The autodev-add-memory skill handles searching for related entries, deciding whether to
+create new / append / supersede / skip, and executing the action.
 
 ## Batch Processing Strategy
 
@@ -284,7 +300,8 @@ Given ~5,280 sessions totaling ~2.1 GB:
 3. **Backfill:** Use `--since 90d` or `--since 180d` to gradually process older sessions
 4. **Per-session budget:** Read at most 500 messages per session. For larger sessions,
    focus on user messages and the final assistant response (where resolutions live).
-5. **Rate limiting:** Process 10-20 sessions per run to keep context manageable
+5. **Rate limiting:** 50 sessions per run for backfill (`--since 90d+`), 10-20 for
+   incremental runs
 
 ## Session Filtering
 
@@ -304,12 +321,15 @@ Extraction complete (23 sessions processed, 142 remaining)
 
   Candidates found: 5
     - 2 gotchas (ts-prefect)
-    - 1 correction (ts-scraper)
+    - 1 diagnosis (ts-scraper)
     - 1 solution (ts-prefect)
     - 1 reference (ts-dashboard)
 
-  Ingested: 4 (1 skipped by user)
-  Duplicates: 0
+  Ingestion results:
+    - 2 new entries created
+    - 1 appended to existing entry "DataDome blocking patterns" (entry abc123)
+    - 1 superseded "old pgvector config" (entry def456)
+    - 1 skipped (already covered by "Scrapling response types")
 
   Progress: 165/5280 sessions processed (3.1%)
   State saved to ~/.local/share/autodev-extract/progress.json

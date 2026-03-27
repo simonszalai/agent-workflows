@@ -19,7 +19,20 @@ where it broke.
 
 ### Step 1: COLLECT — Pull evidence for this session
 
-The hook already injects recent search operation logs in the `additionalContext`.
+**Start with the hook log file** — it shows exactly what each hook did and returned:
+
+```bash
+# See recent hook activity (what queries were generated, what was returned)
+tail -50 ~/.config/autodev-memory/hooks.log
+
+# See the full additionalContext that was sent to Claude
+grep "output ->" ~/.config/autodev-memory/hooks.log | tail -5
+
+# Check for errors
+grep ERROR ~/.config/autodev-memory/hooks.log | tail -10
+```
+
+The hook also injects recent search operation logs in the `additionalContext`.
 Review what's provided, then collect additional evidence:
 
 ```

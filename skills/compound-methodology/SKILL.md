@@ -42,7 +42,7 @@ Every learning stems from one of these upstream gaps:
 
 **Fix targets:**
 
-- Memory service via `mcp__autodev-memory__add_entry` — store the gotcha, pattern, or solution
+- Memory service via **autodev-add-memory** skill — search, decide, store
 - `AGENTS.md` - Add rule if repeatedly violated
 - **The codebase itself** - If the gotcha identifies existing violations, fix them (or create a
   work item). Documenting a rule without fixing the known violation means the bug will recur.
@@ -208,24 +208,15 @@ what adds value and what doesn't.
 
 #### 5a: Store Knowledge in Memory Service (MCP)
 
-For every applied knowledge improvement, store via `mcp__autodev-memory__add_entry`.
+For every applied knowledge improvement, use the **autodev-add-memory** skill to store it.
+Load that skill and follow its search → decide → act procedure, passing:
 
-**Before adding**, search for duplicates with `mcp__autodev-memory__search`. If a related entry
-exists, use `mcp__autodev-memory__update_entry` to supersede or append instead of creating a
-duplicate.
+- `source`: `"captured"`
+- `caller_context.skill`: `"compound"`
+- `caller_context.trigger`: `"user correction"` or `"review finding"` etc.
 
-**Required parameters:**
-
-| Parameter        | Description                                                   |
-| ---------------- | ------------------------------------------------------------- |
-| `project`        | From `<!-- mem:project=X -->` in CLAUDE.md                    |
-| `title`          | 1-sentence search-friendly summary                            |
-| `content`        | Full knowledge content (200-800 tokens target)                |
-| `entry_type`     | `gotcha`, `pattern`, `correction`, `solution`, `reference`    |
-| `summary`        | 1-sentence summary                                            |
-| `tags`           | Array of topical tags for semantic search (e.g., `["css", "flexbox"]`) |
-| `source`         | `captured`                                                    |
-| `caller_context` | JSON with `skill`, `reason`, `action_rationale`, `trigger`    |
+The autodev-add-memory skill handles searching for related entries, deciding whether to
+create new / append / supersede / skip, and executing the action.
 
 **caller_context fields:**
 
@@ -304,7 +295,7 @@ Before finalizing improvements:
 **Improvement:**
 
 1. Add to AGENTS.md: "Always use TEXT for string columns - never VARCHAR (see CLAUDE.md)"
-2. Store in memory service via `mcp__autodev-memory__add_entry` as type `correction`
+2. Store in memory via autodev-add-memory skill as type `correction`
 
 ---
 
