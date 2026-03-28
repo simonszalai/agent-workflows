@@ -93,24 +93,52 @@ If frontmatter parsing fails, use filename as title and full content as body.
 
 ## Step 3: Curate — Plan Optimal Memory Entries
 
-This is the critical step. Do NOT blindly map files 1:1 to memory entries. Instead, review
-all collected content for the repo and produce an **ingestion plan** — a list of memory
-entries to create, where each entry may draw from one or more source files, or a source file
-may produce multiple entries.
+This is the critical step. Do NOT blindly map files 1:1 to memory entries. The plan must
+account for **both** the source files being ingested **and** what already exists in the
+database. An ingestion that creates a new entry when it should have appended to an existing
+one is a bug.
 
-### What to Evaluate for Each Piece of Content
+### 3a: Fetch Existing Entries for the Repo
+
+Before planning, load what's already in the database for this repo:
+
+```
+mcp__autodev-memory__list_entries(project: <project>, repo: <repo_name>)
+```
+
+Also search for broader matches (an entry might be global or tagged to a different repo):
+
+```
+mcp__autodev-memory__search(
+  queries: [{ "text": "<repo_name> conventions rules gotchas patterns" }],
+  project: <project>,
+  limit: 20
+)
+```
+
+For every existing entry returned, **fetch its full content** with `get_entry()`. You cannot
+decide whether to merge or skip based on titles and summaries alone — you need the full text
+to know what's already covered.
+
+### 3b: Evaluate Each Piece of Source Content
 
 For every source file, ask:
 
-1. **Is this one topic or several?** A file covering "auth cookies, session management, AND
+1. **Does an existing entry already cover this topic?** This is the FIRST question, not an
+   afterthought. If an existing entry covers the same domain (e.g., both are about alembic
+   migrations, both are about proxy configuration, both are about auth cookies), the default
+   action is **append** or **supersede** — not create new. Only create a separate entry if
+   the topics are genuinely distinct and independently searchable.
+
+2. **Is this one topic or several?** A file covering "auth cookies, session management, AND
    rate limiting gotchas" should be split into separate entries — each topic should be
    independently searchable.
 
-2. **Does this overlap with another file?** Two files about the same topic (e.g.,
+3. **Does this overlap with another source file?** Two files about the same topic (e.g.,
    `proxy-rotation.md` and `proxy-fallback-patterns.md`) may be better as one merged entry
    than two near-duplicate memories.
 
-3. **Is the content well-written for retrieval?** Knowledge entries are found via semantic
+4. **Is the content well-written for retrieval?** Knowledge entries are found via semantic
    search. Rewrite if the content is:
    - **Too bloated** — verbose explanations, excessive examples, filler text. Cut to the
      essential knowledge. A memory entry should be dense and scannable.
@@ -121,10 +149,10 @@ For every source file, ask:
    - **Missing search surface** — the title or content lacks the keywords someone would
      actually search for. Ensure the entry is findable.
 
-4. **Is this still relevant?** Skip content that is clearly outdated, obsolete, or
+5. **Is this still relevant?** Skip content that is clearly outdated, obsolete, or
    superseded by other files in the same batch.
 
-5. **What's the right entry_type?** The directory hint may be wrong. A file in `references/`
+6. **What's the right entry_type?** The directory hint may be wrong. A file in `references/`
    that describes a pitfall is really a `gotcha`. Use judgment.
 
 ### CLAUDE.md Special Handling
@@ -134,49 +162,64 @@ sections. Each major rule, convention, or architectural decision should become i
 Do not ingest a full CLAUDE.md as a single entry — it will be too large and unfocused for
 search.
 
-### Produce the Ingestion Plan
+### 3c: Produce the Ingestion Plan
 
-For each planned memory entry, define:
+Each planned entry must specify an **action** — the plan encodes merge decisions, not just
+content:
 
 | Field | Description |
 | --- | --- |
-| `title` | Clear, searchable title |
-| `content` | The curated content (rewritten as needed) |
+| `action` | **new**, **append**, **supersede**, or **skip** |
+| `target_entry_id` | For append/supersede: the existing entry ID to modify |
+| `title` | Clear, searchable title (for append/supersede: updated title if scope shifted) |
+| `content` | The curated content (for append: **merged** content combining existing + new) |
 | `entry_type` | gotcha, reference, solution, pattern, architecture, diagnosis |
 | `source_files` | List of source file paths this entry draws from |
-| `rationale` | Brief note on why this structure was chosen (merge/split/rewrite/as-is) |
+| `rationale` | Why this action was chosen — must reference existing entry if append/supersede |
+
+**Append vs supersede vs new — decision guide:**
+
+- **Append**: Existing entry is good but the source file adds complementary information
+  (e.g., existing entry covers "always create migrations" and source file adds "how to name
+  and resolve multi-head conflicts"). Merge into one coherent entry. Update the title and
+  summary if the combined scope has shifted.
+- **Supersede**: Existing entry is outdated or the source file is a better/more complete
+  version of the same knowledge. Replace entirely.
+- **New**: No existing entry covers this topic. Genuinely distinct knowledge.
+- **Skip**: Source file content is already fully covered by an existing entry.
 
 **In `--dry-run` mode**, output the plan and stop. Do not proceed to ingestion.
 
-## Step 4: Ingest via autodev-add-memory
+## Step 4: Execute the Ingestion Plan
 
-For each planned entry from the ingestion plan, use the **autodev-add-memory** skill to
-ingest. Load that skill and follow its search -> decide -> act procedure sequentially,
-passing:
+Process each planned entry sequentially. The plan already encodes the action (from Step 3),
+so execute it directly — do NOT re-search or re-decide.
+
+**Common fields for all actions:**
 
 - `source`: `"ingested"`
-- `source_metadata`: provenance about the source file(s)
+- `project`: from the topology mapping (Step 1)
+- `repos`: always `["{repo_name}"]`
+- `summary`: concise 1-sentence summary written for search relevance
 - `caller_context.skill`: `"autodev-ingest-knowledge"`
 - `caller_context.trigger`: `"user invoked /autodev-ingest-knowledge"`
-
-**Key field rules:**
-
-- `project`: from the topology mapping (Step 1)
-- `repos`: always `["{repo_name}"]` — single repo tag for the source repo
-- `source`: always `"ingested"`
-- `summary`: concise 1-sentence summary written for search relevance
 
 **`source_metadata` fields:**
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `source_files` | Yes | List of relative paths from repo root that contributed to this entry |
+| `source_files` | Yes | Relative paths from repo root that contributed to this entry |
 | `repo` | Yes | Repo name the files came from |
-| `curation_rationale` | Yes | Why this entry was shaped this way (merged/split/rewritten/as-is) |
+| `curation_rationale` | Yes | Why this entry was shaped this way |
 
-**Note:** A planned entry may still be skipped by autodev-add-memory if it duplicates an
-existing memory. That's expected — the curation step handles file-level dedup, and
-autodev-add-memory handles memory-level dedup.
+**Execute by action type:**
+
+- **new** → `mcp__autodev-memory__create_entry(...)` with all fields
+- **append** → `mcp__autodev-memory__update_entry(entry_id: <target_entry_id>, ...)`
+  with merged content, updated title/summary if scope shifted
+- **supersede** → `mcp__autodev-memory__supersede_entry(old_entry_id: <target_entry_id>,
+  ...)` with full new entry details
+- **skip** → Log the decision, no MCP call
 
 ## Step 5: Report Results
 
@@ -184,16 +227,16 @@ autodev-add-memory handles memory-level dedup.
 Knowledge ingestion complete for project: ts
 
   ts-prefect:
-    Source files:  89 knowledge/ + 1 CLAUDE.md
-    Curated into:  67 planned entries (14 merged, 8 split, 23 rewritten, 22 as-is)
-    Ingested:      42 new, 16 skipped (existing), 9 appended, 0 errors
+    Source files:    89 knowledge/ + 1 CLAUDE.md
+    Existing in DB:  42 entries fetched (full text read)
+    Plan:            67 actions (31 new, 12 append, 3 supersede, 21 skip)
+    Executed:        31 created, 12 appended, 3 superseded, 21 skipped, 0 errors
 
   ts-dashboard:
-    Source files:  34 knowledge/ + 1 CLAUDE.md
-    Curated into:  41 planned entries (2 merged, 9 split, 12 rewritten, 18 as-is)
-    Ingested:      38 new, 3 skipped (existing), 0 appended, 0 errors
-
-  Total: 125 source files -> 108 planned entries -> 80 new, 19 skipped, 9 appended, 0 errors
+    Source files:    34 knowledge/ + 1 CLAUDE.md
+    Existing in DB:  18 entries fetched (full text read)
+    Plan:            41 actions (28 new, 5 append, 1 supersede, 7 skip)
+    Executed:        28 created, 5 appended, 1 superseded, 7 skipped, 0 errors
 ```
 
 ## Handling Errors
