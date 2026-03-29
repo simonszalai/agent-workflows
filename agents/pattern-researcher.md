@@ -124,6 +124,21 @@ Return your findings in this exact format:
 [2-3 sentences on findings in this partition]
 ```
 
+## Topology-Aware Partitions
+
+When the project has multiple repos, use topology to define partitions by repo:
+
+```
+mcp__autodev-memory__list_projects()
+mcp__autodev-memory__list_repos(project_name: <current_project>)
+```
+
+**Multi-repo projects:** If the search spans sibling repos, partition by repo first, then by
+code area within each repo. This ensures each repo is searched with appropriate file type
+filters (e.g., `.py` for Python repos, `.tsx` for React repos) based on its tech_tags.
+
+**Single-repo projects:** Fall back to the standard area-based partitioning below.
+
 ## Partition Assignment
 
 Read AGENTS.md for project-specific partition definitions. Common partitions:

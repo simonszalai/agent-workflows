@@ -42,10 +42,10 @@ right time:
 |                      | `hooks/mem-env.sh`                                 |
 | Hook logging         | `hooks/mem-log.sh`                                 |
 |                      | `~/.config/autodev-memory/hooks.log`               |
-| Correction detection | `hooks/autodev-memory-correction-detect.sh`        |
-|                      | `hooks/prompts/classify-and-extract.md`            |
-|                      | `hooks/prompts/match-entry.md`                     |
-|                      | `hooks/prompts/decide-action.md`                   |
+| Memory writes        | `/save`, `/wtf`, `/glossary`, `/compound` commands |
+|                      | `skills/autodev-save/SKILL.md`                     |
+|                      | `skills/autodev-wtf/SKILL.md`                      |
+|                      | `skills/autodev-glossary/SKILL.md`                 |
 | Search engine        | `src/search.py` (hybrid search, RRF merge)         |
 | Chunking             | `src/chunking.py` (split, embed, index)            |
 | Schema / models      | `src/models.py` (Entry, Chunk, OperationLog)       |
@@ -81,12 +81,10 @@ grep "output ->" ~/.config/autodev-memory/hooks.log | tail -5
 Log format: `YYYY-MM-DD HH:MM:SS [hook-name     ] LEVEL message`
 
 Key events logged per hook:
-- **session-start**: config, glossary fetch count, final output
-- **prompt-submit**: prompt (truncated), triggers (???/!!!/>>>), search decision + reason,
-  query count + display, result count, status line, full additionalContext output
+- **session-start**: config, glossary entry count, final output
+- **prompt-submit**: prompt (truncated), search decision + reason, query count + display,
+  result count, status line, full additionalContext output
 - **pre-agent**: agent type/desc, query count + body, result count, full output
-- **correction-detect**: each pipeline step (classify, index, candidates, decide, store)
-- **glossary-extract**: term extraction, store result
 - **mem-err-trap**: all error exits with stderr capture
 
 The log auto-rotates at ~1MB. Use this FIRST when diagnosing "Claude didn't show the
@@ -105,8 +103,7 @@ Key fields to analyze:
 - `response.results` — what came back (titles, types, similarity scores, chunks)
 - `response.search_time_ms` — latency
 - `result_count` — how many results returned
-- `hook_source` — which hook triggered it (`user_prompt`, `pre_tool_use`, `mcp`,
-  `correction_detect`)
+- `hook_source` — which hook triggered it (`user_prompt`, `pre_tool_use`, `mcp`)
 - `error` — any failures
 - `caller_context` — structured context from LLM callers
 
@@ -190,14 +187,13 @@ Evaluate each dimension below. For each, note specific evidence from Phase 1.
 - Is the top-20 per-retriever limit sufficient?
 - Are cross-project (global DB) results being found when they should be?
 
-#### C. Correction Detection
+#### C. Memory Write Commands
 
-- Is the regex gate catching real corrections? (`CORRECTION_REGEX` in prompt-submit)
-- Are corrections being missed by the regex? (Check session logs for uncaptured
-  corrections)
-- Is the classify-and-extract prompt correctly distinguishing corrections vs noise?
-- Are the match-entry and decide-action prompts making good decisions?
-- Is the 4-step pipeline too slow or too aggressive?
+- Are users successfully saving knowledge via `/save`?
+- Is the `/save` skill correctly determining scope (global vs project)?
+- Are dedup checks working? (Check for duplicate entries in the KB)
+- Is `/wtf` correctly diagnosing pipeline failures?
+- Is `/glossary` correctly extracting and storing terms?
 - Are `skip` actions justified? (Check operation logs for store with action=skip)
 
 #### D. Entry Quality & Coverage

@@ -34,6 +34,23 @@ Use `past-work-researcher` when you need to:
 | "What similar features have we built?"  | `past-work-researcher` |
 | "What issues did we hit last time?"     | `past-work-researcher` |
 
+## Topology Context (Do First)
+
+Before searching, fetch the project topology to scope your research:
+
+```
+mcp__autodev-memory__list_projects()
+mcp__autodev-memory__list_repos(project_name: <current_project>)
+```
+
+Use topology to:
+
+- **Filter by current project** — prioritize work items in repos belonging to the current
+  project over unrelated projects
+- **Understand repo boundaries** — know which repos are siblings (same project) to find
+  cross-repo work items that may be relevant
+- **Scope keyword searches** — include repo names as search terms for more targeted results
+
 ## Your Role
 
 You search completed and in-progress work items to extract:

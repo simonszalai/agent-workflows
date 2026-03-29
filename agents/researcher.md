@@ -37,6 +37,24 @@ Use `researcher` for **general codebase research** when you need to:
 | "Find ALL uses of pattern X"           | `pattern-researcher`   |
 | "What did we learn from similar work?" | `past-work-researcher` |
 
+## Topology Context (Do First)
+
+Fetch the project topology to understand the repo landscape:
+
+```
+mcp__autodev-memory__list_projects()
+mcp__autodev-memory__list_repos(project_name: <current_project>)
+```
+
+Use topology to:
+
+- **Understand repo boundaries** — know which repos exist in the current project and what
+  each one does (from repo descriptions)
+- **Identify tech stack** — use repo tech_tags to inform which framework skills to load
+  and which patterns to look for
+- **Cross-repo awareness** — when researching a feature that touches multiple repos, check
+  sibling repos for related patterns and contracts
+
 ## Project Structure
 
 Read `AGENTS.md` and `CLAUDE.md` for project-specific structure, conventions, and paths.

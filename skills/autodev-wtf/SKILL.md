@@ -3,13 +3,13 @@ name: autodev-wtf
 description: >-
   Incident-focused investigation skill for when the memory system fails to prevent
   an error. Traces the search pipeline for a single failure, diagnoses the root cause,
-  and recommends a fix. Triggered by ??? in user messages.
+  and recommends a fix. Used by /wtf command.
 ---
 
 # Autodev WTF — Memory System Failure Investigation
 
-When the user writes `???`, the memory system failed to prevent an error they just
-corrected. This skill provides the methodology to investigate WHY.
+When the user runs `/wtf`, the memory system failed to prevent an error they just corrected.
+This skill provides the methodology to investigate WHY.
 
 **Scope:** One failure, one trace, one verdict. This is NOT a broad system audit
 (use `improve-autodev` for that). This traces a single pipeline execution to find
@@ -32,13 +32,12 @@ grep "output ->" ~/.config/autodev-memory/hooks.log | tail -5
 grep ERROR ~/.config/autodev-memory/hooks.log | tail -10
 ```
 
-The hook also injects recent search operation logs in the `additionalContext`.
-Review what's provided, then collect additional evidence:
+Then collect additional evidence via MCP tools:
 
 ```
-debug_logs(project="<project>", operation="search", hours=2, limit=20)
-debug_logs(project="<project>", operation="store", hours=2, limit=10)
-list_entries(project="<project>")
+mcp__autodev-memory__debug_logs(project="<project>", operation="search", hours=2, limit=20)
+mcp__autodev-memory__debug_logs(project="<project>", operation="store", hours=2, limit=10)
+mcp__autodev-memory__list_entries(project="<project>")
 ```
 
 Also use the conversation transcript already in context — it shows what the user
@@ -47,7 +46,7 @@ asked about that led to the error.
 ### Step 2: TRACE — Follow the pipeline for the failing interaction
 
 1. **What was the user's question?** — Identify the message that led to the error.
-   This is the conversation context before the `???` message.
+   This is the conversation context before the `/wtf` invocation.
 
 2. **What queries did Haiku generate?** — Check `request.queries` in the search
    operation logs for that timeframe.
@@ -66,8 +65,8 @@ asked about that led to the error.
 Search the KB for the correction topic:
 
 ```
-search(queries=["<topic from the correction>"], project="<project>")
-list_entries(project="<project>")
+mcp__autodev-memory__search(queries=[{"keywords": [...], "text": "..."}], project="<project>")
+mcp__autodev-memory__list_entries(project="<project>")
 ```
 
 - **If found:** Why wasn't it surfaced? Possible causes:
@@ -76,8 +75,8 @@ list_entries(project="<project>")
   - Low similarity (embedding distance too far despite topic relevance)
   - Below limit (entry was in top-20 per retriever but cut by result limit)
 
-- **If not found:** This is a knowledge gap. The correction capture (Phase 1 in
-  the hook) has already stored the new entry. The root cause is `no_entry`.
+- **If not found:** This is a knowledge gap. Use the `/save` methodology to store the
+  correction as a new entry.
 
 ### Step 4: DIAGNOSE — Classify root cause
 
@@ -98,7 +97,7 @@ Pick ONE primary root cause:
 
 For each root cause, the standard recommendation:
 
-- **`no_entry`** — "Correction saved. Knowledge gap filled. No further action."
+- **`no_entry`** — Save the correction via `/save` methodology. Knowledge gap filled.
 - **`bad_query`** — "Query generation prompt should handle [pattern]. Consider
   adding an example to `hooks/prompts/query-generation.md`."
 - **`bad_ranking`** — "Entry exists but scored [X]. Consider updating the entry
@@ -109,12 +108,22 @@ For each root cause, the standard recommendation:
 - **`formatting_loss`** — "Results returned but key info lost in formatting."
 - **`not_preventable`** — "This type of error isn't catchable by KB search."
 
+### Step 6: SAVE — Store the correction
+
+After the investigation, always save the correction to the memory system. Follow the
+`autodev-save` skill procedure:
+
+1. Determine scope (global vs project) using project topology
+2. Fetch existing entries to check for duplicates
+3. Decide action (new/append/supersede/skip)
+4. Execute via MCP tools
+
 ## Output Format
 
 Report your findings as a concise structured verdict:
 
 ```
-## ??? WTF Investigation Verdict
+## WTF Investigation Verdict
 
 **Root cause:** `<category>`
 **Confidence:** high | medium | low

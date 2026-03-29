@@ -29,6 +29,7 @@ _MEM_LOG_DIR="$HOME/.config/autodev-memory"
 _MEM_LOG_FILE="$_MEM_LOG_DIR/hooks.log"
 _MEM_LOG_MAX_BYTES=1048576  # 1MB
 _MEM_LOG_HOOK_NAME=$(basename "${0:-unknown}" .sh)
+_MEM_LOG_CWD=""  # Set by mem-env.sh after CWD is determined
 
 # Ensure log directory exists
 mkdir -p "$_MEM_LOG_DIR" 2>/dev/null || true
@@ -45,9 +46,13 @@ mem_log() {
     message="${message:0:2000}...[truncated]"
   fi
 
-  # Append to log file
-  printf '%s [%-14s] %-5s %s\n' \
-    "$timestamp" "$_MEM_LOG_HOOK_NAME" "$level" "$message" \
+  # Append to log file (include cwd basename if known)
+  local cwd_tag=""
+  if [[ -n "$_MEM_LOG_CWD" ]]; then
+    cwd_tag=" cwd=$_MEM_LOG_CWD"
+  fi
+  printf '%s [%-14s] %-5s%s %s\n' \
+    "$timestamp" "$_MEM_LOG_HOOK_NAME" "$level" "$cwd_tag" "$message" \
     >> "$_MEM_LOG_FILE" 2>/dev/null || true
 
   # Rotate if over max size
@@ -67,6 +72,6 @@ mem_log() {
 mem_log_output() {
   local json="$1"
   local ctx
-  ctx=$(echo "$json" | jq -r '.additionalContext // "(empty)"' 2>/dev/null || echo "(parse failed)")
+  ctx=$(echo "$json" | jq -r '.hookSpecificOutput.additionalContext // "(empty)"' 2>/dev/null || echo "(parse failed)")
   mem_log DEBUG "output -> $ctx"
 }

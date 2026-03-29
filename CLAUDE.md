@@ -179,15 +179,18 @@ When the user mentions these activities, proactively use the corresponding comma
 
 | User says                                                          | Action                        |
 | ------------------------------------------------------------------ | ----------------------------- |
+| "save this", "remember this", "store this"                         | Run `/save`                   |
+| "define X", "X means", "glossary", "add term"                      | Run `/glossary`               |
+| "wtf", "why didn't you know this", "you should have known"         | Run `/wtf`                    |
 | "compound", "document this", "save this learning"                  | Run `/compound`               |
 | "what did we learn", "learn from review", "learn from this"        | Run `/compound`               |
-| "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/compound` |
-| "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/compound` |
+| "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/save`     |
+| "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/save`     |
 | "retrospect", "what went wrong", "post-mortem"                     | Run `/retrospect`             |
 
 **Correction detection:** When the user explicitly corrects Claude's approach or output,
-proactively ask: "Should I `/compound` this so it doesn't happen again?" This ensures
-corrections become permanent workflow/knowledge improvements.
+proactively ask: "Should I `/save` this to the memory system?" This ensures corrections become
+permanent knowledge. Use `/compound` when the correction also implies workflow/skill changes.
 
 ### Maintenance
 
@@ -196,6 +199,7 @@ corrections become permanent workflow/knowledge improvements.
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
 | "heal knowledge", "organize knowledge", "consolidate knowledge" | Run `/heal-knowledge`  |
 | "heal work items", "clean up work items"                        | Run `/heal-work-items` |
+| "consolidate memories", "audit memories", "clean up memories"   | Run `/consolidate`     |
 
 ### Work Item Management
 

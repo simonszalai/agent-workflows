@@ -3,20 +3,18 @@
 # autodev-memory-prompt-submit.sh — UserPromptSubmit hook for memory system
 # =============================================================================
 #
-# On every user message (all steps blocking/sync):
-# 1. If ??? detected → run correction-detect + fetch debug logs
-# 2. If !!! detected → run correction-detect
-# 3. If >>> detected → run glossary extraction
-# 4. Ask Haiku whether a KB search is warranted (sees message + last 3 exchanges)
-# 5. If yes → generate queries, search, return results
-# 6. Return everything with explicit instructions for AI to report to user
+# On every user message:
+# 1. Quick heuristic: skip messages that won't benefit from search (instant)
+# 2. Init mem-env (only if searching)
+# 3. Extract keywords locally (no LLM call)
+# 4. Search the KB, let score cutoffs filter garbage
 #
-# Requires: AUTODEV_MEMORY_API_TOKEN, claude CLI on PATH
+# Requires: AUTODEV_MEMORY_API_TOKEN
 # =============================================================================
 
 set -euo pipefail
 
-# --- Recursion guard: claude -p subprocess also triggers this hook ---
+# --- Recursion guard ---
 if [[ "${_MEM_HOOK_ACTIVE:-}" == "1" ]]; then
   echo '{}'
   exit 0
@@ -25,21 +23,12 @@ export _MEM_HOOK_ACTIVE=1
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOK_DIR/mem-err-trap.sh"
+_HOOK_EVENT_NAME="UserPromptSubmit"
 source "$HOOK_DIR/mem-log.sh"
 
 INPUT=$(cat)
 
-# --- Parse mem config (errors caught by mem-err-trap EXIT handler) ---
-MEM_ENV_SKIP=""
-source "$HOOK_DIR/mem-env.sh" "$INPUT"
-
-if [[ -n "$MEM_ENV_SKIP" ]]; then
-  mem_log INFO "skip (no mem config)"
-  echo '{}'
-  exit 0
-fi
-
-# --- Extract prompt ---
+# --- Extract prompt EARLY (before mem-init) for fast skip ---
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 if [[ -z "$PROMPT" ]]; then
   mem_log INFO "skip (empty prompt)"
@@ -47,212 +36,191 @@ if [[ -z "$PROMPT" ]]; then
   exit 0
 fi
 
+# --- Strip Conductor's <system_instruction> wrapper to get the actual user prompt ---
+if echo "$PROMPT" | head -1 | grep -q '^<system_instruction>'; then
+  PROMPT=$(echo "$PROMPT" | sed -n '/<\/system_instruction>/,$ { /<\/system_instruction>/d; p; }')
+  PROMPT=$(echo "$PROMPT" | sed '/^[[:space:]]*$/{ 1d; }')  # strip leading blank line
+  if [[ -z "$PROMPT" ]]; then
+    mem_log INFO "skip (system_instruction only, no user prompt)"
+    echo '{}'
+    exit 0
+  fi
+  mem_log INFO "stripped <system_instruction> wrapper"
+fi
+
+# =============================================================================
+# Skip heuristic — instant, before any network calls
+# =============================================================================
+
+FIRST_LINE=$(echo "$PROMPT" | head -1 | sed 's/^[[:space:]]*//')
+FIRST_LINE_LOWER=$(echo "$FIRST_LINE" | tr '[:upper:]' '[:lower:]')
+WORD_COUNT=$(echo "$FIRST_LINE_LOWER" | wc -w | tr -d ' ')
+
+SHOULD_SKIP="false"
+SKIP_REASON=""
+
+# 1. Starts with < (system injection, tool result, XML tag)
+if [[ "$FIRST_LINE" == "<"* ]]; then
+  SHOULD_SKIP="true"
+  SKIP_REASON="system injection"
+fi
+
+# 2. Starts with # (skill/command prompt header like "# LFG Command")
+if [[ "$SHOULD_SKIP" == "false" && "$FIRST_LINE" == "#"* ]]; then
+  SHOULD_SKIP="true"
+  SKIP_REASON="skill/command header"
+fi
+
+# 3. Starts with [ (interrupt markers like "[Request interrupted")
+if [[ "$SHOULD_SKIP" == "false" && "$FIRST_LINE" == "["* ]]; then
+  SHOULD_SKIP="true"
+  SKIP_REASON="interrupt marker"
+fi
+
+# 4. Bare slash command (single word starting with /, no spaces)
+if [[ "$SHOULD_SKIP" == "false" && "$FIRST_LINE_LOWER" == /* ]] && ! echo "$FIRST_LINE_LOWER" | grep -q ' '; then
+  SHOULD_SKIP="true"
+  SKIP_REASON="bare slash command"
+fi
+
+# 5. Very short (≤3 words) and not a question
+if [[ "$SHOULD_SKIP" == "false" && "$WORD_COUNT" -le 3 ]]; then
+  IS_QUESTION="false"
+  case "$FIRST_LINE_LOWER" in
+    how\ *|why\ *|what\ *|where\ *|when\ *|which\ *|does\ *|is\ *|are\ *|can\ *|could\ *|should\ *|would\ *)
+      IS_QUESTION="true" ;;
+  esac
+  if [[ "$IS_QUESTION" == "false" ]]; then
+    SHOULD_SKIP="true"
+    SKIP_REASON="short non-question ($WORD_COUNT words)"
+  fi
+fi
+
+if [[ "$SHOULD_SKIP" == "true" ]]; then
+  mem_log INFO "skip ($SKIP_REASON)"
+  # Return empty — no need for a status line on skipped messages
+  echo '{}'
+  exit 0
+fi
+
 mem_log INFO "start prompt=$(echo "$PROMPT" | head -c 120)"
 
-# --- Read recent conversation (last 3 user messages + truncated AI responses) ---
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '(.transcript_path // .session.transcript_path) // empty')
-
-RECENT_CONTEXT=""
-if [[ -n "$TRANSCRIPT_PATH" && -f "$TRANSCRIPT_PATH" ]]; then
-  RECENT_CONTEXT=$(tail -200 "$TRANSCRIPT_PATH" | jq -sc '
-    [.[] | select(.type == "human" or .type == "assistant")]
-    | .[-6:]
-    | [.[] |
-        if .type == "assistant"
-        then {type, content: (.content[:300] + "...")}
-        else {type, content}
-        end
-      ]
-  ' 2>/dev/null || echo "[]")
-fi
-
-RECENT_TEXT=""
-if [[ -n "$RECENT_CONTEXT" && "$RECENT_CONTEXT" != "[]" ]]; then
-  RECENT_TEXT=$(echo "$RECENT_CONTEXT" | jq -r '.[] | .type + ": " + (.content // "" | tostring)[:500]' 2>/dev/null | tail -c 3000)
-fi
-
 # =============================================================================
-# Step 1: Triple-char trigger dispatch (all sync)
-#
-# To switch any trigger to async later, replace:
-#   RESULT=$( "$HOOK_DIR/script.sh" args 2>&1 ) || true
-# with:
-#   "$HOOK_DIR/script.sh" args >/dev/null 2>&1 &
-#   RESULT="[fired] running in background (pid $!)"
+# Init mem-env (only runs for messages that will be searched)
 # =============================================================================
 
-TRIGGER_SECTION=""
-CLEAN_PROMPT="$PROMPT"
+source "$HOOK_DIR/mem-init.sh"
+mem_init "$INPUT"
 
-# --- WTF trigger: ??? ---
-if echo "$PROMPT" | grep -qF "???"; then
-  mem_log INFO "trigger: ??? WTF"
-  CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/???//g')
+case "$MEM_INIT_STATUS" in
+  skip)  echo '{}'; exit 0 ;;
+  error) mem_init_offline_output "prompt-submit" "UserPromptSubmit" "${MEM_INIT_ERROR:-memory API unreachable}"; exit 0 ;;
+esac
 
-  DETECT_OUTPUT=$("$HOOK_DIR/autodev-memory-correction-detect.sh" \
-    "$MEM_PROJECT" "$MEM_REPO" "$MEM_URL" "$MEM_TOKEN" \
-    "$CLEAN_PROMPT" "$TRANSCRIPT_PATH" 2>&1) || true
+MEM_TRIGGER_SOURCE="prompt_submit"
+# MEM_USER_PROMPT is already set by mem-env.sh (extracted from .prompt field)
 
-  RECENT_SEARCHES=$(curl -sS --max-time 5 \
-    -H "Authorization: Bearer $MEM_TOKEN" \
-    "$MEM_URL/debug-logs?project=$MEM_PROJECT&operation=search&hours=2&limit=10" 2>/dev/null) || true
+source "$HOOK_DIR/mem-curl.sh"
 
-  TRIGGER_SECTION="## Trigger: ??? WTF Investigation
+# =============================================================================
+# Extract keywords locally — no LLM needed
+# =============================================================================
 
-### Correction Result
-$DETECT_OUTPUT
+STOP_WORDS="a an and but or if so the is are was were be been being have has had do does did will would shall should may might can could of in to for on with at by from as into through during before after above below between out off over under again further then once here there when where why how all each every both few more most other some such no nor not only own same than too very just also about up its it this that these those i me my we our you your he him his she her they them their what which who whom let lets get got now new old like want need know think see look make take give tell try put say set run way thing things still even back well much many since last first next dont anything nothing everything something hello hey thanks yeah yep nope okay sure right great nice cool fine please already always never maybe probably basically actually really quite pretty rather"
 
-### Investigation Required
-The user flagged this as a memory system failure. Use the autodev-wtf methodology to
-investigate why the memory system didn\'t prevent this error.
+KEYWORDS_JSON=$(echo "$PROMPT" | head -c 500 | tr '[:upper:]' '[:lower:]' | \
+  tr -cs '[:alnum:]-' '\n' | \
+  awk -v stops="$STOP_WORDS" '
+    BEGIN { split(stops, a, " "); for (i in a) stop[a[i]]=1 }
+    length >= 3 && !stop[$0] && !seen[$0]++ { print }
+  ' | head -8 | jq -R -s 'split("\n") | map(select(length > 0))')
 
-Load the autodev-wtf skill for the investigation methodology, then:
-1. Analyze the recent search operations below
-2. Check if relevant knowledge existed but wasn\'t surfaced
-3. Diagnose the root cause category
-4. Report your verdict
+KEYWORD_COUNT=$(echo "$KEYWORDS_JSON" | jq 'length' 2>/dev/null || echo "0")
+if [[ "$KEYWORD_COUNT" -le 1 ]]; then
+  mem_log INFO "skip (too few keywords after filtering: $KEYWORD_COUNT)"
+  echo '{}'
+  exit 0
+fi
 
-### Recent Search Operations
-$RECENT_SEARCHES
+SEARCH_TEXT=$(echo "$PROMPT" | head -c 200 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
 
-**IMPORTANT: Before doing anything else, report the WTF trigger results to the user.
-Tell them what the correction detection found and that you are beginning the investigation.**"
+QUERY_DISPLAY=$(echo "$KEYWORDS_JSON" | jq -r 'join(", ")' 2>/dev/null || echo "?")
+mem_log INFO "keywords: $QUERY_DISPLAY | text: $(echo "$SEARCH_TEXT" | head -c 80)"
 
-# --- Force-compound: !!! ---
-elif echo "$PROMPT" | grep -qF "!!!"; then
-  mem_log INFO "trigger: !!! force-compound"
-  CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/!!!//g')
+QUERIES=$(jq -n \
+  --argjson keywords "$KEYWORDS_JSON" \
+  --arg text "$SEARCH_TEXT" \
+  '[{keywords: $keywords, text: $text}]')
 
-  DETECT_OUTPUT=$("$HOOK_DIR/autodev-memory-correction-detect.sh" \
-    "$MEM_PROJECT" "$MEM_REPO" "$MEM_URL" "$MEM_TOKEN" \
-    "$PROMPT" "$TRANSCRIPT_PATH" 2>&1) || true
+# =============================================================================
+# Search
+# =============================================================================
 
-  TRIGGER_SECTION="## Trigger: !!! Correction Detection
+EXCLUDE_IDS_JSON="null"
+_IDS_FILE="$MEM_CACHE_DIR/$MEM_CACHE_KEY.ids"
+if [[ -f "$_IDS_FILE" && -s "$_IDS_FILE" ]]; then
+  EXCLUDE_IDS_JSON=$(jq -R -s 'split("\n") | map(select(length > 0))' < "$_IDS_FILE" 2>/dev/null || echo "null")
+  _EXCLUDE_COUNT=$(echo "$EXCLUDE_IDS_JSON" | jq 'length' 2>/dev/null || echo "0")
+  mem_log INFO "excluding $_EXCLUDE_COUNT already-injected entry IDs"
+fi
 
-Result: $DETECT_OUTPUT
+SEARCH_BODY=$(jq -n \
+  --argjson searches "$QUERIES" \
+  --arg project "$MEM_PROJECT" \
+  --argjson exclude_ids "$EXCLUDE_IDS_JSON" \
+  '{searches: $searches, project: $project, limit: 5} + (if $exclude_ids then {exclude_ids: $exclude_ids} else {} end)')
 
-**IMPORTANT: Before doing anything else, report the correction detection result to the user.
-Tell them what was captured/stored/skipped and why.**"
-
-# --- Glossary: >>> ---
-elif echo "$PROMPT" | grep -qF ">>>"; then
-  mem_log INFO "trigger: >>> glossary"
-  CLEAN_PROMPT=$(echo "$PROMPT" | sed 's/>>>//g')
-
-  GLOSSARY_OUTPUT=$("$HOOK_DIR/autodev-memory-glossary-extract.sh" \
-    "$MEM_PROJECT" "$MEM_URL" "$MEM_TOKEN" \
-    "$PROMPT" "$TRANSCRIPT_PATH" 2>&1) || true
-
-  TRIGGER_SECTION="## Trigger: >>> Glossary Extraction
-
-Result: $GLOSSARY_OUTPUT
-
-**IMPORTANT: Before doing anything else, report the glossary extraction result to the user.
-Tell them what term was defined/updated or if extraction failed and why.**"
+SEARCH_RESULT=""
+SEARCH_ERROR=""
+if ! SEARCH_RESULT=$(mem_curl POST "/search" "$SEARCH_BODY" "user_prompt"); then
+  SEARCH_ERROR="$SEARCH_RESULT"
 fi
 
 # =============================================================================
-# Step 2: Search decision — Haiku decides if KB search is warranted
-# =============================================================================
-
-if [[ ! -f "$HOOK_DIR/prompts/search-decision.md" ]]; then
-  echo "HOOK ERROR [prompt-submit]: search-decision.md not found at $HOOK_DIR/prompts/" >&2
-  exit 1
-fi
-DECISION_TEMPLATE=$(cat "$HOOK_DIR/prompts/search-decision.md")
-
-DECISION_PROMPT="$DECISION_TEMPLATE
-
-Current repo: ${MEM_REPO}
-Project repos:
-$MEM_TOPOLOGY
-
-Recent conversation:
-$RECENT_TEXT
-
-Current message: $CLEAN_PROMPT"
-
-DECISION_RAW=$(echo "$DECISION_PROMPT" | claude -p --model haiku --output-format json 2>/dev/null) || true
-DECISION_TEXT=$(echo "$DECISION_RAW" | jq -r '.result // empty' 2>/dev/null || true)
-
-# Parse decision — degrade gracefully if Haiku failed
-SHOULD_SEARCH="false"
-SEARCH_REASON="search decision unavailable (Haiku call failed)"
-
-if [[ -n "$DECISION_TEXT" ]]; then
-  DECISION=$(echo "$DECISION_TEXT" | sed 's/^```json//; s/^```//; s/```$//' | jq -c '.' 2>/dev/null || echo '{}')
-  SHOULD_SEARCH=$(echo "$DECISION" | jq -r '.search // false')
-  SEARCH_REASON=$(echo "$DECISION" | jq -r '.reason // "no reason given"')
-fi
-
-mem_log INFO "search decision: should_search=$SHOULD_SEARCH reason=$SEARCH_REASON"
-
-# =============================================================================
-# Step 3: If search warranted, extract queries and search
+# Format results
 # =============================================================================
 
 SEARCH_SECTION=""
 STATUS_LINE=""
 
-if [[ "$SHOULD_SEARCH" == "true" ]]; then
-  QUERIES=$(echo "$DECISION" | jq -c '.queries // []' 2>/dev/null || echo '[]')
-  QUERY_COUNT=$(echo "$QUERIES" | jq 'length' 2>/dev/null || echo "0")
-  QUERY_DISPLAY=$(echo "$QUERIES" | jq -r '[.[] | (.keywords // [] | join(", ")) + ": " + (.text // .query // "")] | join(" | ")' 2>/dev/null || echo "(autodev-memory prompt-submit: query format error)")
+if [[ -n "$SEARCH_ERROR" ]]; then
+  mem_log ERROR "search API error: $SEARCH_ERROR"
+  STATUS_LINE="Memory: search FAILED"
+  SEARCH_SECTION="Queries: $QUERY_DISPLAY
+Result: $SEARCH_ERROR"
+else
+  RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null || echo "0")
+  mem_log INFO "search results: count=$RESULT_COUNT"
 
-  mem_log INFO "queries: count=$QUERY_COUNT display=$QUERY_DISPLAY"
-
-  if [[ "$QUERY_COUNT" -eq 0 ]]; then
-    STATUS_LINE="Memory: search warranted but no queries generated"
-    SEARCH_SECTION="Queries: (none generated)"
-  else
-    # Execute search
-    SEARCH_BODY=$(jq -n \
-      --argjson searches "$QUERIES" \
-      --arg project "$MEM_PROJECT" \
-      '{searches: $searches, project: $project, limit: 5}')
-
-    SEARCH_RESULT=$(curl -sS --max-time 30 \
-      -X POST \
-      -H "Authorization: Bearer $MEM_TOKEN" \
-      -H "Content-Type: application/json" \
-      -H "X-Hook-Source: user_prompt" \
-      -d "$SEARCH_BODY" \
-      "$MEM_URL/search" 2>&1) || true
-
-    if [[ "$SEARCH_RESULT" == curl:* ]]; then
-      mem_log ERROR "search API unreachable: $SEARCH_RESULT"
-      STATUS_LINE="Memory: search failed (API unreachable)"
-      SEARCH_SECTION="Queries: $QUERY_DISPLAY
-Result: API call failed"
-    else
-      RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null || echo "0")
-
-      mem_log INFO "search results: count=$RESULT_COUNT"
-
-      if [[ "$RESULT_COUNT" -eq 0 ]]; then
-        STATUS_LINE="Memory: searched — 0 results"
-        SEARCH_SECTION="Queries: $QUERY_DISPLAY
+  if [[ "$RESULT_COUNT" -eq 0 ]]; then
+    STATUS_LINE="Memory: searched — 0 results"
+    SEARCH_SECTION="Queries: $QUERY_DISPLAY
 Result: 0 entries found"
-      else
-        RESULTS_FORMATTED=$(echo "$SEARCH_RESULT" | jq -r '
-          [.results[] |
-            "### " + .title + " (" + .type + ")\n" +
-            (if (.tags | length) > 0 then "*Tags: " + (.tags | join(", ")) + "*\n" else "" end) +
-            .content + "\n"
-          ] | join("\n---\n\n")
-        ' 2>/dev/null || echo "(autodev-memory prompt-submit: result formatting failed)")
+  else
+    RESULTS_FORMATTED=$(echo "$SEARCH_RESULT" | jq -r '
+      [.results[] |
+        "### " + .title + " (" + .type + ")\n" +
+        (if (.tags | length) > 0 then "*Tags: " + (.tags | join(", ")) + "*\n" else "" end) +
+        .content + "\n"
+      ] | join("\n---\n\n")
+    ' 2>/dev/null || echo "(autodev-memory prompt-submit: result formatting failed)")
 
-        STATUS_LINE="Memory: searched — $RESULT_COUNT results added to context"
-        SEARCH_SECTION="Queries: $QUERY_DISPLAY
+    ENTRY_INDEX=$(echo "$SEARCH_RESULT" | jq -r '
+      [.results[] | "- " + (.entry_id // .id | tostring | .[0:8]) + " " + .type + ": " + (.title[:60])] | join("\n")
+    ' 2>/dev/null || echo "")
+    STATUS_LINE="Memory: searched — $RESULT_COUNT results added to context
+$ENTRY_INDEX"
+    SEARCH_SECTION="Queries: $QUERY_DISPLAY
 Result: $RESULT_COUNT entries
 
 $RESULTS_FORMATTED"
-      fi
+
+    # Append new entry IDs to cache so subsequent prompts exclude them
+    if [[ -n "$_IDS_FILE" ]]; then
+      echo "$SEARCH_RESULT" | jq -r '.results[] | .entry_id // .id' 2>/dev/null >> "$_IDS_FILE"
+      mem_log INFO "appended $RESULT_COUNT IDs to cache"
     fi
   fi
-else
-  STATUS_LINE="Memory: no search needed"
-  SEARCH_SECTION="Reason: $SEARCH_REASON"
 fi
 
 # =============================================================================
@@ -260,21 +228,13 @@ fi
 # =============================================================================
 
 CONTEXT="<autodev-memory-hook-result source=\"prompt-submit\">
-MANDATORY: Start your reply with this single status line (no extra text around it):
-$STATUS_LINE"
-
-if [[ -n "$TRIGGER_SECTION" ]]; then
-  CONTEXT="$CONTEXT
-
-$TRIGGER_SECTION"
-fi
-
-CONTEXT="$CONTEXT
+MANDATORY: Start your reply with EXACTLY this text (all lines, verbatim):
+$STATUS_LINE
 
 $SEARCH_SECTION
 </autodev-memory-hook-result>"
 
-OUTPUT=$(jq -n --arg context "$CONTEXT" '{additionalContext: $context}')
+OUTPUT=$(jq -n --arg context "$CONTEXT" '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $context}}')
 mem_log INFO "done status_line=$STATUS_LINE"
 mem_log_output "$OUTPUT"
 echo "$OUTPUT"

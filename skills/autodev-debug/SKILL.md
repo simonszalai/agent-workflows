@@ -15,12 +15,11 @@ Hands-on debugging skill for the autodev-memory system. Use this when:
 
 - Hooks return results but Claude doesn't show them
 - Searches return wrong or no results
-- Correction detection isn't capturing what it should
 - You want to understand what the hooks are doing on each message
 - Something is silently failing
 
 **Scope:** Observing and diagnosing. For broad system audits and design proposals, use
-`improve-autodev`. For single-failure pipeline traces triggered by `???`, use `autodev-wtf`.
+`improve-autodev`. For single-failure pipeline traces, use `/wtf`.
 
 ## System Architecture Overview
 
@@ -34,10 +33,9 @@ User types message
        |
        v
 [UserPromptSubmit hook]
-  1. Check for triggers (??? / !!! / >>>)
-  2. Ask Haiku: "should we search the KB?"
-  3. If yes: generate queries, search, format results
-  4. Return additionalContext JSON -> Claude sees it
+  1. Ask Haiku: "should we search the KB?"
+  2. If yes: generate queries, search, format results
+  3. Return additionalContext JSON -> Claude sees it
        |
        v
 Claude generates response
@@ -53,27 +51,34 @@ Claude spawns subagent
   4. Return additionalContext JSON -> subagent sees it
 ```
 
+Memory writes happen via slash commands (`/save`, `/wtf`, `/glossary`, `/compound`) that use
+MCP tools directly — not through hooks.
+
 ### Components
 
 | Component              | Location                                         | Purpose                       |
 | ---------------------- | ------------------------------------------------ | ----------------------------- |
 | Hook config            | `~/.claude/settings.json` (hooks section)        | Which hooks fire when         |
-| Session start hook     | `hooks/autodev-memory-session-start.sh`          | Load glossary on session init |
+| Session start hook     | `hooks/autodev-memory-session-start.sh`          | Load glossary entries at init |
 | Prompt submit hook     | `hooks/autodev-memory-prompt-submit.sh`          | Search KB on user messages    |
 | Pre-agent hook         | `hooks/autodev-memory-pre-agent.sh`              | Search KB for subagent tasks  |
-| Correction detect      | `hooks/autodev-memory-correction-detect.sh`      | 4-step correction pipeline    |
-| Glossary extract       | `hooks/autodev-memory-glossary-extract.sh`       | Define terms via >>>          |
 | Env/config             | `hooks/mem-env.sh`                               | Parse CLAUDE.md mem stub      |
 | Error trap             | `hooks/mem-err-trap.sh`                          | Catch errors, return JSON     |
 | Logging                | `hooks/mem-log.sh`                               | Persistent log file           |
 | Search decision prompt | `hooks/prompts/search-decision.md`               | Haiku decides if search needed|
 | Query generation prompt| `hooks/prompts/query-generation.md`              | Haiku generates search queries|
-| Classify prompt        | `hooks/prompts/classify-and-extract.md`          | Sonnet classifies corrections |
-| Match prompt           | `hooks/prompts/match-entry.md`                   | Sonnet picks candidate entries|
-| Decide prompt          | `hooks/prompts/decide-action.md`                 | Sonnet decides store action   |
 | Memory API             | `$AUTODEV_MEMORY_API_URL` (default localhost:8475)| REST + MCP search/store API  |
 | Env config file        | `~/.config/autodev-memory/.env`                  | API token and URL             |
 | **Log file**           | **`~/.config/autodev-memory/hooks.log`**         | **All hook activity**         |
+
+### Slash Commands (Memory Writes)
+
+| Command      | Purpose                                    | Replaces       |
+| ------------ | ------------------------------------------ | -------------- |
+| `/save`      | Save knowledge to memory system            | Old `!!!` hook |
+| `/wtf`       | Investigate memory system failures         | Old `???` hook |
+| `/glossary`  | Define/manage glossary terms               | Old `>>>` hook |
+| `/compound`  | Learn from corrections, store improvements | —              |
 
 ### Hook Data Flow
 
@@ -134,8 +139,6 @@ grep ERROR ~/.config/autodev-memory/hooks.log
 grep session-start ~/.config/autodev-memory/hooks.log | tail -10
 grep prompt-submit ~/.config/autodev-memory/hooks.log | tail -20
 grep pre-agent ~/.config/autodev-memory/hooks.log | tail -20
-grep correction-detect ~/.config/autodev-memory/hooks.log | tail -10
-grep glossary-extract ~/.config/autodev-memory/hooks.log | tail -5
 
 # See the full additionalContext output (exactly what Claude received)
 grep "output ->" ~/.config/autodev-memory/hooks.log | tail -5
@@ -158,14 +161,11 @@ grep "skip" ~/.config/autodev-memory/hooks.log | tail -20
 | Hook               | Key Events                                                    |
 | ------------------- | ------------------------------------------------------------- |
 | session-start       | config skip/start, glossary term count, final output          |
-| prompt-submit       | prompt (truncated 120 chars), trigger type, search decision   |
-|                     | + reason, query count + display, result count, status line,   |
+| prompt-submit       | prompt (truncated 120 chars), search decision + reason,       |
+|                     | query count + display, result count, status line,             |
 |                     | full additionalContext output                                 |
 | pre-agent           | skip reason OR agent type/desc, query count + body, result    |
 |                     | count, full output                                            |
-| correction-detect   | each pipeline step: classify type, index count, candidate     |
-|                     | IDs, decide action, store result                              |
-| glossary-extract    | prompt, extracted term, store result                          |
 | mem-err-trap        | all error exits with stderr capture and exit code             |
 
 ## Secondary Debug Tools
@@ -183,20 +183,143 @@ Key fields:
 - `request.queries` — what was searched for (keywords + text)
 - `response.results` — what came back (titles, scores, types)
 - `response.search_time_ms` — API-side latency
-- `hook_source` — which hook triggered it (`user_prompt`, `pre_tool_use`, `correction_detect`)
+- `hook_source` — which hook triggered it (`user_prompt`, `pre_tool_use`)
 - `error` — any API-side failures
 
 ### Claude Session Logs
 
-JSONL files in `~/.claude/projects/<path-encoded-cwd>/`. Path encoding: replace `/` with
-`-`, prefix with `-`. Example: `/Users/simon/dev/ts-api` -> `-Users-simon-dev-ts-api`.
+Claude Code automatically saves full session transcripts as **newline-delimited JSON (.jsonl)**
+files. Every message, tool call, file read/write, and reasoning step is captured.
+
+**Location:**
+
+| OS          | Path                               |
+| ----------- | ---------------------------------- |
+| macOS/Linux | `~/.claude/projects/`              |
+| Windows     | `%USERPROFILE%\.claude\projects\`  |
+
+**Folder structure:** Inside `projects/`, subfolders are named after the **working directory**
+with all non-alphanumeric characters replaced by `-`:
+
+```
+~/.claude/projects/
+├── -Users-simon-dev-ts-api/           # Sessions started in /Users/simon/dev/ts-api
+│   ├── 550e8400-e29b-41d4-a716-446655440000.jsonl
+│   └── a1b2c3d4-...jsonl
+├── -Users-simon-dev-ts-scraper/       # Sessions started in /Users/simon/dev/ts-scraper
+│   └── ...
+└── -Users-simon-conductor-workspaces-autodev-memory-seoul-v4/
+    └── ...
+```
+
+Each `.jsonl` file is one session, named with a UUID. There is also a **global history index**
+at `~/.claude/history.jsonl`.
+
+**Logs are not auto-deleted** unless `cleanupPeriodDays` is set to 0 in Claude Code config.
+
+**Essential commands:**
 
 ```bash
-# Find current session log
+# List all project folders
+ls ~/.claude/projects/
+
+# Find the most recent session log for a project
 ls -t ~/.claude/projects/-Users-simon-dev-ts-api/*.jsonl | head -1
 
-# Look for hook results in the session
+# Find sessions that contain hook results
 grep -l "autodev-memory-hook-result" ~/.claude/projects/-Users-simon-*/*.jsonl | head -5
+
+# Read a specific session's messages (human-readable extract)
+cat ~/.claude/projects/-Users-simon-dev-ts-api/<uuid>.jsonl | jq -r 'select(.role) | "\(.role): \(.content[:200] // "")"'
+
+# Search across all sessions for a specific term
+grep -r "some error message" ~/.claude/projects/ --include="*.jsonl" | head -5
+
+# Find sessions from today
+find ~/.claude/projects/ -name "*.jsonl" -mtime 0
+
+# Count total sessions per project
+for d in ~/.claude/projects/*/; do echo "$(ls "$d"/*.jsonl 2>/dev/null | wc -l) $(basename "$d")"; done | sort -rn
+
+# Browse session history interactively (built-in)
+# Use the /history command inside Claude Code
+```
+
+### Conductor SQLite Database
+
+Conductor (the Mac app for running parallel coding agents) stores all workspace and session
+data in a local SQLite database. Useful for investigating workspace state, session history,
+and cross-agent context.
+
+**Database location:**
+
+```
+~/Library/Application Support/com.conductor.app/conductor.db
+```
+
+**Quick access:**
+
+```bash
+# Open the database
+sqlite3 ~/Library/Application\ Support/com.conductor.app/conductor.db
+
+# List all tables
+sqlite3 ~/Library/Application\ Support/com.conductor.app/conductor.db ".tables"
+```
+
+**Schema overview:**
+
+| Table              | Purpose                                      | Key Columns                                                       |
+| ------------------ | -------------------------------------------- | ----------------------------------------------------------------- |
+| `repos`            | Registered repositories                      | `id`, `name`, `root_path`, `remote_url`, `default_branch`         |
+| `workspaces`       | Workspace instances per repo                 | `id`, `repository_id`, `directory_name`, `branch`, `state`,       |
+|                    |                                              | `active_session_id`, `derived_status`, `pr_title`, `notes`        |
+| `sessions`         | Claude Code sessions within workspaces       | `id`, `workspace_id`, `claude_session_id`, `status`, `model`,     |
+|                    |                                              | `permission_mode`, `context_used_percent`, `title`                |
+| `session_messages` | All messages in each session                 | `id`, `session_id`, `role`, `content`, `full_message`, `sent_at`  |
+| `attachments`      | Files attached to sessions/messages          | `id`, `session_id`, `type`, `original_name`, `path`               |
+| `diff_comments`    | PR review comments linked to workspaces      | `id`, `workspace_id`, `file_path`, `line_number`, `body`, `state` |
+| `settings`         | App-level key-value settings                 | `key`, `value`                                                    |
+
+**Useful queries:**
+
+```bash
+DB="$HOME/Library/Application Support/com.conductor.app/conductor.db"
+
+# List all repos
+sqlite3 "$DB" "SELECT name, root_path, default_branch FROM repos ORDER BY name;"
+
+# List active workspaces with their repo
+sqlite3 "$DB" "SELECT w.directory_name, r.name, w.branch, w.derived_status
+  FROM workspaces w JOIN repos r ON w.repository_id = r.id
+  WHERE w.state = 'active' ORDER BY w.updated_at DESC;"
+
+# Find sessions for the current workspace
+sqlite3 "$DB" "SELECT s.id, s.title, s.status, s.model, s.created_at
+  FROM sessions s JOIN workspaces w ON s.workspace_id = w.id
+  WHERE w.directory_name = 'seoul-v4' ORDER BY s.created_at DESC LIMIT 10;"
+
+# Get recent messages from a session
+sqlite3 "$DB" "SELECT role, substr(content, 1, 200), sent_at
+  FROM session_messages WHERE session_id = '<session-id>'
+  ORDER BY sent_at DESC LIMIT 20;"
+
+# Find workspaces by branch name
+sqlite3 "$DB" "SELECT w.directory_name, r.name, w.branch
+  FROM workspaces w JOIN repos r ON w.repository_id = r.id
+  WHERE w.branch LIKE '%f009%';"
+
+# Count messages per session for a workspace
+sqlite3 "$DB" "SELECT s.title, COUNT(sm.id) as msg_count, s.status
+  FROM sessions s
+  JOIN workspaces w ON s.workspace_id = w.id
+  LEFT JOIN session_messages sm ON sm.session_id = s.id
+  WHERE w.directory_name = 'seoul-v4'
+  GROUP BY s.id ORDER BY s.created_at DESC;"
+
+# Find diff comments for a workspace
+sqlite3 "$DB" "SELECT file_path, line_number, body, state
+  FROM diff_comments WHERE workspace_id = '<workspace-id>';"
 ```
 
 ### Direct API Health Check
@@ -260,24 +383,9 @@ curl -s -X POST -H "Authorization: Bearer $AUTODEV_MEMORY_API_TOKEN" \
   "${AUTODEV_MEMORY_API_URL:-http://localhost:8475}/search" | jq '.results[] | {title, score}'
 ```
 
-### "Correction wasn't captured"
+### "Knowledge wasn't saved"
 
-**Diagnosis:**
-```bash
-# Was correction-detect triggered?
-grep correction-detect ~/.config/autodev-memory/hooks.log | tail -10
-
-# What did classify say?
-grep "step1 classify" ~/.config/autodev-memory/hooks.log | tail -5
-
-# What action was decided?
-grep "step3c decide" ~/.config/autodev-memory/hooks.log | tail -5
-```
-
-Common causes:
-- `type=not_correction` — Sonnet didn't classify it as a correction (use `!!!` to force)
-- `action=skip` — decided existing KB already covers it
-- No log lines at all — hook didn't fire (check for trigger characters `!!!` or `???`)
+Use `/wtf` to investigate memory system failures. For manual saves, use `/save`.
 
 ### "Hook is erroring"
 

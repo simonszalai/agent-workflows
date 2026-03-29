@@ -32,7 +32,7 @@ Each memory to store needs:
 | `source` | Yes | "manual", "captured", or "ingested" |
 | `source_metadata` | Yes | Rich provenance metadata (file path, session ID, etc.) |
 | `summary` | No | 1-sentence search-friendly summary |
-| `tags` | No | Topical tags for semantic search |
+| `tags` | No | Use the autodev-tags skill procedure to determine |
 | `caller_context` | Yes | Debugging context (skill name, reason, trigger) |
 
 ## Procedure

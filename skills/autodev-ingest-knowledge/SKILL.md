@@ -162,7 +162,13 @@ sections. Each major rule, convention, or architectural decision should become i
 Do not ingest a full CLAUDE.md as a single entry — it will be too large and unfocused for
 search.
 
-### 3c: Produce the Ingestion Plan
+### 3c: Fetch Existing Tags
+
+Before producing the plan, fetch the existing tag vocabulary so planned entries reuse existing
+tags. Follow the **autodev-tags** skill procedure (Step 1 only — get existing tags for the
+target project + global). Keep the merged tag list available for Step 3d.
+
+### 3d: Produce the Ingestion Plan
 
 Each planned entry must specify an **action** — the plan encodes merge decisions, not just
 content:
@@ -174,6 +180,7 @@ content:
 | `title` | Clear, searchable title (for append/supersede: updated title if scope shifted) |
 | `content` | The curated content (for append: **merged** content combining existing + new) |
 | `entry_type` | gotcha, reference, solution, pattern, architecture, diagnosis |
+| `tags` | 2-5 tags per entry, following autodev-tags skill rules (reuse existing, kebab-case, technology not concept) |
 | `source_files` | List of source file paths this entry draws from |
 | `rationale` | Why this action was chosen — must reference existing entry if append/supersede |
 
@@ -200,6 +207,7 @@ so execute it directly — do NOT re-search or re-decide.
 - `source`: `"ingested"`
 - `project`: from the topology mapping (Step 1)
 - `repos`: always `["{repo_name}"]`
+- `tags`: from the plan (Step 3d), following autodev-tags skill rules
 - `summary`: concise 1-sentence summary written for search relevance
 - `caller_context.skill`: `"autodev-ingest-knowledge"`
 - `caller_context.trigger`: `"user invoked /autodev-ingest-knowledge"`

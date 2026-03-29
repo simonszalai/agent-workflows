@@ -31,6 +31,23 @@ The expected workflow stages (in order):
 8. **Deploy** -> moves to `to_verify/`
 9. **Production Verification** -> `verification-report.md`
 
+## Topology Context (Do First)
+
+Fetch the project topology to scope your analysis:
+
+```
+mcp__autodev-memory__list_projects()
+mcp__autodev-memory__list_repos(project_name: <current_project>)
+```
+
+Use topology to:
+
+- **Find related work items across sibling repos** — a bug in one repo may have originated
+  from a change in a sibling repo
+- **Understand repo boundaries** — know which repos interact to trace cross-repo bugs
+- **Scope knowledge base searches** — use repo names and tech_tags as search terms when
+  checking for missing documentation
+
 ## What to Analyze
 
 Given a bug description and work item (if exists):

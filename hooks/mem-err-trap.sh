@@ -34,6 +34,9 @@ _on_hook_exit() {
       "${errs:-"(none)"}" >> "$_log_file" 2>/dev/null || true
   fi
 
+  # _HOOK_EVENT_NAME must be set by the sourcing script (e.g. "SessionStart")
+  local _event="${_HOOK_EVENT_NAME:-SessionStart}"
+
   if [[ $exit_code -ne 0 && -n "$errs" ]]; then
     jq -n --arg ctx "<autodev-memory-hook-result source=\"${_hook_name}\" status=\"error\">
 MANDATORY: Start your reply with this single status line (no extra text around it):
@@ -41,7 +44,8 @@ Memory: hook error in ${_hook_name}
 
 Error details: $errs
 </autodev-memory-hook-result>" \
-      '{additionalContext: $ctx}' 2>/dev/null || true
+      --arg event "$_event" \
+      '{hookSpecificOutput: {hookEventName: $event, additionalContext: $ctx}}' 2>/dev/null || true
     exit 0
   elif [[ $exit_code -ne 0 ]]; then
     # Non-zero exit but no captured stderr (e.g. 2>/dev/null suppressed it).
@@ -50,7 +54,8 @@ Error details: $errs
 MANDATORY: Start your reply with this single status line (no extra text around it):
 Memory: hook error in ${_hook_name} (exit code $exit_code)
 </autodev-memory-hook-result>" \
-      '{additionalContext: $ctx}' 2>/dev/null || echo '{}'
+      --arg event "$_event" \
+      '{hookSpecificOutput: {hookEventName: $event, additionalContext: $ctx}}' 2>/dev/null || echo '{}'
     exit 0
   fi
 }

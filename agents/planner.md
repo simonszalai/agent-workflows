@@ -38,6 +38,23 @@ and design the new feature to integrate well.
 **For bugs:** You receive investigation findings with root causes. Design a fix that addresses
 the root causes identified.
 
+## Topology Context (Do Early)
+
+Fetch the project topology to understand the project structure:
+
+```
+mcp__autodev-memory__list_projects()
+mcp__autodev-memory__list_repos(project_name: <current_project>)
+```
+
+Use topology to:
+
+- **Scope past work searches** — search within repos belonging to the current project first
+- **Identify cross-repo impacts** — features may require changes in sibling repos (e.g., API
+  contract changes in the backend repo when building a new frontend feature)
+- **Inform architecture decisions** — repo descriptions and tech_tags reveal the tech stack,
+  helping you choose patterns consistent with existing architecture
+
 ## Research Past Work (IMPORTANT)
 
 Before creating a plan, search for similar past work items using `research-past-work` skill:
