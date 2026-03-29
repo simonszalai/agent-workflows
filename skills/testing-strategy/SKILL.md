@@ -1,6 +1,18 @@
 ---
 name: testing-strategy
 description: Universal testing methodology. What to test, what not to test, how to test, speed and parallelism rules. Referenced by /write-tests and /fix-tests.
+memory:
+  tags:
+    - pytest
+    - vitest
+    - testing
+    - mock
+    - fixture
+    - $tech_tags
+  types:
+    - gotcha
+    - pattern
+    - solution
 ---
 
 # Testing Strategy

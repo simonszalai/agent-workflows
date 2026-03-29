@@ -1,6 +1,17 @@
 ---
 name: review-data-integrity
 description: Data integrity and migration safety checklist. Used by reviewer-data agent. Portable to Cursor.
+memory:
+  tags:
+    - migration
+    - alembic
+    - postgres
+    - prisma
+    - schema
+  types:
+    - gotcha
+    - pattern
+    - solution
 ---
 
 # Data Integrity Review Standards

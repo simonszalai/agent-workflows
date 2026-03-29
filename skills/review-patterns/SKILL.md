@@ -1,6 +1,15 @@
 ---
 name: review-patterns
 description: Design patterns, anti-patterns, and code quality checklist. Used by reviewer-code agent. Portable to Cursor.
+memory:
+  tags:
+    - design-pattern
+    - anti-pattern
+    - code-smell
+    - $tech_tags
+  types:
+    - gotcha
+    - pattern
 ---
 
 # Pattern Review Standards

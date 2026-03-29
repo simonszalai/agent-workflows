@@ -1,6 +1,15 @@
 ---
 name: build-plan-methodology
 description: Deep research methodology for creating detailed build todos. Searches knowledge base, codebase, and git history exhaustively.
+memory:
+  tags:
+    - migration
+    - implementation-pattern
+    - $tech_tags
+  types:
+    - gotcha
+    - pattern
+    - solution
 ---
 
 # Build Plan Methodology

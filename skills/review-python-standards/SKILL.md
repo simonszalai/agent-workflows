@@ -1,6 +1,18 @@
 ---
 name: review-python-standards
 description: Python coding standards and quality checklist. Used by reviewer-code agent. Portable to Cursor.
+memory:
+  tags:
+    - python
+    - sqlalchemy
+    - asyncio
+    - pydantic
+    - type-hints
+    - pgvector
+  types:
+    - gotcha
+    - pattern
+    - preference
 ---
 
 # Python Review Standards

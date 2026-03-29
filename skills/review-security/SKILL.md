@@ -1,6 +1,16 @@
 ---
 name: review-security
 description: Security audit checklist and OWASP compliance. Used by reviewer-system agent. Portable to Cursor.
+memory:
+  tags:
+    - security
+    - owasp
+    - authentication
+    - xss
+    - sql-injection
+  types:
+    - gotcha
+    - pattern
 ---
 
 # Security Review Standards

@@ -1,6 +1,12 @@
 ---
 name: review-simplicity
 description: Code simplicity and YAGNI checklist. Used by reviewer-code agent. Portable to Cursor.
+memory:
+  tags:
+    - $tech_tags
+  types:
+    - preference
+    - pattern
 ---
 
 # Simplicity Review Standards

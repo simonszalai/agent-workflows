@@ -1,6 +1,17 @@
 ---
 name: review-performance
 description: Performance analysis checklist and optimization guide. Used by reviewer-system agent. Portable to Cursor.
+memory:
+  tags:
+    - performance
+    - caching
+    - n-plus-one
+    - indexing
+    - $tech_tags
+  types:
+    - gotcha
+    - pattern
+    - solution
 ---
 
 # Performance Review Standards

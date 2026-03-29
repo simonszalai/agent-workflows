@@ -2,6 +2,16 @@
 name: react-router-framework-mode
 description: Build full-stack React applications using React Router's framework mode. Use when configuring routes, working with loaders and actions, handling forms, handling navigation, pending/optimistic UI, error boundaries, or working with react-router.config.ts or other react router conventions.
 license: MIT
+memory:
+  tags:
+    - react-router
+    - hono
+    - vite
+    - bun
+  types:
+    - gotcha
+    - pattern
+    - reference
 ---
 
 # React Router Framework Mode

@@ -1,6 +1,17 @@
 ---
 name: review-deployment
 description: Deployment verification checklist with SQL queries and rollback plans. Used by reviewer-data agent. Portable to Cursor.
+memory:
+  tags:
+    - deployment
+    - render
+    - ci
+    - docker
+    - rollback
+  types:
+    - gotcha
+    - reference
+    - solution
 ---
 
 # Deployment Review Standards

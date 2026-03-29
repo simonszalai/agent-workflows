@@ -3,6 +3,15 @@ name: review-data-adequacy
 description:
   Data adequacy and quality checklist for pipeline features. Verifies data transformations
   produce values fit for downstream use. Portable to Cursor.
+memory:
+  tags:
+    - data-quality
+    - validation
+    - pipeline
+    - $tech_tags
+  types:
+    - gotcha
+    - pattern
 ---
 
 # Review: Data Adequacy

@@ -3,8 +3,17 @@
 # autodev-memory-pre-agent.sh — PreToolUse[Agent] hook for memory system
 # =============================================================================
 #
-# When Claude spawns a subagent, extract keywords from the subagent prompt
-# and search for task-specific knowledge. No LLM call needed.
+# When Claude spawns a subagent:
+# 1. Inject starred + tech-tag entries (same as session-start)
+# 2. Load skill-specific entries based on agent's skill declarations
+#
+# Skills can declare memory needs in their SKILL.md frontmatter:
+#   memory:
+#     tags: ["python", "sqlalchemy"]
+#     types: ["gotcha", "pattern"]
+#
+# The hook reads the agent definition → extracts skills → reads each skill's
+# memory block → merges tags/types → calls /entries/by-skill endpoint.
 #
 # Requires: AUTODEV_MEMORY_API_TOKEN
 # =============================================================================
@@ -30,7 +39,7 @@ mem_init "$INPUT"
 
 case "$MEM_INIT_STATUS" in
   skip) echo '{}'; exit 0 ;;
-  error) mem_init_offline_output "pre-agent" "PreToolUse" "${MEM_INIT_ERROR:-memory API unreachable}"; exit 0 ;;
+  error) echo '{}'; exit 0 ;;
 esac
 
 MEM_TRIGGER_SOURCE="pre_tool_use(Agent)"
@@ -38,8 +47,8 @@ source "$HOOK_DIR/mem-curl.sh"
 
 # --- Extract subagent info ---
 AGENT_PROMPT=$(echo "$INPUT" | jq -r '.tool_input.prompt // empty')
-AGENT_DESC=$(echo "$INPUT" | jq -r '.tool_input.description // empty')
 AGENT_TYPE=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // "general"')
+AGENT_DESC=$(echo "$INPUT" | jq -r '.tool_input.description // empty')
 
 if [[ -z "$AGENT_PROMPT" || ${#AGENT_PROMPT} -lt 30 ]]; then
   mem_log INFO "skip (prompt too short: ${#AGENT_PROMPT} chars)"
@@ -50,78 +59,197 @@ fi
 mem_log INFO "start type=$AGENT_TYPE desc=$AGENT_DESC"
 
 # =============================================================================
-# Extract keywords locally — no LLM needed
+# Load entries (shared with session-start hook)
 # =============================================================================
 
-# Combine description + first 500 chars of prompt for keyword extraction
-COMBINED_TEXT="$AGENT_DESC $AGENT_PROMPT"
+source "$HOOK_DIR/mem-load-entries.sh"
 
-STOP_WORDS="a an and but or if so the is are was were be been being have has had do does did will would shall should may might can could of in to for on with at by from as into through during before after above below between out off over under again further then once here there when where why how all each every both few more most other some such no nor not only own same than too very just also about up its it this that these those i me my we our you your he him his she her they them their what which who whom need must use find search look check read write edit create make sure let get got now new old like want know think see take give tell try put say set run way thing things still even back well much many since last first next dont"
-
-KEYWORDS_JSON=$(echo "$COMBINED_TEXT" | head -c 500 | tr '[:upper:]' '[:lower:]' | \
-  tr -cs '[:alnum:]-' '\n' | \
-  awk -v stops="$STOP_WORDS" '
-    BEGIN { split(stops, a, " "); for (i in a) stop[a[i]]=1 }
-    length >= 3 && !stop[$0] && !seen[$0]++ { print }
-  ' | head -8 | jq -R -s 'split("\n") | map(select(length > 0))')
-
-# Use description + first 200 chars of prompt as text query
-SEARCH_TEXT=$(echo "$AGENT_DESC $(echo "$AGENT_PROMPT" | head -c 200)" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
-
-QUERY_DISPLAY=$(echo "$KEYWORDS_JSON" | jq -r 'join(", ")' 2>/dev/null || echo "?")
-mem_log INFO "keywords: $QUERY_DISPLAY"
-
-QUERIES=$(jq -n \
-  --argjson keywords "$KEYWORDS_JSON" \
-  --arg text "$SEARCH_TEXT" \
-  '[{keywords: $keywords, text: $text}]')
-
-# --- Read cached entry IDs from session start ---
-EXCLUDE_IDS_JSON="null"
-_IDS_FILE="$MEM_CACHE_DIR/$MEM_CACHE_KEY.ids"
-if [[ -f "$_IDS_FILE" && -s "$_IDS_FILE" ]]; then
-  EXCLUDE_IDS_JSON=$(jq -R -s 'split("\n") | map(select(length > 0))' < "$_IDS_FILE" 2>/dev/null || echo "null")
-fi
-
-# --- Search ---
-SEARCH_BODY=$(jq -n \
-  --argjson searches "$QUERIES" \
-  --arg project "$MEM_PROJECT" \
-  --argjson exclude_ids "$EXCLUDE_IDS_JSON" \
-  '{searches: $searches, project: $project, limit: 5} + (if $exclude_ids then {exclude_ids: $exclude_ids} else {} end)')
-
-SEARCH_RESULT=""
-SEARCH_ERROR=""
-if ! SEARCH_RESULT=$(mem_curl POST "/search" "$SEARCH_BODY" "pre_tool_use(Agent)"); then
-  SEARCH_ERROR="$SEARCH_RESULT"
-  mem_log ERROR "search API error: $SEARCH_ERROR"
+if [[ -n "$_LOAD_ERROR" ]]; then
+  mem_log ERROR "session-init failed: $_LOAD_ERROR"
   echo '{}'
   exit 0
 fi
 
-RESULT_COUNT=$(echo "$SEARCH_RESULT" | jq '.results | length' 2>/dev/null || echo "0")
-mem_log INFO "search results: count=$RESULT_COUNT"
-if [[ -z "$RESULT_COUNT" || "$RESULT_COUNT" -eq 0 ]]; then
-  mem_log INFO "done (0 results)"
+mem_log INFO "entries: starred=$STARRED_COUNT tech_tags=$TECH_TAG_COUNT"
+
+# --- Collect entry IDs for exclusion from skill loading ---
+INIT_ENTRY_IDS=$(echo "$ALL_ENTRIES" | jq '[.[] | .id] | unique' 2>/dev/null || echo "[]")
+
+# =============================================================================
+# Skill-based memory loading — agent definition → skills → memory declarations
+# =============================================================================
+
+SKILL_ENTRIES="[]"
+SKILL_COUNT=0
+
+# Resolve agent definition file (project-level first, then user-level)
+_CWD=$(echo "$INPUT" | jq -r '(.cwd // .session.cwd) // empty' 2>/dev/null)
+_AGENT_FILE=""
+if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "general" ]]; then
+  # Convert type to lowercase for filename matching
+  _AGENT_LC=$(echo "$AGENT_TYPE" | tr '[:upper:]' '[:lower:]')
+  for _DIR in "$_CWD/.claude/agents" "$HOME/.claude/agents"; do
+    # Try exact match first, then lowercase
+    for _NAME in "$AGENT_TYPE" "$_AGENT_LC"; do
+      if [[ -f "$_DIR/${_NAME}.md" ]]; then
+        _AGENT_FILE="$_DIR/${_NAME}.md"
+        break 2
+      fi
+    done
+  done
+fi
+
+if [[ -n "$_AGENT_FILE" ]]; then
+  # Extract skill names from agent YAML frontmatter (only lines under skills:)
+  _SKILL_NAMES=()
+  _IN_SKILLS=false
+  while IFS= read -r line; do
+    if echo "$line" | grep -q '^skills:'; then
+      _IN_SKILLS=true; continue
+    fi
+    if $_IN_SKILLS; then
+      if echo "$line" | grep -q '^ *- '; then
+        _SKILL_NAMES+=("$(echo "$line" | sed 's/^ *- //')")
+      else
+        _IN_SKILLS=false
+      fi
+    fi
+  done < <(sed -n '/^---$/,/^---$/p' "$_AGENT_FILE")
+
+  # Read memory declarations from each skill's SKILL.md
+  _ALL_SKILL_TAGS=()
+  _ALL_SKILL_TYPES=()
+
+  for _SKILL in "${_SKILL_NAMES[@]}"; do
+    _SKILL_FILE=""
+    for _DIR in "$_CWD/.claude/skills" "$HOME/.claude/skills"; do
+      if [[ -f "$_DIR/$_SKILL/SKILL.md" ]]; then
+        _SKILL_FILE="$_DIR/$_SKILL/SKILL.md"
+        break
+      fi
+    done
+    [[ -z "$_SKILL_FILE" ]] && continue
+
+    # Extract YAML frontmatter
+    _FM=$(sed -n '/^---$/,/^---$/p' "$_SKILL_FILE")
+    echo "$_FM" | grep -q '^ *memory:' || continue
+
+    # Parse memory.tags and memory.types from frontmatter
+    _IN_MEM=false
+    _IN_TAGS=false
+    _IN_TYPES=false
+
+    while IFS= read -r line; do
+      if echo "$line" | grep -q '^ *memory:'; then
+        _IN_MEM=true; continue
+      fi
+      if $_IN_MEM; then
+        if echo "$line" | grep -qE '^[a-z]' || echo "$line" | grep -q '^---'; then
+          _IN_MEM=false; _IN_TAGS=false; _IN_TYPES=false; continue
+        fi
+        if echo "$line" | grep -q '^ *tags:'; then
+          _IN_TAGS=true; _IN_TYPES=false; continue
+        fi
+        if echo "$line" | grep -q '^ *types:'; then
+          _IN_TYPES=true; _IN_TAGS=false; continue
+        fi
+        if $_IN_TAGS && echo "$line" | grep -q '^ *- '; then
+          _TAG=$(echo "$line" | sed 's/^ *- *//' | tr -d '"' | tr -d "'")
+          _ALL_SKILL_TAGS+=("$_TAG")
+        fi
+        if $_IN_TYPES && echo "$line" | grep -q '^ *- '; then
+          _TYPE=$(echo "$line" | sed 's/^ *- *//' | tr -d '"' | tr -d "'")
+          _ALL_SKILL_TYPES+=("$_TYPE")
+        fi
+      fi
+    done <<< "$_FM"
+  done
+
+  # Resolve $tech_tags and deduplicate
+  if [[ ${#_ALL_SKILL_TAGS[@]} -gt 0 || ${#_ALL_SKILL_TYPES[@]} -gt 0 ]]; then
+    _RESOLVED_TAGS=()
+    for _TAG in "${_ALL_SKILL_TAGS[@]}"; do
+      if [[ "$_TAG" == '$tech_tags' || "$_TAG" == '${tech_tags}' ]]; then
+        if [[ -n "$MEM_TECH_TAGS" ]]; then
+          IFS=',' read -ra _TTAGS <<< "$MEM_TECH_TAGS"
+          _RESOLVED_TAGS+=("${_TTAGS[@]}")
+        fi
+      else
+        _RESOLVED_TAGS+=("$_TAG")
+      fi
+    done
+
+    _UNIQUE_TAGS=($(printf '%s\n' "${_RESOLVED_TAGS[@]}" 2>/dev/null | sort -u))
+    _UNIQUE_TYPES=($(printf '%s\n' "${_ALL_SKILL_TYPES[@]}" 2>/dev/null | sort -u))
+
+    if [[ ${#_UNIQUE_TAGS[@]} -gt 0 ]]; then
+      _TAGS_JSON=$(printf '%s\n' "${_UNIQUE_TAGS[@]}" | jq -R . | jq -s .)
+      _TYPES_JSON="[]"
+      if [[ ${#_UNIQUE_TYPES[@]} -gt 0 ]]; then
+        _TYPES_JSON=$(printf '%s\n' "${_UNIQUE_TYPES[@]}" | jq -R . | jq -s .)
+      fi
+
+      _SKILL_BODY=$(jq -n \
+        --arg project "$MEM_PROJECT" \
+        --arg repo "$MEM_REPO" \
+        --argjson tags "$_TAGS_JSON" \
+        --argjson types "$_TYPES_JSON" \
+        --argjson exclude_ids "$INIT_ENTRY_IDS" \
+        '{
+          project: $project,
+          repo: $repo,
+          tags: $tags,
+          types: $types,
+          exclude_ids: $exclude_ids
+        }')
+
+      _SKILL_RESULT=""
+      if _SKILL_RESULT=$(mem_curl POST "/entries/by-skill" "$_SKILL_BODY" "pre_tool_use(Agent)"); then
+        SKILL_ENTRIES=$(echo "$_SKILL_RESULT" | jq '.entries // []' 2>/dev/null || echo "[]")
+        SKILL_COUNT=$(echo "$_SKILL_RESULT" | jq '.count // 0' 2>/dev/null || echo "0")
+        mem_log INFO "skill entries: count=$SKILL_COUNT tags=${_UNIQUE_TAGS[*]} types=${_UNIQUE_TYPES[*]}"
+      else
+        mem_log WARN "entries/by-skill failed: $_SKILL_RESULT"
+      fi
+    fi
+  fi
+fi
+
+# --- Merge skill entries into ALL_ENTRIES (session-init entries already loaded) ---
+if [[ "$SKILL_COUNT" -gt 0 ]]; then
+  ALL_ENTRIES=$(jq -s '
+    [.[0] // [], .[1] // []] | add // [] |
+    group_by(.id) | map(.[0])
+  ' <(echo "$ALL_ENTRIES") <(echo "$SKILL_ENTRIES") 2>/dev/null || echo "$ALL_ENTRIES")
+  DEDUPED_COUNT=$(echo "$ALL_ENTRIES" | jq 'length' 2>/dev/null || echo "0")
+fi
+
+if [[ "$DEDUPED_COUNT" -eq 0 ]]; then
+  mem_log INFO "done (0 entries total)"
   echo '{}'
   exit 0
 fi
 
-# --- Format and return ---
-CONTEXT=$(echo "$SEARCH_RESULT" | jq -r '
-  "## Knowledge Base Results (autodev-memory pre-agent)\n\n" +
-  ([.results[] |
-    "### " + .title + " (" + .type + ")\n" +
-    (if (.tags | length) > 0 then "*Tags: " + (.tags | join(", ")) + "*\n" else "" end) +
-    .content + "\n"
-  ] | join("\n---\n\n"))
-' 2>/dev/null || echo "## Knowledge Base Results (autodev-memory pre-agent)\n\n(formatting failed)")
+FORMATTED=$(echo "$ALL_ENTRIES" | jq -r '
+  .[] |
+  "### [" + .type + "] " + .title + "\n" +
+  "*Tags: " + (.tags | join(", ")) + "*\n\n" +
+  .content + "\n"
+' 2>/dev/null || echo "(formatting error)")
 
-TAGGED="<autodev-memory-hook-result source=\"pre-agent\">
-$CONTEXT
+# Build context with skill summary if any skill entries were loaded
+SKILL_NOTE=""
+if [[ "$SKILL_COUNT" -gt 0 ]]; then
+  SKILL_NOTE=" + $SKILL_COUNT by skills"
+fi
+
+CONTEXT="<autodev-memory-hook-result source=\"pre-agent\">
+## Knowledge Base ($DEDUPED_COUNT entries for: ${MEM_TECH_TAGS}${SKILL_NOTE})
+
+$FORMATTED
 </autodev-memory-hook-result>"
 
-OUTPUT=$(jq -n --arg context "$TAGGED" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $context}}')
-mem_log INFO "done results=$RESULT_COUNT"
+OUTPUT=$(jq -n --arg context "$CONTEXT" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $context}}')
+mem_log INFO "done entries=$DEDUPED_COUNT (session_init=$TOTAL_COUNT skill=$SKILL_COUNT)"
 mem_log_output "$OUTPUT"
 echo "$OUTPUT"

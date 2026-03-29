@@ -1,6 +1,16 @@
 ---
 name: review-architecture
 description: Architectural principles and compliance checklist. Used by reviewer-system agent. Portable to Cursor.
+memory:
+  tags:
+    - architecture
+    - solid
+    - dependency
+    - $tech_tags
+  types:
+    - pattern
+    - architecture
+    - preference
 ---
 
 # Architecture Review Standards

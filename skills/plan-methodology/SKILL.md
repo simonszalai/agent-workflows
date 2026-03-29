@@ -1,6 +1,16 @@
 ---
 name: plan-methodology
 description: Planning process, input verification, and synthesis methodology. Used by planner agent.
+memory:
+  tags:
+    - architecture
+    - tradeoff
+    - constraint
+    - $tech_tags
+  types:
+    - architecture
+    - pattern
+    - preference
 ---
 
 # Plan Methodology

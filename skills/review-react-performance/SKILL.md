@@ -1,6 +1,15 @@
 ---
 name: review-react-performance
 description: React performance review checklist. Eliminating waterfalls, re-render optimization, bundle size, client-side fetching patterns.
+memory:
+  tags:
+    - react
+    - re-render
+    - bundle
+    - suspense
+  types:
+    - gotcha
+    - pattern
 ---
 
 # React Performance Review Checklist

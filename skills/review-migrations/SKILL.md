@@ -1,6 +1,15 @@
 ---
 name: review-migrations
 description: Data migration safety and ID mapping validation. Used by reviewer-data agent. Portable to Cursor.
+memory:
+  tags:
+    - alembic
+    - migration
+    - prisma
+    - schema
+  types:
+    - gotcha
+    - solution
 ---
 
 # Migration Review Standards

@@ -1,6 +1,15 @@
 ---
 name: review-react-router
 description: React Router v7 review checklist. Server/client module boundaries, route registration, fetcher patterns, loader optimization, and common gotchas.
+memory:
+  tags:
+    - react-router
+    - loader
+    - action
+    - server-components
+  types:
+    - gotcha
+    - pattern
 ---
 
 # React Router Review Checklist

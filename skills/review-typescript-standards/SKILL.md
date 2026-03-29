@@ -1,6 +1,16 @@
 ---
 name: review-typescript-standards
 description: TypeScript coding standards and quality checklist. Used by reviewer-code agent. Portable to Cursor.
+memory:
+  tags:
+    - typescript
+    - react
+    - zod
+    - biome
+  types:
+    - gotcha
+    - pattern
+    - preference
 ---
 
 # TypeScript Review Standards
