@@ -60,7 +60,7 @@ Standards for reviewing data migrations, backfills, and data transformations. Ap
 | Unique | `uq_{table}_{cols}`            | `uq_user_email`       |
 | Check  | `ck_{table}_{desc}`            | `ck_score_range`      |
 
-See `.claude/knowledge/gotchas/migration-downgrade-named-constraints-*.md`
+See memory entry: "migration downgrade named constraints" (search memory service if not auto-injected)
 
 ### 3. Verify Mapping/Transformation Logic
 

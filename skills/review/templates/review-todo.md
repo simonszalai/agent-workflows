@@ -60,7 +60,7 @@ How to prevent similar issues in future work items:
 ### Build Todos Phase
 
 **What research should have been done:**
-[e.g., "Should have searched .claude/knowledge/gotchas/ for async patterns before implementation"]
+[e.g., "Should have searched memory service for async pattern gotchas before implementation"]
 
 **Suggested pattern to include:**
 [e.g., "Build todo should reference similar implementations like src/flows/example/task.py"]

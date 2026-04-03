@@ -14,11 +14,11 @@ depends_on: []
 
 <!-- REQUIRED: Document all patterns found during research that apply to this step -->
 
-**From knowledge base:**
+**From memory service:**
 
-- `.claude/knowledge/gotchas/xxx.md`: [How this gotcha applies to this step]
-- `.claude/knowledge/references/xxx.md`: [Standard to follow]
-- `.claude/knowledge/solutions/xxx.md`: [Past solution that informs this step]
+- [Gotcha entry title]: [How this gotcha applies to this step]
+- [Reference entry title]: [Standard to follow]
+- [Solution entry title]: [Past solution that informs this step]
 
 **From codebase:**
 

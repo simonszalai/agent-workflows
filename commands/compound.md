@@ -45,7 +45,7 @@ was skipped with reasoning.
 | `.claude/skills/build-plan-methodology/SKILL.md` | Build todos should have found this  | New pattern search                 |
 | `.claude/commands/*.md`                           | Workflow step was missing           | Add verification step              |
 
-**Knowledge is NOT stored in local `.claude/knowledge/` files.** The memory service is the single
+The memory service is the single
 source of truth for gotchas, solutions, references, patterns, and corrections.
 
 ## 2-Tier Knowledge System
@@ -242,4 +242,4 @@ git push origin main
 | `/retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
 | `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
 | `/auto-build`     | Calls `/compound` after review resolution                             |
-| `/heal-knowledge` | Audits/reorganizes existing knowledge. `/compound` adds new knowledge |
+

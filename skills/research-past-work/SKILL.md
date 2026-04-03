@@ -113,16 +113,14 @@ From `conclusion.md` files, extract:
 - **Outcome** - Results and resolution
 - **Learnings** - What would be done differently
 
-### 6. Cross-Reference Knowledge Base
+### 6. Cross-Reference Memory Service
 
-After finding similar work, check if knowledge docs were created:
+After finding similar work, search the memory service for related entries:
 
-```bash
-# Check if work item created knowledge docs
-grep -r "work_item:" .claude/knowledge/*/*.md
-
-# Find gotchas mentioned in work item
-grep -r "gotcha" work_items/*/plan.md work_items/*/*/plan.md
+```
+mcp__autodev-memory__search(queries=[
+  {"keywords": ["<work-item-area>"], "text": "<area> gotchas lessons learned"}
+])
 ```
 
 ## Output Format
@@ -175,12 +173,12 @@ Based on past work:
 2. [Warning based on what didn't work]
 3. [Pattern to follow from successful implementation]
 
-### Knowledge Docs to Review
+### Related Memory Entries
 
-Related knowledge base entries:
+Related entries from memory service:
 
-- [path/to/gotcha.md] - [Why relevant]
-- [path/to/reference.md] - [Why relevant]
+- [Entry title] - [Why relevant]
+- [Entry title] - [Why relevant]
 ```
 
 ## Usage Guidelines
@@ -209,31 +207,9 @@ Focus on:
 - Common issues in this area of codebase
 - Process improvements suggested
 
-## Memory Service Search (Complementary)
-
-The memory service hooks auto-inject relevant knowledge as `additionalContext` on every
-prompt and agent dispatch. For targeted past-work queries beyond what was auto-injected:
-
-```bash
-curl -sf -X POST \
-  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"searches": [
-    {"query": "<similar feature/bug> implementation approach"},
-    {"query": "<similar area> debugging fix resolution"}
-  ], "project": "<project>", "limit": 5}' \
-  "$MEM_SERVICE_URL/search"
-```
-
-The memory service captures insights that may not have been written into work_items/
-(informal corrections, quick fixes, architectural decisions made during implementation).
-Especially important for learnings from cloud sessions where file changes were ephemeral.
-
-If $MEM_BEARER_TOKEN is unset, mention once and continue with file-based search only.
-
 ## Key Insight
 
-Past work items are a calibrated knowledge base of what actually happened, not what was
+Past work items are a calibrated source of what actually happened, not what was
 predicted. Use them to:
 
 - Avoid reinventing approaches that failed

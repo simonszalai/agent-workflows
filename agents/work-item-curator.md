@@ -12,7 +12,6 @@ description: |
 model: inherit
 max_turns: 50
 skills:
-  - research-knowledge-base
 ---
 
 You are a work item curator. You manage the work items system - creating new items, updating

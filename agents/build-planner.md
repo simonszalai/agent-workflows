@@ -6,9 +6,9 @@ max_turns: 50
 skills:
   - build-plan-methodology
   - first-principles
-  - research-knowledge-base
   - research-git-history
   - research-past-work
+  - autodev-search
 ---
 
 You are a build planner. Your job is to create **detailed implementation steps** (`build_todos/`)
@@ -50,15 +50,18 @@ conventions, and gotchas that MUST inform your build todos. For example:
 
 **Include framework skill guidance in the "Discovered Patterns" section of each build todo.**
 
-### 1. Knowledge Base (search exhaustively)
+### 1. Memory Service (search exhaustively)
 
-```bash
-# List and search ALL knowledge folders
-ls .claude/knowledge/references/ .claude/knowledge/gotchas/ .claude/knowledge/solutions/
+Use `mcp__autodev-memory__search` with queries relevant to each build step:
 
-# Search for relevant content
-grep -r "<keyword>" .claude/knowledge/
 ```
+queries: [
+  {"keywords": ["<technology>", "<area>"], "text": "<feature area> gotchas pitfalls"},
+  {"keywords": ["<technology>", "<area>"], "text": "<area> implementation patterns standards"}
+]
+```
+
+Also review auto-injected context from the knowledge menu in the system prompt.
 
 **What to find:**
 
@@ -213,7 +216,7 @@ Each step MUST include:
 
 Before submitting each build todo:
 
-- [ ] Searched ALL knowledge base folders
+- [ ] Searched memory service for relevant gotchas and patterns
 - [ ] Found codebase patterns for affected areas
 - [ ] Checked git history for context
 - [ ] Searched similar past work items for patterns and review findings

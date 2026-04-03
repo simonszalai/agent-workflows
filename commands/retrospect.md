@@ -84,7 +84,7 @@ Find:
 1. When was the buggy code introduced? (git blame)
 2. What commits relate to this area?
 3. Are there similar patterns that handle this correctly?
-4. Any knowledge docs that mention this area?
+4. Any memory entries that mention this area?
 ")
 ```
 

@@ -5,7 +5,6 @@ model: inherit
 max_turns: 50
 skills:
   - research-past-work
-  - research-knowledge-base
 ---
 
 You are a past work researcher. Your job is to find and analyze similar past work items to inform
@@ -128,5 +127,5 @@ Use the output format from the `research-past-work` skill.
 If you need:
 
 - **Deeper codebase patterns** - Request `researcher` agent
-- **Knowledge base search** - Use `research-knowledge-base` skill (already loaded)
+- **Memory service search** - Use `mcp__autodev-memory__search` for gotchas and patterns
 - **External docs** - Request `web-searcher` agent

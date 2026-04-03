@@ -6,7 +6,7 @@ max_turns: 75
 # Create Build Todos Command
 
 Create detailed implementation steps (`build_todos/`) from an approved `plan.md`. This command
-performs **deep research** into the codebase, knowledge base, and git history to ensure all
+performs **deep research** into the codebase, memory service, and git history to ensure all
 existing patterns and rules are discovered and followed.
 
 ## Usage
@@ -89,7 +89,7 @@ grep -E "^\| [0-9]{4}-[0-9]{2}-[0-9]{2} \| plan \|" work_items/*/[id]*/plan.md
    - `investigation.md` - Production findings (if exists)
 
 3. **Spawn build-planner agent** for deep research:
-   - Agent searches knowledge base exhaustively
+   - Agent searches memory service exhaustively
    - Agent searches codebase for all relevant patterns
    - Agent analyzes git history for context
    - Agent may spawn additional researcher agents
@@ -149,20 +149,20 @@ Each build todo contains:
 
 ## Post-Creation Validation
 
-After all build todos are written, verify knowledge base compliance:
+After all build todos are written, verify memory service compliance:
 
 ```bash
-# Check that build todos reference the knowledge base
-grep -rl "knowledge" work_items/*/[id]*/build_todos/ | wc -l
-# If 0: WARNING - no knowledge base references found. Re-run research phase.
+# Check that build todos reference the memory service
+grep -rl "memory service" work_items/*/[id]*/build_todos/ | wc -l
+# If 0: WARNING - no memory service references found. Re-run research phase.
 
-# Check that every build todo has "From knowledge base" subsection
+# Check that every build todo has "From memory service" subsection
 for f in work_items/*/[id]*/build_todos/*.md; do
-  grep -q "From knowledge base" "$f" || echo "MISSING knowledge base section: $f"
+  grep -q "From memory service" "$f" || echo "MISSING memory service section: $f"
 done
 ```
 
-If validation fails, go back and add the missing knowledge base research before committing.
+If validation fails, go back and add the missing memory service research before committing.
 
 ## Next Steps
 

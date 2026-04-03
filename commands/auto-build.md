@@ -138,7 +138,7 @@ For each finding in `review_todos/`:
 Run `/compound` in **autonomous mode** to learn from the build and review process.
 
 1. Analyze resolved review findings for upstream gaps
-2. Identify improvements to knowledge docs, skills, and workflows
+2. Identify improvements to memory entries, skills, and workflows
 3. Auto-apply all improvements (no user approval needed in auto-build)
 4. Store all learnings in memory service (critical for cloud persistence)
 5. Report what was changed

@@ -1,6 +1,6 @@
 ---
 name: build-plan-methodology
-description: Deep research methodology for creating detailed build todos. Searches knowledge base, codebase, and git history exhaustively.
+description: Deep research methodology for creating detailed build todos. Searches memory service, codebase, and git history exhaustively.
 memory:
   tags:
     - migration
@@ -29,23 +29,18 @@ Use the template at `templates/build-todo.md` for each build step.
 **This is the core of build planning.** Before writing any build todo, you MUST thoroughly
 research each of these areas:
 
-### 1. Knowledge Base Research (REQUIRED)
+### 1. Memory Service Search (REQUIRED)
 
-Search ALL relevant knowledge:
+Search the memory service for relevant knowledge:
 
-```bash
-# Find all references
-ls .claude/knowledge/references/
-grep -r "<relevant-keyword>" .claude/knowledge/references/
-
-# Find all gotchas (CRITICAL - these are known pitfalls)
-ls .claude/knowledge/gotchas/
-grep -r "<relevant-keyword>" .claude/knowledge/gotchas/
-
-# Find past solutions
-ls .claude/knowledge/solutions/
-grep -r "<relevant-keyword>" .claude/knowledge/solutions/
 ```
+mcp__autodev-memory__search(queries=[
+  {"keywords": ["<technology>", "<area>"], "text": "<feature area> gotchas pitfalls"},
+  {"keywords": ["<technology>", "<area>"], "text": "<area> standards patterns"}
+])
+```
+
+Also review auto-injected context from the knowledge menu in the system prompt.
 
 **Document in each build todo:**
 
@@ -109,22 +104,21 @@ Check project rules:
 - Document which rules affect this step
 - Note specific requirements (e.g., "no Any types", "use TEXT not VARCHAR")
 
-### 5. Memory Service Research (REQUIRED)
+### 5. Memory Search (REQUIRED)
 
-The memory service hooks auto-inject relevant knowledge as `additionalContext` on every
-prompt and agent dispatch. Check the injected context first. For targeted queries beyond
-what was auto-injected:
+Review the knowledge menu injected by hooks. For each build step's technology area,
+search for relevant gotchas and patterns using `mcp__autodev-memory__search`:
 
-```bash
-curl -sf -X POST \
-  -H "Authorization: Bearer $MEM_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"searches": [
-    {"query": "<feature area> implementation patterns"},
-    {"query": "<technology/area> gotchas pitfalls"}
-  ], "project": "<project>", "limit": 5}' \
-  "$MEM_SERVICE_URL/search"
 ```
+queries: [
+  {"keywords": ["<technology>", "<area>"], "text": "<feature area> implementation patterns"},
+  {"keywords": ["<technology>", "<area>"], "text": "<technology/area> gotchas pitfalls"}
+]
+project: "<project>"
+limit: 5
+```
+
+See the `autodev-search` skill for full MCP tool reference.
 
 **Document in each build todo:**
 
@@ -132,22 +126,19 @@ curl -sf -X POST \
 - User preferences that apply to this step
 - Past debug learnings for this area
 
-If $MEM_BEARER_TOKEN is unset, mention once and continue with other research.
-
 ## Build Todo Creation Process
 
 1. **Read plan.md** - Understand the architecture
 2. **Identify steps** - Break into independently completable units
-3. **Pre-flight knowledge base audit (MANDATORY):**
-   a. List ALL files in `.claude/knowledge/gotchas/` and `.claude/knowledge/references/`
+3. **Pre-flight memory service audit (MANDATORY):**
+   a. Search memory service for gotchas and references relevant to each build step's area
    b. For each build todo's affected area (database, migrations, encryption, API, etc.),
-   search for matching gotchas with grep
-   c. Read the most relevant 2-3 gotchas/references in full
-   d. If a build todo involves database schema changes, ALWAYS read
-   `references/database-migrations-*.md` and ALL `gotchas/migration-*.md` files
+   search with relevant keywords
+   c. Review the most relevant memory entries in full
+   d. If a build todo involves database schema changes, search for migration-related gotchas
    e. Document findings in each build todo's "Discovered Patterns" section
 4. **For each step:**
-   a. Research knowledge base for gotchas/standards
+   a. Search memory service for gotchas/standards
    b. Research codebase for patterns to follow
    c. Research git history for context
    d. Check CLAUDE.md for applicable rules
@@ -162,10 +153,10 @@ Every build todo MUST include a "Discovered Patterns" section:
 ```markdown
 ## Discovered Patterns
 
-**From knowledge base:**
+**From memory service:**
 
-- `.claude/knowledge/gotchas/xxx.md`: [How it applies]
-- `.claude/knowledge/references/xxx.md`: [Standard to follow]
+- [Entry title]: [How it applies]
+- [Entry title]: [Standard to follow]
 
 **From codebase:**
 
@@ -247,9 +238,9 @@ Use `depends_on` field to make dependencies explicit.
 
 Before finalizing each build todo:
 
-- [ ] Searched ALL knowledge base folders (references, gotchas, solutions)
+- [ ] Searched memory service for relevant gotchas, patterns, and solutions
 - [ ] Checked memory service results (auto-injected + explicit search if needed)
-- [ ] EVERY build todo has "From knowledge base" subsection (even if "none applicable")
+- [ ] EVERY build todo has "From memory service" subsection (even if "none applicable")
 - [ ] For database changes: migration gotchas were read and referenced
 - [ ] For field modifications: all consumers of modified fields were audited
 - [ ] Found and documented relevant codebase patterns
@@ -279,7 +270,7 @@ If schema changes are needed:
    always create a migration (`bun run migrate`, `alembic revision --autogenerate`, etc.).
    Never rely on `prisma db push` or equivalent tools alone -- they only sync the local
    dev database. Deployed environments run migrations, so a missing migration = column not
-   found at runtime. See `.claude/knowledge/references/prisma-migration-process.md`.
+   found at runtime. Search memory service for 'prisma migration process' for details.
 
 ### Environment Variables
 

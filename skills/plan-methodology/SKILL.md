@@ -118,28 +118,43 @@ new API integrations, changes to alert/notification logic
 ### For Features
 
 1. **Read source.md** - Understand requirements and scope
-2. **First-principles analysis** - State fundamental goal, classify constraints, eliminate fake ones
-3. **Research codebase** - Spawn `researcher` to find patterns, integration points
-4. **Define what we're NOT building** - Explicitly list eliminated scope
-5. **Assess complexity** - Determine verification strategy needed
-6. **Design architecture** - Choose high-level implementation approach (simplest that works)
-7. **Identify tradeoffs** - What we're optimizing for vs accepting
-8. **Identify side effects** - What else this change affects
-9. **Identify risks** - What could go wrong, how to mitigate
-10. **Write plan.md** - Synthesize research into architecture doc
+2. **Search memory service** - Find relevant gotchas, patterns, and past solutions:
+   ```
+   mcp__autodev-memory__search(queries=[
+     {"keywords": ["<feature-area>"], "text": "<feature area> architecture patterns"},
+     {"keywords": ["<technology>"], "text": "<technology> gotchas pitfalls"}
+   ])
+   ```
+   Also review auto-injected context from the knowledge menu.
+3. **First-principles analysis** - State fundamental goal, classify constraints, eliminate fake ones
+4. **Research codebase** - Spawn `researcher` to find patterns, integration points
+5. **Define what we're NOT building** - Explicitly list eliminated scope
+6. **Assess complexity** - Determine verification strategy needed
+7. **Design architecture** - Choose high-level implementation approach (simplest that works)
+8. **Identify tradeoffs** - What we're optimizing for vs accepting
+9. **Identify side effects** - What else this change affects
+10. **Identify risks** - What could go wrong, how to mitigate
+11. **Write plan.md** - Synthesize research into architecture doc
 
 ### For Bugs
 
 1. **Read source.md + investigation.md** - Understand problem and root causes
-2. **Verify investigation complete** - If missing root causes, suggest `/investigate`
-3. **First-principles analysis** - Is the root cause in code that should exist? Could we eliminate
+2. **Search memory service** - Find related past fixes and gotchas:
+   ```
+   mcp__autodev-memory__search(queries=[
+     {"keywords": ["<bug-area>"], "text": "<bug area> root cause fix"},
+     {"keywords": ["<technology>"], "text": "<technology> gotchas"}
+   ])
+   ```
+3. **Verify investigation complete** - If missing root causes, suggest `/investigate`
+4. **First-principles analysis** - Is the root cause in code that should exist? Could we eliminate
    rather than fix?
-4. **Assess complexity** - Determine verification strategy needed
-5. **Design fix approach** - Choose solution based on root causes (prefer elimination over repair)
-6. **Identify tradeoffs** - What we're optimizing for vs accepting
-7. **Identify side effects** - What else this fix affects
-8. **Identify risks** - What could go wrong, how to mitigate
-9. **Write plan.md** - Synthesize investigation into fix architecture
+5. **Assess complexity** - Determine verification strategy needed
+6. **Design fix approach** - Choose solution based on root causes (prefer elimination over repair)
+7. **Identify tradeoffs** - What we're optimizing for vs accepting
+8. **Identify side effects** - What else this fix affects
+9. **Identify risks** - What could go wrong, how to mitigate
+10. **Write plan.md** - Synthesize investigation into fix architecture
 
 ## Synthesis Guidelines
 

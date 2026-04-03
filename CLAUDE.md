@@ -105,7 +105,7 @@ Shared agents, commands, skills, and this CLAUDE.md live in `simonszalai/agent-w
 | Project-specific agent/skill/cmd | `.claude/` in project repo                | Only relevant there  |
 | Shared skill/agent/command       | `~/.claude/` (→ agent-workflows)          | Available everywhere |
 | User-level CLAUDE.md conventions | `~/.claude/CLAUDE.md` (→ agent-workflows) | Shared rules         |
-| Knowledge gotcha/reference       | `.claude/knowledge/` in project           | Project-specific     |
+| Knowledge gotcha/reference       | Memory service via `mcp__autodev-memory`  | Persisted in MCP     |
 
 ### Committing User-Level Changes (Critical)
 
@@ -197,7 +197,6 @@ permanent knowledge. Use `/compound` when the correction also implies workflow/s
 | User says                                                       | Action                 |
 | --------------------------------------------------------------- | ---------------------- |
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
-| "heal knowledge", "organize knowledge", "consolidate knowledge" | Run `/heal-knowledge`  |
 | "heal work items", "clean up work items"                        | Run `/heal-work-items` |
 | "consolidate memories", "audit memories", "clean up memories"   | Run `/consolidate`     |
 
@@ -347,20 +346,17 @@ unambiguous link back to the original work item.
 - `/auto-build`: Steps 2-8 + creates PR (for features with approved plans)
 - `/lfg`: Also handles bugs — investigate -> hypothesize -> fix -> review -> PR
 
-## 2-Tier Knowledge System
+## Knowledge System
 
-| Tier   | Location           | Purpose             | Always in Context |
-| ------ | ------------------ | ------------------- | ----------------- |
-| Tier 1 | CLAUDE.md          | Critical rules      | Yes               |
-| Tier 2 | .claude/knowledge/ | Detailed references | No (searched)     |
+| Tier   | Location                         | Purpose             | Always in Context |
+| ------ | -------------------------------- | ------------------- | ----------------- |
+| Tier 1 | CLAUDE.md                        | Critical rules      | Yes               |
+| Tier 2 | Memory service (autodev-memory)  | Detailed references | Auto-injected     |
 
-### Knowledge Base Structure
+Knowledge is stored in the memory service via `mcp__autodev-memory`. Context is auto-injected
+by hooks and can be explicitly searched via `mcp__autodev-memory__search`.
 
-- `references/` - Architecture, patterns, deployment guides
-- `gotchas/` - Common pitfalls and their solutions
-- `solutions/` - Problem resolutions
-
-### When to Search Knowledge Base
+### When to Search Memory Service
 
 - Researching patterns for a new feature
 - Looking for past solutions to similar problems

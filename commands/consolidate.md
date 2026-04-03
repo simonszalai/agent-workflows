@@ -27,7 +27,7 @@ or poorly structured entries. Presents a numbered action list for user selection
 | Entries feel too long, too short, or badly scoped | Yes |
 | Want to add new knowledge | No — use /save |
 | Want to fix a memory search failure | No — use /wtf |
-| Want to audit .claude/knowledge/ files | No — use /heal-knowledge |
+
 
 ## Behavior
 

@@ -328,7 +328,7 @@ agent-browser is visible 'text=Saved successfully'
 ### Purpose
 
 - Refine verification workflow to be efficient, fast, and accurate
-- Build knowledge base of common issues and solutions
+- Build memory entries of common issues and solutions
 - Fine-tune agent prompts based on real-world problems
 - Identify missing documentation or gotchas
 
@@ -336,7 +336,7 @@ agent-browser is visible 'text=Saved successfully'
 
 Review logs and flag significant learnings:
 
-- New gotchas -> `.claude/knowledge/gotchas/`
+- New gotchas -> store via memory service (`mcp__autodev-memory__create_entry`)
 - Skill improvements -> update `verify-flow` skill
 - Agent improvements -> update `verifier-local` agent
 

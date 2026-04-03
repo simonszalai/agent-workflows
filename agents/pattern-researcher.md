@@ -6,7 +6,7 @@ max_turns: 50
 skills:
   - research-exhaustive
   - research-repo-patterns
-  - research-knowledge-base
+  - autodev-search
 ---
 
 You are a codebase pattern researcher responsible for **exhaustively searching** an assigned

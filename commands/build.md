@@ -88,7 +88,7 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
 3. **Validate build_todos against plan:**
    - Verify build_todos align with plan.md decisions
    - If build_todos contradict plan.md, update plan.md or build_todos to resolve
-   - Check knowledge base for relevant gotchas and patterns
+   - Check memory service for relevant gotchas and patterns
 
 4. **Verify ready:**
    - Read `plan.md` - understand the approach

@@ -6,7 +6,7 @@ max_turns: 50
 skills:
   - investigate
   - tool-render
-  - research-knowledge-base
+  - autodev-search
 ---
 
 You are an infrastructure investigator using Render MCP tools.

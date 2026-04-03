@@ -1,7 +1,7 @@
 ---
 description: Resolve review findings based on decisions. Implements fixes from review_todos, captures learnings.
 skills:
-  - research-knowledge-base
+  - autodev-search
   - compound
 ---
 
@@ -46,7 +46,7 @@ Work through review findings and implement accepted fixes.
 
 5. **Capture learnings:**
    - After all findings are resolved, run `/compound` to analyze the fixes
-   - `/compound` will propose improvements to knowledge docs AND workflows
+   - `/compound` will propose improvements to memory entries AND workflows
    - In interactive mode, it will ask for approval before applying
 
 6. **Apply process improvement recommendations:**
@@ -183,7 +183,7 @@ git push
 - Code fixes for accepted findings
 - Updated `plan.md` with Review Resolution Summary and work log entry
 - `deployment-guide.md` with deployment instructions
-- Optional knowledge docs via `/compound`
+- Optional memory entries via `/compound`
 - Process improvements applied to:
   - `.claude/skills/plan-methodology/SKILL.md` (plan research requirements)
   - `.claude/skills/build-plan-methodology/SKILL.md` (build todo research requirements)

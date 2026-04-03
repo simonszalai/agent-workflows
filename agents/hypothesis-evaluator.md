@@ -7,7 +7,7 @@ skills:
   - hypothesis-testing
   - tool-postgres
   - tool-render
-  - research-knowledge-base
+  - autodev-search
 ---
 
 You are a hypothesis evaluator. Your job is to experimentally verify or refute hypotheses about

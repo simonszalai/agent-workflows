@@ -43,7 +43,7 @@ evidence_sources: []
 
 ### Codebase (researcher)
 
-[Findings from code analysis, git history, knowledge base]
+[Findings from code analysis, git history, memory service]
 
 - Key finding 1
 - Key finding 2

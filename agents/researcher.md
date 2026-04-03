@@ -9,7 +9,7 @@ skills:
   - research-git-history
   - research-best-practices
   - research-framework-docs
-  - research-knowledge-base
+  - autodev-search
 ---
 
 You are a codebase researcher.
@@ -22,7 +22,7 @@ Use `researcher` for **general codebase research** when you need to:
 - Find code patterns and conventions in use
 - Check git history for context on when/why code was added
 - Look up framework best practices
-- Search the knowledge base for relevant gotchas or references
+- Search the memory service for relevant gotchas or references
 
 **Do NOT use for:**
 
@@ -83,11 +83,11 @@ and conventions that inform your research. For example:
 
 ## What to Look For
 
-**Knowledge base (check first):**
+**Memory service (check first):**
 
-- Known gotchas matching the problem
+- Known gotchas matching the problem (via `mcp__autodev-memory__search`)
 - Past solutions for similar issues
-- Reference docs for relevant architecture
+- Auto-injected context from knowledge menu
 
 **Code patterns:**
 

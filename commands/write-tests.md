@@ -2,6 +2,7 @@
 description: Write sensible tests for code changes. Analyzes what matters, skips what doesn't.
 skills:
   - testing-strategy
+  - autodev-search
 ---
 
 # Write Tests Command
@@ -18,7 +19,7 @@ Write tests that catch real bugs and protect important behavior. Not coverage th
 
 ## Process
 
-### 1. Load Testing Strategy
+### 1. Load Testing Strategy and Search Memory
 
 Read the `testing-strategy` skill for:
 - What to test vs what to skip (priority matrix)
@@ -31,6 +32,17 @@ Also check the project's AGENTS.md for:
 - Test database configuration
 - Demo accounts for e2e
 - Project-specific test conventions
+
+**Search memory service** for testing gotchas relevant to the code being tested:
+
+```
+mcp__autodev-memory__search(queries=[
+  {"keywords": ["test", "<technology>"], "text": "<area> testing gotchas pitfalls"},
+  {"keywords": ["test", "<area>"], "text": "<area> test patterns assertions"}
+])
+```
+
+Also review auto-injected context from the knowledge menu for relevant testing entries.
 
 ### 2. Analyze What Changed
 
@@ -142,6 +154,41 @@ Parallelism: All tests use unique identifiers and run independently.
 
 Run: bun run test [paths]
 ```
+
+### 7. Capture Test Failure Patterns (if failures were fixed)
+
+If any tests failed during step 5 and you fixed them, store the failure pattern in memory so
+future test-writing avoids the same pitfall:
+
+```
+# 1. Search for duplicates
+mcp__autodev-memory__search(
+  queries=["<failure pattern keywords>"],
+  project="<from <!-- mem:project=X --> in CLAUDE.md>"
+)
+
+# 2. If no duplicate, store the pattern
+mcp__autodev-memory__create_entry(
+  project="<from <!-- mem:project=X --> in CLAUDE.md>",
+  title="Test gotcha: <1-sentence failure summary>",
+  content="<What failed, why, and the fix. 100-300 tokens.>",
+  entry_type="gotcha",
+  summary="<1-sentence summary>",
+  tags=["test", "<technology>", "<area>"],
+  source="captured",
+  caller_context={
+    "skill": "write-tests",
+    "reason": "Test failure pattern that future test-writing should know about",
+    "action_rationale": "New entry — no existing entry covers this test pitfall",
+    "trigger": "test failure fix"
+  }
+)
+```
+
+**Capture when:** The failure was non-obvious (e.g., async timing, mock setup, DB state).
+**Skip when:** The failure was a simple typo or wrong assertion value.
+
+If the MCP tool is unavailable, skip this step silently.
 
 ## When Called from /build
 

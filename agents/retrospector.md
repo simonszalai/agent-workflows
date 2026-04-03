@@ -6,7 +6,6 @@ max_turns: 50
 skills:
   - retrospect-methodology
   - research-git-history
-  - research-knowledge-base
 ---
 
 You are a workflow retrospective analyst.
@@ -45,7 +44,7 @@ Use topology to:
 - **Find related work items across sibling repos** — a bug in one repo may have originated
   from a change in a sibling repo
 - **Understand repo boundaries** — know which repos interact to trace cross-repo bugs
-- **Scope knowledge base searches** — use repo names and tech_tags as search terms when
+- **Scope memory searches** — use repo names and tech_tags as search terms when
   checking for missing documentation
 
 ## What to Analyze
@@ -92,12 +91,14 @@ This is critical. For every production bug, answer:
 - If tests exist, why didn't they cover this scenario?
 - What specific test scenario should be added?
 
-### 5. Check Knowledge Base
+### 5. Check Memory Service
 
-```bash
-grep -r "keyword" .claude/knowledge/gotchas/
-grep -r "keyword" .claude/knowledge/references/
-grep -r "keyword" .claude/knowledge/solutions/
+Search for relevant memories that should have prevented this:
+
+```
+mcp__autodev-memory__search(queries=[
+  {"keywords": ["<bug-area>"], "text": "<bug description> gotcha"}
+])
 ```
 
 Is there missing documentation that could have prevented this?
@@ -149,7 +150,7 @@ When analyzing gaps, pay special attention to:
 
 **Plan phase:**
 
-- Did plan research `.claude/knowledge/` for gotchas?
+- Did plan search memory service for gotchas?
 - Did plan check existing patterns in similar code?
 - Did plan identify database/migration implications?
 

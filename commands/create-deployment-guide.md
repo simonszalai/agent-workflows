@@ -2,7 +2,7 @@
 description: Create a deployment guide markdown after code is ready. Documents what to deploy and how.
 skills:
   - review-deployment
-  - research-knowledge-base
+  - autodev-search
 ---
 
 # Create Deployment Guide Command
@@ -57,12 +57,12 @@ Categorize changes by deployment requirements:
 
 ### 3. Check for Project-Specific Deployment Rules
 
-Search knowledge base for deployment gotchas:
+Search memory service for deployment gotchas:
 
-```bash
-# Check for deployment-related knowledge
-grep -r "deploy" .claude/knowledge/gotchas/
-grep -r "migration" .claude/knowledge/
+```
+mcp__autodev-memory__search(queries=[
+  {"keywords": ["deploy", "migration"], "text": "deployment gotchas rollback"}
+])
 ```
 
 Refer to AGENTS.md for project-specific deployment requirements.

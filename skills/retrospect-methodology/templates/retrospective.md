@@ -91,11 +91,12 @@ bug_introduced_by: [commit hash or "unknown"]
 
 **Type:** gotcha | reference | solution | none needed
 
-**If knowledge doc needed:**
+**If memory entry needed:**
 
-- **Location:** `.claude/knowledge/[type]/[filename].md`
+- **Type:** gotcha | pattern | solution
 - **Title:** [Proposed title]
 - **Key content:** [What it should capture]
+- **Action:** Store via `mcp__autodev-memory__create_entry`
 
 ### Process Change (if recurring pattern)
 

@@ -6,8 +6,8 @@ max_turns: 50
 skills:
   - plan-methodology
   - first-principles
-  - research-knowledge-base
   - research-past-work
+  - autodev-search
 ---
 
 You are a planner. Create **high-level architecture plans**.

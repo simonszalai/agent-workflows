@@ -6,7 +6,7 @@ max_turns: 50
 skills:
   - investigate
   - tool-postgres
-  - research-knowledge-base
+  - autodev-search
 ---
 
 You are a database investigator using Postgres MCP tools.

@@ -21,11 +21,10 @@ Standards for high-quality Python code. Apply these when reviewing Python change
 
 ## 0. Project-Specific Standards First
 
-**Before applying generic rules below, read project coding standards:**
+**Before applying generic rules below, check memory service for project coding standards:**
 
-```
-.claude/knowledge/references/coding-standards-*.md
-```
+Search `mcp__autodev-memory__search` for coding standards relevant to this project.
+Also review auto-injected context from the knowledge menu.
 
 Project-specific conventions override generic best practices. For example, a project may allow
 patterns (like assertions for data completeness) that generic rules would flag.
@@ -160,7 +159,7 @@ if record.embedding is not None:  # Correct
 - `core_event_embedding`, `title_embedding`, `*_embedding`
 - Any `Field(sa_type=Vector(N))` column
 
-See: `.claude/knowledge/gotchas/pgvector-numpy-truthiness-20260122.md`
+See memory entry: "pgvector numpy truthiness" (search memory service if not auto-injected)
 
 ## 13. Exception Handler Control Flow
 
@@ -239,7 +238,7 @@ raw_sql = """
 recurred when only the first failing parameter was fixed while others in the same expression
 were left uncast.
 
-See: `.claude/knowledge/gotchas/asyncpg-text-param-type-inference-20260302.md`
+See memory entry: "asyncpg text param type inference" (search memory service if not auto-injected)
 
 ## 15. Broad except Exception Masking Critical Errors
 
@@ -283,7 +282,7 @@ except Exception as e:
 **Key distinction:** Will retrying help? Monthly usage cap won't reset with retries — it's
 critical. A network timeout might resolve on retry — it's transient.
 
-See: `.claude/knowledge/gotchas/broad-except-masks-critical-errors-20260305.md`
+See memory entry: "broad except masks critical errors" (search memory service if not auto-injected)
 
 ## 16. Catch-and-Warn on Must-Succeed Operations
 
