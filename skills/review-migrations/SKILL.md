@@ -86,6 +86,7 @@ See memory entry: "migration downgrade named constraints" (search memory service
 - [ ] Search for every reference to removed columns/tables/associations
 - [ ] Check background jobs, admin pages, rake tasks for deleted associations
 - [ ] Do any serializers, APIs, or analytics jobs expect old columns?
+- [ ] If scripts/tools were moved or renamed, grep `.github/workflows/` for old paths — including cross-branch steps that checkout `origin/main`
 - [ ] Document exact search commands for future reviewers
 
 ## Quick Reference SQL
