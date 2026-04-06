@@ -34,10 +34,15 @@ Use the template at `templates/investigation.md` for output format.
 When combining findings from multiple sources:
 
 1. **Correlate timestamps** - Match events across sources (logs, DB records, flow runs)
-2. **Follow causation** - Infrastructure issues → flow failures → data state
-3. **Quantify impact** - Count affected records, flows, time windows
-4. **Rank by severity** - Critical (data loss, outage) > High (degraded) > Medium (edge cases)
-5. **Verify hypotheses** - Each root cause needs evidence from at least one source
+2. **Check cross-service correlation** - If multiple independent services fail
+   simultaneously, investigate shared infrastructure (proxy, DB, network) before
+   per-service causes. Error messages from individual services may assume a cause
+   (e.g., "anti-bot challenge") that is actually a shared infrastructure failure.
+3. **Follow causation** - Infrastructure issues → flow failures → data state
+4. **Quantify impact** - Count affected records, flows, time windows
+5. **Rank by severity** - Critical (data loss, outage) > High (degraded) > Medium (edge cases)
+6. **Verify hypotheses** - Each root cause needs evidence from at least one source
+
 
 ## Evidence Quality
 
