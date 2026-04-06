@@ -71,10 +71,14 @@ When combining findings from multiple sources:
 ## Investigation Process
 
 1. **Gather evidence** - Collect findings from all relevant sources
-2. **Correlate timeline** - Build event sequence across sources
-3. **Identify root causes** - Distinguish symptoms from causes
-4. **Assess impact** - Quantify what was affected
-5. **Recommend fixes** - High-level fix directions (not solution design)
+2. **Check deployment correlation** - Compare failure onset with recent deploys.
+   If failures started right after a code change, **suspect the new code first** —
+   don't blame external services until the new code is ruled out. New "guard" or
+   "pre-flight" checks are especially suspect: they can silently block real work.
+3. **Correlate timeline** - Build event sequence across sources
+4. **Identify root causes** - Distinguish symptoms from causes
+5. **Assess impact** - Quantify what was affected
+6. **Recommend fixes** - High-level fix directions (not solution design)
 
 **Note:** Investigation answers "what happened and why". Solution design happens in `/plan`.
 
