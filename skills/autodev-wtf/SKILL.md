@@ -12,7 +12,7 @@ When the user runs `/wtf`, the memory system failed to prevent an error they jus
 This skill provides the methodology to investigate WHY.
 
 **Scope:** One failure, one trace, one verdict. This is NOT a broad system audit
-(use `improve-autodev` for that). This traces a single pipeline execution to find
+(use `autodev-improve` for that). This traces a single pipeline execution to find
 where it broke.
 
 ## Investigation Process
@@ -35,8 +35,8 @@ grep ERROR ~/.config/autodev-memory/hooks.log | tail -10
 Then collect additional evidence via MCP tools:
 
 ```
-mcp__autodev-memory__debug_logs(project="<project>", operation="search", hours=2, limit=20)
-mcp__autodev-memory__debug_logs(project="<project>", operation="store", hours=2, limit=10)
+mcp__autodev-memory__debug_logs(project="<project>", operation="mcp_search", hours=2, limit=20)
+mcp__autodev-memory__debug_logs(project="<project>", operation="mcp_create_entry", hours=2, limit=10)
 mcp__autodev-memory__list_entries(project="<project>")
 ```
 

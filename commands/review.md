@@ -11,7 +11,7 @@ Review implementation by spawning specialized review agents in parallel.
 ```
 /review 009                              # Bug/incident #009 (NNN format)
 /review F001                             # Feature F001 (FNNN format)
-/review work_items/active/009-fix-timeout  # Use explicit path
+/review B0009                              # Bug ticket B0009
 ```
 
 ## Agent Dispatch
@@ -42,15 +42,14 @@ similar past implementations. This helps catch recurring patterns proactively.
 ## Process
 
 1. **Gather context:**
-   - Read `plan.md` for intended approach
+   - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
+   - Read plan artifact for intended approach
    - Run `git diff --name-only` to identify changed files
-   - Read `build_todos/` completion notes
+   - Read build_todo artifact completion notes
 
-2. **Check existing review_todos:**
-   - List files in `review_todos/` directory (if it exists)
-   - Extract index numbers from filenames (pattern: `NN-*.md`)
-   - Find the highest existing index number
-   - New findings start at `max_index + 1` (or 01 if empty)
+2. **Check existing review_todo artifacts:**
+   - Count existing review_todo artifacts from `get_ticket` response
+   - New findings start at `max_sequence + 1` (or 1 if none exist)
 
 3. **Spawn agents** with prompts like:
 
@@ -60,9 +59,18 @@ similar past implementations. This helps catch recurring patterns proactively.
    Return findings with file_path:line_number format.
    ```
 
-4. **Collect findings** into `review_todos/` directory
-   - Use `review` skill template for output format
-   - Number files starting from the next available index (from step 2)
+4. **Store findings** as review_todo artifacts:
+   ```
+   mcp__autodev-memory__create_artifact(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     artifact_type="review_todo",
+     title="<finding title>",
+     sequence=N,
+     status="pending",
+     content="<finding content using review skill template>",
+     command="/review"
+   )
+   ```
 
 5. **Store P1/P2 findings in memory service** (persists beyond session):
    For each P1/P2 finding, first search for duplicates, then store via MCP:
@@ -98,10 +106,7 @@ similar past implementations. This helps catch recurring patterns proactively.
    where review findings would otherwise be lost after the session ends.
    If the MCP tool is unavailable, skip this step silently.
 
-6. **Update plan.md** work log:
-   ```
-   | YYYY-MM-DD | review | Ran review agents | N findings (X p1, Y p2, Z p3) |
-   ```
+6. **Update plan artifact** with review log entry via `update_artifact`
 
 ## Output
 

@@ -66,7 +66,7 @@ assuming a fixed stack.
 
    ```bash
    # Find review findings in same codebase area
-   grep -r "src/" work_items/*/review_todos/*.md work_items/*/*/review_todos/*.md
+   mcp__autodev-memory__search_tickets(project=PROJECT, query="<relevant keywords>")
    ```
 
    Extract patterns of issues found in similar implementations.

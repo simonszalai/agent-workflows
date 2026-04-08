@@ -1,0 +1,1 @@
+/Users/simon/dev/agent-workflows/skills/gstack/health/SKILL.md

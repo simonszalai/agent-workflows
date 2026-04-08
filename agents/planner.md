@@ -57,14 +57,18 @@ Use topology to:
 
 ## Research Past Work (IMPORTANT)
 
-Before creating a plan, search for similar past work items using `research-past-work` skill:
+Before creating a plan, search for similar past tickets using MCP:
 
-```bash
-# Find work items in same codebase area
-grep -r "src/" work_items/*/plan.md work_items/*/*/plan.md
+```
+# Find similar completed tickets
+similar = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+)
 
-# Find work items with similar patterns
-grep -r "<relevant_keywords>" work_items/*/source.md work_items/*/*/source.md
+# Search by keyword
+results = mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="<relevant keywords>"
+)
 ```
 
 **Extract from similar past work:**
@@ -167,9 +171,10 @@ Before creating a plan, verify:
 
 ## Output
 
-Create `plan.md` in the work item folder using the template from plan-methodology skill.
+Store plan as artifact via `create_artifact(artifact_type="plan", content=...)`.
+Use the template from plan-methodology skill for content structure.
 
-Work items can be in any of: `work_items/active/`, `work_items/backlog/`, `work_items/closed/`
+Ticket artifacts are stored in the MCP ticket system.
 
 ## Next Steps
 

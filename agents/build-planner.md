@@ -158,16 +158,20 @@ For each build todo, include:
 
 Read CLAUDE.md and note all rules that apply. Always follow the project's coding standards.
 
-### 6. Past Work Items (find similar implementations)
+### 6. Past Tickets (find similar implementations)
 
-Search for similar past work items using `research-past-work` skill:
+Search for similar past tickets using MCP:
 
-```bash
-# Find similar build_todos
-grep -r "src/" work_items/*/build_todos/*.md work_items/*/*/build_todos/*.md
+```
+# Find similar completed tickets
+similar = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+)
 
-# Find review findings in similar area
-grep -r "type hint\|missing index\|constraint" work_items/*/review_todos/*.md
+# Search by keyword across all ticket artifacts
+results = mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="<relevant keywords>"
+)
 ```
 
 **What to find:**
@@ -234,7 +238,8 @@ If you need more information:
 
 ## Output
 
-Create `build_todos/` in the work item folder using templates from build-plan-methodology skill.
+Store build todos as artifacts via `create_artifact(artifact_type="build_todo", sequence=N, ...)`.
+Use templates from build-plan-methodology skill for content structure.
 
 ## Next Steps
 

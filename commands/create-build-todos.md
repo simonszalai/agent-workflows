@@ -14,34 +14,30 @@ existing patterns and rules are discovered and followed.
 ```
 /create-build-todos 009                              # Bug/incident #009 (NNN format)
 /create-build-todos F001                             # Feature F001 (FNNN format)
-/create-build-todos work_items/active/009-fix-timeout  # Use explicit path
+/create-build-todos B0009                              # Bug ticket B0009
 ```
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 
 Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
 
-```bash
-# 1. Locate work item
-find work_items -maxdepth 2 -type d -name "*[id]*" | head -1
-# If empty: STOP - work item not found
+```
+# 1. Load ticket
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+# If not found: STOP - ticket not found
 
-# 2. Check plan.md exists
-test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
+# 2. Check plan artifact exists
+# Look for artifact with type="plan" in ticket response
 # If missing: STOP - run /plan first
-
-# 3. Check plan is approved (has work log entry or explicit approval)
-grep -E "^\| [0-9]{4}-[0-9]{2}-[0-9]{2} \| plan \|" work_items/*/[id]*/plan.md
-# If no entries: warn that plan may not be reviewed
 ```
 
 **If any prerequisite fails:**
 
 | Missing             | Action                                 |
 | ------------------- | -------------------------------------- |
-| Work item not found | **STOP** - create work item first      |
-| No plan.md          | **STOP** - run `/plan [id]` first      |
-| Plan not reviewed   | **WARN** - suggest user review plan.md |
+| Ticket not found    | **STOP** - create ticket first         |
+| No plan artifact    | **STOP** - run `/plan [id]` first      |
+| Plan not reviewed   | **WARN** - suggest user review plan    |
 
 **Additional requirements:**
 
@@ -83,10 +79,10 @@ grep -E "^\| [0-9]{4}-[0-9]{2}-[0-9]{2} \| plan \|" work_items/*/[id]*/plan.md
    - Same ID resolution as `/plan` command
    - Error if plan.md doesn't exist
 
-2. **Read context:**
-   - `plan.md` - The approved architecture plan
-   - `source.md` - Original problem/feature description
-   - `investigation.md` - Production findings (if exists)
+2. **Read context** from `get_ticket` response:
+   - Plan artifact - The approved architecture plan
+   - Source artifact - Original problem/feature description
+   - Investigation artifact - Production findings (if exists)
 
 3. **Spawn build-planner agent** for deep research:
    - Agent searches memory service exhaustively
@@ -94,18 +90,20 @@ grep -E "^\| [0-9]{4}-[0-9]{2}-[0-9]{2} \| plan \|" work_items/*/[id]*/plan.md
    - Agent analyzes git history for context
    - Agent may spawn additional researcher agents
 
-4. **Write build_todos/**:
-   - One file per implementation step
-   - Steps ordered by dependencies
+4. **Write build_todo artifacts:**
+   - One artifact per implementation step
+   - Steps ordered by dependencies via `sequence` field
    - Each step includes discovered patterns to follow
-
-5. **Commit build_todos/**:
-
-   ```bash
-   git add work_items/*/[id]*/build_todos/
-   git commit -m "Create build todos for {work-item-id}
-
-   Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+   ```
+   mcp__autodev-memory__create_artifact(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     artifact_type="build_todo",
+     title="<step title>",
+     sequence=N,
+     status="pending",
+     content="<step content>",
+     command="/create-build-todos"
+   )
    ```
 
 ## Research Depth
@@ -122,14 +120,13 @@ The build-planner agent performs thorough research:
 
 ## Output
 
-```
-work_items/active/{NNN|FNNN}-title/
-  plan.md             # Input (must exist)
-  build_todos/        # Created by build-planner
-    01-step-name.md
-    02-step-name.md
-    ...
-```
+Build todo artifacts stored in MCP ticket system:
+
+| Artifact | Type | Sequence |
+|---|---|---|
+| Step 1: [name] | build_todo | 1 |
+| Step 2: [name] | build_todo | 2 |
+| ... | build_todo | N |
 
 Each build todo contains:
 
@@ -149,20 +146,9 @@ Each build todo contains:
 
 ## Post-Creation Validation
 
-After all build todos are written, verify memory service compliance:
-
-```bash
-# Check that build todos reference the memory service
-grep -rl "memory service" work_items/*/[id]*/build_todos/ | wc -l
-# If 0: WARNING - no memory service references found. Re-run research phase.
-
-# Check that every build todo has "From memory service" subsection
-for f in work_items/*/[id]*/build_todos/*.md; do
-  grep -q "From memory service" "$f" || echo "MISSING memory service section: $f"
-done
-```
-
-If validation fails, go back and add the missing memory service research before committing.
+After all build todos are written, verify memory service compliance by reading back
+the ticket artifacts and checking each build_todo content contains memory service
+references. If any are missing, go back and add the missing research.
 
 ## Next Steps
 

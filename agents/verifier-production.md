@@ -41,16 +41,16 @@ application behavior. This agent is **read-only** - it never modifies data.
 Read from the work item to understand what to verify:
 
 ```
-Read: work_items/{path}/plan.md
+Read plan artifact from get_ticket response
   - Find "## Verification Strategy" section
   - Extract test scenarios and expected results
   - Identify affected components and database tables
 
-Read: work_items/{path}/source.md
+Read source artifact from get_ticket response
   - Understand the feature requirements
   - Identify acceptance criteria
 
-Read: work_items/{path}/investigation.md (if exists)
+Read investigation artifact from get_ticket response (if exists)
   - Context about the original issue
   - Affected records or patterns
 ```

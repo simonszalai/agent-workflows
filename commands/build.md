@@ -13,7 +13,7 @@ Execute a plan by working through build_todos.
 /build 009                  # Execute bug #009 (NNN format)
 /build F001                 # Execute feature F001 (FNNN format)
 /build F001 --step 2        # Execute specific step
-/build work_items/active/009-fix-timeout  # Use explicit path
+/build B0009                  # Bug ticket B0009
 ```
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
@@ -27,12 +27,10 @@ Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
 git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
 git worktree list | grep "$(pwd)" | grep -v "bare"  # Must match current dir
 
-# 2. Check build_todos exist
-ls work_items/*/[id]*/build_todos/*.md 2>/dev/null | head -1
-# If empty: STOP - run /create-build-todos first
-
-# 3. Check plan.md exists
-test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
+# 2. Load ticket and check artifacts exist
+mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+# Check for build_todo artifacts — if none: STOP - run /create-build-todos first
+# Check for plan artifact — if missing: STOP - run /plan first
 ```
 
 ### Branch Mode (Cloud)
@@ -42,13 +40,12 @@ When `CLAUDE_CODE_REMOTE=true`:
 ```bash
 # 1. Check we're on a feature branch (not main)
 git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
-# If on main: Create branch first (see Branch-Based Execution below)
+# If on main: Create branch first
 
-# 2. Check build_todos exist
-ls work_items/*/[id]*/build_todos/*.md 2>/dev/null | head -1
-
-# 3. Check plan.md exists
-test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
+# 2. Load ticket and check artifacts exist
+mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+# Check for build_todo artifacts — if none: STOP - run /create-build-todos first
+# Check for plan artifact — if missing: STOP - run /plan first
 ```
 
 **If any prerequisite fails:**
@@ -78,25 +75,24 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
    - This mode is used for cloud execution where worktrees aren't practical
 
 2. **Process user feedback:**
-   - Read `plan.md` Open Questions section - review all Q&A pairs
-   - Read `plan.md` Additional Notes section - note any corrections or clarifications
+   - Read plan artifact from `get_ticket` response — check Open Questions and Additional Notes
    - If answers or notes require changes to build_todos:
-     - Update affected todo files with new requirements
+     - Update affected build_todo artifacts via `update_artifact`
      - Add/remove/modify steps as indicated
      - Document changes in work log
 
 3. **Validate build_todos against plan:**
-   - Verify build_todos align with plan.md decisions
-   - If build_todos contradict plan.md, update plan.md or build_todos to resolve
+   - Verify build_todo artifacts align with plan artifact decisions
+   - If build_todos contradict plan, update via `update_artifact` to resolve
    - Check memory service for relevant gotchas and patterns
 
 4. **Verify ready:**
-   - Read `plan.md` - understand the approach
-   - List `build_todos/` - identify pending steps
+   - Read plan artifact — understand the approach
+   - List build_todo artifacts — identify pending steps (status != "complete")
 
 5. **Execute each step:**
    - Read todo file - understand objective
-   - Update status to `in_progress`
+   - Update artifact status: `mcp__autodev-memory__update_artifact(project=PROJECT, artifact_id=ID, status="in_progress")`
    - Implement changes as specified
    - **Run ALL verification commands** listed in the build todo's Verification section
    - **Count-verify bulk changes:** If the todo says "modify N call sites," run a grep
@@ -113,9 +109,7 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
    - Run tests (project's test suite)
    - Run type checker (project's type checker)
    - Run linter (project's linter)
-   - Update status to `complete`
-   - Fill Completion Notes section
-   - Add work log entry to `plan.md`
+   - Update artifact: `update_artifact(artifact_id=ID, status="complete", content="<updated with completion notes>")`
 
 6. **Handle issues:**
    | Issue | Action |
@@ -164,8 +158,7 @@ test -f work_items/*/[id]*/plan.md || echo "MISSING plan.md"
 10. **Final:**
    - Run full test suite
    - Run type checker - fix any type errors before completing
-   - Add completion summary to `plan.md` (see format below)
-   - Add final work log entry
+   - Update plan artifact with completion summary via `update_artifact`
 
 ## Status Flow
 

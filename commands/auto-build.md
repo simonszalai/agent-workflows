@@ -50,8 +50,8 @@ summary report.
 ### Phase 1: Setup
 
 1. **Verify plan is approved:**
-   - Read `plan.md`
-   - Check for approval indicator (user sign-off in work log or explicit approval)
+   - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
+   - Check plan artifact for approval indicator
    - If not approved: STOP and report "Plan needs approval first"
 
 2. **Create feature branch:**
@@ -70,7 +70,7 @@ summary report.
 Run `/create-build-todos` internally:
 
 - Spawns `build-planner` agent for deep research
-- Creates `build_todos/` with detailed implementation steps
+- Creates build_todo artifacts with detailed implementation steps
 - Each step includes discovered patterns and conventions
 
 **On failure:** Log error, report to user, do not continue.
@@ -115,7 +115,7 @@ Run `/review` internally:
   - `reviewer-code` (quality, YAGNI, patterns)
   - `reviewer-system` (architecture, security, performance)
   - `reviewer-data` (if database changes)
-- Collect findings into `review_todos/`
+- Store findings as review_todo artifacts
 
 **If `--review-pause`:** Stop here, notify user, wait for decisions.
 
@@ -200,8 +200,8 @@ Run `/verify-local` internally:
 
 Run `/create-pr {work-item-id}` internally:
 
-1. Collects all work item artifacts (plan.md, build_todos/, review_todos/,
-   deployment-guide.md, verification-report.md, etc.)
+1. Collects all ticket artifacts via `get_ticket` (plan, build_todos, review_todos,
+   deployment_guide, etc.)
 2. Runs tests and collects results
 3. Generates standardized summary with:
    - What was done (implementation details)
@@ -260,7 +260,7 @@ Summary:
 - Verification: PASS
 - Review: 4 findings resolved
 
-Work item: F007-feature-name
+Ticket: F0007
 ```
 
 ### On Partial Success
@@ -276,7 +276,7 @@ Summary:
 - Verification: FAIL (1 scenario)
 - Review: 3 findings resolved, 1 P3 remaining
 
-Work item: F007-feature-name
+Ticket: F0007
 ```
 
 ### On Failure
@@ -286,8 +286,8 @@ Auto-build failed at: {phase}
 
 Reason: {error description}
 
-Work item: F007-feature-name
-See: work_items/active/F007-feature-name/ for partial progress
+Ticket: F0007
+See ticket F0007 for partial progress
 ```
 
 ## Work Log Entry

@@ -135,118 +135,45 @@ Determine input source and extract requirements.
 
    Then STOP and wait for user response before continuing.
 
-**Source C: Resume existing work item** (when invoked with BNNN)
+**Source C: Resume existing ticket** (when invoked with BNNN)
 
-1. Read the existing work item from `work_items/flow_failures/ongoing/{id}-*/`
-2. Load `source.md` for context
-3. Check which phases are already complete (investigation.md, plan.md, build_todos/, etc.)
+1. Load the existing ticket:
+   ```
+   ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+   ```
+2. Read the source artifact for context
+3. Check which artifact types already exist (investigation, plan, build_todo, etc.)
 4. Resume from the next incomplete phase
 
-### Phase 2: Create Work Item
+### Phase 2: Create Ticket
 
-1. **Find next number:**
+Resolve project and repo from CLAUDE.md (`<!-- mem:project=X -->`) and git remote.
 
-   For bugs:
+**Create a ticket via MCP:**
 
-   ```bash
-   find work_items/flow_failures -maxdepth 2 -type d -name "B[0-9][0-9][0-9]-*" | \
-     sed 's/.*B\([0-9]*\).*/\1/' | sort -n | tail -1
-   ```
+```
+ticket = mcp__autodev-memory__create_ticket(
+  project=PROJECT, repo=REPO,
+  title="<synthesized title>",
+  type="bug" | "feature",
+  description="<formatted description — see below>",
+  status="active",
+  tags={"github_issue": issue_number, "source": "conversation"},  # as applicable
+  command="/lfg"
+)
+# ticket_id is auto-generated (e.g., F0043, B0012)
+```
 
-   For features:
+**Description content by input source:**
 
-   ```bash
-   find work_items -maxdepth 2 -type d -name "F[0-9][0-9][0-9]-*" | \
-     sed 's/.*F\([0-9]*\).*/\1/' | sort -n | tail -1
-   ```
+**For GitHub issue input:**
+Include issue number, author, labels, body, and extracted acceptance criteria.
 
-2. **Create folder:** `work_items/active/{id}-{slug}/` (or `work_items/flow_failures/ongoing/{id}-{slug}/` for BNNN)
+**For conversation input (features):**
+Include context summary, requirements, and acceptance criteria.
 
-3. **Create source.md:**
-
-   **For GitHub issue input:**
-
-   ```markdown
-   ---
-   title: { Issue title }
-   type: { bug|feature }
-   status: active
-   created: YYYY-MM-DD
-   github_issue: #{issue_number}
-   ---
-
-   # {Issue Title}
-
-   ## GitHub Issue
-
-   **Issue:** #{issue_number}
-   **Author:** {author}
-   **Labels:** {labels}
-
-   ## Requirements
-
-   {Issue body content}
-
-   ## Acceptance Criteria
-
-   {Extracted from issue body or inferred}
-   ```
-
-   **For conversation input (features):**
-
-   ```markdown
-   ---
-   title: { Synthesized title }
-   type: feature
-   status: active
-   created: YYYY-MM-DD
-   source: conversation
-   ---
-
-   # {Synthesized Title}
-
-   ## Context
-
-   {Summary of conversation that triggered this work}
-
-   ## Requirements
-
-   {Requirements extracted from conversation}
-
-   ## Acceptance Criteria
-
-   {Criteria extracted or inferred from conversation}
-   ```
-
-   **For conversation input (bugs/incidents):**
-
-   ```markdown
-   ---
-   title: { Synthesized title }
-   type: bug
-   status: active
-   created: YYYY-MM-DD
-   source: conversation
-   service: {service name, if known}
-   error_time: {timestamp, if known}
-   ---
-
-   # {Service Name} - {Error Type}
-
-   ## Error Context
-
-   **Service:** {name}
-   **Time:** {timestamp}
-   **Error Type:** {crash/timeout/OOM/etc.}
-
-   ## Error Message
-
-   {Error text from notification or conversation}
-
-   ## User Context
-
-   {Any hints or context from the user's comment}
-   ```
+**For conversation input (bugs):**
+Include service name, error time, error type, error message, and user context.
 
 ### Phase 3: Research or Investigate
 
@@ -301,13 +228,16 @@ via the memory service store API (see compound-methodology skill for full API de
 
 Run `/plan` internally:
 
-1. Read research/investigation findings
+1. Read research/investigation artifacts from `get_ticket` response
 2. Design implementation approach
-3. Create `plan.md` with:
-   - Approach summary
-   - Files to modify
-   - Testing strategy
-   - Potential risks
+3. Store plan as artifact:
+   ```
+   mcp__autodev-memory__create_artifact(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     artifact_type="plan", content="<plan content>",
+     command="/lfg"
+   )
+   ```
 
 **Plan is auto-approved** in LFG mode (no user confirmation needed).
 
@@ -316,7 +246,7 @@ Run `/plan` internally:
 Run `/create-build-todos` internally:
 
 - Spawns `build-planner` agent for deep research
-- Creates `build_todos/` with detailed implementation steps
+- Creates `build_todo` artifacts with detailed implementation steps
 - Each step includes discovered patterns and conventions
 
 **On failure:** STOP, report error.
@@ -377,9 +307,11 @@ This phase loops until there are no P1 or P2 findings remaining.
 
 2. **Check for P1/P2 findings:**
 
-   ```bash
-   grep -l "priority: p[12]" review_todos/*.md 2>/dev/null | \
-     xargs -I{} grep -L "status: resolved" {} 2>/dev/null
+   Check the ticket's review_todo artifacts for unresolved P1/P2 findings:
+   ```
+   ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+   # Filter artifacts where type="review_todo" and status != "resolved"
+   # and content contains "priority: p1" or "priority: p2"
    ```
 
 3. **If P1/P2 exist:**
@@ -421,8 +353,8 @@ Run `/create-pr {work-item-id}` internally (no issue to link).
 
 Steps:
 
-1. Collects all work item artifacts (source.md, plan.md, build_todos/, review_todos/,
-   investigation.md, hypothesis-evaluation/, learning-report.md, etc.)
+1. Collects all ticket artifacts via `get_ticket` (source, plan, build_todos,
+   review_todos, investigation, learning_report, etc.)
 2. Runs tests and collects results
 3. Generates standardized summary with:
    - What was done (research/investigation + implementation)
@@ -469,42 +401,31 @@ Steps:
 | Compound        | Not included          | Autonomous mode                       |
 | Scope           | Features with plans   | Any issue or request (bug or feature) |
 
-## Work Item Structure
+## Ticket Artifacts
 
-**For features:**
+All artifacts are stored in the MCP ticket system, not on the filesystem.
 
-```
-work_items/active/F042-user-dashboard/
-  source.md                    # Issue or conversation context
-  research.md                  # Codebase research
-  plan.md                      # Implementation approach
-  build_todos/                 # Implementation steps
-    01-create-component.md
-    02-add-routes.md
-  review_todos/                # Review findings (across iterations)
-    01-finding.md
-    02-finding.md
-  lfg-report.md                # Final summary for PR
-```
+**For features (e.g., F0042):**
 
-**For bugs:**
+| Artifact Type | Purpose |
+|---|---|
+| `source` | Issue or conversation context (auto-created) |
+| `investigation` | Codebase research findings |
+| `plan` | Implementation approach |
+| `build_todo` (seq 1-N) | Implementation steps |
+| `review_todo` (seq 1-N) | Review findings |
+| `learning_report` | Final summary for PR |
 
-```
-work_items/flow_failures/ongoing/B001-service-oom/
-  source.md                    # Error context + details
-  investigation.md             # Root cause analysis + hypotheses
-  hypothesis-evaluation/       # Experimental verification
-    hypothesis-01-memory.md    # Verdict: CONFIRMED
-    hypothesis-02-timeout.md   # Verdict: REFUTED
-  plan.md                      # Fix architecture
-  build_todos/                 # Implementation steps
-    01-add-batch-limit.md
-    02-add-chunking.md
-  review_todos/                # Review findings
-    01-finding.md
-  learning-report.md           # Workflow gap analysis
-  lfg-report.md                # Final summary for PR
-```
+**For bugs (e.g., B0001):**
+
+| Artifact Type | Purpose |
+|---|---|
+| `source` | Error context + details (auto-created) |
+| `investigation` | Root cause analysis + hypotheses |
+| `plan` | Fix architecture |
+| `build_todo` (seq 1-N) | Implementation steps |
+| `review_todo` (seq 1-N) | Review findings |
+| `learning_report` | Workflow gap analysis |
 
 ## Output
 
@@ -522,7 +443,7 @@ Summary:
 - Verification: PASS
 - 3 review iterations, all P1/P2 resolved
 
-Work item: F042-user-dashboard
+Ticket: F0042
 ```
 
 ### On Partial Success
@@ -539,7 +460,7 @@ Summary:
 - Verification: SKIPPED
 - 2 P3 findings remain (not blocking)
 
-Work item: F042-user-dashboard
+Ticket: F0042
 ```
 
 ### On Failure
@@ -550,8 +471,8 @@ LFG failed at: {phase}
 Issue: #123                              # Only shown if source was GitHub issue
 Reason: {error description}
 
-Work item created: F042-user-dashboard
-See: work_items/active/F042-user-dashboard/ for partial progress
+Ticket created: F0042
+See ticket F0042 for partial progress
 ```
 
 ## Example Flows
@@ -575,7 +496,7 @@ Should integrate with existing analytics.
 **LFG execution:**
 
 1. Parse: source=github, type=feature, title="Add user activity dashboard"
-2. Create: `work_items/active/F042-user-activity-dashboard/`
+2. Create: `ticket F0042 via MCP`
 3. Research: Find analytics patterns, component structure
 4. Plan: Dashboard component + API routes + DB queries
 5. Build todos: 6 steps identified
@@ -600,7 +521,7 @@ finalized invoices should be exportable."
 **LFG execution:**
 
 1. Parse: source=conversation, type=feature, title="Bulk invoice PDF export"
-2. Create: `work_items/active/F043-bulk-invoice-pdf-export/`
+2. Create: `ticket F0043 via MCP`
 3. Research: Find invoice list patterns, PDF generation, ZIP utilities
 4. Plan: Selection UI + export API route + ZIP generation
 5. Build todos: 5 steps identified
@@ -622,7 +543,7 @@ Summary:
 - Verification: PASS
 - 2 review iterations, all P1/P2 resolved
 
-Work item: F043-bulk-invoice-pdf-export
+Ticket: F0043
 ```
 
 ### Example C: Bug Fix from Error Report
@@ -637,7 +558,7 @@ failed at 14:23 UTC with exit code -9"
 **LFG execution:**
 
 1. Parse: source=conversation, type=bug, service=main-processor, error=OOM
-2. Create: `work_items/flow_failures/ongoing/B001-processor-oom/`
+2. Create: `ticket B0001 via MCP`
 3. Investigate: Finds memory spike at 14:23, batch had 650 items
 4. Hypotheses:
    - H1: Memory exhaustion on batches >500 items (High confidence)
@@ -662,5 +583,5 @@ Fix: Added batch size limit of 200 items with chunked processing
 Tests: 5 passing / 5 total
 Verification: PASS
 
-Work item: B001-processor-oom
+Ticket: B0001
 ```

@@ -57,7 +57,7 @@ security, and performance patterns.
 
    ```bash
    # Find architecture/security/performance findings in similar work
-   grep -r "architecture\|security\|performance\|N+1" work_items/*/review_todos/*.md
+   mcp__autodev-memory__search_tickets(project=PROJECT, query="architecture security performance N+1")
    ```
 
    Extract patterns of system-level issues found in similar implementations.

@@ -21,19 +21,23 @@ Past work items contain valuable learnings that should inform new work:
 
 ### 1. Find Similar Past Work
 
-Search for work items with similar characteristics:
+Search for tickets with similar characteristics using MCP:
 
-```bash
-# Find all work items across all folders
-find work_items -maxdepth 2 -type d -name "*-*"
+```
+# Find similar completed tickets (primary method)
+similar = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+)
 
-# Search by keyword in source/plan/conclusion
-grep -r "keyword" work_items/*/source.md work_items/*/*/source.md
-grep -r "keyword" work_items/*/plan.md work_items/*/*/plan.md
-grep -r "keyword" work_items/*/conclusion.md work_items/*/*/conclusion.md
+# Search across all ticket artifacts by keyword
+results = mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="<relevant keywords>"
+)
 
-# Search for similar file patterns in build_todos
-grep -r "src/" work_items/*/build_todos/*.md work_items/*/*/build_todos/*.md
+# List tickets by type/status for browsing
+tickets = mcp__autodev-memory__list_tickets(
+  project=PROJECT, type="feature", status="completed"
+)
 ```
 
 **Similarity criteria:**
@@ -113,13 +117,13 @@ From `conclusion.md` files, extract:
 - **Outcome** - Results and resolution
 - **Learnings** - What would be done differently
 
-### 6. Cross-Reference Memory Service
+### 6. Cross-Reference Knowledge Base
 
-After finding similar work, search the memory service for related entries:
+After finding similar tickets, search the knowledge base for related entries:
 
 ```
 mcp__autodev-memory__search(queries=[
-  {"keywords": ["<work-item-area>"], "text": "<area> gotchas lessons learned"}
+  {"keywords": ["<ticket-area>"], "text": "<area> gotchas lessons learned"}
 ])
 ```
 

@@ -20,26 +20,23 @@ the final step of autonomous workflows (`/lfg`, `/auto-build`) and can also be c
 
 ### 1. Gather Context
 
-Read the work item folder to collect all artifacts:
+Load the ticket with all artifacts:
 
-```bash
-# Find the work item
-find work_items -maxdepth 2 -type d -name "*{id}*"
+```
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
-**Read these artifacts (if they exist):**
+**Read these artifacts from the ticket response:**
 
-| Artifact | What It Provides |
+| Artifact Type | What It Provides |
 |---|---|
-| `source.md` | Title, type, requirements, GitHub issue number |
-| `plan.md` | Approach summary, what was planned |
-| `build_todos/` | Count of steps, what was implemented |
-| `review_todos/` | Review findings and their resolution status |
-| `investigation.md` | Root cause (for bugs) |
-| `hypothesis-evaluation/` | Hypothesis verdicts (for bugs) |
-| `learning-report.md` | Knowledge/workflow improvements made |
-| `deployment-guide.md` | Deployment steps |
-| `verification-report.md` | Verification evidence |
+| `source` | Title, type, requirements, GitHub issue number |
+| `plan` | Approach summary, what was planned |
+| `build_todo` (multiple) | Count of steps, what was implemented |
+| `review_todo` (multiple) | Review findings and their resolution status |
+| `investigation` | Root cause (for bugs) |
+| `learning_report` | Knowledge/workflow improvements made |
+| `deployment_guide` | Deployment steps |
 
 ### 2. Collect Test Results
 

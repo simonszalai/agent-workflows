@@ -59,58 +59,76 @@ You search completed and in-progress work items to extract:
 - Review issues that commonly appear
 - Conclusions and learnings
 
-## Work Item Locations
+## Ticket Lookup
+
+All tickets are in the MCP ticket system. Use these tools:
 
 ```
-work_items/
-  active/       # Currently being worked on
-  backlog/      # Planned but not started
-  to_verify/    # Deployed, awaiting verification
-  closed/       # Completed work with learnings
+# Find similar completed tickets (best for learning)
+similar = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+)
+
+# Search across all ticket artifacts by keyword
+results = mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="<keywords>"
+)
+
+# List tickets by status
+tickets = mcp__autodev-memory__list_tickets(
+  project=PROJECT, status="completed", repo=REPO
+)
+
+# Get full ticket with all artifacts
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO
+)
 ```
 
 **Priority order for research:**
 
-1. `closed/` - Completed work has the richest learnings (conclusions, full review history)
-2. `active/` - In-progress work may have relevant patterns being discovered
-3. `backlog/` - Planned work shows similar scope/features coming up
+1. `completed` tickets - Richest learnings (conclusions, full review history)
+2. `active` tickets - In-progress work may have relevant patterns
+3. `backlog` tickets - Planned work shows similar scope
 
-## Key Files to Analyze
+## Key Artifacts to Analyze
 
-| File                | Contains                 | Extract                             |
-| ------------------- | ------------------------ | ----------------------------------- |
-| `source.md`         | Original problem/request | Scope and context                   |
-| `plan.md`           | Architecture decisions   | Approaches, tradeoffs, risks        |
-| `build_todos/*.md`  | Implementation details   | Patterns, gotchas, test approaches  |
-| `review_todos/*.md` | Review findings          | Common issues, process improvements |
-| `conclusion.md`     | Final learnings          | What worked, what would change      |
-| `investigation.md`  | Root cause analysis      | How similar bugs were diagnosed     |
+| Artifact Type      | Contains                 | Extract                             |
+| ------------------ | ------------------------ | ----------------------------------- |
+| `source`           | Original problem/request | Scope and context                   |
+| `plan`             | Architecture decisions   | Approaches, tradeoffs, risks        |
+| `build_todo`       | Implementation details   | Patterns, gotchas, test approaches  |
+| `review_todo`      | Review findings          | Common issues, process improvements |
+| `retrospective`    | Final learnings          | What worked, what would change      |
+| `investigation`    | Root cause analysis      | How similar bugs were diagnosed     |
 
 ## Search Strategy
 
-### 1. By Codebase Area
+### 1. By Similarity (Primary)
 
-```bash
-# Find work items touching same files/areas
-grep -r "src/path/to/area" work_items/*/plan.md work_items/*/*/plan.md
-grep -r "affected-component" work_items/*/build_todos/*.md work_items/*/*/build_todos/*.md
+```
+# Best approach: find tickets similar to the current one
+similar = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO
+)
 ```
 
-### 2. By Change Type
+### 2. By Keyword
 
-```bash
-# Database/model changes
-grep -r "CREATE TABLE\|ALTER TABLE\|migration" work_items/*/plan.md work_items/*/*/plan.md
-
-# API integrations
-grep -r "API\|integration\|external" work_items/*/plan.md work_items/*/*/plan.md
+```
+# Search across all ticket artifacts
+results = mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="database migration schema change"
+)
 ```
 
-### 3. By Pattern
+### 3. By Type/Status
 
-```bash
-# Find work items with similar patterns mentioned
-grep -r "pattern-keyword" work_items/
+```
+# List all completed features for pattern mining
+tickets = mcp__autodev-memory__list_tickets(
+  project=PROJECT, type="feature", status="completed"
+)
 ```
 
 ## Output Format

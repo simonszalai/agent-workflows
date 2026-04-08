@@ -14,7 +14,7 @@ Work through review findings and implement accepted fixes.
 ```
 /resolve-review 009                              # Bug/incident #009 (NNN format)
 /resolve-review F001                             # Feature F001 (FNNN format)
-/resolve-review work_items/active/009-fix-timeout  # Use explicit path
+/resolve-review B0009                              # Bug ticket B0009
 ```
 
 ## Prerequisites
@@ -24,11 +24,11 @@ Work through review findings and implement accepted fixes.
 
 ## Process
 
-1. **Read review_todos/** - identify pending items
+1. **Load ticket** via `get_ticket` — identify pending review_todo artifacts
 
-2. **For each finding, check Decision section:**
+2. **For each review_todo artifact, check Decision section:**
    - If Action is empty, missing, or "accept" - execute the **Suggested Fix** as-is
-   - If Action is "skip" - document reasoning and mark status: skipped
+   - If Action is "skip" - mark artifact status: `update_artifact(status="skipped")`
    - If Action is "modify" - follow the user's notes for the modified approach
 
 3. **For each accepted/default finding:**
@@ -38,7 +38,7 @@ Work through review findings and implement accepted fixes.
      - Check related repositories if applicable
    - Implement the suggested fix exactly as written
    - Update Resolution Notes section
-   - Mark status: resolved
+   - Mark artifact: `update_artifact(artifact_id=ID, status="resolved")`
 
 4. **For skipped findings:**
    - Document reasoning in Resolution Notes

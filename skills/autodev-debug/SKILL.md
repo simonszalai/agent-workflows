@@ -19,7 +19,7 @@ Hands-on debugging skill for the autodev-memory system. Use this when:
 - Something is silently failing
 
 **Scope:** Observing and diagnosing. For broad system audits and design proposals, use
-`improve-autodev`. For single-failure pipeline traces, use `/wtf`.
+`autodev-improve`. For single-failure pipeline traces, use `/wtf`.
 
 ## System Architecture Overview
 
@@ -175,8 +175,8 @@ grep "skip" ~/.config/autodev-memory/hooks.log | tail -20
 The memory API logs every search and store operation. Query via MCP:
 
 ```
-debug_logs(project="<project>", operation="search", hours=2, limit=20)
-debug_logs(project="<project>", operation="store", hours=2, limit=10)
+debug_logs(project="<project>", operation="mcp_search", hours=2, limit=20)
+debug_logs(project="<project>", operation="mcp_create_entry", hours=2, limit=10)
 ```
 
 Key fields:

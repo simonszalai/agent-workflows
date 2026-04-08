@@ -38,7 +38,7 @@ Follow the **autodev-wtf** skill procedure:
 
 ## Important
 
-- This is a **single-failure trace**, not a broad audit. Use `/improve-autodev` for system-wide
+- This is a **single-failure trace**, not a broad audit. Use `/autodev-improve` for system-wide
   analysis.
 - Keep the verdict SHORT. The user is frustrated — give a clear answer and confirmation it
   won't happen again.

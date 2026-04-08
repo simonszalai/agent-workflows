@@ -14,7 +14,7 @@ checking database state. This command is **read-only** - it does not modify data
 ```
 /verify-prod 009                              # Bug/incident #009 (NNN format)
 /verify-prod F001                             # Feature F001 (FNNN format)
-/verify-prod work_items/to_verify/009-fix-timeout  # Use explicit path
+/verify-prod B0009                              # Bug ticket B0009
 /verify-prod --lookback 24h                   # Check last 24 hours (default: 6h)
 /verify-prod --lookback 7d                    # Check last 7 days
 ```
@@ -23,20 +23,17 @@ checking database state. This command is **read-only** - it does not modify data
 
 Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
 
-```bash
-# 1. Locate work item (prefer to_verify/ folder)
-find work_items/to_verify -maxdepth 1 -type d -name "*[id]*" | head -1
-# If empty, check all folders:
-find work_items -maxdepth 2 -type d -name "*[id]*" | head -1
-# If still empty: STOP - work item not found
+```
+# 1. Load ticket
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+# If not found: STOP - ticket not found
 
-# 2. Check plan.md exists with verification strategy
-test -f work_items/*/[id]*/plan.md && grep -q "Verification Strategy" work_items/*/[id]*/plan.md
-# If missing: STOP - need plan.md with verification strategy
+# 2. Check plan artifact exists with verification strategy
+# Look for plan artifact in ticket response, check content for "Verification Strategy"
+# If missing: STOP - need plan with verification strategy
 
-# 3. Check deployment happened (work item should be in to_verify/)
-ls -d work_items/to_verify/*[id]* 2>/dev/null
-# If not in to_verify/: WARN - may be verifying undeployed code
+# 3. Check ticket status is "to_verify"
+# If not: WARN - may be verifying undeployed code
 ```
 
 **If any prerequisite fails:**
@@ -48,19 +45,13 @@ ls -d work_items/to_verify/*[id]* 2>/dev/null
 | No verification strategy | **STOP** - add verification strategy to plan |
 | Not in to_verify/        | **WARN** - verify deployment happened first  |
 
-## Finding Work Items
+## Loading Tickets
 
-**Prefer `to_verify/` folder** - deployed items awaiting verification:
-
-```bash
-find work_items/to_verify -maxdepth 1 -type d -name "*{id}*"
+```
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
-If not found, search all folders:
-
-```bash
-find work_items -maxdepth 2 -type d -name "*{id}*"
-```
+Check `ticket.status` — prefer tickets with status `to_verify`.
 
 ## What This Command Does
 
@@ -73,11 +64,11 @@ find work_items -maxdepth 2 -type d -name "*{id}*"
 
 ### Phase 1: Load Context
 
-Read from the work item folder:
+Read from the ticket artifacts (via `get_ticket` response):
 
-- `plan.md` - Verification strategy section defines what to check
-- `source.md` - Feature requirements to verify against
-- `investigation.md` - Context about the problem/feature (if exists)
+- Plan artifact - Verification strategy section defines what to check
+- Source artifact - Feature requirements to verify against
+- Investigation artifact - Context about the problem/feature (if exists)
 
 Identify:
 
@@ -138,7 +129,7 @@ Validate the quality of new data:
 
 ### Phase 2b: Re-Evaluate Original Hypotheses (Bug Fixes Only)
 
-For bug-fix work items (NNN or BNNN) that have a `hypothesis-evaluation/` folder, re-evaluate
+For bug-fix tickets (B-prefix) that have hypothesis evaluation artifacts, re-evaluate
 the confirmed hypothesis against **post-deployment** production data to verify the fix actually
 addressed the root cause.
 
@@ -208,7 +199,7 @@ Collect results from all agents and produce a unified report:
 ````markdown
 ## Production Verification Report
 
-**Work Item:** work_items/to_verify/F002-feature-name
+**Ticket:** F0002
 **Deployed:** 2026-01-19 14:30 UTC
 **Verified:** 2026-01-20 09:15 UTC
 **Lookback Period:** 6 hours
@@ -311,7 +302,7 @@ The verify command spawns `verifier-production` agents in parallel with differen
 3. **Move to closed:**
 
    ```bash
-   git mv work_items/to_verify/{id}-slug work_items/closed/
+   # Status already updated to "completed" via update_ticket in Phase 4
    ```
 
 4. **Report:** "Verification PASSED. Moved {id} to closed/"
@@ -319,7 +310,7 @@ The verify command spawns `verifier-production` agents in parallel with differen
 ## On Verification FAIL
 
 1. **Document issues** - Capture specific failures
-2. **Keep in to_verify/** - Do not move
+2. **Keep ticket status as `to_verify`** - Do not change
 3. **Report:** "Verification FAILED: [issues]. Investigation needed."
 
 Provide specific guidance on what to investigate next.

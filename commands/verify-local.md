@@ -32,14 +32,14 @@ and produce detailed evidence reports. Use when you need controlled testing befo
 
 Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
 
-```bash
-# 1. Locate work item
-find work_items -maxdepth 2 -type d -name "*[id]*" | head -1
-# If empty: STOP - work item not found
+```
+# 1. Load ticket
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+# If not found: STOP - ticket not found
 
-# 2. Check plan.md exists with verification strategy
-test -f work_items/*/[id]*/plan.md && grep -q "Verification Strategy" work_items/*/[id]*/plan.md
-# If missing: STOP - need plan.md with verification strategy
+# 2. Check plan artifact exists with verification strategy
+# Look for plan artifact in ticket response
+# If missing: STOP - need plan with verification strategy
 
 # 3. Check local services are running (project-specific)
 # Examples: database, API server, etc.
@@ -52,8 +52,8 @@ test -f work_items/*/[id]*/plan.md && grep -q "Verification Strategy" work_items
 
 | Missing                  | Action                                       |
 | ------------------------ | -------------------------------------------- |
-| Work item not found      | **STOP** - create work item first            |
-| No plan.md               | **STOP** - run `/plan [id]` first            |
+| Ticket not found         | **STOP** - create ticket first               |
+| No plan artifact         | **STOP** - run `/plan [id]` first            |
 | No verification strategy | **STOP** - add verification strategy to plan |
 | Services not running     | **STOP** - start required services           |
 | Database not accessible  | **STOP** - start database                    |
@@ -66,16 +66,16 @@ test -f work_items/*/[id]*/plan.md && grep -q "Verification Strategy" work_items
 
 ## Process
 
-### 1. Locate Work Item
+### 1. Load Ticket
 
-```bash
-find work_items -maxdepth 2 -type d -name "*{id}*"
+```
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
-Read:
+Read from ticket artifacts:
 
-- `source.md` - Feature requirements, acceptance criteria
-- `plan.md` - Verification strategy section
+- Source artifact - Feature requirements, acceptance criteria
+- Plan artifact - Verification strategy section
 
 ### 2. Environment Setup
 
@@ -158,7 +158,7 @@ SELECT 'table' as tbl, COUNT(*) FROM table_name WHERE id LIKE 'TEST_VERIFY_%';
 Create report in work item folder using template at
 `.claude/skills/verify-flow/templates/verification-report.md`
 
-Save to: `work_items/{folder}/{id}-name/verification-report.md`
+Save as artifact: `create_artifact(artifact_type="deployment_guide", content=...)`
 
 ## Agent Dispatch
 

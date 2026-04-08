@@ -51,15 +51,19 @@ Use topology to:
 
 Given a bug description and work item (if exists):
 
-### 1. Find Related Work Item
+### 1. Find Related Ticket
 
-Search for the original feature/bug work item:
+Search for the original feature/bug ticket:
 
-```bash
-find work_items -maxdepth 2 -type d -name "*keyword*"
+```
+# Search by keyword
+results = mcp__autodev-memory__search_tickets(project=PROJECT, query="<keyword>")
+
+# Or load directly by ID
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
-Read all artifacts in the work item folder.
+Read all artifacts from the ticket response.
 
 ### 2. Trace the Bug in Git
 

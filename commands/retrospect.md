@@ -12,7 +12,7 @@ reporting tool - it applies changes.
 
 ```
 /retrospect "Bug description: items missing associations"
-/retrospect work_items/active/009-missing-data
+/retrospect B0009                              # Bug ticket B0009
 /retrospect 009                              # Bug/incident #009 (NNN format)
 /retrospect F003                             # Feature F003 (FNNN format)
 ```
@@ -32,24 +32,34 @@ reporting tool - it applies changes.
 review → test → verify → deploy) for a specific production failure. Compound is lighter and
 broader, triggered after any learning moment.
 
-## Work Item Lookup
+## Ticket Lookup
 
-**If work item path given:** Use that folder as context.
+**If ticket ID given** (e.g., `B0003`, `F0009`):
 
-**If number given (009 or F003):** Search for existing work item:
-
-```bash
-find work_items -maxdepth 2 -type d -name "*{id}*"
+```
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
-**If only description given:** Search for related work items by keyword, or create a new
-incident work item in `work_items/active/NNN-retrospect-slug/`.
+**If only description given:** Search for related tickets or create a new one:
+
+```
+# Search first
+results = mcp__autodev-memory__search_tickets(project=PROJECT, query="<description>")
+
+# If no match, create new ticket
+ticket = mcp__autodev-memory__create_ticket(
+  project=PROJECT, repo=REPO,
+  title="Retrospect: <slug>",
+  type="bug", description="<description>",
+  status="active", command="/retrospect"
+)
+```
 
 ## Process
 
 ### Phase 1: Gather Context
 
-1. Find and read all work item artifacts (plan.md, build_todos/, review_todos/, etc.)
+1. Load ticket with all artifacts via `get_ticket`
 2. Get git history for related commits
 3. Read the bug report or incident description
 4. Check production state if tools available (DB, logs, metrics)
@@ -146,7 +156,18 @@ in autonomous mode, retrospect always confirms - production incidents deserve ca
 
 ### Phase 5: Write Retrospective
 
-Write `retrospective.md` to the work item folder with:
+Store as retrospective artifact:
+
+```
+mcp__autodev-memory__create_artifact(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  artifact_type="retrospective",
+  content="<retrospective content>",
+  command="/retrospect"
+)
+```
+
+Content format:
 
 ```markdown
 # Retrospective: [Work Item ID]

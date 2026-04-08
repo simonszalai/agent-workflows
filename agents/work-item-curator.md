@@ -19,12 +19,9 @@ existing ones, splitting scope when things belong elsewhere, and maintaining pro
 
 ## CRITICAL RULES (Never Violate)
 
-1. **ALWAYS check ALL folders when finding next number**: active/, backlog/, to_verify/, closed/,
-   completed/, AND the root work_items/ folder (for legacy items)
-2. **Cross-project imports ALWAYS get a new number**: Never keep the original number when moving
-   a work item from one project to another
-3. **Validate before creating**: After determining the next number, verify it doesn't exist anywhere
-4. **Numbers are project-scoped**: Each project has its own number sequence
+1. **Always use MCP tools** for all ticket operations — never create local files
+2. **Cross-repo imports ALWAYS get a new ID**: `create_ticket` auto-generates the next ID
+3. **IDs are repo-scoped**: Each repo maintains its own sequence per type prefix
 
 ## IMPORTANT: Context Extraction
 
@@ -36,103 +33,100 @@ current context). Your job is to:
 3. **Execute the operation** with complete context - don't ask for more info if it's in context
 4. **Report concisely** what you did
 
-## Work Items System Overview
+## Ticket System Overview
 
+All tickets are managed via the `mcp__autodev-memory` MCP server. No local `work_items/`
+directory is used.
+
+**Ticket types:**
+
+- Features: `F0023` (type: "feature")
+- Bugs: `B0023` (type: "bug")
+- Refactors: `R0023` (type: "refactor")
+
+**Statuses:** backlog, active, to_verify, completed, abandoned
+
+**Context resolution:**
 ```
-work_items/
-├── active/     # Currently being worked on (bugs AND in-progress features)
-├── backlog/    # Planned work not yet started (roadmap features)
-├── to_verify/  # Deployed, awaiting production verification
-├── closed/     # Completed or abandoned work
-└── completed/  # (Legacy) Some projects use this instead of closed/
+# Project: from <!-- mem:project=X --> in CLAUDE.md
+# Repo: from git remote — basename -s .git $(git config --get remote.origin.url)
 ```
-
-**Naming schemes:**
-
-- Bugs/Incidents: `NNN-kebab-title` (e.g., `009-timeout-errors`)
-- Features: `FNNN-kebab-title` (e.g., `F001-new-feature`)
-- Auto-fix bugs: `BNNN-kebab-title` (e.g., `B001-oom-fix`)
 
 ## Core Operations
 
-### 1. Create New Work Item
+### 1. Create New Ticket
 
-**When to use:** User says "new work item", "create a work item", "track this", "add to backlog"
+**When to use:** User says "new work item", "create a ticket", "track this", "add to backlog"
 
 **Steps:**
 
-1. **Determine item type:**
-   - Bug/incident → `NNN` format, goes to `active/`
-   - Feature → `FNNN` format, goes to `backlog/`
-   - Auto-fix bug → `BNNN` format, goes to `active/`
+1. **Determine ticket type and status:**
+   - Bug/incident → type: "bug", status: "active"
+   - Feature → type: "feature", status: "backlog"
 
-2. **Find next available number (CRITICAL - check ALL folders):**
+2. **Create ticket via MCP** (ID auto-generated):
 
-   ```bash
-   # For bugs - find highest NNN across ALL locations, add 1
-   find work_items -type d \( -name "[0-9][0-9][0-9]-*" -o -name "[0-9][0-9][0-9][0-9]-*" \) 2>/dev/null | \
-     sed 's/.*\///; s/-.*//' | grep -E '^[0-9]+$' | sort -n | tail -1
-
-   # For features - find highest FNNN across ALL locations, add 1
-   find work_items -type d -name "F[0-9]*-*" 2>/dev/null | \
-     sed 's/.*\///; s/F//; s/-.*//' | sort -n | tail -1
-
-   # For bugs - find highest BNNN across ALL locations, add 1
-   find work_items -type d -name "B[0-9]*-*" 2>/dev/null | \
-     sed 's/.*\///; s/B//; s/-.*//' | sort -n | tail -1
+   ```
+   ticket = mcp__autodev-memory__create_ticket(
+     project=PROJECT, repo=REPO,
+     title="<title>",
+     type="feature" | "bug",
+     description="<description content>",
+     status="backlog" | "active",
+     priority="p1" | "p2" | null,
+     quarter="2026Q2",
+     command="/curator", agent="work-item-curator"
+   )
    ```
 
-3. **Validate the number is unique:**
+3. **Report:** "Created ticket {ticket_id}: {title}"
 
-   ```bash
-   # Verify the chosen number doesn't exist anywhere
-   NEXT_NUM=042  # or F042, B042
-   find work_items -type d -name "*${NEXT_NUM}-*" 2>/dev/null
-   # If this returns anything, increment and try again
+### 2. Import Ticket from Another Repo
+
+**When to use:** User says "move this from ts-scraper", "import from another project",
+"copy F0003 from ts-dashboard"
+
+**Steps:**
+
+1. **Read the source ticket:**
+   ```
+   source = mcp__autodev-memory__get_ticket(
+     project=SOURCE_PROJECT, ticket_id=SOURCE_ID, repo=SOURCE_REPO
+   )
    ```
 
-4. **Create folder and source.md** (see Templates section)
+2. **Create new ticket in target repo** (new ID auto-generated):
+   ```
+   ticket = mcp__autodev-memory__create_ticket(
+     project=TARGET_PROJECT, repo=TARGET_REPO,
+     title=source.title,
+     type=source.type,
+     description=source.description + "\n\n## Origin\nImported from {SOURCE_REPO} (was {SOURCE_ID})",
+     related=[f"{SOURCE_REPO}/{SOURCE_ID}"],
+     command="/curator", agent="work-item-curator"
+   )
+   ```
 
-5. **Report:** "Created work_items/{folder}/NNN-title/"
+3. **Report:** "Imported as {new_ticket_id} (was {SOURCE_ID} in {SOURCE_REPO})"
 
-### 2. Import Work Item from Another Project
+### 3. Add Context to Existing Ticket
 
-**When to use:** User says "move this from ts-scraper", "import work item from another project",
-"copy F003 from ts-dashboard"
-
-**CRITICAL RULE:** Work items imported from another project ALWAYS get a NEW number in the target
-project. Never keep the original number.
-
-**Steps:**
-
-1. **Read the source work item** from the other project
-
-2. **Find next available number in TARGET project** (using the commands above)
-
-3. **Create new work item with new number:**
-   - Copy content from source
-   - Update any internal references to use new number
-   - Add origin note in source.md:
-     ```markdown
-     ## Origin
-     Imported from [SOURCE_PROJECT] (was [ORIGINAL_ID])
-     ```
-
-4. **Report:**
-   "Imported as [NEW_ID] (was [ORIGINAL_ID] in [SOURCE_PROJECT])"
-
-5. **Optionally:** If requested, mark the original as superseded or delete it
-
-### 3. Add Context to Existing Item
-
-**When to use:** User says "add to 009", "update F003 with...", "append context to..."
+**When to use:** User says "add to B0009", "update F0003 with...", "append context to..."
 
 **Steps:**
 
-1. Find the work item across all folders
-2. Read existing source.md
-3. Add new section or append to existing section, preserving frontmatter
-4. Use appropriate heading level (usually `##` for new sections)
+1. **Load the ticket:**
+   ```
+   ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+   ```
+2. **Update the source artifact** with additional context:
+   ```
+   mcp__autodev-memory__update_artifact(
+     project=PROJECT, artifact_id=source_artifact_id,
+     content="<existing content + new section>",
+     command="/curator", agent="work-item-curator"
+   )
+   ```
 
 **Common additions:**
 
@@ -146,159 +140,112 @@ project. Never keep the original number.
 **When to use:** During planning/review, user says "this should be separate", "defer this",
 "out of scope for current work", "create backlog item from this"
 
-**This is a critical workflow.** When reviewing a plan and realizing something should be excluded:
+**Steps:**
 
-1. **Extract the context** from current investigation/plan/discussion:
-   - What is the feature/fix?
-   - Why was it identified?
-   - What's the technical context?
-   - Any implementation hints discovered?
+1. **Extract the context** from current discussion/plan
 
-2. **Find next available number** (using the commands in section 1)
-
-3. **Create new backlog item** with full context:
-
-   ```markdown
-   ---
-   type: feature
-   quarter: 2026Q1
-   priority: TBD
-   depends_on: []
-   ---
-
-   # [Title]
-
-   ## Origin
-
-   Identified during work on [CURRENT_ITEM_ID]: [current item title]
-
-   ## Context
-
-   [Full context extracted from current investigation/plan]
-
-   ## Why Deferred
-
-   [Reason this was split out - complexity, scope creep, different concern, etc.]
-
-   ## Initial Thoughts
-
-   [Any implementation ideas already discussed]
+2. **Create new backlog ticket:**
+   ```
+   new_ticket = mcp__autodev-memory__create_ticket(
+     project=PROJECT, repo=REPO,
+     title="<deferred feature title>",
+     type="feature",
+     description="## Origin\nIdentified during work on {CURRENT_ID}\n\n## Context\n<extracted context>\n\n## Why Deferred\n<reason>",
+     status="backlog",
+     related=[CURRENT_ID],
+     command="/curator", agent="work-item-curator"
+   )
    ```
 
-4. **Update current item** to note the exclusion:
-   Add to plan.md or source.md:
-
-   ```markdown
-   ## Out of Scope
-
-   - [FNNN-title]: [Brief reason - link to new item]
+3. **Update current ticket's plan** to note the exclusion:
+   ```
+   mcp__autodev-memory__update_artifact(
+     project=PROJECT, artifact_id=plan_artifact_id,
+     content="<existing + Out of Scope section referencing new_ticket_id>"
+   )
    ```
 
-5. **Report:** "Created FNNN-title in backlog. Added 'Out of Scope' section to current plan."
+4. **Report:** "Created {new_ticket_id} in backlog. Added Out of Scope note to current plan."
 
-### 5. Update Item Metadata
+### 5. Update Ticket Metadata
 
-**When to use:** "Change priority of F003", "add dependency"
+**When to use:** "Change priority of F0003", "add dependency"
 
-Modify frontmatter while preserving content:
-
-```yaml
----
-type: feature
-quarter: 2026Q1
-priority: 2 # 1 = highest
-depends_on: [F001] # Work item numbers
----
+```
+mcp__autodev-memory__update_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  priority="p1",  # or "p2", "p0"
+  quarter="2026Q2",
+  depends_on=["F0001"],
+  command="/curator", agent="work-item-curator"
+)
 ```
 
-### 6. Move Item Between Folders (Same Project)
+### 6. Change Ticket Status
 
-**When to use:** "Start F003", "move 009 to closed", "defer F005 to backlog"
+**When to use:** "Start F0003", "close B0009", "defer F0005 to backlog"
 
-```bash
-# Start a backlog item
-mv work_items/backlog/F003-title work_items/active/
-
-# Defer active item back to backlog
-mv work_items/active/F003-title work_items/backlog/
-
-# Close an item (should have conclusion.md first)
-mv work_items/active/009-title work_items/closed/
+```
+mcp__autodev-memory__update_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  status="active" | "backlog" | "to_verify" | "completed" | "abandoned",
+  reason="<optional reason for status change>",
+  command="/curator", agent="work-item-curator"
+)
 ```
 
-**Note:** Moving within the same project KEEPS the same number.
+## Description Templates
 
-## Templates
-
-### source.md for Bugs (active/)
+### Bug Description
 
 ```markdown
----
-type: bugfix
----
-
 # [Title]
 
 ## Problem
-
 [What's broken, error messages, symptoms]
 
 ## Context
-
 [How it was discovered, affected users/systems]
 
 ## Reproduction
-
 [Steps to reproduce if known]
 ```
 
-### source.md for Features (backlog/)
+### Feature Description
 
 ```markdown
----
-type: feature
-quarter: 2026Q1
-priority: TBD
-depends_on: []
----
-
 # [Title]
 
 ## Overview
-
 [What this feature does, user value]
 
 ## Problem Statement
-
 [Why this is needed, what pain it solves]
 
 ## Proposed Solution
-
 [High-level approach if known]
 
 ## Acceptance Criteria
-
 - [ ] [Criterion 1]
 - [ ] [Criterion 2]
 ```
 
-## Finding Work Items
+## Finding Tickets
 
-Always search all folders:
+```
+# By ID
+ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id="F0003", repo=REPO)
 
-```bash
-# By number (works for both NNN and FNNN)
-find work_items -type d -name "*009*"
-find work_items -type d -name "F003*"
+# By keyword
+results = mcp__autodev-memory__search_tickets(project=PROJECT, query="keyword")
 
-# By keyword in title
-find work_items -type d -name "*keyword*"
+# List by status
+tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="active", repo=REPO)
 ```
 
 ## Output Guidelines
 
-- Always report what you created/modified with full path
+- Always report what you created/modified with ticket ID
 - When creating from scope split, include the extracted context summary
-- When updating, show what was added (diff-style if helpful)
-- When importing, clearly state old number → new number
-- Suggest next steps: "/plan FNNN" or "consider adding to sprint"
+- When importing, clearly state old ID → new ID
+- Suggest next steps: "/plan F0023" or "consider adding to sprint"
