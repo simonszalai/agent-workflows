@@ -1,8 +1,8 @@
 ---
 name: autodev-improve
 description: >-
-  Audit the autodev-memory system against real session evidence. Parses Claude
-  session JSONL logs to verify memories surface when needed, MCP tools are called
+  Audit the autodev-memory system against real session evidence. Parses
+  Claude session logs to verify memories surface when needed, MCP tools are called
   appropriately, bloat is minimized, and the knowledge pipeline is functioning
   end-to-end. Propose-only, never auto-implements.
 user_invocable: true
@@ -12,12 +12,12 @@ argument-hint: "[project] [focus-area]"
 # Autodev Improve
 
 Evidence-based audit of the autodev-memory system. Every finding must be backed by
-data from session logs, operation logs, or the knowledge base — not speculation.
+data from Claude session logs, operation logs, or the knowledge base — not speculation.
 
 Use this for:
 
 - **Surfacing verification** — are the right memories reaching the right agent at the
-  right time? Cross-reference session JSONL against the knowledge base.
+  right time? Cross-reference Claude session logs against the knowledge base.
 - **MCP tool call verification** — is Claude calling `mcp__autodev-memory__search`,
   `create_entry`, etc. when it should? Are there missed opportunities?
 - **Bloat detection** — entries that are never retrieved, duplicate CLAUDE.md content,
@@ -36,9 +36,9 @@ analysis on that topic. When invoked without context, run a broad audit.
 
 ## Data Sources — In Priority Order
 
-### 0. Session JSONL Logs (Primary Evidence)
+### 0. Claude Session Logs (Primary Evidence)
 
-The JSONL session logs are the ground truth for what actually happened in each session.
+The Claude session logs are the ground truth for what actually happened in each session.
 
 **User-level session index:**
 ```
@@ -49,7 +49,7 @@ Each line: `{"display": "<user prompt>", "project": "<cwd>", "sessionId": "<uuid
 This file indexes ALL sessions across all projects. Use it to find session IDs for
 a specific project or time range, then read the corresponding project-level JSONL.
 
-**Project-level session logs:**
+**Project-level Claude session logs:**
 ```
 ~/.claude/projects/<path-encoded-cwd>/<session-id>.jsonl
 ```
@@ -92,7 +92,7 @@ find ~/.claude/projects -path "*ts-prefect*" -name "*.jsonl" -mtime -2 \
 | Hook injection | `"type": "user"`, content contains `<system-reminder>` with `autodev-memory-hook-result` | What the memory system injected |
 | Assistant text | `"type": "assistant"`, `message.content[].type == "text"` | What Claude said — did it USE the memories? |
 
-**Parsing session JSONL — essential scripts:**
+**Parsing Claude session logs — essential scripts:**
 
 ```bash
 SESSION="<path-to-session>.jsonl"
@@ -243,7 +243,7 @@ cd ~/dev/autodev-memory && \
   git log -1 --format="%ai %H %s" origin/main
 ```
 
-Use this timestamp as the **evidence cutoff**. When collecting session logs and
+Use this timestamp as the **evidence cutoff**. When collecting Claude session logs and
 operation logs in Phase 1, filter to sessions that started AFTER this timestamp.
 In the audit report, state the baseline commit explicitly:
 
@@ -261,7 +261,7 @@ the post-baseline sessions still show the issue.
 Run these in parallel where possible:
 
 1. **Session index** — Read `~/.claude/history.jsonl`, filter for project (after baseline)
-2. **Recent sessions** — Parse 3-5 most recent session JSONLs for the project
+2. **Recent sessions** — Parse 3-5 most recent Claude session logs for the project
 3. **Subagent logs** — Parse subagent logs from those sessions
 4. **Operation logs** — `debug_logs(project="<project>", operation="mcp_search", hours=48)`
 5. **Entry index** — `list_entries(project="<project>")` for current KB state

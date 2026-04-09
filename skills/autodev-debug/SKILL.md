@@ -188,7 +188,7 @@ Key fields:
 
 ### Claude Session Logs
 
-Claude Code automatically saves full session transcripts as **newline-delimited JSON (.jsonl)**
+Claude Code automatically saves Claude session logs as **newline-delimited JSON (.jsonl)**
 files. Every message, tool call, file read/write, and reasoning step is captured.
 
 **Location:**
@@ -223,7 +223,7 @@ at `~/.claude/history.jsonl`.
 # List all project folders
 ls ~/.claude/projects/
 
-# Find the most recent session log for a project
+# Find the most recent Claude session log for a project
 ls -t ~/.claude/projects/-Users-simon-dev-ts-api/*.jsonl | head -1
 
 # Find sessions that contain hook results

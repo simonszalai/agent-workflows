@@ -1,12 +1,12 @@
 ---
 name: autodev-extract
-description: Extract knowledge from Claude Code session logs and Conductor conversations
+description: Extract knowledge from Claude session logs and Conductor conversations
 user_invocable: true
 ---
 
 # Autodev Extract
 
-Mine Claude Code session transcripts and Conductor data for knowledge that was never formally
+Mine Claude session logs and Conductor data for knowledge that was never formally
 captured. Identifies corrections, debugging resolutions, repeated patterns, and architectural
 decisions embedded in conversation history.
 
@@ -29,14 +29,14 @@ decisions embedded in conversation history.
 
 ## Data Sources
 
-### Claude Code Session Transcripts (Primary)
+### Claude Session Logs (Primary)
 
 **Location:** `~/.claude/projects/`
 
 Each project directory contains:
 - `sessions-index.json` — manifest with session metadata
-- `{sessionId}.jsonl` — full conversation transcript (one JSON object per line)
-- `{sessionId}/subagents/` — subagent conversation transcripts
+- `{sessionId}.jsonl` — Claude session log (one JSON object per line)
+- `{sessionId}/subagents/` — subagent Claude session logs
 
 **Session index structure:**
 ```json
