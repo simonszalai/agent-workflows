@@ -4,9 +4,9 @@ description: "Create implementation plans for fixes and features."
 model: inherit
 max_turns: 50
 skills:
-  - plan-methodology
+  - plan
   - first-principles
-  - research-past-work
+  - research
   - autodev-search
 ---
 
@@ -149,7 +149,7 @@ Run the project's lint, format, and type check commands (see CLAUDE.md for proje
 - **Local:** Need controlled test data or can't risk production side effects
 - **Local+UI:** Feature affects frontend display
 
-See plan-methodology skill for complexity assessment criteria.
+See plan skill for complexity assessment criteria.
 
 ## Input Verification
 
@@ -163,7 +163,7 @@ Before creating a plan, verify:
    - `source.md` - Problem/feature description (required)
    - `investigation.md` - Root cause analysis (required for bugs)
 
-3. **Check completeness** per plan-methodology skill
+3. **Check completeness** per plan skill
 
 4. **If inputs insufficient:**
    - For bugs missing investigation: Suggest running `/investigate` first
@@ -172,7 +172,7 @@ Before creating a plan, verify:
 ## Output
 
 Store plan as artifact via `create_artifact(artifact_type="plan", content=...)`.
-Use the template from plan-methodology skill for content structure.
+Use the template from plan skill for content structure.
 
 Ticket artifacts are stored in the MCP ticket system.
 

@@ -4,8 +4,8 @@ description: "Analyze workflow artifacts to identify gaps that allowed bugs to r
 model: inherit
 max_turns: 50
 skills:
-  - retrospect-methodology
-  - research-git-history
+  - retrospect
+  - research
 ---
 
 You are a workflow retrospective analyst.
@@ -176,7 +176,7 @@ When analyzing gaps, pay special attention to:
 
 **Verification phase:**
 
-- Did `/verify-prod` check production database state?
+- Did `/verify prod` check production database state?
 - Did verification wait for enough data to flow through?
 - Were the right verification scenarios defined?
 

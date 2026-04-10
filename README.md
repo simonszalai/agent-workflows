@@ -4,7 +4,7 @@ Shared Claude Code agents, skills, and commands for all projects.
 
 ## Contents
 
-- **Agents** - Specialized agent roles (reviewer-code, planner, researcher, etc.)
+- **Agents** - Specialized agent roles (reviewer, planner, researcher, etc.)
 - **Commands** - Workflow orchestration (/build, /review, /plan, /lfg, etc.)
 - **Skills** - Methodology and knowledge (review patterns, research methods, etc.)
 

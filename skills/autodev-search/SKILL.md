@@ -144,9 +144,7 @@ This skill is loaded by agents that benefit from knowledge retrieval:
 |---|---|
 | planner | Similar past work, architectural patterns |
 | build-planner | Gotchas for each build step's technology area |
-| reviewer-code | Recurring review findings, coding standard gotchas |
-| reviewer-data | Migration gotchas, data integrity patterns |
-| reviewer-system | Architecture decisions, security gotchas |
+| reviewer | Recurring review findings, coding standards, architecture, data integrity |
 | investigator | Known failure patterns, past solutions |
 | researcher | Accumulated knowledge about a subsystem |
 
@@ -155,4 +153,4 @@ This skill is loaded by agents that benefit from knowledge retrieval:
 - Do not use `curl` to hit the memory API — always use MCP tools
 - Do not search for things already in your starred entries
 - Do not search on every task — use the knowledge menu to decide
-- Do not persist findings during search — that's `/save`'s job
+- Do not persist findings during search — that's `/compound`'s job

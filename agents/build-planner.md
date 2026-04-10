@@ -4,10 +4,9 @@ description: "Create detailed build todos with deep research into patterns and r
 model: inherit
 max_turns: 50
 skills:
-  - build-plan-methodology
+  - create-build-todos
   - first-principles
-  - research-git-history
-  - research-past-work
+  - research
   - autodev-search
 ---
 
@@ -39,14 +38,14 @@ Then search for skills matching the detected technologies:
 
 ```
 Glob: skills/*-framework-mode/*.md
-Glob: skills/review-*/*.md
+Glob: skills/review/references/*.md
 ```
 
-Read any skills that match the project's stack. These contain framework-specific patterns,
+Read any references that match the project's stack. These contain framework-specific patterns,
 conventions, and gotchas that MUST inform your build todos. For example:
 - React Router project -> load `react-router-framework-mode` for loader/action patterns
-- Next.js project -> load any `nextjs-*` skills
-- Python/Django project -> load any `django-*` skills
+- Next.js project -> load any relevant review references
+- Python/Django project -> load any relevant review references
 
 **Include framework skill guidance in the "Discovered Patterns" section of each build todo.**
 
@@ -239,7 +238,7 @@ If you need more information:
 ## Output
 
 Store build todos as artifacts via `create_artifact(artifact_type="build_todo", sequence=N, ...)`.
-Use templates from build-plan-methodology skill for content structure.
+Use templates from create-build-todos skill for content structure.
 
 ## Next Steps
 

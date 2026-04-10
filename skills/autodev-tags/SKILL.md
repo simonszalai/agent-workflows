@@ -11,7 +11,7 @@ memory system (tag vector search and entry BM25), so good tags directly improve 
 
 ## When to Load
 
-Loaded by autodev-save, autodev-add-memory, and autodev-ingest-knowledge when creating or
+Loaded by compound, autodev-extract, and autodev-ingest when creating or
 updating entries. Use this skill whenever you need to decide what tags to assign.
 
 ## How Tags Work in Search

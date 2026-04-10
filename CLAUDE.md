@@ -146,15 +146,15 @@ When the user mentions these activities, proactively use the corresponding comma
 | User says                                                 | Action              |
 | --------------------------------------------------------- | ------------------- |
 | "write tests", "add tests", "test coverage"               | Run `/write-tests`  |
-| "fix tests", "tests failing", "CI failing", "test broken" | Run `/fix-tests`    |
+| "fix tests", "tests failing", "CI failing", "test broken" | Investigate root cause, then fix (test or code, whichever is wrong) |
 | "verify in browser", "check the UI", "smoke test"         | Run `/test-browser` |
 
 ### Verification & Deployment
 
 | User says                                       | Action                         |
 | ----------------------------------------------- | ------------------------------ |
-| "verify", "test this locally", "does this work" | Run `/verify-local`            |
-| "check production", "verify deployed"           | Run `/verify-prod`             |
+| "verify", "test this locally", "does this work" | Run `/verify local`            |
+| "check production", "verify deployed"           | Run `/verify prod`             |
 | "create deployment guide"                       | Run `/create-deployment-guide` |
 | "create PR", "make a PR", "open PR"             | Run `/create-pr`               |
 
@@ -207,8 +207,8 @@ permanent knowledge. Use `/compound` when the correction also implies workflow/s
 
 ## Parallelism
 
-When spawning multiple independent agents (e.g., /review spawns reviewer-code, reviewer-data,
-reviewer-system), ALWAYS use parallel Task tool calls in a single message. Never spawn
+When spawning multiple independent agents (e.g., /review spawns multiple reviewer instances),
+ALWAYS use parallel Task tool calls in a single message. Never spawn
 sequentially when agents don't depend on each other's output.
 
 ## Ticket System (MCP-Based)

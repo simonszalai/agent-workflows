@@ -8,7 +8,7 @@
 #
 # Usage:
 #   ./scripts/fetch-skill-memory.sh review-python-standards review-patterns
-#   ./scripts/fetch-skill-memory.sh --agent reviewer-code
+#   ./scripts/fetch-skill-memory.sh --agent reviewer
 #
 # Modes:
 #   skill names:  Read each skill's SKILL.md, merge tags/types

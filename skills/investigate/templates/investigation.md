@@ -20,21 +20,21 @@ evidence_sources: []
 
 ## Evidence
 
-### Infrastructure (investigator-render)
+### Infrastructure (investigator)
 
 [Findings from Render logs, metrics, deployments]
 
 - Key finding 1
 - Key finding 2
 
-### Database (investigator-postgres)
+### Database (investigator)
 
 [Findings from database queries, health checks]
 
 - Key finding 1
 - Key finding 2
 
-### Prefect (investigator-prefect)
+### Prefect (investigator)
 
 [Findings from flow runs, deployments, workers]
 

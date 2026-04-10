@@ -307,7 +307,7 @@ Check if Claude proactively searched the knowledge base when:
 **Red flags:**
 - Zero `mcp__autodev-memory__search` calls in a long session
 - Claude relied solely on hook-injected context without ever searching manually
-- `/save` or `/compound` never called after user corrections
+- `/compound` never called after user corrections
 
 ### Phase 3: Detect Bloat
 

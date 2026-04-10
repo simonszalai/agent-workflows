@@ -1,13 +1,35 @@
 ---
 name: autodev-ingest
-description: Ingest structured knowledge from project repos into the autodev-memory database
+description: Ingest structured knowledge from project repos into the autodev-memory database. Modes — knowledge (default), tickets, work-items.
 user_invocable: true
 ---
 
 # Autodev Ingest
 
-Ingest `.claude/knowledge/` files, `CLAUDE.md`, and work item artifacts from any repo into the
-autodev-memory database via MCP tools.
+Ingest knowledge into the autodev-memory database via MCP tools.
+
+## Modes
+
+| Mode | What it ingests | Reference |
+|---|---|---|
+| *(default)* | `.claude/knowledge/` files, `CLAUDE.md`, flow failure artifacts | This file |
+| `tickets` | Filesystem `work_items/` directories into the ticket system | `references/tickets.md` |
+| `work-items` | Work item artifacts (conclusions, retrospectives) into memory entries | `references/work-items.md` |
+
+## Usage
+
+```
+/autodev-ingest                          # Default: knowledge files from all repos
+/autodev-ingest ts-prefect               # Default mode, one specific repo
+/autodev-ingest --project ts             # Default mode, all repos in a project
+/autodev-ingest tickets                  # Migrate work_items/ to ticket system
+/autodev-ingest tickets ts-prefect       # Tickets mode, one repo
+/autodev-ingest work-items               # Ingest work item artifacts as memory entries
+/autodev-ingest --dry-run                # Preview without storing (any mode)
+```
+
+**Mode dispatch:** If the first argument is `tickets` or `work-items`, read the corresponding
+reference file and follow that procedure. Otherwise, use the default knowledge ingestion below.
 
 ## When to Use
 
@@ -15,15 +37,8 @@ autodev-memory database via MCP tools.
 - After resolving flow failures with investigation/conclusion docs
 - After completing features with retrospectives or architectural decisions
 - Periodic bulk sync to keep memory up-to-date with all repos
-
-## Usage
-
-```
-/autodev-ingest                          # Ingest all repos in all known projects
-/autodev-ingest ts-prefect               # Ingest one specific repo
-/autodev-ingest --project ts             # Ingest all repos in a project
-/autodev-ingest --dry-run                # Preview what would be ingested without storing
-```
+- One-time migration of work items into the ticket system (`tickets` mode)
+- Sweeping work item artifacts for operational learnings (`work-items` mode)
 
 ## Step 1: Discover Topology
 

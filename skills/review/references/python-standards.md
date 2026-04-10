@@ -1,0 +1,345 @@
+# Python Review Standards
+
+Standards for high-quality Python code. Apply these when reviewing Python changes.
+
+## 0. Project-Specific Standards First
+
+**Before applying generic rules below, check memory service for project coding standards:**
+
+Search `mcp__autodev-memory__search` for coding standards relevant to this project.
+Also review auto-injected context from the knowledge menu.
+
+Project-specific conventions override generic best practices. For example, a project may allow
+patterns (like assertions for data completeness) that generic rules would flag.
+
+## 1. Existing Code Modifications - Be Very Strict
+
+- Any added complexity to existing files needs strong justification
+- Always prefer extracting to new modules/classes over complicating existing ones
+- Question every change: "Does this make the existing code harder to understand?"
+
+## 2. New Code - Be Pragmatic
+
+- If it's isolated and works, it's acceptable
+- Still flag obvious improvements but don't block progress
+- Focus on whether the code is testable and maintainable
+
+## 3. Type Hints Convention
+
+- ALWAYS use type hints for function parameters and return values
+- Use modern Python 3.10+ syntax: `list[str]` not `List[str]`
+- Use union types with `|` operator: `str | None` not `Optional[str]`
+
+**Examples:**
+
+- FAIL: `def process_data(items):`
+- PASS: `def process_data(items: list[User]) -> dict[str, Any]:`
+
+## 4. Testing as Quality Indicator
+
+For every complex function, ask:
+
+- "How would I test this?"
+- "If it's hard to test, what should be extracted?"
+- Hard-to-test code = Poor structure that needs refactoring
+
+## 5. Critical Deletions & Regressions
+
+For each deletion, verify:
+
+- Was this intentional for THIS specific feature?
+- Does removing this break an existing workflow?
+- Are there tests that will fail?
+- Is this logic moved elsewhere or completely removed?
+
+## 6. Naming & Clarity - The 5-Second Rule
+
+If you can't understand what a function/class does in 5 seconds from its name:
+
+- FAIL: `do_stuff`, `process`, `handler`
+- PASS: `validate_user_email`, `fetch_user_profile`, `transform_api_response`
+
+## 7. Module Extraction Signals
+
+Consider extracting to a separate module when you see multiple of these:
+
+- Complex business rules (not just "it's long")
+- Multiple concerns being handled together
+- External API interactions or complex I/O
+- Logic you'd want to reuse across the application
+
+## 8. Pythonic Patterns
+
+- Use context managers (`with` statements) for resource management
+- Prefer list/dict comprehensions over explicit loops (when readable)
+- Use dataclasses or Pydantic models for structured data
+- FAIL: Functions returning tuples with 4+ values — use a Pydantic `BaseModel` instead.
+  Long tuples are fragile: adding a field requires updating every return path and caller,
+  and missing a value causes runtime `ValueError` with no static analysis warning (B026).
+- FAIL: Getter/setter methods (this isn't Java)
+- PASS: Properties with `@property` decorator when needed
+
+## 9. Import Organization
+
+- Follow PEP 8: stdlib, third-party, local imports
+- Use absolute imports over relative imports
+- Avoid wildcard imports (`from module import *`)
+- FAIL: Circular imports, mixed import styles
+- PASS: Clean, organized imports with proper grouping
+
+## 10. Modern Python Features
+
+- Use f-strings for string formatting (not % or .format())
+- Leverage pattern matching (Python 3.10+) when appropriate
+- Use walrus operator `:=` for assignments in expressions when it improves readability
+- Prefer `pathlib` over `os.path` for file operations
+
+## 11. Documentation Staleness
+
+Check for stale documentation that references old work items or outdated context:
+
+- **Module docstrings** referencing completed/old work items (e.g., "Added in F003")
+- **Function docstrings** describing removed parameters or old behavior
+- **Comments** with TODO items for completed work
+- **README/doc files** with outdated architecture descriptions
+
+**What to flag:**
+
+- Docstrings mentioning work item IDs from completed tickets
+- Comments saying "temporary" or "TODO" for code that's been stable
+- Docstrings that don't match current function signatures
+
+## 12. pgvector/NumPy Truthiness
+
+**Critical for database code with vector columns.**
+
+pgvector columns (`Vector(N)`) return NumPy arrays, not Python lists. Using truthiness checks on
+NumPy arrays raises `ValueError: The truth value of an array with more than one element is
+ambiguous`.
+
+**FAIL - Will crash at runtime:**
+
+```python
+if not record.core_event_embedding:  # NumPy array truthiness fails
+    return []
+
+if record.embedding:  # Same problem
+    process(record.embedding)
+```
+
+**PASS - Use explicit None checks:**
+
+```python
+if record.core_event_embedding is None:  # Correct
+    return []
+
+if record.embedding is not None:  # Correct
+    process(record.embedding)
+```
+
+**When to check:** Any code touching these column patterns:
+
+- `core_event_embedding`, `title_embedding`, `*_embedding`
+- Any `Field(sa_type=Vector(N))` column
+
+See memory entry: "pgvector numpy truthiness" (search memory service if not auto-injected)
+
+## 13. Exception Handler Control Flow
+
+When reviewing exception handlers around multi-step operations, check for the
+**append-before-confirm anti-pattern**: mutable state (list appends, dict updates, flag sets)
+modified BEFORE a fallible operation in the same try block.
+
+**FAIL - Mutation before fallible call:**
+
+```python
+results = []
+for item in items:
+    try:
+        results.append(item)           # Appended BEFORE the fallible call
+        await external_api_call(item)  # If this throws, item is still in results
+    except Exception:
+        log_error(item)
+        continue
+```
+
+**PASS - Fallible call before mutation:**
+
+```python
+results = []
+for item in items:
+    try:
+        await external_api_call(item)  # Fallible call FIRST
+        results.append(item)           # Only added on success
+    except Exception:
+        log_error(item)
+        continue
+```
+
+**Checklist for exception handlers:**
+
+- Are mutable collections modified BEFORE a fallible operation in the same try block?
+- If the fallible operation throws, does the catch block clean up partial state, or does the
+  mutation leak to downstream code?
+- Is there a transactional invariant (e.g., "X must succeed before Y is considered done") that
+  the ordering violates?
+
+## 14. Raw SQL text() Parameter Type Casts
+
+**Critical for asyncpg + SQLAlchemy `text()` queries.**
+
+asyncpg infers parameter types from query context. In complex expressions (CASE branches,
+INTERVAL arithmetic, comparisons with computed values), inference fails and defaults to `text`,
+causing runtime errors like `operator does not exist: double precision > text`.
+
+**Rule:** Every named parameter in a `text()` query that appears in a CASE branch, INTERVAL
+expression, or comparison with a computed value MUST have an explicit `CAST()`.
+
+**FAIL — asyncpg defaults params to text:**
+
+```python
+raw_sql = """
+    ... > CASE
+        WHEN posted_at >= :cutoff - INTERVAL '10 days'
+            THEN :threshold
+    END
+"""
+```
+
+**PASS — explicit types:**
+
+```python
+raw_sql = """
+    ... > CASE
+        WHEN posted_at >= CAST(:cutoff AS timestamptz) - INTERVAL '10 days'
+            THEN CAST(:threshold AS double precision)
+    END
+"""
+```
+
+**When fixing one parameter, audit ALL parameters in the same query** — this bug class has
+recurred when only the first failing parameter was fixed while others in the same expression
+were left uncast.
+
+See memory entry: "asyncpg text param type inference" (search memory service if not auto-injected)
+
+## 15. Broad except Exception Masking Critical Errors
+
+**Critical for multi-layer async code with error handling at each level.**
+
+When broad `except Exception` handlers return graceful defaults (empty list, default wait time,
+continue loop), critical errors can be silently swallowed at every layer. The combined effect
+across layers creates total error suppression — flows complete with COMPLETED status despite
+producing zero results.
+
+**FAIL — Critical error silently swallowed:**
+
+```python
+try:
+    result = await call_external_api()
+except Exception as e:
+    logger.error(f"Error: {e}")
+    return default_value
+```
+
+**PASS — Critical errors propagate, transient errors degrade gracefully:**
+
+```python
+try:
+    result = await call_external_api()
+except (AuthError, UsageCapExceeded, ConfigMissing):
+    raise  # Critical: fail fast for visibility
+except Exception as e:
+    logger.error(f"Transient error: {e}")
+    return default_value
+```
+
+**Checklist for broad except handlers:**
+
+- Does this handler catch exceptions that won't resolve with retries (auth, quota, config)?
+- Are there multiple layers of `except Exception` in the call chain? (Each layer compounds the
+  suppression)
+- If ALL items fail silently, does the flow still report COMPLETED?
+- Is there a cleanup/retention policy that would delete evidence of the silent failure?
+
+**Key distinction:** Will retrying help? Monthly usage cap won't reset with retries — it's
+critical. A network timeout might resolve on retry — it's transient.
+
+See memory entry: "broad except masks critical errors" (search memory service if not auto-injected)
+
+## 16. Catch-and-Warn on Must-Succeed Operations
+
+**Critical for setup/initialization code where failure makes the rest of the operation
+pointless.**
+
+When an exception handler catches a failure in a prerequisite operation but only logs a
+warning and continues, downstream code runs in an invalid state. This wastes resources
+(network, compute, time) and produces misleading results — the operation "succeeds" with
+zero useful output.
+
+**FAIL — Catch-and-warn on prerequisite:**
+
+```python
+async def inject_cookies(context, cookies):
+    try:
+        await context.add_cookies(cookies)
+    except Exception as e:
+        logger.warning(f"Failed to inject cookies: {e}")
+        # Continues! Scraper runs without auth cookies, hits paywalls
+```
+
+**PASS — Fail fast when prerequisite fails:**
+
+```python
+async def inject_cookies(context, cookies):
+    try:
+        await context.add_cookies(cookies)
+    except Exception as e:
+        raise RuntimeError(f"Cookie injection failed: {e}") from e
+        # Caller sees the failure immediately, no wasted work
+```
+
+**Checklist for exception handlers:**
+
+- Is this operation a **prerequisite** for everything that follows? (auth setup, connection
+  init, config load, schema validation)
+- If this fails, does the rest of the function produce **meaningful results**?
+- Would a caller know to check for partial failure, or would they assume success?
+- Is the warning visible to the caller, or only in internal logs?
+
+**Common must-succeed operations:**
+
+- Cookie/auth token injection (without auth, scraping is pointless)
+- Database connection setup (without DB, no data flows)
+- Configuration loading (without config, behavior is undefined)
+- Schema validation (invalid data corrupts downstream)
+
+## 17. Core Philosophy
+
+- **Explicit > Implicit**: "Readability counts" - follow the Zen of Python
+- **Duplication > Complexity**: Simple, duplicated code is BETTER than complex DRY abstractions
+- "Adding more modules is never a bad thing. Making modules very complex is a bad thing"
+- **Duck typing with type hints**: Use protocols and ABCs when defining interfaces
+- Follow PEP 8, but prioritize consistency within the project
+
+## Review Checklist
+
+When reviewing Python code:
+
+1. Start with critical issues (regressions, deletions, breaking changes)
+2. Check for missing type hints and non-Pythonic patterns
+3. Verify modern type syntax (`tuple` not `Tuple`, `T | None` not `Optional[T]`)
+4. Check for `logger.exception()` in except blocks (not `logger.error()`)
+5. Look for unused parameters, variables, or fetched data
+6. Check for stale docstrings referencing old work items
+7. **Check for pgvector/NumPy truthiness bugs** (see section 12)
+8. **Check exception handler control flow** for append-before-confirm anti-pattern (see section 13)
+9. **Check for long tuple returns** (4+ values) — flag for refactoring to Pydantic model
+10. **Check for broad `except Exception` masking critical errors** (see section 15)
+11. Evaluate testability and clarity
+12. Suggest specific improvements with examples
+13. Be strict on existing code modifications, pragmatic on new isolated code
+14. **Check for catch-and-warn on must-succeed operations** (see section 16)
+15. **Check for `str()` on rich objects** (HTTP responses, DB results, API clients) — use the
+    explicit content accessor (`.body`, `.text`, `.content`) instead of relying on `__str__`
+16. Always explain WHY something doesn't meet the bar

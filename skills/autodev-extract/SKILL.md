@@ -267,7 +267,7 @@ Found 5 knowledge candidates from 23 sessions:
 
 ## Ingestion
 
-Ingest approved candidates using the **autodev-add-memory** skill. Load that skill and
+Ingest approved candidates using the **compound** skill's store procedure (see `compound/references/store-procedure.md`). Load that skill and
 follow its procedure for each candidate sequentially, passing:
 
 - `source`: `"captured"` (not `"ingested"` — these are derived from conversations)
@@ -288,7 +288,7 @@ follow its procedure for each candidate sequentially, passing:
 | `conductor_workspace` | No | Conductor workspace name (for Conductor-sourced entries) |
 | `message_range` | No | Approximate message indices containing the knowledge (e.g., `"42-58"`) |
 
-The autodev-add-memory skill handles searching for related entries, deciding whether to
+The compound skill's store procedure handles searching for related entries, deciding whether to
 create new / append / supersede / skip, and executing the action.
 
 ## Batch Processing Strategy
