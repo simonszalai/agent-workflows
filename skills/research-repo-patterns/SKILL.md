@@ -45,16 +45,16 @@ Standards for conducting thorough research on a repository's structure, document
 
 ### 6. Work Item History
 
-Check work_items folders for context and decisions:
+Search the ticket system for context and decisions:
 
-```bash
-# Search all folders (active/, backlog/, closed/)
-find work_items -name "*.md" -path "*/closed/*" -o -name "investigation.md"
+```
+mcp__autodev-memory__search_tickets(project="ts", query="relevant search terms")
+mcp__autodev-memory__list_tickets(project="ts", status="completed")
 ```
 
-- Review closed work items (`work_items/closed/`) for architectural decisions and rationale
-- Check backlog (`work_items/backlog/`) for planned features with context
-- Examine `investigation.md` and `conclusion.md` files for past analysis
+- Review completed tickets for architectural decisions and rationale
+- Check backlog tickets for planned features with context
+- Examine investigation and retrospective artifacts for past analysis
 - Look for patterns in how problems were solved
 - Understand why certain approaches were chosen over alternatives
 

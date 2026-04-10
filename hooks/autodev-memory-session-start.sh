@@ -33,12 +33,10 @@ _SS_TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // "none"' 2>/dev/null 
 _SS_CWD_SHORT=$(echo "$INPUT" | jq -r '(.cwd // .session.cwd // "?") | split("/") | last' 2>/dev/null || echo "?")
 mem_log INFO "TRIGGER source=$_SS_SOURCE session=$_SS_SESSION cwd=$_SS_CWD_SHORT pid=$$ transcript=$_SS_TRANSCRIPT"
 
-# --- Skip resume events ---
-if [[ "$_SS_SOURCE" == "resume" ]]; then
-  mem_log INFO "SKIP source=resume (not a new session)"
-  echo '{}'
-  exit 0
-fi
+# --- Run on all sources: startup, resume, compact, clear ---
+# SessionStart hook output is injected into system context but NOT persisted
+# in the JSONL transcript. On resume (heavily used by Conductor), the original
+# starred memories and knowledge menu vanish. Re-inject every time.
 
 mem_init "$INPUT"
 
@@ -94,9 +92,18 @@ if [[ "$TOTAL_COUNT" -gt 0 ]]; then
     ' 2>/dev/null || echo "(formatting error)")
   fi
 
-  CONTEXT="<autodev-memory-hook-result source=\"session-start\">
-MANDATORY: Start your first reply with this single status line (no extra text around it):
+  # Vary the status line by source — on resume/compact, don't force the assistant
+  # to announce "session started" mid-conversation
+  if [[ "$_SS_SOURCE" == "startup" || "$_SS_SOURCE" == "clear" ]]; then
+    _STATUS_LINE="MANDATORY: Start your first reply with this single status line (no extra text around it):
 Memory: session started — $MENU_COUNT searchable entries"
+  else
+    _STATUS_LINE="Memory system re-injected ($_SS_SOURCE). Do NOT announce this to the user.
+$MENU_COUNT searchable entries available."
+  fi
+
+  CONTEXT="<autodev-memory-hook-result source=\"session-start\">
+$_STATUS_LINE"
 
   if [[ "$STARRED_COUNT" -gt 0 ]]; then
     CONTEXT="$CONTEXT

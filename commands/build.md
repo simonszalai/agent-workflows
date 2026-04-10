@@ -59,7 +59,16 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 
 ## Process
 
-1. **Verify execution context (REQUIRED):**
+1. **Set ticket status to building:**
+   ```
+   mcp__autodev-memory__update_ticket(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     status="building",
+     command="/build"
+   )
+   ```
+
+2. **Verify execution context (REQUIRED):**
 
    **Standard Mode (Local Terminal):**
    - Run `git rev-parse --is-inside-work-tree` and `git worktree list`
@@ -74,23 +83,23 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    - All operations happen in current directory on the feature branch
    - This mode is used for cloud execution where worktrees aren't practical
 
-2. **Process user feedback:**
+3. **Process user feedback:**
    - Read plan artifact from `get_ticket` response — check Open Questions and Additional Notes
    - If answers or notes require changes to build_todos:
      - Update affected build_todo artifacts via `update_artifact`
      - Add/remove/modify steps as indicated
      - Document changes in work log
 
-3. **Validate build_todos against plan:**
+4. **Validate build_todos against plan:**
    - Verify build_todo artifacts align with plan artifact decisions
    - If build_todos contradict plan, update via `update_artifact` to resolve
    - Check memory service for relevant gotchas and patterns
 
-4. **Verify ready:**
+5. **Verify ready:**
    - Read plan artifact — understand the approach
    - List build_todo artifacts — identify pending steps (status != "complete")
 
-5. **Execute each step:**
+6. **Execute each step:**
    - Read todo file - understand objective
    - Update artifact status: `mcp__autodev-memory__update_artifact(project=PROJECT, artifact_id=ID, status="in_progress")`
    - Implement changes as specified
@@ -111,14 +120,14 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    - Run linter (project's linter)
    - Update artifact: `update_artifact(artifact_id=ID, status="complete", content="<updated with completion notes>")`
 
-6. **Handle issues:**
+7. **Handle issues:**
    | Issue | Action |
    | --------------------- | ------------------------------- |
    | Missing info | Note in todo, continue or pause |
    | Tests failing | Debug, fix, document |
    | Approach doesn't work | Revise plan.md, document changes |
 
-7. **Write tests for new code:**
+8. **Write tests for new code:**
    - After all build steps are complete, run `/write-tests {work-item-id}`
    - This analyzes all code changes and writes appropriate tests:
      - Unit tests for pure logic and business rules
@@ -127,7 +136,7 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    - Run all new tests to verify they pass
    - Run full test suite to check for regressions
 
-8. **Parallel execution (optional):**
+9. **Parallel execution (optional):**
    - If the plan has truly independent pieces of work (e.g., changes in separate repos, unrelated modules), spawn parallel subagents to speed up execution
    - Good candidates for parallelization:
      - Work in different repositories
@@ -140,7 +149,7 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 
    > **When in doubt, build sequentially.** If independence isn't clear, don't take risks. Sequential execution is safer and easier to debug. Only parallelize when you're confident the work is truly independent.
 
-9. **Migration parity check (REQUIRED after model changes):**
+10. **Migration parity check (REQUIRED after model changes):**
    - After all build steps, check if any model files were modified:
      ```bash
      git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20

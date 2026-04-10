@@ -358,6 +358,22 @@ Check if injected context is too large:
 
 ## Output Format
 
+Every finding gets an incremental ID for easy reference in follow-up discussion:
+
+| Prefix | Section | Example |
+|---|---|---|
+| H | Surfacing Hits | H1, H2, H3 |
+| M | Surfacing Misses | M1, M2 |
+| I | Ignored Memories | I1, I2 |
+| O | Missed Opportunities (MCP) | O1, O2 |
+| D | Dead Entries | D1, D2 |
+| R | Redundant Entries | R1, R2 |
+| S | Stale Entries | S1, S2 |
+| F | Additional Findings | F1, F2, F3 |
+
+IDs are stable within a report. Use them when telling the agent which findings to act on
+(e.g., "implement F2 and F5, skip M1").
+
 ```markdown
 # Autodev Audit Report
 
@@ -379,13 +395,16 @@ Check if injected context is too large:
 |---|---|---|---|---|---|
 
 ### Surfacing Hits (memories correctly delivered)
-- <specific examples with session + message context>
+- **H1.** <specific example with session + message context>
+- **H2.** ...
 
 ### Surfacing Misses (memories should have appeared but didn't)
-- <user message, relevant memory entry, why it wasn't found>
+- **M1.** <user message, relevant memory entry, why it wasn't found>
+- **M2.** ...
 
 ### Ignored Memories (surfaced but not used by Claude)
-- <memory injected, Claude didn't apply it, user had to correct>
+- **I1.** <memory injected, Claude didn't apply it, user had to correct>
+- **I2.** ...
 
 ## MCP Tool Call Verification
 
@@ -394,27 +413,33 @@ Check if injected context is too large:
 |---|---|---|
 
 ### Missed Opportunities
-- <cases where Claude should have searched but didn't>
+- **O1.** <case where Claude should have searched but didn't>
+- **O2.** ...
 
 ## Bloat Analysis
 
 ### Dead Entries (never retrieved)
-| Entry | Type | Last Retrieved |
-|---|---|---|
+| ID | Entry | Type | Last Retrieved |
+|---|---|---|---|
+| D1 | | | |
 
 ### Redundant (duplicates CLAUDE.md or overlaps)
-- <specific entries>
+- **R1.** <specific entry>
+- **R2.** ...
 
 ### Stale (outdated content)
-- <entries no longer matching reality>
+- **S1.** <entry no longer matching reality>
+- **S2.** ...
 
 ## Additional Findings
 
-### [PRIORITY] Finding Title
+### F1. [PRIORITY] Finding Title
 **Dimension:** <A-I>
 **Evidence:** <specific data>
 **Proposed change:** <actionable recommendation>
 **Files to modify:** <exact paths>
+
+### F2. [PRIORITY] ...
 
 ## Metrics to Track
 <suggested ongoing metrics>

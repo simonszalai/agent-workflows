@@ -11,16 +11,19 @@ user_invocable: false
 
 Reference for agents that need to retrieve knowledge from the memory system during their work.
 
-## What You Get Automatically
+## What You Get Automatically (Parent Sessions Only)
 
-At session start and subagent spawn, hooks inject two things as `additionalContext`:
+At **session start**, hooks inject two things as `additionalContext`:
 
 1. **Starred entries** (full content) — critical rules, architecture, gotchas that apply to
    every task. Treat these with the same authority as CLAUDE.md.
 2. **Knowledge menu** — a compact list of ALL entries with their `[type]`, title, and tags.
    This is your index. Use it to decide whether a search is warranted.
 
-You do NOT need to search for starred entries — they are already in your context.
+**Subagents do NOT receive hook injections.** `PreToolUse` hook output goes to the parent
+model, not the spawned subagent. If you are a subagent (your task came from an Agent tool
+call, not directly from the user), you must **actively search** for relevant knowledge at
+the start of your task — see "Subagent Bootstrap" below.
 
 ## When to Search
 
@@ -42,6 +45,28 @@ use `mcp__autodev-memory__search` to retrieve its full content.
 
 The agent decides. No need to search on every task — just when the menu suggests useful
 knowledge exists.
+
+
+## Subagent Bootstrap (CRITICAL for subagents)
+
+Since subagents receive NO hook injections, you must bootstrap your own memory context
+at the very start of your task. Do this BEFORE any other work:
+
+1. **Search for relevant gotchas** — extract 2-4 keywords from your task description and
+   search for known issues:
+
+   ```
+   mcp__autodev-memory__search(
+     queries=[{"keywords": ["<tech>", "<area>"], "text": "<what you're investigating/building>"}],
+     project="<project>",
+     limit=5
+   )
+   ```
+
+2. **Read any results carefully** — gotchas and patterns from the memory system represent
+   hard-won production lessons. They override general knowledge.
+
+This takes ~5 seconds and prevents re-introducing bugs that were already documented and solved.
 
 ## MCP Tools for Search
 

@@ -77,7 +77,16 @@ Run `/create-build-todos` internally:
 
 ### Phase 3: Build
 
-Run `/build` internally for each build todo:
+1. **Set ticket status to building:**
+   ```
+   mcp__autodev-memory__update_ticket(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     status="building",
+     command="/auto-build"
+   )
+   ```
+
+2. Run `/build` internally for each build todo:
 
 - Execute steps in dependency order
 - Run tests after each step

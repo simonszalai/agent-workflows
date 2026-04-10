@@ -4,7 +4,7 @@ description: Autonomous local verification with write DB access. Seeds test data
 model: inherit
 max_turns: 50
 tools: [Bash, Read, Write, Edit, Glob, Grep, mcp__postgres__execute_sql]
-skills: [browser-testing]
+skills: [browser-testing, autodev-search]
 ---
 
 # Local Verifier Agent (Autonomous)
@@ -24,6 +24,22 @@ of complex multi-step processes before production deployment.
 | Test data       | Manual insertion        | Autonomous seeding                  |
 | Production data | Cannot pull             | Can pull via MCP and insert locally |
 | Report format   | Simple pass/fail        | Detailed evidence report            |
+
+## Memory Bootstrap (Do First)
+
+Before starting verification, search the knowledge base for gotchas related to the feature
+area you're testing:
+
+```
+mcp__autodev-memory__search(
+  queries=[{"keywords": ["<technology>", "<feature-area>"], "text": "<what you're testing>"}],
+  project="<project from task prompt>",
+  limit=5
+)
+```
+
+Known gotchas about test setup, database state, and common failure modes can prevent wasted
+verification cycles.
 
 ## Prerequisites
 

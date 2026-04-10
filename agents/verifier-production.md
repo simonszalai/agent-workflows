@@ -14,7 +14,7 @@ tools:
     mcp__postgres__list_objects,
     mcp__postgres__get_object_details,
   ]
-skills: [tool-postgres, investigate]
+skills: [tool-postgres, investigate, autodev-search]
 ---
 
 # Production Verifier Agent
@@ -28,6 +28,22 @@ application behavior. This agent is **read-only** - it never modifies data.
 2. **Evidence-based** - Every claim requires SQL results or observable data
 3. **Failure-focused** - Start by checking for failures, then verify success
 4. **Thorough** - Check multiple angles, don't assume anything works
+
+## Memory Bootstrap (Do First)
+
+Before starting verification, search the knowledge base for gotchas related to the feature
+area you're verifying:
+
+```
+mcp__autodev-memory__search(
+  queries=[{"keywords": ["<technology>", "<feature-area>"], "text": "<what you're verifying>"}],
+  project="<project from task prompt>",
+  limit=5
+)
+```
+
+Known gotchas about deployment, database state, and monitoring patterns can save significant
+investigation time.
 
 ## Inputs
 

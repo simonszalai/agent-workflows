@@ -18,10 +18,10 @@ Standards for conducting **bug and incident investigations** and producing inves
 
 - **RETURN findings directly** in your response - do NOT create files
 - The parent agent will synthesize all findings into a single investigation.md
-- Never create work_items folders or investigation files yourself
+- Never create local work_items folders or investigation files yourself
 
 **Only the orchestrating agent** (invoked via `/investigate {number}`) writes the final
-`investigation.md` to the work item folder (searches active/, backlog/, closed/ for the number).
+investigation artifact to the ticket via `mcp__autodev-memory__create_artifact`.
 
 ## Output Template
 
@@ -106,8 +106,8 @@ after synthesizing findings.
 **Auto-close when all "Next Steps" are complete.** When all checkboxes in the investigation.md are
 checked off:
 
-1. Create `conclusion.md` in the work item folder (see AGENTS.md for template)
-2. Move work item to `work_items/closed/`
-3. Report: "Investigation complete. Moved to closed/"
+1. Create a conclusion artifact on the ticket via `mcp__autodev-memory__create_artifact`
+2. Update ticket status to `completed` via `mcp__autodev-memory__update_ticket`
+3. Report: "Investigation complete. Ticket closed."
 
 Do NOT wait for user to say "close" - if all action items are done, close it.

@@ -1,5 +1,5 @@
 ---
-name: work-item-curator
+name: ticket-curator
 description: |
   Use this agent PROACTIVELY when user mentions ANY of these in context of work items:
   - "exclude from scope", "out of scope", "defer this", "make a new backlog item"
@@ -44,7 +44,7 @@ directory is used.
 - Bugs: `B0023` (type: "bug")
 - Refactors: `R0023` (type: "refactor")
 
-**Statuses:** backlog, active, to_verify, completed, abandoned
+**Statuses:** backlog, active, building, to_verify, completed, abandoned
 
 **Context resolution:**
 ```
@@ -75,7 +75,7 @@ directory is used.
      status="backlog" | "active",
      priority="p1" | "p2" | null,
      quarter="2026Q2",
-     command="/curator", agent="work-item-curator"
+     command="/curator", agent="ticket-curator"
    )
    ```
 
@@ -103,7 +103,7 @@ directory is used.
      type=source.type,
      description=source.description + "\n\n## Origin\nImported from {SOURCE_REPO} (was {SOURCE_ID})",
      related=[f"{SOURCE_REPO}/{SOURCE_ID}"],
-     command="/curator", agent="work-item-curator"
+     command="/curator", agent="ticket-curator"
    )
    ```
 
@@ -124,7 +124,7 @@ directory is used.
    mcp__autodev-memory__update_artifact(
      project=PROJECT, artifact_id=source_artifact_id,
      content="<existing content + new section>",
-     command="/curator", agent="work-item-curator"
+     command="/curator", agent="ticket-curator"
    )
    ```
 
@@ -153,7 +153,7 @@ directory is used.
      description="## Origin\nIdentified during work on {CURRENT_ID}\n\n## Context\n<extracted context>\n\n## Why Deferred\n<reason>",
      status="backlog",
      related=[CURRENT_ID],
-     command="/curator", agent="work-item-curator"
+     command="/curator", agent="ticket-curator"
    )
    ```
 
@@ -177,7 +177,7 @@ mcp__autodev-memory__update_ticket(
   priority="p1",  # or "p2", "p0"
   quarter="2026Q2",
   depends_on=["F0001"],
-  command="/curator", agent="work-item-curator"
+  command="/curator", agent="ticket-curator"
 )
 ```
 
@@ -188,9 +188,9 @@ mcp__autodev-memory__update_ticket(
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="active" | "backlog" | "to_verify" | "completed" | "abandoned",
+  status="active" | "backlog" | "building" | "to_verify" | "completed" | "abandoned",
   reason="<optional reason for status change>",
-  command="/curator", agent="work-item-curator"
+  command="/curator", agent="ticket-curator"
 )
 ```
 

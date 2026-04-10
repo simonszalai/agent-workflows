@@ -253,13 +253,22 @@ Run `/create-build-todos` internally:
 
 ### Phase 6: Build
 
-1. **Create branch:**
+1. **Set ticket status to building:**
+   ```
+   mcp__autodev-memory__update_ticket(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     status="building",
+     command="/lfg"
+   )
+   ```
+
+2. **Create branch:**
 
    ```bash
    git checkout -b lfg/{work-item-id}
    ```
 
-2. Run `/build` internally:
+3. Run `/build` internally:
    - Execute steps in dependency order
    - Run tests after each step
    - Run type checker

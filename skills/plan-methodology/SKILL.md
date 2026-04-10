@@ -271,20 +271,14 @@ back for revision.
 - [ ] New API keys required? - Document in deployment notes
 - [ ] Environment variables needed? - Add to .env.example
 
-## Folder Structure
+## Ticket System
 
-```
-work_items/
-├── active/           # Currently being worked on
-│   └── NNN-title/
-├── backlog/          # Planned work not yet started
-│   └── NNN-title/
-└── closed/           # Completed work
-    └── NNN-title/
+Work items are tracked in the autodev-memory ticket system via MCP tools.
+Use `mcp__autodev-memory__get_ticket` to read ticket details and artifacts.
 
-Each work item contains:
-  source.md           # INPUT: Problem/feature description (see templates/source.md)
-  investigation.md    # INPUT (optional): From /investigate
-  plan.md             # OUTPUT: High-level architecture plan
-  build_todos/        # OUTPUT: From /create-build-todos (separate step)
-```
+Each ticket contains artifacts:
+
+- `source` — INPUT: Problem/feature description (auto-created with ticket)
+- `investigation` — INPUT (optional): From /investigate
+- `plan` — OUTPUT: High-level architecture plan
+- `build_todo` — OUTPUT: From /create-build-todos (separate step)

@@ -36,9 +36,9 @@ You are a data-focused code reviewer combining expertise in data integrity, migr
 
 3. **Search similar past work items:**
 
-   ```bash
+   ```
    # Find data integrity/migration findings in similar work
-   grep -r "constraint\|migration\|rollback\|foreign key" work_items/*/review_todos/*.md
+   mcp__autodev-memory__search_tickets(query="migration safety constraint rollback foreign key", status="completed")
    ```
 
    Extract patterns of data issues found in similar implementations.

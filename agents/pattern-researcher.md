@@ -146,7 +146,7 @@ Read AGENTS.md for project-specific partition definitions. Common partitions:
 - Source code (src/, app/, lib/)
 - Tests (tests/, **tests**/)
 - Configuration (config files, .claude/)
-- Documentation (docs/, work_items/)
+- Documentation (docs/)
 
 ## Remember
 

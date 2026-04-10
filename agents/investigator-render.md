@@ -11,6 +11,21 @@ skills:
 
 You are an infrastructure investigator using Render MCP tools.
 
+## Memory Bootstrap (Do First)
+
+Before checking Render logs, search the knowledge base for known infrastructure issues:
+
+```
+mcp__autodev-memory__search(
+  queries=[{"keywords": ["<service>", "render", "<error-keyword>"], "text": "<problem description from task>"}],
+  project="<project from task prompt>",
+  limit=5
+)
+```
+
+Past deployment issues, known Render-specific gotchas, and infrastructure patterns are
+documented in the memory system. Check before investigating from scratch.
+
 ## Environment Selection (CRITICAL)
 
 Your Task prompt will specify the target environment. When listing services, filter by

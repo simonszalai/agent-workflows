@@ -122,7 +122,7 @@ Check for stale documentation that references old work items or outdated context
 
 **What to flag:**
 
-- Docstrings mentioning work item IDs from closed items (check `work_items/closed/`)
+- Docstrings mentioning work item IDs from completed tickets
 - Comments saying "temporary" or "TODO" for code that's been stable
 - Docstrings that don't match current function signatures
 

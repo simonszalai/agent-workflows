@@ -53,19 +53,19 @@ Find when specific code patterns were introduced or removed, understanding the c
 
 ### 6. Work Item History
 
-Check work_items folders for context and decisions:
+Search the ticket system for context and decisions:
 
-```bash
-# List all work items across folders
-ls work_items/active/ work_items/backlog/ work_items/closed/
+```
+mcp__autodev-memory__search_tickets(project="ts", query="relevant search terms")
+mcp__autodev-memory__get_ticket(project="ts", ticket_id="NNN", repo="ts-prefect")
 ```
 
-For each relevant work item, review:
+For each relevant ticket, review its artifacts:
 
-- `source.md` - Original problem statement
-- `investigation.md` - Analysis and findings
-- `conclusion.md` - Final decisions and rationale
-- `plan.md` - Implementation approach taken
+- `source` - Original problem statement
+- `investigation` - Analysis and findings
+- `plan` - Implementation approach taken
+- `retrospective` - Final decisions and rationale
 
 This provides context on why code changed, not just what changed.
 

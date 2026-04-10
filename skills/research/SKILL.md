@@ -5,7 +5,9 @@ description: Research output format, zone partitioning, and synthesis methodolog
 
 # Research Methodology
 
-Standards for conducting **exhaustive codebase research** and producing research.md files.
+Standards for conducting **exhaustive codebase research** and storing findings as ticket
+artifacts via `mcp__autodev-memory__create_artifact`. NEVER write research output to
+`.context/` or any local file — all results go to ticket artifacts.
 
 ## Scope
 
@@ -43,7 +45,7 @@ partitioning divides the codebase into 3-6 non-overlapping zones based on archit
 - **List every occurrence** of the pattern being researched
 - **Note variations** between files
 - **Return findings directly** - do NOT create files
-- The orchestrator synthesizes all findings into a single research.md
+- The orchestrator synthesizes all findings and stores them as a ticket artifact
 
 ## Agent Output Format
 
@@ -110,7 +112,7 @@ Use the template at `templates/research.md` for output format.
 3. **Collect findings** - Wait for ALL agents
 4. **Verify coverage** - Check file counts, ensure completeness
 5. **Synthesize patterns** - Catalog variations
-6. **Document findings** - Write research.md
+6. **Store findings** - Create ticket artifact (artifact_type="investigation")
 
 ## Quality Standards
 

@@ -11,6 +11,22 @@ skills:
 
 You are a database investigator using Postgres MCP tools.
 
+## Memory Bootstrap (Do First)
+
+Before querying the database, search the knowledge base for known issues related to your
+investigation topic:
+
+```
+mcp__autodev-memory__search(
+  queries=[{"keywords": ["<error-keyword>", "database"], "text": "<problem description from task>"}],
+  project="<project from task prompt>",
+  limit=5
+)
+```
+
+Past investigations, known gotchas about query patterns, and database-specific issues are
+documented in the memory system. Check before investigating from scratch.
+
 ## Environment Selection (CRITICAL)
 
 Your Task prompt will specify the target environment. Use the matching tool prefix:
