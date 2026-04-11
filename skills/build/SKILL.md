@@ -1,12 +1,12 @@
 ---
 name: build
-description: Execute an implementation plan. Works through build_todos step by step, writes code, updates work log.
+description: Execute an implementation plan. Spawns builder agent to work through build_todos step by step.
 max_turns: 100
 ---
 
 # Build Command
 
-Execute a plan by working through build_todos.
+Execute a plan by spawning a `builder` agent to work through build_todos.
 
 ## Usage
 
@@ -96,79 +96,56 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    - If build_todos contradict plan, update via `update_artifact` to resolve
    - Check memory service for relevant gotchas and patterns
 
-5. **Verify ready:**
-   - Read plan artifact — understand the approach
-   - List build_todo artifacts — identify pending steps (status != "complete")
+5. **Spawn builder agent:**
 
-6. **Execute each step:**
-   - Read todo file - understand objective
-   - Update artifact status: `mcp__autodev-memory__update_artifact(project=PROJECT, artifact_id=ID, status="in_progress")`
-   - Implement changes as specified
-   - **Run ALL verification commands** listed in the build todo's Verification section
-   - **Count-verify bulk changes:** If the todo says "modify N call sites," run a grep
-     to confirm all N were actually modified. Example:
-     ```bash
-     # If todo says "add prompt_version_id to 24 call sites"
-     grep -r "prompt_version_id=" src/flows/ --include="*.py" | wc -l
-     # Must match expected count
-     ```
-   - **Delete verification:** If todo says "delete file X," verify it no longer exists
-   - **Elimination verification:** If the plan has a "What We're Eliminating" section, grep
-     for imports of the old system after ALL build steps complete. Zero results required.
-     This is a build blocker — do not proceed to tests or review until verified.
-   - Run tests (project's test suite)
-   - Run type checker (project's type checker)
-   - Run linter (project's linter)
-   - Update artifact: `update_artifact(artifact_id=ID, status="complete", content="<updated with completion notes>")`
+   ```
+   Agent(
+     subagent_type="builder",
+     model="opus",
+     prompt="
+       MODE: build
+       Ticket: {ticket_id}
+       Project: {PROJECT}
+       Repo: {REPO}
 
-7. **Handle issues:**
-   | Issue | Action |
-   | --------------------- | ------------------------------- |
-   | Missing info | Note in todo, continue or pause |
-   | Tests failing | Debug, fix, document |
-   | Approach doesn't work | Revise plan.md, document changes |
+       Execute all pending build_todo artifacts for this ticket.
 
-8. **Write tests for new code:**
-   - After all build steps are complete, run `/write-tests {work-item-id}`
-   - This analyzes all code changes and writes appropriate tests:
-     - Unit tests for pure logic and business rules
-     - Integration tests for database operations
-     - E2E tests for multi-step user flows
-   - Run all new tests to verify they pass
+       Plan summary: {plan artifact summary}
+
+       Build todos (pending):
+       {list of pending build_todo artifacts with sequence numbers}
+
+       {if --step: 'Execute ONLY step {N}'}
+
+       Work through each step in sequence order. For each step:
+       1. Read the build_todo artifact content
+       2. Implement changes following discovered patterns
+       3. Run verification commands from the todo
+       4. Run tests, type checker, linter
+       5. Update artifact status to complete
+
+       After all steps: run migration parity check (git diff model files vs migrations).
+
+       Return completion summary with steps completed, test results, and any issues.
+     "
+   )
+   ```
+
+6. **After builder returns:**
+   - Write tests: run `/write-tests {work-item-id}`
    - Run full test suite to check for regressions
+   - Update plan artifact with completion summary via `update_artifact`
 
-9. **Parallel execution (optional):**
-   - If the plan has truly independent pieces of work (e.g., changes in separate repos, unrelated modules), spawn parallel subagents to speed up execution
+7. **Parallel execution (optional):**
+   - If the plan has truly independent pieces of work (e.g., changes in separate repos,
+     unrelated modules), spawn multiple builder agents in parallel
    - Good candidates for parallelization:
      - Work in different repositories
      - Independent features with no shared code paths
-     - Separate test suites that don't interact
    - **After parallel work completes:** Verify everything fits together
-     - Run integration tests across affected repos
-     - Check for interface mismatches
-     - Ensure shared types/schemas are consistent
 
-   > **When in doubt, build sequentially.** If independence isn't clear, don't take risks. Sequential execution is safer and easier to debug. Only parallelize when you're confident the work is truly independent.
-
-10. **Migration parity check (REQUIRED after model changes):**
-   - After all build steps, check if any model files were modified:
-     ```bash
-     git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20
-     ```
-   - If model files changed, verify a migration exists in this branch:
-     ```bash
-     git diff --name-only main -- migrations/versions/ | grep '\.py$'
-     ```
-   - **If models changed but no migration exists: STOP.** Create one before proceeding:
-     ```bash
-     uv run alembic revision --autogenerate -m 'description'
-     ```
-   - This is a build blocker — missing migrations cause production failures.
-
-10. **Final:**
-   - Run full test suite
-   - Run type checker - fix any type errors before completing
-   - Update plan artifact with completion summary via `update_artifact`
+   > **When in doubt, build sequentially.** Only parallelize when you're confident the
+   > work is truly independent.
 
 ## Status Flow
 

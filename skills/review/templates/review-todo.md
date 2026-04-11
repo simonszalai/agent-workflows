@@ -2,6 +2,11 @@
 status: pending
 source: [agent-name]
 priority: p1 | p2 | p3
+confidence: 0.00
+autofix_class: safe_auto | gated_auto | manual | advisory
+owner: review-fixer | downstream-resolver | human
+requires_verification: false
+pre_existing: false
 ---
 
 # Decision
@@ -16,6 +21,15 @@ priority: p1 | p2 | p3
 ## Finding
 
 [What the review agent identified as an issue or improvement opportunity]
+
+**Why it matters:** [Impact — not what's wrong, but what breaks or degrades]
+
+**Confidence:** [0.00-1.00] — [certain/confident/flag]
+**Autofix class:** [safe_auto/gated_auto/manual/advisory]
+
+## Evidence
+
+- [Code snippet, line reference, or pattern description]
 
 ## Current Code
 

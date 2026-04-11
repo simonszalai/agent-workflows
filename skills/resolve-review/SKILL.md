@@ -1,6 +1,6 @@
 ---
 name: resolve-review
-description: Resolve review findings based on decisions. Implements fixes from review_todos, captures learnings.
+description: Resolve review findings based on decisions. Spawns builder agent to implement fixes from review_todos, captures learnings.
 skills:
   - autodev-search
   - compound
@@ -8,68 +8,156 @@ skills:
 
 # Resolve-Review Command
 
-Work through review findings and implement accepted fixes.
+Spawn a `builder` agent to work through review findings and implement accepted fixes.
+Routes findings by autofix classification — safe fixes are applied automatically, gated
+fixes need approval, manual findings are handed off.
 
 ## Usage
 
 ```
 /resolve-review 009                              # Bug/incident #009 (NNN format)
 /resolve-review F001                             # Feature F001 (FNNN format)
-/resolve-review B0009                              # Bug ticket B0009
+/resolve-review B0009                            # Bug ticket B0009
 ```
 
 ## Prerequisites
 
-- `review_todos/` exists with findings
+- `review_todos/` exists with findings (or review_todo artifacts on ticket)
 - (Optional) User has filled Decision sections
+
+## Autofix Classification Routing
+
+Review findings are classified by the `/review` orchestrator. Each class has a different
+resolution path:
+
+| autofix_class | Default owner | Resolution |
+| ------------- | ------------- | ---------- |
+| `safe_auto` | `review-fixer` | **Auto-apply.** Builder implements fix without asking. Local, deterministic changes. |
+| `gated_auto` | `downstream-resolver` | **Ask first.** Present the fix and ask for approval. Changes behavior/contracts. |
+| `manual` | `downstream-resolver` | **Hand off.** Requires design decisions. Present options, wait for user choice. |
+| `advisory` | `human` | **Skip.** Already reported during review. No code fix needed. |
 
 ## Process
 
 1. **Load ticket** via `get_ticket` — identify pending review_todo artifacts
 
-2. **For each review_todo artifact, check Decision section:**
-   - If Action is empty, missing, or "accept" - execute the **Suggested Fix** as-is
-   - If Action is "skip" - mark artifact status: `update_artifact(status="skipped")`
-   - If Action is "modify" - follow the user's notes for the modified approach
+2. **Partition findings by autofix_class:**
 
-3. **For each accepted/default finding:**
-   - **CRITICAL: Before removing any export/class/function:**
-     - Search for ALL usages across the codebase
-     - Update ALL import sites BEFORE removing the export
-     - Check related repositories if applicable
-   - Implement the suggested fix exactly as written
-   - Update Resolution Notes section
-   - Mark artifact: `update_artifact(artifact_id=ID, status="resolved")`
+   Read all review_todo artifacts. Group by autofix_class:
 
-4. **For skipped findings:**
-   - Document reasoning in Resolution Notes
-   - Mark status: skipped
+   - **safe_auto queue:** Implement immediately (no approval needed)
+   - **gated_auto queue:** Present for approval before implementing
+   - **manual queue:** Present with options, user decides
+   - **advisory:** Mark as skipped (already reported)
 
-5. **Capture learnings:**
-   - After all findings are resolved, run `/compound` to analyze the fixes
+3. **Spawn builder for safe_auto fixes:**
+
+   ```
+   Agent(
+     subagent_type="builder",
+     model="sonnet",
+     prompt="
+       MODE: resolve
+       Ticket: {ticket_id}
+       Project: {PROJECT}
+       Repo: {REPO}
+
+       Apply these SAFE AUTO fixes (no approval needed):
+
+       {for each safe_auto review_todo artifact:}
+       - Finding #{sequence}: {title}
+         Priority: {p1/p2/p3}
+         Confidence: {confidence}
+         Suggested Fix: {suggested fix from artifact}
+         File: {file_path}:{line_number}
+       {end for}
+
+       For each fix:
+       - CRITICAL: Before removing any export/class/function, search ALL usages first
+       - Implement the suggested fix exactly as written
+       - Run linter and type checker after each fix
+       - Update artifact status to 'resolved' via update_artifact
+
+       Return summary of what was resolved and any issues encountered.
+     "
+   )
+   ```
+
+4. **Present gated_auto findings for approval:**
+
+   For each gated_auto finding, present the fix and ask:
+
+   ```
+   Gated fix: {title}
+   File: {file}:{line}
+   Why: {why_it_matters}
+   Confidence: {confidence}
+   Suggested fix: {suggested_fix}
+
+   This changes behavior/contracts. Apply? (yes / no / modify)
+   ```
+
+   - **yes:** Add to builder queue, implement fix
+   - **no:** Mark as skipped with reason
+   - **modify:** User provides alternative fix, add to builder queue
+
+5. **Present manual findings:**
+
+   For each manual finding, present options:
+
+   ```
+   Manual finding: {title}
+   File: {file}:{line}
+   Why: {why_it_matters}
+   Confidence: {confidence}
+
+   This requires a design decision. Options:
+   1. Implement suggested fix: {suggested_fix}
+   2. Provide alternative approach
+   3. Defer to a separate work item
+   4. Skip — not worth fixing
+   ```
+
+6. **Spawn builder for approved gated/manual fixes:**
+
+   ```
+   Agent(
+     subagent_type="builder",
+     model="sonnet",
+     prompt="
+       MODE: resolve
+       Ticket: {ticket_id}
+       Project: {PROJECT}
+       Repo: {REPO}
+
+       Apply these APPROVED fixes:
+
+       {for each approved finding:}
+       - Finding #{sequence}: {title}
+         Decision: {accept/modify}
+         Fix: {suggested fix or user-provided alternative}
+         File: {file_path}:{line_number}
+       {end for}
+
+       For each fix:
+       - CRITICAL: Before removing any export/class/function, search ALL usages first
+       - Implement the fix as specified
+       - Run linter and type checker after each fix
+       - Update artifact status to 'resolved' via update_artifact
+
+       Return summary of what was resolved and any issues encountered.
+     "
+   )
+   ```
+
+7. **After builder returns — capture learnings:**
+   - Run `/compound` to analyze the fixes
    - `/compound` will propose improvements to memory entries AND workflows
    - In interactive mode, it will ask for approval before applying
 
-6. **Apply process improvement recommendations:**
+8. **Apply process improvement recommendations:**
 
-   For each finding with Process Improvement Recommendations:
-
-   **Plan Phase improvements:**
-   - If recommendation is project-specific - store via memory service (handled by `/compound`)
-   - If recommendation is a general pattern - update `.claude/skills/plan/SKILL.md`
-   - Examples: "Always research error handling patterns before planning async flows"
-
-   **Build Todos Phase improvements:**
-   - If recommendation adds a research step - update `.claude/skills/create-build-todos/SKILL.md`
-   - If recommendation references useful patterns - store via memory service (handled by `/compound`)
-   - Examples: "Search for similar models before defining new ones"
-
-   **Build Phase improvements:**
-   - If recommendation adds a verification step - update `.claude/commands/build.md` checklist
-   - If recommendation is about testing - store via memory service (handled by `/compound`)
-   - Examples: "Run integration tests against staging data before marking complete"
-
-   **Where to apply:**
+   `/compound` handles all updates — including MCP calls to persist knowledge:
 
    | Recommendation Type             | Target Location                                     |
    | ------------------------------- | --------------------------------------------------- |
@@ -79,16 +167,7 @@ Work through review findings and implement accepted fixes.
    | Build todo research requirement | `.claude/skills/create-build-todos/SKILL.md`        |
    | Build verification step         | `.claude/skills/build/SKILL.md`                     |
 
-   `/compound` handles all of these updates when run after resolve-review — including
-   MCP calls to persist knowledge in the memory service.
-
-7. **Run linter and type checker (REQUIRED after every fix):**
-   - Run project's linter - fix any linting errors
-   - Run project's type checker - fix any type errors
-   - **Do not proceed until all checks pass**
-   - This catches broken imports and missing dependencies immediately
-
-8. **Update plan.md:**
+9. **Update plan.md:**
 
    Add completion summary section (before Work Log):
 
@@ -106,9 +185,10 @@ Work through review findings and implement accepted fixes.
 
    ### Findings Summary
 
-   | Category | Accepted | Skipped | Total |
-   | -------- | -------- | ------- | ----- |
-   | [type]   | N        | N       | N     |
+   | Category    | safe_auto | gated_auto | manual | advisory | Total |
+   | ----------- | --------- | ---------- | ------ | -------- | ----- |
+   | Applied     | N         | N          | N      | -        | N     |
+   | Skipped     | -         | N          | N      | N        | N     |
 
    ### Files Changed
 
@@ -128,10 +208,10 @@ Work through review findings and implement accepted fixes.
    Add work log entry:
 
    ```
-   | YYYY-MM-DD | resolve-review | Resolved N findings | X accepted, Y skipped |
+   | YYYY-MM-DD | resolve-review | Resolved N findings | X applied, Y skipped |
    ```
 
-9. **Create deployment guide:**
+10. **Create deployment guide:**
 
    Run `/create-deployment-guide` to generate deployment instructions:
    - Analyzes changes and creates `deployment-guide.md`
@@ -140,7 +220,7 @@ Work through review findings and implement accepted fixes.
 
    This step can be skipped for trivial changes (e.g., doc-only updates).
 
-10. **Commit changes (submodule-aware):** _(no permission needed)_
+11. **Commit changes (submodule-aware):** _(no permission needed)_
 
     Handle submodules first, then main repo:
 

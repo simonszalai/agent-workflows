@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: "Codebase researcher. Spawned with a specific research mode and focus area."
-model: inherit
+model: sonnet
 max_turns: 50
 skills:
   - investigate

@@ -28,7 +28,7 @@ until the user selects actions.**
 | Multiple entries seem to cover the same topic | Yes |
 | Entries feel too long, too short, or badly scoped | Yes |
 | Want to add new knowledge | No — use /compound |
-| Want to fix a memory search failure | No — use /wtf |
+| Want to fix a memory search failure | No — use /autodev-wtf |
 
 ## Procedure
 

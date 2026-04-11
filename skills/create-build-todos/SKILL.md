@@ -55,7 +55,7 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 
 ## What This Command Does
 
-**Deep research phase:**
+### Phase 1: Deep Research
 
 1. **Knowledge base search** - Find all relevant:
    - References (architecture, patterns, standards)
@@ -74,14 +74,43 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
    - Recent changes that might conflict
    - Contributors who know this area
 
-**Implementation planning phase:**
+### Phase 2: Break Down the Plan
 
-4. **Create build_todos/** with detailed steps:
-   - Specific files to modify
+4. **Split plan into independently completable steps:**
+   - Each step maps to one logical change (one file group, one concept)
+   - Order by dependencies
+   - Identify which steps can be parallelized
+
+### Phase 3: Deepen Each Step (CRITICAL)
+
+5. **For each step, perform independent deep research:**
+   - This is NOT just restating the plan in more detail
+   - Each step gets its OWN research pass:
+     a. Search autodev-memory for gotchas specific to THIS step's area
+     b. Read the actual files that will be modified — understand their
+        current state, imports, patterns, and constraints
+     c. Find the closest existing implementation to follow (grep for
+        similar code, read it, document the pattern with file:line refs)
+     d. Check git history for past changes to these specific files
+     e. Trace data flow: what produces the input this step needs? What
+        consumes this step's output? What breaks if the contract changes?
+     f. Identify edge cases: what happens with empty input, null fields,
+        concurrent execution, partial failure?
+
+   **The deepened step must contain enough detail that the builder can
+   implement it without needing to do additional research.** If the builder
+   would need to "figure out" how something works, the deepening was
+   insufficient.
+
+### Phase 4: Write Build Todos
+
+6. **Create build_todo artifacts** with detailed steps:
+   - Specific files to modify with current line numbers
    - Code examples following discovered patterns
    - Dependencies between steps
    - Test requirements per step
    - Verification commands
+   - Edge cases to handle
 
 ## Process
 

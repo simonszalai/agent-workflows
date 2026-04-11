@@ -1,7 +1,7 @@
 ---
 name: web-searcher
 description: "Research external services, libraries, APIs, and documentation using web search. No browser required."
-model: inherit
+model: sonnet
 max_turns: 50
 allowedTools:
   - WebSearch

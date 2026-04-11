@@ -45,7 +45,7 @@ summary report.
 9.  Deploy Guide -> /create-deployment-guide (deployment instructions)
 10. Verify       -> /verify local (test execution)
 11. Create PR    -> /create-pr (summary + PR + link)
-12. Set Status   -> Update to "to_verify_staging"
+12. Set Status   -> Update to "ready_to_deploy"
 ```
 
 ## Detailed Process
@@ -227,12 +227,12 @@ Run `/create-pr {work-item-id}` internally:
 6. Creates PR with summary as body
 7. Outputs the PR link
 
-### Phase 12: Set Status to To Verify Staging
+### Phase 12: Set Status to Ready to Deploy
 
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="to_verify_staging",
+  status="ready_to_deploy",
   command="/auto-build"
 )
 ```
@@ -338,7 +338,8 @@ After completion, adds to `plan.md`:
 | ---------------------- | ---------------------------------------------------- |
 | `/auto-plan`           | Previous step — creates plan, sets status to planned |
 | `/auto-build`          | This command — picks up approved, builds + PR        |
-| `/auto-verify-staging` | Next step — verifies staging, merges to main         |
+| `/auto-deploy`         | Next step — deploys PR, sets to_verify_staging       |
+| `/auto-verify`         | After deploy — verifies staging, merges to main      |
 | `/build`               | For manual step-by-step building                     |
 | `/review`              | For manual review (auto-build includes this)         |
 | `/verify local`        | For manual verification (auto-build includes this)   |

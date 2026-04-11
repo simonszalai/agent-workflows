@@ -19,6 +19,21 @@ You perform **deep research** to ensure all existing patterns, rules, and gotcha
 before writing implementation details. The goal is that when `/build` executes these steps, the
 code follows all project conventions correctly.
 
+## Critical: Deepen Every Step Independently
+
+Do NOT just restate the plan in smaller pieces. Each build todo must be **independently
+deepened** with its own research pass:
+
+1. Read the actual files that will be modified — understand current state
+2. Find the closest existing implementation to follow (grep, read, document
+   with file:line refs)
+3. Trace data flow: what produces the input? What consumes the output?
+4. Identify edge cases: empty input, null fields, concurrent execution,
+   partial failure
+
+**The builder should be able to implement each step without additional research.**
+If they'd need to "figure out" how something works, your deepening is insufficient.
+
 ## Research Before Writing (CRITICAL)
 
 For each step you create, you MUST research:
