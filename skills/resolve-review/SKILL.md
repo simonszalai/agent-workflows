@@ -9,25 +9,48 @@ skills:
 # Resolve-Review Command
 
 Spawn a `builder` agent to work through review findings and implement accepted fixes.
+Routes findings by autofix classification — safe fixes are applied automatically, gated
+fixes need approval, manual findings are handed off.
 
 ## Usage
 
 ```
 /resolve-review 009                              # Bug/incident #009 (NNN format)
 /resolve-review F001                             # Feature F001 (FNNN format)
-/resolve-review B0009                              # Bug ticket B0009
+/resolve-review B0009                            # Bug ticket B0009
 ```
 
 ## Prerequisites
 
-- `review_todos/` exists with findings
+- `review_todos/` exists with findings (or review_todo artifacts on ticket)
 - (Optional) User has filled Decision sections
+
+## Autofix Classification Routing
+
+Review findings are classified by the `/review` orchestrator. Each class has a different
+resolution path:
+
+| autofix_class | Default owner | Resolution |
+| ------------- | ------------- | ---------- |
+| `safe_auto` | `review-fixer` | **Auto-apply.** Builder implements fix without asking. Local, deterministic changes. |
+| `gated_auto` | `downstream-resolver` | **Ask first.** Present the fix and ask for approval. Changes behavior/contracts. |
+| `manual` | `downstream-resolver` | **Hand off.** Requires design decisions. Present options, wait for user choice. |
+| `advisory` | `human` | **Skip.** Already reported during review. No code fix needed. |
 
 ## Process
 
 1. **Load ticket** via `get_ticket` — identify pending review_todo artifacts
 
-2. **Spawn builder agent to resolve findings:**
+2. **Partition findings by autofix_class:**
+
+   Read all review_todo artifacts. Group by autofix_class:
+
+   - **safe_auto queue:** Implement immediately (no approval needed)
+   - **gated_auto queue:** Present for approval before implementing
+   - **manual queue:** Present with options, user decides
+   - **advisory:** Mark as skipped (already reported)
+
+3. **Spawn builder for safe_auto fixes:**
 
    ```
    Agent(
@@ -39,36 +62,100 @@ Spawn a `builder` agent to work through review findings and implement accepted f
        Project: {PROJECT}
        Repo: {REPO}
 
-       Resolve these review findings:
+       Apply these SAFE AUTO fixes (no approval needed):
 
-       {for each review_todo artifact:}
+       {for each safe_auto review_todo artifact:}
        - Finding #{sequence}: {title}
          Priority: {p1/p2/p3}
-         Decision: {accept/skip/modify — default accept if empty}
+         Confidence: {confidence}
          Suggested Fix: {suggested fix from artifact}
          File: {file_path}:{line_number}
        {end for}
 
-       For each accepted finding:
+       For each fix:
        - CRITICAL: Before removing any export/class/function, search ALL usages first
        - Implement the suggested fix exactly as written
        - Run linter and type checker after each fix
        - Update artifact status to 'resolved' via update_artifact
-
-       For skipped findings:
-       - Update artifact status to 'skipped'
 
        Return summary of what was resolved and any issues encountered.
      "
    )
    ```
 
-3. **After builder returns — capture learnings:**
+4. **Present gated_auto findings for approval:**
+
+   For each gated_auto finding, present the fix and ask:
+
+   ```
+   Gated fix: {title}
+   File: {file}:{line}
+   Why: {why_it_matters}
+   Confidence: {confidence}
+   Suggested fix: {suggested_fix}
+
+   This changes behavior/contracts. Apply? (yes / no / modify)
+   ```
+
+   - **yes:** Add to builder queue, implement fix
+   - **no:** Mark as skipped with reason
+   - **modify:** User provides alternative fix, add to builder queue
+
+5. **Present manual findings:**
+
+   For each manual finding, present options:
+
+   ```
+   Manual finding: {title}
+   File: {file}:{line}
+   Why: {why_it_matters}
+   Confidence: {confidence}
+
+   This requires a design decision. Options:
+   1. Implement suggested fix: {suggested_fix}
+   2. Provide alternative approach
+   3. Defer to a separate work item
+   4. Skip — not worth fixing
+   ```
+
+6. **Spawn builder for approved gated/manual fixes:**
+
+   ```
+   Agent(
+     subagent_type="builder",
+     model="sonnet",
+     prompt="
+       MODE: resolve
+       Ticket: {ticket_id}
+       Project: {PROJECT}
+       Repo: {REPO}
+
+       Apply these APPROVED fixes:
+
+       {for each approved finding:}
+       - Finding #{sequence}: {title}
+         Decision: {accept/modify}
+         Fix: {suggested fix or user-provided alternative}
+         File: {file_path}:{line_number}
+       {end for}
+
+       For each fix:
+       - CRITICAL: Before removing any export/class/function, search ALL usages first
+       - Implement the fix as specified
+       - Run linter and type checker after each fix
+       - Update artifact status to 'resolved' via update_artifact
+
+       Return summary of what was resolved and any issues encountered.
+     "
+   )
+   ```
+
+7. **After builder returns — capture learnings:**
    - Run `/compound` to analyze the fixes
    - `/compound` will propose improvements to memory entries AND workflows
    - In interactive mode, it will ask for approval before applying
 
-4. **Apply process improvement recommendations:**
+8. **Apply process improvement recommendations:**
 
    `/compound` handles all updates — including MCP calls to persist knowledge:
 
@@ -80,7 +167,7 @@ Spawn a `builder` agent to work through review findings and implement accepted f
    | Build todo research requirement | `.claude/skills/create-build-todos/SKILL.md`        |
    | Build verification step         | `.claude/skills/build/SKILL.md`                     |
 
-5. **Update plan.md:**
+9. **Update plan.md:**
 
    Add completion summary section (before Work Log):
 
@@ -98,9 +185,10 @@ Spawn a `builder` agent to work through review findings and implement accepted f
 
    ### Findings Summary
 
-   | Category | Accepted | Skipped | Total |
-   | -------- | -------- | ------- | ----- |
-   | [type]   | N        | N       | N     |
+   | Category    | safe_auto | gated_auto | manual | advisory | Total |
+   | ----------- | --------- | ---------- | ------ | -------- | ----- |
+   | Applied     | N         | N          | N      | -        | N     |
+   | Skipped     | -         | N          | N      | N        | N     |
 
    ### Files Changed
 
@@ -120,10 +208,10 @@ Spawn a `builder` agent to work through review findings and implement accepted f
    Add work log entry:
 
    ```
-   | YYYY-MM-DD | resolve-review | Resolved N findings | X accepted, Y skipped |
+   | YYYY-MM-DD | resolve-review | Resolved N findings | X applied, Y skipped |
    ```
 
-6. **Create deployment guide:**
+10. **Create deployment guide:**
 
    Run `/create-deployment-guide` to generate deployment instructions:
    - Analyzes changes and creates `deployment-guide.md`
@@ -132,7 +220,7 @@ Spawn a `builder` agent to work through review findings and implement accepted f
 
    This step can be skipped for trivial changes (e.g., doc-only updates).
 
-7. **Commit changes (submodule-aware):** _(no permission needed)_
+11. **Commit changes (submodule-aware):** _(no permission needed)_
 
     Handle submodules first, then main repo:
 

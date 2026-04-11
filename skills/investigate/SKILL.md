@@ -94,14 +94,73 @@ Choose agents based on problem symptoms. Refer to AGENTS.md for available invest
 
 **Spawn only what's needed.** Most bugs need 2-3 agents, not all available agents.
 
-## Process
+## Process: Root-Cause-First Methodology
 
-1. **Parse problem** - Identify symptoms and likely sources
-2. **Select agents** - Pick relevant agents (often 2-3)
-3. **Spawn in parallel** - Single message, multiple Task calls
-4. **Collect findings** - Wait for all agents
-5. **Synthesize** - Write investigation artifact with root causes and evidence
-6. **Capture knowledge** - Store non-obvious findings in memory service
+Follow this discipline strictly. The goal is to **confirm the root cause before
+recommending a fix**. Premature fixes based on symptoms cause regressions.
+
+1. **Reproduce** - Confirm the failure is real and current
+   - Check Prefect flow runs, logs, or DB state to confirm the symptom
+   - If the failure is intermittent, gather timing/frequency data
+   - Document the exact error message, stack trace, or observable behavior
+
+2. **Trace backward** - Follow the causal chain from symptom to origin
+   - Start from the error and trace upstream: what called this? what data
+     was passed? what state was expected vs actual?
+   - Check deployment correlation: did failures start after a recent commit?
+     If so, **suspect the new code first** before blaming external services
+   - Search autodev-memory for similar past incidents:
+     ```
+     mcp__autodev-memory__search(
+       queries=[{"keywords": ["<error area>"], "text": "<error message>"}],
+       project=PROJECT
+     )
+     ```
+
+3. **Select agents and spawn** - Pick relevant agents (often 2-3)
+   - Single message, multiple Task calls for parallel investigation
+   - Brief agents with the symptom AND the backward trace so far
+
+4. **Collect and synthesize** - Wait for all agents, build the causal chain
+
+5. **Form hypotheses with testable predictions**
+   - For each hypothesis, define: "If this is the root cause, then we
+     expect to see X when we check Y"
+   - **Every hypothesis needs a prediction that can be confirmed or refuted**
+   - Predictions must be specific and falsifiable, not vague
+
+6. **Test predictions before concluding**
+   - Execute the verification for each hypothesis
+   - For high-confidence hypotheses: run the primary check
+   - For medium-confidence: run primary + corroborating checks
+   - For low-confidence: only pursue if higher-confidence hypotheses fail
+   - **Do not conclude root cause without at least one confirmed prediction**
+
+7. **Causal chain gate** — Do NOT proceed to writing the artifact until you can
+   explain the full causal chain from trigger to symptom with **no gaps**:
+   - Trigger → [each intermediate step] → Observed symptom
+   - "Somehow X leads to Y" is a gap — fill it or flag it
+   - For obvious chains (missing import, clear null deref): the chain itself is
+     the gate — no prediction needed
+   - For uncertain links: a prediction about something in a *different* code path
+     that must also be true if this link is correct
+   - **If a prediction was wrong but a fix appears to work, you found a symptom,
+     not the root cause** — the real cause is still active
+
+8. **Smart escalation** — If 2-3 hypotheses are exhausted without confirmation:
+
+   | Pattern | Diagnosis | Next move |
+   | ------- | --------- | --------- |
+   | Hypotheses point to different subsystems | Architecture/design problem | Present findings, suggest `/plan` for redesign |
+   | Evidence contradicts itself | Wrong mental model of the code | Re-read the code path without assumptions |
+   | Works locally, fails in prod/staging | Environment problem | Focus on env differences, config, timing |
+   | Fix works but prediction was wrong | Symptom fix, not root cause | Keep investigating — real cause still active |
+
+   Present the diagnosis before proceeding. Do not keep trying blindly.
+
+9. **Write investigation artifact** with confirmed root causes and evidence
+
+10. **Capture knowledge** - Store non-obvious findings in memory service
 
 ## Writing the Investigation Artifact
 
@@ -183,10 +242,13 @@ Include in the investigation artifact after Root Causes section:
 ### H1: [Hypothesis Name]
 
 **Statement:** [Specific claim about root cause]
+**Causal Chain:** [Trigger] → [Step 1] → [Step 2] → [Observed symptom]
+**Uncertain Links:** [Which steps in the chain are unconfirmed, if any]
 **Evidence:** [Observations supporting this]
-**Testable Prediction:** [What we expect if true]
-**Evaluation Method:** [Specific queries/checks]
+**Testable Prediction:** [What we expect if true — something in a DIFFERENT code path]
+**Evaluation Method:** [Specific queries/checks to test the prediction]
 **Confidence Level:** High | Medium | Low
+**Status:** Pending | Confirmed | Refuted
 ```
 
 ### Confidence Level Guidelines
