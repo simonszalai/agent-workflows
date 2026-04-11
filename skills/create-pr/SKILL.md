@@ -223,8 +223,16 @@ Manual steps:
 
 ### From /lfg
 
-- Branch: `lfg/{work-item-id}`
-- Always has GitHub issue (link and comment)
+- No ticket — reads context from `.context/` directory
+- Branch name from conversation context
+- May have GitHub issue (link and comment)
+- Summary includes research/investigation phase
+
+### From /auto-flow
+
+- Branch: `auto-flow/{work-item-id}`
+- Full ticket artifacts available via MCP
+- May have GitHub issue (link and comment)
 - Summary includes research/investigation phase
 
 ### From /auto-build

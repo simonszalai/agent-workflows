@@ -1,7 +1,7 @@
 # Testing Strategy
 
 Universal testing methodology for all projects. This is the single source of truth for testing
-decisions. Updated by `/compound` and `/retrospect` when test gaps are discovered.
+decisions. Updated by `/compound` and `/autodev-retrospect` when test gaps are discovered.
 
 ## Philosophy
 

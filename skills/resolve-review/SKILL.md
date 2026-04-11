@@ -1,6 +1,6 @@
 ---
 name: resolve-review
-description: Resolve review findings based on decisions. Implements fixes from review_todos, captures learnings.
+description: Resolve review findings based on decisions. Spawns builder agent to implement fixes from review_todos, captures learnings.
 skills:
   - autodev-search
   - compound
@@ -8,7 +8,7 @@ skills:
 
 # Resolve-Review Command
 
-Work through review findings and implement accepted fixes.
+Spawn a `builder` agent to work through review findings and implement accepted fixes.
 
 ## Usage
 
@@ -27,49 +27,50 @@ Work through review findings and implement accepted fixes.
 
 1. **Load ticket** via `get_ticket` — identify pending review_todo artifacts
 
-2. **For each review_todo artifact, check Decision section:**
-   - If Action is empty, missing, or "accept" - execute the **Suggested Fix** as-is
-   - If Action is "skip" - mark artifact status: `update_artifact(status="skipped")`
-   - If Action is "modify" - follow the user's notes for the modified approach
+2. **Spawn builder agent to resolve findings:**
 
-3. **For each accepted/default finding:**
-   - **CRITICAL: Before removing any export/class/function:**
-     - Search for ALL usages across the codebase
-     - Update ALL import sites BEFORE removing the export
-     - Check related repositories if applicable
-   - Implement the suggested fix exactly as written
-   - Update Resolution Notes section
-   - Mark artifact: `update_artifact(artifact_id=ID, status="resolved")`
+   ```
+   Agent(
+     subagent_type="builder",
+     model="sonnet",
+     prompt="
+       MODE: resolve
+       Ticket: {ticket_id}
+       Project: {PROJECT}
+       Repo: {REPO}
 
-4. **For skipped findings:**
-   - Document reasoning in Resolution Notes
-   - Mark status: skipped
+       Resolve these review findings:
 
-5. **Capture learnings:**
-   - After all findings are resolved, run `/compound` to analyze the fixes
+       {for each review_todo artifact:}
+       - Finding #{sequence}: {title}
+         Priority: {p1/p2/p3}
+         Decision: {accept/skip/modify — default accept if empty}
+         Suggested Fix: {suggested fix from artifact}
+         File: {file_path}:{line_number}
+       {end for}
+
+       For each accepted finding:
+       - CRITICAL: Before removing any export/class/function, search ALL usages first
+       - Implement the suggested fix exactly as written
+       - Run linter and type checker after each fix
+       - Update artifact status to 'resolved' via update_artifact
+
+       For skipped findings:
+       - Update artifact status to 'skipped'
+
+       Return summary of what was resolved and any issues encountered.
+     "
+   )
+   ```
+
+3. **After builder returns — capture learnings:**
+   - Run `/compound` to analyze the fixes
    - `/compound` will propose improvements to memory entries AND workflows
    - In interactive mode, it will ask for approval before applying
 
-6. **Apply process improvement recommendations:**
+4. **Apply process improvement recommendations:**
 
-   For each finding with Process Improvement Recommendations:
-
-   **Plan Phase improvements:**
-   - If recommendation is project-specific - store via memory service (handled by `/compound`)
-   - If recommendation is a general pattern - update `.claude/skills/plan/SKILL.md`
-   - Examples: "Always research error handling patterns before planning async flows"
-
-   **Build Todos Phase improvements:**
-   - If recommendation adds a research step - update `.claude/skills/create-build-todos/SKILL.md`
-   - If recommendation references useful patterns - store via memory service (handled by `/compound`)
-   - Examples: "Search for similar models before defining new ones"
-
-   **Build Phase improvements:**
-   - If recommendation adds a verification step - update `.claude/commands/build.md` checklist
-   - If recommendation is about testing - store via memory service (handled by `/compound`)
-   - Examples: "Run integration tests against staging data before marking complete"
-
-   **Where to apply:**
+   `/compound` handles all updates — including MCP calls to persist knowledge:
 
    | Recommendation Type             | Target Location                                     |
    | ------------------------------- | --------------------------------------------------- |
@@ -79,16 +80,7 @@ Work through review findings and implement accepted fixes.
    | Build todo research requirement | `.claude/skills/create-build-todos/SKILL.md`        |
    | Build verification step         | `.claude/skills/build/SKILL.md`                     |
 
-   `/compound` handles all of these updates when run after resolve-review — including
-   MCP calls to persist knowledge in the memory service.
-
-7. **Run linter and type checker (REQUIRED after every fix):**
-   - Run project's linter - fix any linting errors
-   - Run project's type checker - fix any type errors
-   - **Do not proceed until all checks pass**
-   - This catches broken imports and missing dependencies immediately
-
-8. **Update plan.md:**
+5. **Update plan.md:**
 
    Add completion summary section (before Work Log):
 
@@ -131,7 +123,7 @@ Work through review findings and implement accepted fixes.
    | YYYY-MM-DD | resolve-review | Resolved N findings | X accepted, Y skipped |
    ```
 
-9. **Create deployment guide:**
+6. **Create deployment guide:**
 
    Run `/create-deployment-guide` to generate deployment instructions:
    - Analyzes changes and creates `deployment-guide.md`
@@ -140,7 +132,7 @@ Work through review findings and implement accepted fixes.
 
    This step can be skipped for trivial changes (e.g., doc-only updates).
 
-10. **Commit changes (submodule-aware):** _(no permission needed)_
+7. **Commit changes (submodule-aware):** _(no permission needed)_
 
     Handle submodules first, then main repo:
 

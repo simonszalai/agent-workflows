@@ -191,7 +191,7 @@ Skip when: only memory service saves, or `$CLAUDE_CODE_REMOTE=true`.
 
 | Skill             | Relationship                                                          |
 | ----------------- | --------------------------------------------------------------------- |
-| `/retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
+| `/autodev-retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
 | `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
 | `/auto-build`     | Calls `/compound` after review resolution                             |
 | `/consolidate`    | Audits existing entries. `/compound` adds new ones                    |

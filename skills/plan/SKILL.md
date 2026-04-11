@@ -425,3 +425,19 @@ Each ticket contains artifacts:
 - `investigation` — INPUT (optional): From /investigate
 - `plan` — OUTPUT: High-level architecture plan
 - `build_todo` — OUTPUT: From /create-build-todos (separate step)
+
+### Scope Completeness Rule (CRITICAL)
+
+When creating a plan from a source document that lists multiple deliverables:
+
+- Every item in the source MUST appear as a numbered implementation step in the plan
+- If an item should be deferred, it MUST be explicitly flagged as
+  **"DEFERRED — requires user approval"** (not "TBD" or "later")
+- NEVER mark items as TBD and continue — present the deferral decision to the user
+  before proceeding to build
+- For combined tickets (superseding multiple sub-tickets), verify 1:1 coverage:
+  every superseded ticket's scope must map to at least one plan step
+
+**Why:** F0076 combined 5 tickets. The plan marked one item as "TBD" without user
+approval. It was silently dropped, the ticket was marked complete, and $110/month
+in unnecessary cost continued running for weeks.

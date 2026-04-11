@@ -19,16 +19,16 @@ Review implementation by spawning specialized review agents in parallel.
 
 Spawn these agents **in parallel** (single message, multiple Task tool calls):
 
-| Agent    | Review References                                                                                                    | Focus                                |
-| -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| reviewer | references/python-standards.md, references/typescript-standards.md, references/simplicity.md, references/patterns.md | Code quality, YAGNI, design patterns |
-| reviewer | references/architecture.md, references/security.md, references/performance.md                                        | Architecture, security, performance  |
+| Agent    | Model    | Review References                                                                                                    | Focus                                |
+| -------- | -------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| reviewer | `sonnet` | references/python-standards.md, references/typescript-standards.md, references/simplicity.md, references/patterns.md | Code quality, YAGNI, design patterns |
+| reviewer | `opus`   | references/architecture.md, references/security.md, references/performance.md                                        | Architecture, security, performance  |
 
 **Conditional agent** (based on file changes):
 
-| Condition                        | Agent    | Review References                                                                              |
-| -------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| Database/model/migration changes | reviewer | references/data-integrity.md, references/migrations.md, references/deployment.md               |
+| Condition                        | Agent    | Model  | Review References                                                                              |
+| -------------------------------- | -------- | ------ | ---------------------------------------------------------------------------------------------- |
+| Database/model/migration changes | reviewer | `opus` | references/data-integrity.md, references/migrations.md, references/deployment.md               |
 
 **CRITICAL: reviewer (data) spawn rule.** Always check for model file changes explicitly:
 ```bash
@@ -53,12 +53,18 @@ proactively.
    - Count existing review_todo artifacts from `get_ticket` response
    - New findings start at `max_sequence + 1` (or 1 if none exist)
 
-3. **Spawn agents** with prompts like:
+3. **Spawn agents** with model overrides per the dispatch table:
 
    ```
-   Review these files for [focus area]: [file list]
-   Context: [brief summary of what was implemented]
-   Return findings with file_path:line_number format.
+   Agent(
+     subagent_type="reviewer",
+     model="sonnet",  # or "opus" per dispatch table
+     prompt="
+       Review these files for [focus area]: [file list]
+       Context: [brief summary of what was implemented]
+       Return findings with file_path:line_number format.
+     "
+   )
    ```
 
 4. **Store findings** as review_todo artifacts:
@@ -187,3 +193,21 @@ unique finding using the template at `templates/review-todo.md`.
 
 **Numbering:** Check existing review_todo artifacts from `get_ticket` response for highest
 sequence number. Start new findings at `max_sequence + 1` (or 1 if none exist).
+
+## Scope Completeness Check (CRITICAL)
+
+For every review, compare the source document's scope against the implementation:
+
+1. **Read the source artifact** from the ticket — enumerate every deliverable it lists
+2. **Read the plan artifact** — verify every source item has a plan step
+3. **Diff against implementation** — for each planned item, verify code exists
+4. **Flag missing items as P1** — scope items that were planned but not implemented
+   are correctness issues, not style nits
+
+| Source Item | Plan Step | Implemented? | Finding |
+|---|---|---|---|
+| [item from source] | Step N | Yes / **No** | [p1] if missing |
+
+**Why:** F0076 listed 4 deliverables in the source. The plan marked one as "TBD".
+Implementation skipped it entirely. Review never ran, so no one caught the gap.
+The ticket was marked complete with $110/month in unnecessary cost still running.

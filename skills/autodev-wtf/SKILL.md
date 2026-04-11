@@ -1,5 +1,5 @@
 ---
-name: wtf
+name: autodev-wtf
 description: Investigate why the memory system failed to prevent an error. Replaces the ??? hook trigger.
 ---
 
@@ -15,8 +15,8 @@ Also saves the correction to the memory system via the save skill.
 ## Usage
 
 ```
-/wtf                          # Investigate why memory didn't help with the current error
-/wtf "topic that was missed"  # Investigate a specific topic the system should have surfaced
+/autodev-wtf                          # Investigate why memory didn't help with the current error
+/autodev-wtf "topic that was missed"  # Investigate a specific topic the system should have surfaced
 ```
 
 ## When to Use
@@ -67,7 +67,7 @@ asked about that led to the error.
 ### Step 2: TRACE — Follow the pipeline for the failing interaction
 
 1. **What was the user's question?** — Identify the message that led to the error.
-   This is the conversation context before the `/wtf` invocation.
+   This is the conversation context before the `/autodev-wtf` invocation.
 
 2. **What queries did Haiku generate?** — Check `request.queries` in the search
    operation logs for that timeframe.

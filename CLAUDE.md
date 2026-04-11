@@ -176,7 +176,7 @@ When the user mentions these activities, proactively use the corresponding comma
 | "what did we learn", "learn from review", "learn from this"        | Run `/compound`               |
 | "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/save`     |
 | "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/save`     |
-| "retrospect", "what went wrong", "post-mortem"                     | Run `/retrospect`             |
+| "retrospect", "autodev-retrospect", "what went wrong", "post-mortem"                     | Run `/autodev-retrospect`             |
 
 **Correction detection:** When the user explicitly corrects Claude's approach or output,
 proactively ask: "Should I `/save` this to the memory system?" This ensures corrections become
@@ -302,7 +302,8 @@ create_ticket(
 ### Autonomous Workflows
 
 - `/auto-build`: Steps 2-8 + creates PR (for features with approved plans)
-- `/lfg`: Also handles bugs — investigate -> hypothesize -> fix -> review -> PR
+- `/lfg`: Autonomous end-to-end (no tickets) — research -> plan -> build -> review -> PR
+- `/auto-flow`: Like `/lfg` but with full ticket lifecycle tracking (FNNN/BNNN)
 
 ## Knowledge System
 

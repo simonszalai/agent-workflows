@@ -9,7 +9,7 @@ description: |
   - "move this from [project]", "import from [project]", "copy work item"
   - "document this rule" (when about work item conventions)
   Spawn this agent to handle work item CRUD operations while you continue with the main task.
-model: inherit
+model: sonnet
 max_turns: 50
 skills:
 ---

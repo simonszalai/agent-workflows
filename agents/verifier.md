@@ -1,7 +1,7 @@
 ---
 name: verifier
 description: "Verify features. Spawned with environment (local/production) and verification scope."
-model: inherit
+model: sonnet
 max_turns: 50
 tools:
   [

@@ -3,6 +3,7 @@ title: "Retrospective: [Issue Title]"
 date: YYYY-MM-DD
 status: complete
 work_item: [NNN or FNNN]
+failure_type: [production_bug | workflow_failure]
 bug_introduced_by: [commit hash or "unknown"]
 ---
 
@@ -12,13 +13,16 @@ bug_introduced_by: [commit hash or "unknown"]
 
 [2-3 sentence description of what happened and why it matters]
 
-## The Bug
+## The Failure
 
 **What happened:**
-[Specific description of the bug behavior]
+[Specific description of the bug behavior or scope gap]
+
+**Failure type:**
+[production bug | workflow failure (scope dropped) | workflow failure (plan drift) | ...]
 
 **Impact:**
-[User/system impact, data affected, duration]
+[User/system impact, data affected, duration, wasted cost]
 
 **When introduced:**
 [Commit, date, or change that introduced it]
@@ -38,15 +42,15 @@ bug_introduced_by: [commit hash or "unknown"]
 **What actually existed:**
 [What was there, or "nothing"]
 
-**Why this would have caught the bug:**
-[Specific explanation of how this gap relates to the bug]
+**Why this would have caught the failure:**
+[Specific explanation of how this gap relates to the failure]
 
 ### Secondary Gaps
 
-| Stage   | Severity  | Gap Identified                           |
-| ------- | --------- | ---------------------------------------- |
-| [Stage] | SECONDARY | [Brief description]                      |
-| [Stage] | N/A       | [Why this stage wouldn't have caught it] |
+| Stage   | Severity  | Gap Identified                              |
+| ------- | --------- | ------------------------------------------- |
+| [Stage] | SECONDARY | [Brief description]                         |
+| [Stage] | N/A       | [Why this stage wouldn't have caught it]    |
 
 ## Evidence
 
@@ -55,7 +59,7 @@ bug_introduced_by: [commit hash or "unknown"]
 | Artifact            | Status      | Notes                                  |
 | ------------------- | ----------- | -------------------------------------- |
 | source.md           | exists/none | [Quality assessment]                   |
-| plan.md             | exists/none | [Did it cover the bug area?]           |
+| plan.md             | exists/none | [Did it cover the failure area?]       |
 | investigation.md    | exists/none | [N/A for features]                     |
 | build_todos/        | exists/none | [Did todos cover the failing case?]    |
 | review_todos/       | exists/none | [Did reviewers flag it?]               |
@@ -65,11 +69,19 @@ bug_introduced_by: [commit hash or "unknown"]
 
 **Relevant commits:**
 
-- `abc1234` - [commit message] - [how it relates to bug]
+- `abc1234` - [commit message] - [how it relates to failure]
 
 **Code blame:**
 
 - Bug in `file.py:NN` introduced by commit `xyz5678` on YYYY-MM-DD
+
+### Scope Comparison (workflow failures only)
+
+**Planned items (from source.md):**
+
+- [ ] Item 1 — implemented
+- [ ] Item 2 — implemented
+- [ ] Item 3 — **NOT implemented, silently dropped**
 
 ## Recommendations
 
@@ -100,7 +112,7 @@ bug_introduced_by: [commit hash or "unknown"]
 
 ### Process Change (if recurring pattern)
 
-**Pattern identified:** [Name of pattern, e.g., "untested edge case"]
+**Pattern identified:** [Name of pattern, e.g., "silent scope reduction"]
 
 **Suggested process change:**
 [What to change in the workflow to prevent recurrence]

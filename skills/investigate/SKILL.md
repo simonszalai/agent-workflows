@@ -164,7 +164,7 @@ After collecting evidence from all agents, generate testable hypotheses:
 
 ### When to Generate Hypotheses
 
-- **Always for B-prefix tickets** (autonomous bug fixes via `/lfg`)
+- **Always for B-prefix tickets** (autonomous bug fixes via `/lfg` or `/auto-flow`)
 - **Optional for other bugs** - generate when root cause is uncertain
 - **Never for F-prefix tickets** (features don't use investigation)
 

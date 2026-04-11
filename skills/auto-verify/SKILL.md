@@ -33,15 +33,14 @@ test data templates) — it's the same across all environments.
 
 ## When to Use
 
-- Scheduled agent picks up `to_verify_staging` or `to_verify_local` tickets automatically
+- Scheduled agent picks up `to_verify_staging` tickets automatically
 - Manual trigger after a build has been deployed
 
 ## Prerequisites
 
-- Ticket must exist with status `to_verify_{env}`
+- Ticket must exist with status `to_verify_staging` or `to_verify_prod`
 - Plan artifact must exist with verification strategy
 - For staging: PR must exist and be deployed
-- For local: local services must be running
 
 ## Process Overview
 
@@ -182,7 +181,8 @@ Status: verify_{env}_failed (needs manual triage)
 
 | Command        | Relationship                                       |
 | -------------- | -------------------------------------------------- |
-| `/auto-build`  | Previous step — creates the PR deployed to staging |
-| `/auto-qa`     | Broader QA — tests entire app, not one ticket      |
-| `/verify local`| Manual local verification (no ticket pipeline)     |
-| `/verify prod` | Manual production verification                     |
+| `/auto-deploy` | Previous step — deploys PR to staging               |
+| `/auto-build`  | Creates the PR that auto-deploy deploys             |
+| `/auto-qa`     | Broader QA — tests entire app, not one ticket       |
+| `/verify local`| Manual local verification (no ticket pipeline)      |
+| `/verify prod` | Manual production verification                      |
