@@ -110,17 +110,22 @@ _mem_parse_env() {
 
   MEM_PROJECT=$(echo "$mem_line" | sed 's/.*project=\([^ ]*\).*/\1/' | sed 's/ *-->//')
 
-  # Auto-detect repo from git remote
-  local git_remote
-  git_remote=$(git -C "$_CWD" remote get-url origin 2>/dev/null || true)
+  # Auto-detect repo from git remote (retry up to 3 times)
+  local git_remote="" _retry
+  for _retry in 1 2 3; do
+    git_remote=$(git -C "$_CWD" remote get-url origin 2>/dev/null || true)
+    [[ -n "$git_remote" ]] && break
+    sleep 0.5
+  done
   if [[ -n "$git_remote" ]]; then
-    MEM_REPO=$(echo "$git_remote" | sed 's/.*[/:]\([^/]*\)\.git$/\1/' | sed 's/.*[/:]\([^/]*\)$/\1/')
+    MEM_REPO=$(echo "$git_remote" | sed 's/.*[\/:]\([^/]*\)\.git$/\1/' | sed 's/.*[\/:]\([^/]*\)$/\1/')
     MEM_GITHUB_URL=$(echo "$git_remote" | sed 's|^git@github\.com:|https://github.com/|' | sed 's|\.git$||')
   else
     MEM_REPO=$(echo "$mem_line" | sed -n 's/.*repo=\([^ ]*\).*/\1/p' | sed 's/ *-->//')
     MEM_GITHUB_URL=""
     if [[ -z "$MEM_REPO" ]]; then
-      MEM_REPO=$(basename "$_CWD")
+      echo "HOOK ERROR [mem-lib]: could not detect repo from git remote or CLAUDE.md (cwd=$_CWD)" >&2
+      _MEM_ENV_SKIP=1; return 0
     fi
   fi
 
