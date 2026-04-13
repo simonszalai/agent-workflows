@@ -21,12 +21,12 @@ First argument is the environment: `staging` or `local`.
 
 ## Environment Config
 
-**Read `.claude/{env}.md`** (e.g., `.claude/staging.md` or `.claude/local.md`) for:
+**Read `.claude/environments/{env}.md`** (e.g., `.claude/environments/staging.md` or `.claude/environments/local.md`) for:
 - URL, service IDs, credentials
 - DB MCP tool name
 - Auth/login flow
 
-**Read `.claude/staging.md`** for the shared **project map** (routes, entities, dependencies,
+**Read `.claude/environments/staging.md`** for the shared **project map** (routes, entities, dependencies,
 test data templates, integrations, known console errors, UI localization) — it's the same
 across all environments.
 
@@ -59,7 +59,7 @@ tests. Chain commands in a single `echo '[...]' | $B chain` call to preserve ses
 
 ### Login Flow
 
-**Staging:** Real Kinde auth (no dev-login bypass). Credentials in `.claude/staging.md`.
+**Staging:** Real Kinde auth (no dev-login bypass). Credentials in `.claude/environments/staging.md`.
 
 ```bash
 B=~/.claude/skills/gstack/browse/dist/browse
@@ -90,7 +90,7 @@ echo '[["snapshot"]]' | $B chain
 
 **Post-login routing:**
 - `/home` — Org exists, proceed to Phase 2+
-- `/signup` — Empty DB. Complete signup using the values in `.claude/staging.md` (Signup section)
+- `/signup` — Empty DB. Complete signup using the values in `.claude/environments/staging.md` (Signup section)
 
 ### Phase 1: Infrastructure Health
 
@@ -104,7 +104,7 @@ Wait 30-60s and retry.
 ### Phase 2: Seed Test Data
 
 Create the minimum entities needed for testing. Use the test data templates from the project map
-in `.claude/staging.md`. **Track all created entity IDs for cleanup in the final phase.**
+in `.claude/environments/staging.md`. **Track all created entity IDs for cleanup in the final phase.**
 
 Creation order (from Entity Dependencies):
 1. Client
