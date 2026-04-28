@@ -14,7 +14,10 @@ and determine the correct fix target.
 **Fix targets:**
 
 - Memory service via **compound** store procedure (see `store-procedure.md`) — search, decide, store
-- `AGENTS.md` - Add rule if repeatedly violated
+- Promote to Tier 2 if the rule should always apply: `mcp__autodev-memory__star_entry`
+- `CLAUDE.md` (auto-loaded by Claude Code) — only if the rule is a project-level convention,
+  not self-contained knowledge. Prefer Tier 2 for gotchas; reserve CLAUDE.md for stack/branch/
+  repo conventions
 - **The codebase itself** - If the gotcha identifies existing violations, fix them (or create a
   work item). Documenting a rule without fixing the known violation means the bug will recur.
 
@@ -80,7 +83,8 @@ and determine the correct fix target.
 **Fix targets:**
 
 - None (the fix itself is sufficient)
-- Consider AGENTS.md rule if pattern repeats
+- If the pattern repeats: star the relevant memory entry, or — only if it's a project
+  convention — add to `CLAUDE.md`
 
 ## Classification Checklist
 
@@ -116,13 +120,18 @@ For each item to analyze, determine:
 
 - Type: Pattern violation (wrong column type)
 - Upstream gap: Knowledge Gap + possible Rule Gap
-- Check: Is this already in CLAUDE.md? -> Yes, "Always use TEXT instead of VARCHAR"
+- Check: Is this already in CLAUDE.md or as a starred memory? -> Yes, exists as a memory
+  entry but is unstarred — needs promotion since it keeps being violated
 - Self-review: `APPLY: User correction, and rule exists but was violated — needs promotion`
 
 **Improvement:**
 
-1. Add to AGENTS.md: "Always use TEXT for string columns - never VARCHAR (see CLAUDE.md)"
-2. Store in memory via compound store procedure (see `store-procedure.md`) as type `correction`
+1. Star the existing memory entry via `mcp__autodev-memory__star_entry` so it auto-injects
+   into every session
+2. Add or update the entry content to capture this correction (type `correction`)
+
+(Use CLAUDE.md only if "use TEXT not VARCHAR" is the kind of project-wide schema convention
+that belongs alongside stack/branch facts. For most cases, the starred memory is enough.)
 
 ---
 
@@ -145,6 +154,7 @@ For each item to analyze, determine:
 
 1. Store in memory service as `gotcha` with key `prisma-schema-change-dev-server-restart`
 2. Content documents the full causal chain and the fix (restart dev server after generate)
+3. Consider starring if the same trap is hit again — keep it Tier 3 for now
 
 ---
 
