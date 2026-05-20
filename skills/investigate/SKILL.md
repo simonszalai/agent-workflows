@@ -136,7 +136,24 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    - For low-confidence: only pursue if higher-confidence hypotheses fail
    - **Do not conclude root cause without at least one confirmed prediction**
 
-7. **Causal chain gate** — Do NOT proceed to writing the artifact until you can
+7. **Boundary-contract minimization** — For timeouts, provider/API failures,
+   integration failures, or "only fails in env X" bugs, isolate the exact
+   artifact crossing the failing boundary before blaming runtime infrastructure:
+   - Capture what is actually sent after framework serialization/transforms
+     (examples: generated SQL, JSON Schema, HTTP/gRPC payload, headers,
+     prompt/tool declarations, queue/webhook body, env-expanded config).
+   - Reproduce as directly as possible against the downstream component: remove
+     proxies, orchestrators, caches, retries, and optional tools unless each is
+     the variable under test.
+   - Minimize to a tiny failing contract, then run an A/B test where exactly one
+     feature changes while input, target, version, and timeout stay fixed.
+   - If staging fails and prod works, diff the emitted artifacts and deployed
+     code/data, not just the topology. Env correlation is not proof of infra
+     causation.
+   - Treat "direct minimized repro has the same symptom" as evidence against the
+     removed infrastructure being causal.
+
+8. **Causal chain gate** — Do NOT proceed to writing the artifact until you can
    explain the full causal chain from trigger to symptom with **no gaps**:
    - Trigger → [each intermediate step] → Observed symptom
    - "Somehow X leads to Y" is a gap — fill it or flag it
@@ -147,7 +164,7 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    - **If a prediction was wrong but a fix appears to work, you found a symptom,
      not the root cause** — the real cause is still active
 
-8. **Smart escalation** — If 2-3 hypotheses are exhausted without confirmation:
+9. **Smart escalation** — If 2-3 hypotheses are exhausted without confirmation:
 
    | Pattern | Diagnosis | Next move |
    | ------- | --------- | --------- |
@@ -158,9 +175,9 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
    Present the diagnosis before proceeding. Do not keep trying blindly.
 
-9. **Write investigation artifact** with confirmed root causes and evidence
+10. **Write investigation artifact** with confirmed root causes and evidence
 
-10. **Capture knowledge** - Store non-obvious findings in memory service
+11. **Capture knowledge** - Store non-obvious findings in memory service
 
 ## Writing the Investigation Artifact
 

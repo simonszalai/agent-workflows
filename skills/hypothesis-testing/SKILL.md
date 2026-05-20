@@ -176,6 +176,26 @@ ORDER BY 2 DESC;
 - Review recent changes in affected area
 - Analyze concurrency patterns
 
+### Boundary Contract Minimization
+
+**When to use:** Hypothesis involves an external API/provider, generated artifact,
+serialization layer, timeout, or an environment-only integration failure.
+
+**Techniques:**
+
+- Capture the exact artifact sent across the boundary after all framework transforms
+  (generated SQL, JSON Schema, HTTP/gRPC payload, headers, prompts/tools, webhook/queue
+  body, env-expanded config).
+- Reproduce directly against the downstream component with suspected middle layers removed
+  (no proxy/orchestrator/cache/retries unless that layer is the variable).
+- Minimize to the smallest failing artifact, then run an A/B test where exactly one
+  feature changes while input, target, service version, and timeout stay fixed.
+- For staging-vs-prod failures, diff emitted artifacts and deployed code/data, not just
+  infrastructure topology.
+- A provider/network/runtime hypothesis is refuted or weakened when the same minimized
+  direct call fails without that layer; a contract-feature hypothesis is strengthened when
+  removing only that feature makes the call pass.
+
 ## Verdict Criteria
 
 ### CONFIRMED
