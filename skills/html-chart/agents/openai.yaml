@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML Chart"
+  short_description: "Turn thread context into interactive visual HTML"
+  default_prompt: "Use $html-chart to turn this thread into a concise, interactive visual HTML explainer."

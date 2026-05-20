@@ -1,166 +1,150 @@
 ---
 name: autodev-wtf
-description: Investigate why the memory system failed to prevent an error. Replaces the ??? hook trigger.
+description: Investigate how a bug slipped into production. Runs memory system and workflow pipeline analysis in parallel to find all gaps.
 ---
 
 # WTF
 
-Investigate why the memory system failed to prevent an error the user just encountered. Traces
-the search pipeline for the specific failure, diagnoses the root cause, and recommends a fix.
-Also saves the correction to the memory system via the save skill.
-
-**Scope:** One failure, one trace, one verdict. This is NOT a broad system audit
-(use `/consolidate` for that). This traces a single pipeline execution to find where it broke.
+A bug slipped into production. Find out why. This orchestrator runs two investigations
+in parallel — one on the memory system, one on the agent workflows — then synthesizes
+a unified verdict.
 
 ## Usage
 
 ```
-/autodev-wtf                          # Investigate why memory didn't help with the current error
-/autodev-wtf "topic that was missed"  # Investigate a specific topic the system should have surfaced
+/autodev-wtf "Bug description: items missing associations"
+/autodev-wtf B0009                    # Bug ticket B0009
+/autodev-wtf "scraper config broke prod after deploy"
 ```
 
 ## When to Use
 
 | Trigger | Example |
 |---|---|
-| Memory system missed something | "You should have known this — it's in the KB" |
-| Correction not surfaced | User corrects Claude on something that should have been found |
-| Repeated mistake | Same error keeps happening despite prior corrections |
+| Bug reached production | Something is broken in prod |
+| Known issue recurred | "Didn't we fix this already?" |
+| Post-incident review | Want to know where the system failed |
 
-## Important
+## When NOT to Use
 
-- This is a **single-failure trace**, not a broad audit. Use `/consolidate` for system-wide
-  analysis.
-- Keep the verdict SHORT. The user is frustrated — give a clear answer and confirmation it
-  won't happen again.
-- Always save the correction. The investigation diagnoses why the system failed, but the new
-  knowledge still needs to be stored.
+| Situation | Use Instead |
+|---|---|
+| Only memory system suspected | `/autodev-wtf-memory` directly |
+| Only workflow gap suspected | `/autodev-wtf-workflows` directly |
+| Need to find the bug's root cause | `/investigate` first, then `/autodev-wtf` |
+| Learning moment, not a prod bug | `/compound` |
+| Broad system audit | `/consolidate` |
 
-## Investigation Process
+## Process
 
-### Step 1: COLLECT — Pull evidence for this session
+### Step 1: Establish Context
 
-**Start with the hook log file** — it shows exactly what each hook did and returned:
-
-```bash
-# See recent hook activity (what queries were generated, what was returned)
-tail -50 ~/.config/autodev-memory/hooks.log
-
-# See the full additionalContext that was sent to Claude
-grep "output ->" ~/.config/autodev-memory/hooks.log | tail -5
-
-# Check for errors
-grep ERROR ~/.config/autodev-memory/hooks.log | tail -10
+If a ticket ID is given, load it:
+```
+mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
-Then collect additional evidence via MCP tools:
-
+If only a description, search for related tickets:
 ```
-mcp__autodev-memory__debug_logs(project="<project>", operation="mcp_search", hours=2, limit=20)
-mcp__autodev-memory__debug_logs(project="<project>", operation="mcp_create_entry", hours=2, limit=10)
-mcp__autodev-memory__list_entries(project="<project>")
+mcp__autodev-memory__search_tickets(project=PROJECT, query="<description>")
 ```
 
-Also use the conversation transcript already in context — it shows what the user
-asked about that led to the error.
+Gather enough context to brief both investigations: bug description, affected code area,
+when it was introduced, what the expected behavior was.
 
-### Step 2: TRACE — Follow the pipeline for the failing interaction
+### Step 2: Run Both Investigations in Parallel
 
-1. **What was the user's question?** — Identify the message that led to the error.
-   This is the conversation context before the `/autodev-wtf` invocation.
+Spawn two agents simultaneously:
 
-2. **What queries did Haiku generate?** — Check `request.queries` in the search
-   operation logs for that timeframe.
-
-3. **What results came back?** — Check `response.results` for each search. Note:
-   - Which entries were returned
-   - Their similarity scores
-   - Their titles and types
-   - Whether the relevant topic appeared at all
-
-4. **What scores did results have?** — Were relevant entries present but ranked too
-   low? Were irrelevant entries ranked higher?
-
-### Step 3: SEARCH — Check if relevant knowledge exists
-
-Search the KB for the correction topic:
-
+**Memory investigation:**
 ```
-mcp__autodev-memory__search(queries=[{"keywords": [...], "text": "..."}], project="<project>")
-mcp__autodev-memory__list_entries(project="<project>")
+Agent(subagent_type="general-purpose", name="wtf-memory", prompt="
+Run /autodev-wtf-memory for this failure:
+
+Bug: [description]
+Affected area: [code area]
+Ticket: [ID or 'none']
+
+Trace the memory search pipeline to determine if the autodev-memory system
+had knowledge that should have prevented this bug. Follow the full
+autodev-wtf-memory skill process.
+
+Report your verdict in the WTF Memory Verdict format.
+")
 ```
 
-- **If found:** Why wasn't it surfaced? Possible causes:
-  - Query mismatch (Haiku generated queries that don't match the entry)
-  - Bad tags (entry tags don't match the query's semantic space)
-  - Low similarity (embedding distance too far despite topic relevance)
-  - Below limit (entry was in top-20 per retriever but cut by result limit)
-
-- **If not found:** This is a knowledge gap. Use the save skill procedure to store the
-  correction as a new entry.
-
-### Step 4: DIAGNOSE — Classify root cause
-
-Pick ONE primary root cause:
-
-| Category          | When to use                                                |
-| ----------------- | ---------------------------------------------------------- |
-| `no_entry`        | Relevant knowledge doesn't exist in KB (gap)               |
-| `bad_query`       | Haiku generated wrong/insufficient search queries          |
-| `bad_ranking`     | Entry exists, was searched, but ranked too low / below cut |
-| `bad_tags`        | Entry exists but tags don't match the query space          |
-| `bad_prompt`      | Query generation prompt template is inadequate             |
-| `hook_failure`    | Hooks didn't fire (prompt too short, error, config issue)  |
-| `formatting_loss` | Results returned but formatted poorly / Claude ignored     |
-| `not_preventable` | This error can't reasonably be caught by the memory system |
-
-### Step 5: RECOMMEND — Actionable fix
-
-For each root cause, the standard recommendation:
-
-- **`no_entry`** — Save the correction via save skill procedure. Knowledge gap filled.
-- **`bad_query`** — "Query generation prompt should handle [pattern]. Consider
-  adding an example to `hooks/prompts/query-generation.md`."
-- **`bad_ranking`** — "Entry exists but scored [X]. Consider updating the entry
-  summary to use vocabulary matching how this topic naturally comes up."
-- **`bad_tags`** — "Entry tags [X] don't match query space [Y]. Retag the entry."
-- **`bad_prompt`** — "Haiku prompt template needs an example for [pattern type]."
-- **`hook_failure`** — "Hook didn't fire because [reason]. Fix: [specific fix]."
-- **`formatting_loss`** — "Results returned but key info lost in formatting."
-- **`not_preventable`** — "This type of error isn't catchable by KB search."
-
-### Step 6: SAVE — Store the correction
-
-After the investigation, always save the correction to the memory system. Follow the
-save skill procedure:
-
-1. Determine scope (global vs project) using project topology
-2. Fetch existing entries to check for duplicates
-3. Decide action (new/append/supersede/skip)
-4. Execute via MCP tools
-
-## Output Format
-
-Report your findings as a concise structured verdict:
-
+**Workflow investigation:**
 ```
-## WTF Investigation Verdict
+Agent(subagent_type="general-purpose", name="wtf-workflows", prompt="
+Run /autodev-wtf-workflows for this failure:
 
-**Root cause:** `<category>`
-**Confidence:** high | medium | low
+Bug: [description]
+Affected area: [code area]
+Ticket: [ID or 'none']
 
-**What happened:**
-<2-3 sentences explaining the failure chain>
+Trace the agent workflow pipeline (plan -> build -> review -> test -> verify)
+to determine which stage should have caught this bug.
 
-**Evidence:**
-- <specific data point 1>
-- <specific data point 2>
-
-**Fix:**
-<actionable recommendation — what to do to prevent recurrence>
-
-**Correction status:** <saved as new entry | appended to X | superseded X>
+Report your findings in the WTF Workflows Analysis format.
+")
 ```
 
-Keep it SHORT. This is a verdict, not a report. The user is frustrated — they
-want a clear answer and confirmation it won't happen again.
+### Step 3: Synthesize Unified Verdict
+
+Combine both investigation results into a single report:
+
+```markdown
+## WTF Verdict: [Brief title]
+
+**Date:** YYYY-MM-DD
+**Bug:** [1-sentence description]
+**Ticket:** [ID or 'none']
+
+### Memory System
+**Root cause:** `<category>` | **Confidence:** high/medium/low
+[2-3 sentence summary from wtf-memory investigation]
+**Fix:** [memory system fix or "no gap found"]
+
+### Workflow Pipeline
+**Primary gap stage:** [stage name] | **Severity:** PRIMARY
+[2-3 sentence summary from wtf-workflows investigation]
+**Fix:** [workflow fix]
+
+### Secondary Gaps
+| Source | Gap | Fix |
+|---|---|---|
+| [memory/workflow] | [description] | [fix] |
+
+### Combined Prevention Plan
+1. [Most important fix — the one that would have caught this earliest]
+2. [Second fix]
+3. [Third fix if applicable]
+```
+
+### Step 4: Apply Fixes (after user approval)
+
+Present the verdict and proposed fixes. **STOP and wait for user approval.**
+
+After approval, apply fixes from both investigations:
+- Memory gaps: save/update entries via MCP
+- Workflow gaps: update skill files, add review checklist items, etc.
+
+Write the retrospective artifact:
+```
+mcp__autodev-memory__create_artifact(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  artifact_type="retrospective",
+  content="<unified verdict content>",
+  command="/autodev-wtf"
+)
+```
+
+## Key Principles
+
+- **Both dimensions always.** Even if you suspect only one system failed, run both.
+  The point is catching gaps you didn't expect.
+- **Propose, don't apply.** Step 3 presents findings. Step 4 only happens after approval.
+- **Concrete fixes only.** Every gap must produce a specific, actionable fix — a file to
+  edit, an entry to create, a checklist item to add. "Be more careful" is not a fix.
+- **One bug, one verdict.** This is not a broad audit. Trace one specific failure through
+  both systems.

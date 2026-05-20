@@ -1,14 +1,15 @@
 ---
 name: auto-build
-description: Autonomous build from approved plan. Creates branch, builds, reviews, resolves, verifies, and creates PR.
+description: Autonomous build from approved plan. Builds on the current branch, reviews, resolves, verifies, and pushes. Does NOT create a branch (the Conductor workspace already provides one) and does NOT create the PR — that is the first action of /auto-deploy.
 max_turns: 200
 ---
 
 # Auto-Build Command
 
-Fully autonomous build workflow that runs after plan approval. Creates a feature branch, executes
-all build steps, runs reviews, resolves findings, verifies locally, and produces a PR with a
-summary report.
+Fully autonomous build workflow that runs after plan approval. Runs on the **current branch**
+(provided by the Conductor workspace or cloud session — auto-build does not create one),
+executes all build steps, runs reviews, resolves findings, verifies locally, and pushes the
+branch. PR creation is deferred to `/auto-deploy`.
 
 ## Usage
 
@@ -27,15 +28,17 @@ summary report.
 
 ## Prerequisites
 
-- `plan.md` must exist and be **approved** (user reviewed and accepted)
+- `plan.md` must exist
+- Must be on a feature branch — **not** `main` or `staging`. Conductor workspaces always
+  start on a dedicated branch; cloud sessions are similarly pre-branched. Auto-build will
+  refuse to run on `main` or `staging` and will NOT create a new branch on its own.
 - For cloud: SessionStart hook configures environment automatically
-- For local: Must be in a git worktree (not main branch)
 
 ## Process Overview
 
 ```
-1.  Validate     -> Check ticket exists, status is approved
-2.  Setup        -> Set status to "building", create branch, verify environment
+1.  Validate     -> Check ticket exists, plan artifact is present, on a feature branch
+2.  Setup        -> Set status to "building", verify environment (branch already exists)
 3.  Build Todos  -> /create-build-todos (deep research)
 4.  Build        -> /build (implement each step)
 5.  Write Tests  -> /write-tests (test coverage for new code)
@@ -43,21 +46,31 @@ summary report.
 7.  Resolve      -> Auto-resolve p1/p2 findings
 8.  Compound     -> /compound (learn from review, apply improvements)
 9.  Deploy Guide -> /create-deployment-guide (deployment instructions)
-10. Verify       -> /verify local (test execution)
-11. Create PR    -> /create-pr (summary + PR + link)
-12. Set Status   -> Update to "ready_to_deploy"
+10. Push Branch  -> Push the current branch to remote (NO PR created here)
+11. Set Status   -> Update to "ready_to_deploy_staging"
 ```
+
+**This skill does NOT create a PR.** PR creation is the first action of `/auto-deploy`.
+UI polish (`/auto-polish-web`) runs as a separate sibling step orchestrated by
+`/auto-flow`, after auto-build and before auto-deploy.
 
 ## Detailed Process
 
 ### Phase 1: Validate and Setup
 
-1. **Validate ticket status:**
+1. **Validate ticket:**
    - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
-   - If status is not `approved`: STOP and report "Ticket status is {status}, expected approved"
    - Check plan artifact exists — if not: STOP - "Plan artifact not found"
 
-2. **Set status to building:**
+2. **Validate branch:**
+   - Run `git rev-parse --abbrev-ref HEAD` to get current branch
+   - If on `main` or `staging`: STOP — "auto-build must run on a feature branch. Start a
+     Conductor workspace (or check out a branch) before running /auto-build."
+   - **Do NOT create a branch.** The Conductor workspace (or cloud session) already
+     provides a dedicated branch; creating another one branches off mid-flow and causes
+     confusion.
+
+3. **Set status to building:**
    ```
    mcp__autodev-memory__update_ticket(
      project=PROJECT, ticket_id=ID, repo=REPO,
@@ -66,13 +79,7 @@ summary report.
    )
    ```
 
-3. **Create feature branch:**
-
-   ```bash
-   git checkout -b auto-build/{work-item-id}
-   ```
-
-3. **Verify environment:**
+4. **Verify environment:**
    - Check required services are running
    - Check database connectivity
    - If cloud (`CLAUDE_CODE_REMOTE=true`): Environment already set up by hook
@@ -190,61 +197,45 @@ Run `/create-deployment-guide` internally:
 
 **On error:** Log details, continue to verification (non-blocking).
 
-### Phase 9: Local Verification
+### Phase 9: Commit and Push Branch
 
-**Unless `--skip-verify`:**
+Commit any remaining staged changes and push the **current** branch to the remote. **Do NOT
+create a PR here** — PR creation is the first action of `/auto-deploy`.
 
-Run `/verify local` internally:
+```bash
+git add -A
+git commit -m "<descriptive message for any outstanding changes>" || true  # ok if nothing to commit
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git push -u origin "$BRANCH"
+```
 
-1. Apply migrations
-2. Seed test data
-3. Execute tests with mocked external services
-4. Verify expected outcomes
-5. Generate verification report
+Reasons the PR is deferred to auto-deploy:
 
-**On verification failure:**
+- Lets `/auto-polish-web` iterate on the branch between build and deploy without generating
+  PR-update noise for every polish commit
+- Keeps the PR summary fresh — it's generated at deploy time from the final ticket
+  artifacts (plan, build_todos, review_todos, polish_report, deployment_guide)
+- Aligns the PR lifecycle with the deploy lifecycle — one PR, one merge, one deploy
 
-1. Log detailed failure info
-2. Include in final report
-3. PR will be marked as "needs attention"
-
-### Phase 10: Create PR
-
-Run `/create-pr {work-item-id}` internally:
-
-1. Collects all ticket artifacts via `get_ticket` (plan, build_todos, review_todos,
-   deployment_guide, etc.)
-2. Runs tests and collects results
-3. Generates standardized summary with:
-   - What was done (implementation details)
-   - Test results (counts by type, pass/fail)
-   - Verification status
-   - Review findings resolved
-   - Deployment notes
-   - Files changed
-4. Commits all changes
-5. Pushes to `auto-build/{work-item-id}` branch
-6. Creates PR with summary as body
-7. Outputs the PR link
-
-### Phase 12: Set Status to Ready to Deploy
+### Phase 10: Set Status to Ready to Deploy Staging
 
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="ready_to_deploy",
+  status="ready_to_deploy_staging",
   command="/auto-build"
 )
 ```
 
 ## On Failure — Revert Status
 
-If the build fails at any phase, revert status to `approved`:
+If the build fails at any phase, revert status to the prior status the ticket had when
+auto-build started (typically `planned` or `approved`):
 
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="approved",
+  status="<prior_status>",
   command="/auto-build"
 )
 ```
@@ -253,8 +244,7 @@ mcp__autodev-memory__update_ticket(
 
 | Phase        | Error                    | Action                                  |
 | ------------ | ------------------------ | --------------------------------------- |
-| Setup        | Plan not approved        | STOP, report                            |
-| Setup        | Not in worktree (local)  | STOP, instruct user                     |
+| Setup        | On main/staging branch   | STOP, instruct user to use a workspace  |
 | Build Todos  | Agent failure            | STOP, report                            |
 | Build        | Test failure             | Retry 2x, then continue                 |
 | Build        | Type error               | Attempt fix, continue                   |
@@ -265,19 +255,20 @@ mcp__autodev-memory__update_ticket(
 | Compound     | Analysis failure         | Log, continue (non-blocking)            |
 | Compound     | Improvement write fails  | Log, continue (non-blocking)            |
 | Deploy Guide | Generation failure       | Log, continue (non-blocking)            |
-| Verify       | Test failure             | Log details, mark PR as needs attention |
-| PR           | Push failure             | Report, provide manual instructions     |
+| Push Branch  | Push failure             | Report, provide manual instructions     |
 
 ## Cloud vs Local Differences
 
-| Aspect            | Cloud               | Local                 |
-| ----------------- | ------------------- | --------------------- |
-| Environment setup | SessionStart hook   | Manual / worktree     |
-| Database          | Pre-configured      | Must be running       |
-| Services          | Started by hook     | Must be running       |
-| Branch creation   | Automatic           | Automatic             |
-| PR creation       | `gh` CLI            | `gh` CLI              |
-| User interaction  | Async notifications | Real-time in terminal |
+| Aspect            | Cloud                       | Local (Conductor workspace) |
+| ----------------- | --------------------------- | --------------------------- |
+| Environment setup | SessionStart hook           | Workspace setup             |
+| Database          | Pre-configured              | Must be running             |
+| Services          | Started by hook             | Must be running             |
+| Branch            | Provided by session         | Provided by workspace       |
+| User interaction  | Async notifications         | Real-time in terminal       |
+
+In both cases, **auto-build does not create a branch** — it uses whatever branch is already
+checked out.
 
 ## Output
 
@@ -286,7 +277,7 @@ mcp__autodev-memory__update_ticket(
 ```
 Auto-build complete!
 
-PR: https://github.com/org/repo/pull/456
+Branch: {current branch} (pushed to origin, no PR yet)
 
 Summary:
 - Implemented {feature description}
@@ -294,7 +285,9 @@ Summary:
 - Verification: PASS
 - Review: 4 findings resolved
 
-Ticket: F0007
+Ticket: F0007 (status: ready_to_deploy_staging)
+
+Next: /auto-polish-web {ID} (UI polish, optional) then /auto-deploy {ID} (creates PR + deploys)
 ```
 
 ### On Partial Success
@@ -302,7 +295,7 @@ Ticket: F0007
 ```
 Auto-build needs attention!
 
-PR: https://github.com/org/repo/pull/456 (marked needs attention)
+Branch: {current branch} (pushed)
 
 Summary:
 - Implemented {feature description}
@@ -311,6 +304,8 @@ Summary:
 - Review: 3 findings resolved, 1 P3 remaining
 
 Ticket: F0007
+
+Next: Fix attention items, then /auto-polish-web or /auto-deploy
 ```
 
 ### On Failure
@@ -329,7 +324,7 @@ See ticket F0007 for partial progress
 After completion, adds to `plan.md`:
 
 ```markdown
-| YYYY-MM-DD | auto-build | Autonomous build complete | PR: {url}, Status: {status} |
+| YYYY-MM-DD | auto-build | Autonomous build complete | Branch: {name}, Status: {status} |
 ```
 
 ## Relation to Other Commands
@@ -337,9 +332,9 @@ After completion, adds to `plan.md`:
 | Command                | When to Use                                          |
 | ---------------------- | ---------------------------------------------------- |
 | `/auto-plan`           | Previous step — creates plan, sets status to planned |
-| `/auto-build`          | This command — picks up approved, builds + PR        |
+| `/auto-build`          | This command — picks up approved, builds + pushes branch (no PR) |
+| `/auto-polish-web`     | Next step (sibling) — UI polish on the pushed branch before deploy |
 | `/auto-deploy`         | Next step — deploys PR, sets to_verify_staging       |
-| `/auto-verify`         | After deploy — verifies staging, merges to main      |
+| `/auto-verify`         | After deploy — observes staging/prod, collects evidence |
 | `/build`               | For manual step-by-step building                     |
 | `/review`              | For manual review (auto-build includes this)         |
-| `/verify local`        | For manual verification (auto-build includes this)   |

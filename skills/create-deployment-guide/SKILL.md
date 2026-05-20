@@ -23,7 +23,7 @@ Generate a deployment guide document that tells the user everything they need to
 This command runs **after code is complete and reviewed**:
 
 - After `/resolve-review` completes
-- Before or alongside `/verify local` or `/verify prod`
+- Before or alongside `/auto-verify staging` or `/auto-verify prod`
 - Automatically as part of `/auto-build` (Phase 7)
 
 ## Prerequisites
@@ -281,5 +281,5 @@ Add work log entry:
 After guide is created, tell the user:
 
 1. Review the deployment guide for accuracy
-2. Proceed with `/verify local` (if needed) or deploy to production
+2. Deploy to production, then run `/auto-verify prod` to collect evidence
 3. Follow the guide during deployment

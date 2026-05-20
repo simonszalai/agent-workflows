@@ -1,18 +1,37 @@
 ---
 name: lfg
-description: Let's Fucking Go - Autonomous end-to-end workflow from GitHub issue, error report, or conversation to PR. No ticket tracking.
+description: Let's Fucking Go - Autonomous end-to-end workflow on the current branch from a GitHub issue, error report, or conversation. Commits before and after; never opens PRs.
 max_turns: 300
 ---
 
 # LFG Command
 
-Let's Fucking Go. The ultimate autonomous workflow that takes a GitHub issue, error report,
-**or conversation context** and delivers a complete PR. Handles both features and bugs
-(including production incidents with hypothesis-driven root cause analysis).
+Let's Fucking Go. Autonomous workflow that takes a GitHub issue, error report,
+**or conversation context** and delivers the work as commits on the **current
+branch** of whichever repo(s) are touched. Handles features and bugs (including
+production incidents with hypothesis-driven root cause analysis).
 
-LFG operates **without the ticket system** — no tickets are created, no status is tracked,
-no artifacts are stored in MCP. All coordination uses the filesystem (`.context/` directory).
-For the ticket-tracked version, use `/auto-flow`.
+LFG operates **without the ticket system** — no tickets are created, no status
+is tracked, no artifacts are stored in MCP. All coordination uses the
+filesystem (`.context/` directory). For the ticket-tracked version, use
+`/auto-flow`.
+
+## What LFG does NOT do
+
+These are hard rules. Never violate them:
+
+- **Never open a pull request.** Not one, not many. The user opens PRs themselves
+  when they're ready. Do not run `gh pr create` under any circumstances.
+- **Never create a new branch.** Work happens on whatever branch is currently
+  checked out. Do not run `git checkout -b`, `git switch -c`, or `git branch
+  <new>`.
+- **Never push.** Pushing is the user's call. Do not run `git push` (with or
+  without `-u`, `-f`, etc.).
+- **Never fan out across repos with separate branches/PRs.** If the task spans
+  multiple repos (rare), commit on each repo's current branch in place. No
+  branches, no PRs, no cross-repo coordination beyond the commits themselves.
+
+If you find yourself reaching for any of those, stop and report back instead.
 
 ## Usage
 
@@ -33,13 +52,15 @@ For the ticket-tracked version, use `/auto-flow`.
 
 ## Relation to /auto-flow
 
-| Aspect      | `/lfg`                         | `/auto-flow`                          |
-| ----------- | ------------------------------ | ------------------------------------- |
-| Ticket      | No ticket created              | Creates and manages ticket lifecycle  |
-| Status      | No status tracking             | backlog -> planning -> planned -> ... |
-| Artifacts   | Filesystem only (.context/)    | Stored in ticket system via MCP       |
-| Resume      | Cannot resume from ticket      | Resume via BNNN/FNNN                  |
-| Deployment  | PR only                        | PR + `/auto-deploy` + `/auto-verify`  |
+| Aspect      | `/lfg`                                     | `/auto-flow`                          |
+| ----------- | ------------------------------------------ | ------------------------------------- |
+| Ticket      | No ticket created                          | Creates and manages ticket lifecycle  |
+| Status      | No status tracking                         | backlog -> planning -> planned -> ... |
+| Artifacts   | Filesystem only (.context/)                | Stored in ticket system via MCP       |
+| Resume      | Cannot resume from ticket                  | Resume via BNNN/FNNN                  |
+| Branches    | Current branch only — no new branches      | May create branches                   |
+| PRs         | Never opens a PR                           | Opens PR via `/auto-deploy`           |
+| Pushing     | Never pushes                               | Pushes when needed                    |
 
 ## Input Detection
 
@@ -53,21 +74,43 @@ LFG detects its input source automatically:
 ## Process Overview
 
 ```
-1.  Parse Input       -> Extract type (bug/feature), requirements from issue OR conversation
-2.  Research          -> Codebase research (features) or investigation (bugs)
-3.  Plan              -> Spawn planner agent, write .context/plan.md
-4.  Build Todos       -> /create-build-todos (deep research into implementation steps)
-5.  Build             -> /build (implement each step)
-6.  Write Tests       -> /write-tests (test coverage for new code)
-7.  Review            -> /review (parallel review agents)
-8.  Resolve           -> /resolve-review (auto-fix p1/p2/p3 findings)
-9.  Compound          -> /compound (learn from review, apply improvements)
-10. Deploy Guide      -> /create-deployment-guide
-11. Verify            -> /verify local (unless --skip-verify)
-12. Create PR         -> Commit, push, create PR with summary
+0.  Pre-work checkpoint -> Commit any uncommitted state on the current branch as a checkpoint
+1.  Parse Input         -> Extract type (bug/feature), requirements from issue OR conversation
+2.  Research            -> Codebase research (features) or investigation (bugs)
+3.  Plan                -> Spawn planner agent, write .context/plan.md
+4.  Build Todos         -> /create-build-todos (deep research into implementation steps)
+5.  Build               -> /build (implement each step)
+6.  Write Tests         -> /write-tests (test coverage for new code)
+7.  Review              -> /review (parallel review agents)
+8.  Resolve             -> /resolve-review (auto-fix p1/p2/p3 findings)
+9.  Compound            -> /compound (learn from review, apply improvements)
+10. Deploy Guide        -> /create-deployment-guide
+11. Final commit        -> Commit the LFG work on the current branch (no push, no PR)
 ```
 
 ## Detailed Process
+
+### Phase 0: Pre-work checkpoint
+
+Before doing anything else, capture the working tree as a checkpoint commit so
+the LFG work has a clean starting point and is reviewable as a discrete diff.
+
+For each repo that LFG will touch:
+
+1. Confirm a branch is checked out (`git rev-parse --abbrev-ref HEAD`). If
+   detached HEAD, STOP and ask the user to check out a branch.
+2. Run `git status --porcelain`.
+3. If there are any uncommitted modifications or untracked files that are not
+   gitignored, stage them (`git add -A`) and create a checkpoint commit:
+   ```
+   chore: checkpoint before /lfg
+   ```
+   Include a one-line subject only. The user's pending work is preserved as a
+   discrete commit, separable from LFG's output.
+4. If the working tree is clean, no checkpoint commit is needed.
+
+Do **not** create a branch. Do **not** push. Stay on whatever branch is
+currently checked out.
 
 ### Phase 1: Parse Input
 
@@ -263,53 +306,47 @@ Run `/create-deployment-guide` internally:
 
 **On error:** Log details, continue (non-blocking).
 
-### Phase 11: Local Verification
+### Phase 11: Final commit
 
-**Unless `--skip-verify`:**
+Commit the LFG output on the current branch — same branch the user was on
+when they invoked `/lfg`. **Do not** create a branch, push, or open a PR.
 
-Run `/verify local` internally:
+For each repo that LFG touched:
 
-1. Apply migrations
-2. Seed test data
-3. Execute tests
-4. Verify expected outcomes
-5. Generate verification report
+1. Confirm still on the same branch as Phase 0.
+2. Stage only the files LFG changed (be specific — avoid `git add -A` so
+   unrelated working-tree state isn't swept in). If the user had pre-existing
+   uncommitted changes, those are already in the Phase 0 checkpoint commit.
+3. Create the final commit. Subject is a one-line conventional summary; the
+   body describes what was done and (briefly) why. Do not include a "Test
+   plan" or PR-style sections — this is a commit, not a PR.
 
-**On failure:** Log details, mark PR as needs attention.
+If multiple repos were touched, repeat per repo. Each repo gets its own
+checkpoint + final commit on its current branch. No cross-repo PRs.
 
-### Phase 12: Create PR
-
-1. Collect all context from `.context/` (plan, build_todos, review_todos, deployment guide)
-2. Run tests and collect results
-3. Generate standardized summary with:
-   - What was done (implementation details)
-   - Test results (counts by type, pass/fail)
-   - Verification status
-   - Review findings resolved
-   - Deployment notes
-   - Files changed
-4. Commit all changes
-5. Push branch
-6. Create PR with summary as body
-7. Output the PR link
+Report back with:
+- Each repo's branch name and the SHAs of the checkpoint + final commits
+- A short summary of what was done
+- Any follow-ups the user may want to handle (uncommitted state, separate cleanup)
 
 ## Error Handling
 
-| Phase        | Error                  | Action                                  |
-| ------------ | ---------------------- | --------------------------------------- |
-| Parse Input  | Can't fetch issue      | STOP, report error                      |
-| Parse Input  | Insufficient context   | Ask user for details, then STOP         |
-| Research     | Agent failure          | Log, attempt plan with less context     |
-| Plan         | Planner failure        | STOP, report error                      |
-| Build Todos  | Agent failure          | STOP, report error                      |
-| Build        | Test failure           | Retry 2x, then continue                 |
-| Write Tests  | Test creation fails    | Log, continue to review (non-blocking)  |
-| Review       | Agent failure          | Log, continue with partial review       |
-| Resolve      | Fix introduces error   | Revert fix, mark as deferred            |
-| Compound     | Analysis failure       | Log, continue (non-blocking)            |
-| Deploy Guide | Generation failure     | Log, continue (non-blocking)            |
-| Verify       | Test failure           | Log details, mark PR as needs attention |
-| PR           | Push failure           | Report, provide manual instructions     |
+| Phase           | Error                  | Action                                  |
+| --------------- | ---------------------- | --------------------------------------- |
+| Pre-work        | Detached HEAD          | STOP, ask user to check out a branch    |
+| Pre-work        | Commit fails           | STOP, report error                      |
+| Parse Input     | Can't fetch issue      | STOP, report error                      |
+| Parse Input     | Insufficient context   | Ask user for details, then STOP         |
+| Research        | Agent failure          | Log, attempt plan with less context     |
+| Plan            | Planner failure        | STOP, report error                      |
+| Build Todos     | Agent failure          | STOP, report error                      |
+| Build           | Test failure           | Retry 2x, then continue                 |
+| Write Tests     | Test creation fails    | Log, continue to review (non-blocking)  |
+| Review          | Agent failure          | Log, continue with partial review       |
+| Resolve         | Fix introduces error   | Revert fix, mark as deferred            |
+| Compound        | Analysis failure       | Log, continue (non-blocking)            |
+| Deploy Guide    | Generation failure     | Log, continue (non-blocking)            |
+| Final commit    | Commit fails           | Report; leave changes staged            |
 
 ## Filesystem Artifacts
 
@@ -332,13 +369,17 @@ All artifacts live in `.context/` (gitignored), not the ticket system:
 ```
 LFG complete!
 
-PR: https://github.com/org/repo/pull/456
-Issue: #123                              # Only shown if source was GitHub issue
+Branch: feature/whatever-was-checked-out
+Commits:
+  abc1234 chore: checkpoint before /lfg            # if Phase 0 made one
+  def5678 fix: <one-line summary of LFG work>
 
 Summary:
 - Implemented user dashboard feature
 - Tests: 12 passing / 12 total (4 unit, 6 integration, 2 e2e)
 - Review: 3 iterations, all P1/P2 resolved
+
+Next: review the diff, then push and open a PR when you're ready.
 ```
 
 ### On Partial Success
@@ -346,8 +387,10 @@ Summary:
 ```
 LFG needs attention!
 
-PR: https://github.com/org/repo/pull/456 (marked needs attention)
-Issue: #123                              # Only shown if source was GitHub issue
+Branch: feature/whatever-was-checked-out
+Commits:
+  abc1234 chore: checkpoint before /lfg
+  def5678 fix: <one-line summary>
 
 Summary:
 - Implemented user dashboard feature
@@ -360,7 +403,7 @@ Summary:
 ```
 LFG failed at: {phase}
 
-Issue: #123                              # Only shown if source was GitHub issue
+Branch: feature/whatever-was-checked-out
 Reason: {error description}
 ```
 
@@ -368,11 +411,13 @@ Reason: {error description}
 
 | Aspect          | Manual steps          | /lfg                                  |
 | --------------- | --------------------- | ------------------------------------- |
-| Trigger         | You run each command  | One command does everything            |
+| Trigger         | You run each command  | One command does everything           |
 | Plan approval   | You review plan first | Auto-approved                         |
 | Review handling | You decide on findings| Loop until no P1/P2                   |
-| Scope           | You pick the work     | Extracts from issue/conversation       |
-| Stops at        | Wherever you stop     | PR created                            |
+| Scope           | You pick the work     | Extracts from issue/conversation      |
+| Stops at        | Wherever you stop     | Final commit on the current branch    |
+| Branch / push   | Up to you             | Stays on current branch; never pushes |
+| PR              | Up to you             | Never opens a PR                      |
 
 ## Example Flows
 
@@ -394,23 +439,28 @@ Should integrate with existing analytics.
 
 **LFG execution:**
 
-1. Parse: source=github, type=feature, title="Add user activity dashboard"
-2. Research: analyze existing analytics, dashboard patterns
-3. Plan: write `.context/plan.md`
-4. Build todos + build + tests + review + resolve + verify + PR
+1. Phase 0: working tree clean → no checkpoint commit
+2. Parse: source=github, type=feature, title="Add user activity dashboard"
+3. Research: analyze existing analytics, dashboard patterns
+4. Plan: write `.context/plan.md`
+5. Build todos + build + tests + review + resolve
+6. Phase 11: stage LFG-touched files, commit on the current branch
 
 **Output:**
 
 ```
 LFG complete!
 
-PR: https://github.com/org/repo/pull/456
-Issue: #123
+Branch: feature/activity-dashboard
+Commits:
+  def5678 feat: add user activity dashboard
 
 Summary:
 - Implemented user activity dashboard
 - Tests: 12 passing / 12 total
 - Review: 3 iterations, all P1/P2 resolved
+
+Next: review the diff, then push and open a PR when you're ready.
 ```
 
 ### Example B: From Conversation
@@ -425,17 +475,22 @@ finalized invoices should be exportable."
 
 **LFG execution:**
 
-1. Parse: source=conversation, type=feature, title="Bulk invoice PDF export"
-2. Research: analyze invoice list code, export patterns
-3. Plan: write `.context/plan.md`
-4. Build todos + build + tests + review + resolve + verify + PR
+1. Phase 0: working tree had pending edits → `chore: checkpoint before /lfg`
+2. Parse: source=conversation, type=feature, title="Bulk invoice PDF export"
+3. Research: analyze invoice list code, export patterns
+4. Plan: write `.context/plan.md`
+5. Build todos + build + tests + review + resolve
+6. Phase 11: stage LFG-touched files, commit on the current branch
 
 **Output:**
 
 ```
 LFG complete!
 
-PR: https://github.com/org/repo/pull/790
+Branch: invoices-work
+Commits:
+  abc1234 chore: checkpoint before /lfg
+  def5678 feat: bulk invoice PDF export
 
 Summary:
 - Implemented bulk invoice PDF export
@@ -454,17 +509,21 @@ failed at 14:23 UTC with exit code -9"
 
 **LFG execution:**
 
-1. Parse: source=conversation, type=bug, service=main-processor, error=OOM
-2. Investigate: hypotheses + evaluation
-3. Plan: write `.context/plan.md`
-4. Build todos + build + tests + review + resolve + verify + PR
+1. Phase 0: clean working tree → no checkpoint commit
+2. Parse: source=conversation, type=bug, service=main-processor, error=OOM
+3. Investigate: hypotheses + evaluation
+4. Plan: write `.context/plan.md`
+5. Build todos + build + tests + review + resolve
+6. Phase 11: commit on the current branch
 
 **Output:**
 
 ```
 LFG complete!
 
-PR: https://github.com/org/repo/pull/456
+Branch: hotfix-batch-oom
+Commits:
+  def5678 fix: cap main-processor batch size to prevent OOM
 
 Root cause: Memory exhaustion on large batches (>500 items)
 Fix: Added batch size limit of 200 items with chunked processing

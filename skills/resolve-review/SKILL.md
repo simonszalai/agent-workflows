@@ -260,6 +260,19 @@ git push
 
 ## Output
 
+### On Success
+
+```
+Review resolved for {ID}: {title}
+
+Applied: {N} fixes ({safe_auto} auto, {gated_auto} gated, {manual} manual)
+Skipped: {N} ({advisory} advisory)
+
+Next: /create-pr {ID} (commit, push, and create PR)
+```
+
+### Artifacts Produced
+
 - Updated `review_todos/` with resolutions
 - Code fixes for accepted findings
 - Updated `plan.md` with Review Resolution Summary and work log entry

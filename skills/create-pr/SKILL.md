@@ -60,7 +60,6 @@ re-running.
 ### 3. Collect Verification Status
 
 Check for verification evidence:
-- Was `/verify local` run? What was the result?
 - Were there any manual verifications?
 - Was `/test-browser` used for visual verification?
 
@@ -204,6 +203,8 @@ Summary:
 - Review: {N findings resolved, N remaining P3}
 
 Work item: {work-item-id}
+
+Next: Merge the PR, or /auto-deploy {work-item-id} (merge + deploy to staging)
 ```
 
 **On push failure:**

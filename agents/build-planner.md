@@ -71,8 +71,17 @@ Use `mcp__autodev-memory__search` with queries relevant to each build step:
 ```
 queries: [
   {"keywords": ["<technology>", "<area>"], "text": "<feature area> gotchas pitfalls"},
-  {"keywords": ["<technology>", "<area>"], "text": "<area> implementation patterns standards"}
+  {"keywords": ["<technology>", "<area>"], "text": "<area> implementation patterns standards"},
+  {"keywords": ["<technology>", "<area>"], "text": "<area> patch fix solution workaround"}
 ]
+```
+
+Also search past tickets for patches and solutions in the same area:
+
+```
+mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="<step area keywords>"
+)
 ```
 
 Also review auto-injected context from the knowledge menu in the system prompt.
@@ -81,7 +90,8 @@ Also review auto-injected context from the knowledge menu in the system prompt.
 
 - Gotchas that apply to this type of change
 - Standards for this area of the codebase
-- Past solutions for similar problems
+- Past solutions and patches for similar problems
+- Past ticket review findings that flagged issues in this area
 
 ### 2. Codebase Patterns (find existing examples)
 

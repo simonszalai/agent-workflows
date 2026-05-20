@@ -86,7 +86,25 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 5. **For each step, perform independent deep research:**
    - This is NOT just restating the plan in more detail
    - Each step gets its OWN research pass:
-     a. Search autodev-memory for gotchas specific to THIS step's area
+     a. **Search autodev-memory for patches and solutions** specific to THIS
+        step's area. Run targeted searches:
+        ```
+        mcp__autodev-memory__search(queries=[
+          {"keywords": ["<step-area>", "<technology>"],
+           "text": "<step area> patch fix solution workaround"},
+          {"keywords": ["<step-area>", "<technology>"],
+           "text": "<step area> gotcha pitfall known issue"}
+        ])
+        ```
+        Also search past tickets for similar work:
+        ```
+        mcp__autodev-memory__search_tickets(
+          project=PROJECT, query="<step area keywords>"
+        )
+        ```
+        Read the full content of every relevant result — titles alone are
+        not enough. Document findings in the "Known Patches & Solutions"
+        subsection (see template).
      b. Read the actual files that will be modified — understand their
         current state, imports, patterns, and constraints
      c. Find the closest existing implementation to follow (grep for
@@ -241,9 +259,10 @@ Every build todo MUST include a "Discovered Patterns" section:
 
 - [Specific rule and how to comply]
 
-**From memory service (auto-injected or explicit search):**
+**Known patches & solutions (from memory + past tickets):**
 
-- [Entry title]: [How it informs this step]
+- [Patch/solution title]: [What it fixes and how it applies to this step]
+- [Past ticket ID]: [What was done and what to reuse or avoid]
 ```
 
 ### Implementation Details Section
@@ -353,6 +372,19 @@ If new API keys or env vars are needed:
 After all build todos are written, verify memory service compliance by reading back
 the ticket artifacts and checking each build_todo content contains memory service
 references. If any are missing, go back and add the missing research.
+
+## Output
+
+After creating all build todos, output:
+
+```
+Build todos created for {ID}: {title}
+
+Steps: {N} build_todo artifacts created
+Ready for implementation.
+
+Next: /build {ID} (implement each step)
+```
 
 ## Next Steps
 

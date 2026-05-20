@@ -195,6 +195,29 @@ After each step, add to `plan.md`:
 | YYYY-MM-DD | build | Completed step NN: [title] | [result/notes] |
 ```
 
+## Output
+
+After completing all build steps, output:
+
+```
+Build complete for {ID}: {title}
+
+Steps: {N}/{N} completed
+Tests: {passing} / {total}
+
+Next: /review {ID} (review implementation against the plan)
+```
+
+If build fails:
+
+```
+Build failed at step {N}: {title}
+
+Error: {error description}
+
+Next: Fix the error and re-run /build {ID} --step {N}
+```
+
 ## Completion Notes
 
 Fill in each completed build_todo:

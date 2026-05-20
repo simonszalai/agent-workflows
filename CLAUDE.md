@@ -1,10 +1,10 @@
 # Universal Development Conventions
 
-Shared conventions for all projects using Claude Code agent workflows.
+Shared conventions for all projects using agent workflows in Claude Code and Codex.
 
 ## Agent Rules (Critical - Never Violate)
 
-- Never commit/push without explicit user approval (except during /resolve-review final step)
+- Never commit/push without explicit user approval (except during the resolve-review workflow final step)
 - Never create markdown files unless explicitly instructed
 - Never deploy or run production operations without explicit instruction
 - Always create database migrations when schema changes require them (they are auto-deployed
@@ -45,7 +45,8 @@ Use `mcp__autodev-memory__create_artifact` to store plans, build todos, review f
 
 ## What I Mean by "Agent Workflows"
 
-Agent workflows are the `.claude/` configuration system with three layers:
+Agent workflows are shared skills plus tool-specific agent, hook, MCP, and legacy command
+configuration:
 
 1. **Skills** - Portable methodology documents (the HOW)
    - Review checklists, research methods, tool references, testing patterns
@@ -53,54 +54,58 @@ Agent workflows are the `.claude/` configuration system with three layers:
    - Loaded by agents as reference material
    - File: `skills/<name>/SKILL.md` with optional `templates/` subdirectory
 
-2. **Agents** - Role definitions (the WHO)
+2. **Agents** - Tool-specific role definitions (the WHO)
    - Define a specialized agent's purpose, methodology, skills to load, tool access
-   - Get project context from CLAUDE.md - not hardcoded
-   - File: `agents/<name>.md`
+   - Get project context from project instructions - not hardcoded
+   - Claude file: `agents/<name>.md`
+   - Codex file: `.codex/agents/<name>.toml`
 
-3. **Commands** - Workflow orchestration (the WHAT)
-   - User-invocable with `/<command-name>`
-   - Spawn and coordinate agents, chain multi-step workflows
+3. **Legacy commands** - Claude-only workflow wrappers (the WHAT)
+   - Keep only where slash-command compatibility is still needed
+   - Prefer invoking the equivalent skill directly in new docs
    - File: `commands/<name>.md`
 
 ### User-Level vs Project-Level
 
-| Level   | Location                                    | Contains                                 |
-| ------- | ------------------------------------------- | ---------------------------------------- |
-| User    | `~/.claude/skills/`, `agents/`, `commands/` | Universal methodology for ALL projects   |
-| Project | `.claude/skills/`, `agents/`, `commands/`   | Project-specific overrides and additions |
+| Level   | Location                                                 | Contains                                 |
+| ------- | -------------------------------------------------------- | ---------------------------------------- |
+| User    | `~/.agents/skills`, `~/.claude/skills`, tool agent dirs  | Universal methodology for ALL projects   |
+| Project | `.agents/skills`, `.claude/agents`, `.codex/agents`      | Project-specific overrides and additions |
 
-**Rule:** If a skill, agent, or command is used in 2+ projects, it belongs at user level.
-Project-specific context (table names, services, routes) goes in CLAUDE.md, not in
-agent/skill/command definitions.
+**Rule:** If a skill or hook is used in 2+ projects, it belongs at user level.
+Project-specific context (table names, services, routes) goes in project instructions, not in
+shared skill or agent definitions.
 
 Project-level overrides user-level when both have the same filename.
 
 ### Agent Workflow Distribution
 
-Shared agents, commands, skills, and this CLAUDE.md live in `simonszalai/agent-workflows`.
+Shared skills, hooks, tool-specific agents, and this instruction file live in
+`simonszalai/agent-workflows`.
 
-| Environment     | Mechanism                               | Direction |
-| --------------- | --------------------------------------- | --------- |
-| Local dev       | `~/.claude/` symlinks → agent-workflows | Two-way   |
-| NanoClaw        | Volume mount from agent-workflows       | Two-way   |
-| Claude Code web | SessionStart copies agent-workflows     | One-way   |
+| Environment     | Mechanism                                      | Direction |
+| --------------- | ---------------------------------------------- | --------- |
+| Local dev       | `~/.claude`, `~/.agents`, `~/.codex` symlinks  | Two-way   |
+| NanoClaw        | Volume mount from agent-workflows              | Two-way   |
+| Cloud sessions  | SessionStart copies agent-workflows            | One-way   |
 
-**Resolution:** Claude Code checks project `.claude/` first, then user `~/.claude/`.
+**Resolution:** shared skills live under `.agents/skills` and are symlinked into Claude where
+needed. Agent definitions remain tool-specific because Claude and Codex use different formats.
 
 ### Where to Make Changes
 
 | Change type                      | Target                                    | Why                  |
 | -------------------------------- | ----------------------------------------- | -------------------- |
-| Project-specific agent/skill/cmd | `.claude/` in project repo                | Only relevant there  |
-| Shared skill/agent/command       | `~/.claude/` (→ agent-workflows)          | Available everywhere |
-| User-level CLAUDE.md conventions | `~/.claude/CLAUDE.md` (→ agent-workflows) | Shared rules         |
-| Knowledge gotcha/reference       | Memory service via `mcp__autodev-memory`  | Persisted in MCP     |
+| Project-specific skill          | `.agents/skills` in project repo          | Shared by tools      |
+| Project-specific agent          | `.claude/agents` or `.codex/agents`       | Tool-specific format |
+| Shared skill or hook            | `~/.agents`/`~/.claude`/`~/.codex` symlink | Available everywhere |
+| User-level conventions          | agent-workflows instruction files         | Shared rules         |
+| Knowledge gotcha/reference      | Autodev-memory MCP                        | Persisted in MCP     |
 
 ### Committing User-Level Changes (Critical)
 
-When `/compound`, `/heal-workflows`, or any correction triggers an edit to a **user-level**
-file (shared skill, agent, command, or this CLAUDE.md), the edit goes through the symlink
+When the `compound` skill, `heal-workflows` skill, or any correction triggers an edit to a
+**user-level** file (shared skill, hook, agent, or this instruction file), the edit goes through the symlink
 and modifies the `agent-workflows` repo directly. The agent MUST then:
 
 1. `cd ~/dev/agent-workflows` (or wherever the repo is checked out)
@@ -111,50 +116,50 @@ and modifies the `agent-workflows` repo directly. The agent MUST then:
 This ensures the improvement propagates to all environments. Without the push, the change
 only exists locally and won't reach cloud sessions or other machines.
 
-**Project-level changes** (files in the project's `.claude/` directory)
+**Project-level changes** (files in the project's config directories)
 do NOT need this — they are committed as part of normal project workflow.
 
 ## Proactive Command & Agent Triggers
 
-When the user mentions these activities, proactively use the corresponding command or agent:
+When the user mentions these activities, proactively use the corresponding skill or agent:
 
 ### Investigation & Research
 
 | User says                                                 | Action             |
 | --------------------------------------------------------- | ------------------ |
-| "investigate", "what's wrong with", "why is this failing" | Run `/investigate` |
-| "research", "how does X work", "find all instances of"    | Run `/research`    |
-| "look into", "debug this", "root cause"                   | Run `/investigate` |
+| "investigate", "what's wrong with", "why is this failing" | Use the `investigate` skill |
+| "research", "how does X work", "find all instances of"    | Use the `research` skill    |
+| "look into", "debug this", "root cause"                   | Use the `investigate` skill |
 
 ### Planning & Building
 
 | User says                                      | Action                    |
 | ---------------------------------------------- | ------------------------- |
-| "plan", "design", "architect", "how should we" | Run `/plan`               |
-| "build", "implement", "start working on"       | Run `/build`              |
-| "create build todos", "break this down"        | Run `/create-build-todos` |
+| "plan", "design", "architect", "how should we" | Use the `plan` skill               |
+| "build", "implement", "start working on"       | Use the `build` skill              |
+| "create build todos", "break this down"        | Use the `create-build-todos` skill |
 
 ### Review & Quality
 
 | User says                                   | Action                |
 | ------------------------------------------- | --------------------- |
-| "review", "check my code", "look over this" | Run `/review`         |
-| "resolve review", "fix review findings"     | Run `/resolve-review` |
+| "review", "check my code", "look over this" | Use the `review` skill         |
+| "resolve review", "fix review findings"     | Use the `resolve-review` skill |
 
 ### Testing
 
 | User says                                                 | Action              |
 | --------------------------------------------------------- | ------------------- |
-| "write tests", "add tests", "test coverage"               | Run `/write-tests`  |
+| "write tests", "add tests", "test coverage"               | Use the `write-tests` skill |
 | "fix tests", "tests failing", "CI failing", "test broken" | Investigate root cause, then fix (test or code, whichever is wrong) |
-| "verify in browser", "check the UI", "smoke test"         | Run `/test-browser` |
+| "verify in browser", "check the UI", "smoke test"         | Use browser testing workflow |
 
 ### Verification & Deployment
 
 | User says                                       | Action                         |
 | ----------------------------------------------- | ------------------------------ |
-| "verify", "test this locally", "does this work" | Run `/verify local`            |
-| "check production", "verify deployed"           | Run `/verify prod`             |
+| "verify staging", "check staging"               | Run `/auto-verify staging`     |
+| "verify production", "verify deployed"          | Run `/auto-verify prod`        |
 | "create deployment guide"                       | Run `/create-deployment-guide` |
 | "create PR", "make a PR", "open PR"             | Run `/create-pr`               |
 

@@ -371,6 +371,18 @@ Ready with fixes / Ready to merge / Not ready
 
 After presenting: ask policy question only if gated_auto or manual findings remain.
 
+**Next step line (always include at the end of interactive output):**
+
+If findings remain:
+```
+Next: /resolve-review {ID} (resolve gated/manual findings)
+```
+
+If no actionable findings:
+```
+Next: /create-pr {ID} (create PR with summary)
+```
+
 ### Headless output
 
 ```

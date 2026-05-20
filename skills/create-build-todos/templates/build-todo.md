@@ -20,6 +20,11 @@ depends_on: []
 - [Reference entry title]: [Standard to follow]
 - [Solution entry title]: [Past solution that informs this step]
 
+**Known patches & solutions (from memory + past tickets):**
+
+- [Patch/fix entry]: [What it fixes and how it applies here]
+- [Past ticket ID]: [What was done, what to reuse or avoid]
+
 **From codebase:**
 
 - `src/path/file.py:123`: [Pattern to follow - describe what it does]

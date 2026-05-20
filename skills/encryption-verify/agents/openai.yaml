@@ -1,0 +1,3 @@
+display_name: Encryption Verify
+short_description: Run safe encryption checks.
+default_prompt: Run the safe automated encryption verification checks for the current ts-prefect workspace.

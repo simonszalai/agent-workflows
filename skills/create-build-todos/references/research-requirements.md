@@ -78,24 +78,38 @@ Check project rules:
 - Document which rules affect this step
 - Note specific requirements (e.g., "no Any types", "use TEXT not VARCHAR")
 
-## 5. Memory Search (REQUIRED)
+## 5. Patch & Solution Search (REQUIRED)
 
-Review the knowledge menu injected by hooks. For each build step's technology area,
-search for relevant gotchas and patterns using `mcp__autodev-memory__search`:
+For each build step, search for patches, fixes, and past solutions that apply:
 
 ```
-queries: [
-  {"keywords": ["<technology>", "<area>"], "text": "<feature area> implementation patterns"},
-  {"keywords": ["<technology>", "<area>"], "text": "<technology/area> gotchas pitfalls"}
-]
-project: "<project>"
-limit: 5
+mcp__autodev-memory__search(queries=[
+  {"keywords": ["<technology>", "<area>"],
+   "text": "<area> patch fix solution workaround"},
+  {"keywords": ["<technology>", "<area>"],
+   "text": "<area> implementation patterns"},
+  {"keywords": ["<technology>", "<area>"],
+   "text": "<technology/area> gotchas pitfalls"}
+], project="<project>", limit=5)
 ```
+
+Also search past tickets for similar work:
+
+```
+mcp__autodev-memory__search_tickets(
+  project=PROJECT, query="<step area keywords>"
+)
+```
+
+Read the full content of every relevant result. Titles alone are not enough to
+know whether a patch applies.
 
 See the `autodev-search` skill for full MCP tool reference.
 
 **Document in each build todo:**
 
 - Relevant memories found (auto-injected or explicitly searched)
+- Known patches and solutions that apply to this step
+- Past ticket review findings that flagged issues in this area
 - User preferences that apply to this step
 - Past debug learnings for this area

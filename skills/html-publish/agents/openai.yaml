@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML Publish"
+  short_description: "Upload HTML artifacts to S3 and return a shareable URL."
+  default_prompt: "Use $html-publish to upload this HTML artifact and give me the shareable URL."

@@ -59,11 +59,13 @@ Auto-Flow detects its input source automatically:
 2.  Create Ticket        -> Feature (FNNN) or Bug (BNNN) via MCP (status: backlog)
 3.  /auto-plan {ID}      -> Research + plan (backlog -> planning -> planned)
 4.  Approve Plan         -> Set status to "approved" (auto-approved in auto-flow)
-5.  /auto-build {ID}     -> Build todos + build + test + review + PR (approved -> ready_to_deploy)
+5.  /auto-build {ID}     -> Build + test + review + push branch (approved -> ready_to_deploy_staging)
+6.  /auto-polish-web {ID} -> Web UI polish on the pushed branch (self-gates; skips for non-UI or non-web repos)
 ```
 
-Auto-Flow stops after auto-build. Deployment and verification are separate steps:
-`/auto-deploy` and `/auto-verify`.
+Auto-Flow stops after polish. PR creation, deployment, and verification are the next
+steps: `/auto-deploy` (creates the PR as its first action, then merges + deploys) and
+`/auto-verify`.
 
 ## Detailed Process
 
@@ -162,7 +164,7 @@ Determine input source and extract requirements.
    | `planned`        | Phase 4 (approve) |
    | `approved`       | Phase 5 (auto-build) |
    | `building`       | Phase 5 (auto-build — will resume) |
-   | `ready_to_deploy`| STOP — already complete, run /auto-deploy |
+   | `ready_to_deploy_staging`| STOP — already complete, run /auto-deploy |
 
 ### Phase 2: Create Ticket
 
@@ -231,11 +233,29 @@ Run `/auto-build {ticket_id}` — this handles:
 - Running `/review` + `/resolve-review` loop
 - Running `/compound`
 - Creating deployment guide
-- Running `/verify local` (unless --skip-verify)
-- Running `/create-pr`
-- Setting status to `ready_to_deploy`
+- Pushing the feature branch (no PR yet)
+- Setting status to `ready_to_deploy_staging`
 
 **On failure:** STOP, report error. Ticket status reverts to `approved`.
+
+### Phase 6: Auto-Polish-Web
+
+Run `/auto-polish-web {ticket_id}` — this handles the UI polish loop on the pushed
+feature branch.
+
+The skill self-gates:
+
+- If the repo has no `.claude/skills/repo-plugin/SKILL.md` → skips silently
+- If the plugin says `should-run=false` (e.g. backend-only ticket) → skips, records
+  `polish_report` artifact
+- If dev server can't start → records artifact, returns non-blocking failure
+- Otherwise iterates critique → change → verify up to 10 times, commits per iteration
+
+Polish commits land on the same feature branch that auto-build pushed. Ticket status
+stays at `ready_to_deploy_staging` throughout.
+
+**On failure:** Non-blocking. Log outcome, auto-flow still terminates successfully. The
+next step (`/auto-deploy`) will pick up the branch regardless of polish outcome.
 
 ## Error Handling
 
@@ -246,6 +266,7 @@ Run `/auto-build {ticket_id}` — this handles:
 | Create Ticket| Creation fails         | STOP, report error              |
 | Auto-Plan    | Any failure            | STOP, report (auto-plan reverts)|
 | Auto-Build   | Any failure            | STOP, report (auto-build reverts)|
+| Auto-Polish  | Any failure            | Log, continue (non-blocking — polish is optional) |
 
 ## Ticket Artifacts
 
@@ -289,7 +310,7 @@ Summary:
 - Tests: 12 passing / 12 total (4 unit, 6 integration, 2 e2e)
 - Review: 3 iterations, all P1/P2 resolved
 
-Ticket: F0042 (ready_to_deploy)
+Ticket: F0042 (ready_to_deploy_staging)
 Next: /auto-deploy F0042
 ```
 
@@ -306,7 +327,7 @@ Summary:
 - Tests: 11 passing / 12 total (1 flaky e2e)
 - 2 P3 findings remain (not blocking)
 
-Ticket: F0042 (ready_to_deploy)
+Ticket: F0042 (ready_to_deploy_staging)
 Next: /auto-deploy F0042
 ```
 
@@ -330,7 +351,7 @@ See ticket F0042 for partial progress
 | Plan approval   | You review plan first | Auto-approved                         |
 | Review handling | You decide on findings| Loop until no P1/P2                   |
 | Scope           | Any ticket            | Creates ticket from issue/conversation |
-| Stops at        | Wherever you stop     | ready_to_deploy (PR created)          |
+| Stops at        | Wherever you stop     | ready_to_deploy_staging (PR created)          |
 
 ## Pipeline Position
 
@@ -365,7 +386,7 @@ Should integrate with existing analytics.
 2. Create: `ticket F0042 via MCP` (status: backlog)
 3. /auto-plan F0042: research + plan (backlog -> planning -> planned)
 4. Approve: set status to approved
-5. /auto-build F0042: build + test + review + PR (approved -> ready_to_deploy)
+5. /auto-build F0042: build + test + review + PR (approved -> ready_to_deploy_staging)
 
 **Output:**
 
@@ -380,7 +401,7 @@ Summary:
 - Tests: 12 passing / 12 total
 - Review: 3 iterations, all P1/P2 resolved
 
-Ticket: F0042 (ready_to_deploy)
+Ticket: F0042 (ready_to_deploy_staging)
 Next: /auto-deploy F0042
 ```
 
@@ -414,7 +435,7 @@ Summary:
 - Tests: 6 passing / 6 total (2 unit, 3 integration, 1 e2e)
 - Review: 2 iterations, all P1/P2 resolved
 
-Ticket: F0043 (ready_to_deploy)
+Ticket: F0043 (ready_to_deploy_staging)
 Next: /auto-deploy F0043
 ```
 
@@ -447,6 +468,6 @@ Fix: Added batch size limit of 200 items with chunked processing
 Tests: 5 passing / 5 total
 Review: No critical findings
 
-Ticket: B0001 (ready_to_deploy)
+Ticket: B0001 (ready_to_deploy_staging)
 Next: /auto-deploy B0001
 ```

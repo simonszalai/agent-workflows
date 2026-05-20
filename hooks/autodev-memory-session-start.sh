@@ -92,15 +92,10 @@ if [[ "$TOTAL_COUNT" -gt 0 ]]; then
     ' 2>/dev/null || echo "(formatting error)")
   fi
 
-  # Vary the status line by source — on resume/compact, don't force the assistant
-  # to announce "session started" mid-conversation
-  if [[ "$_SS_SOURCE" == "startup" || "$_SS_SOURCE" == "clear" ]]; then
-    _STATUS_LINE="MANDATORY: Start your first reply with this single status line (no extra text around it):
-Memory: session started — $MENU_COUNT searchable entries"
-  else
-    _STATUS_LINE="Memory system re-injected ($_SS_SOURCE). Do NOT announce this to the user.
-$MENU_COUNT searchable entries available."
-  fi
+  # Silent injection — do not force the assistant to announce anything in its
+  # first reply. Conductor uses the first assistant message to name the
+  # workspace, so a mandatory status line hijacks the workspace title.
+  _STATUS_LINE="Memory system loaded ($_SS_SOURCE): $MENU_COUNT searchable entries available. Do NOT announce this to the user."
 
   CONTEXT="<autodev-memory-hook-result source=\"session-start\">
 $_STATUS_LINE"

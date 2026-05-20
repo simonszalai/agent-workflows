@@ -165,6 +165,18 @@ automatically as part of its research phase.
 | Additional code context | `researcher`           | If planner requests              |
 | Deep past work research | `researcher` | If planner needs more context    |
 
+## Output
+
+After plan is created, output:
+
+```
+Plan created for {ID}: {title}
+
+Plan artifact stored. Review the plan and approve before proceeding.
+
+Next: /create-build-todos {ID} (create detailed implementation steps)
+```
+
 ## Next Steps
 
 After plan is approved, create detailed implementation steps:

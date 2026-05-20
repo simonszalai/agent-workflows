@@ -82,6 +82,25 @@ Parse the environment from the user's prompt. Look for keywords:
 
 **Pass the environment explicitly to every sub-agent** in the Task prompt.
 
+## Tool-Skill Bootstrap (Required Before MCP)
+
+Before using any infrastructure, database, or external-service MCP tool, load the
+matching `tool-*` skill if one exists. These skills contain required bootstrap
+steps, safety rules, and known MCP gotchas. **Do not call the MCP directly first.**
+
+Examples:
+
+| MCP area | Required skill first | Why |
+| --- | --- | --- |
+| Render services/logs/metrics/Postgres | `tool-render` | Workspace bootstrap and log/metric patterns |
+| Postgres MCP/database investigation | `tool-postgres` | Read-only/safety/query patterns |
+
+For Render investigations, always load `tool-render` before `mcp__render__*`.
+Run its workspace bootstrap first (currently `list_workspaces`; if there is a
+single workspace it auto-selects it). If multiple workspaces are returned, stop
+and ask the user which workspace to use; do not call `select_workspace`
+autonomously.
+
 ## Agent Selection
 
 Choose agents based on problem symptoms. Refer to AGENTS.md for available investigator agents.
@@ -120,6 +139,11 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 3. **Select agents and spawn** - Pick relevant agents (often 2-3)
    - Single message, multiple Task calls for parallel investigation
    - Brief agents with the symptom AND the backward trace so far
+
+Before any evidence-gathering MCP call in steps 1-3, apply **Tool-Skill
+Bootstrap** above. If the first MCP call returns a known bootstrap/setup error
+(for example Render says "no workspace set"), do not treat it as a blocker until
+you have checked the matching `tool-*` skill.
 
 4. **Collect and synthesize** - Wait for all agents, build the causal chain
 
