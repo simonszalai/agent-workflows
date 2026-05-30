@@ -17,6 +17,8 @@ modes for different contexts (interactive, autonomous, read-only, programmatic).
 /review F001 mode:autofix                # Autonomous — apply safe fixes only
 /review F001 mode:report-only            # Read-only — no mutations
 /review F001 mode:headless               # Programmatic — structured output for callers
+/review F001 --deep                      # Force heavyweight workflow path (overrides gate)
+/review F001 --light                     # Force inline path (overrides gate, skips verify)
 ```
 
 ## Mode Detection
@@ -147,26 +149,103 @@ reference issues caught in similar past implementations.
    - Count existing review_todo artifacts from `get_ticket` response
    - New findings start at `max_sequence + 1` (or 1 if none exist)
 
-3. **Select reviewers** based on diff analysis (see Agent Dispatch above)
+3. **Select reviewers** based on diff analysis (see Agent Dispatch above).
 
-4. **Spawn agents** with model overrides per the dispatch table:
+4. **Decide the execution path — complexity gate:**
+
+   The mechanical fan-out, dedup, cross-reviewer boost, adversarial verify, and partition
+   logic lives in the `review-fanout` workflow at `workflows/review-fanout.js`. Workflows
+   have non-trivial token overhead (spawning many subagents, structured-output enforcement,
+   2-skeptic verification per borderline finding). They pay off only when there is enough
+   material to dedup and verify across. For small diffs the orchestration cost dwarfs the work.
+
+   Use this gate:
+
+   | Condition                                                        | Path    |
+   | ---------------------------------------------------------------- | ------- |
+   | User passed `--deep`                                             | Heavy   |
+   | User passed `--light`                                            | Light   |
+   | ≥3 reviewers selected (always-on pair + ≥1 conditional/persona)  | Heavy   |
+   | ≥5 files changed                                                 | Heavy   |
+   | ≥200 LOC changed (added + removed via `git diff --shortstat`)    | Heavy   |
+   | Otherwise                                                        | Light   |
+
+   Announce the chosen path alongside the review team:
 
    ```
-   Agent(
-     subagent_type="reviewer",
-     model="sonnet",  # or "opus" per dispatch table
-     prompt="
-       Review these files for [focus area]: [file list]
-       Context: [brief summary of what was implemented]
-       Intent: [2-3 line intent summary from plan/commits]
-
-       Return structured JSON per the findings schema.
-       Include confidence (0.0-1.0) and autofix_class for each finding.
-     "
-   )
+   Review team: code-quality [sonnet], architecture-security-performance [opus]
+   Path: light (2 reviewers, 1 file, 18 LOC) — inline parallel Agent calls, no verify
    ```
 
-5. **Merge and synthesize findings** (see Synthesis Methodology below)
+   or:
+
+   ```
+   Review team: code-quality, arch-sec-perf, data-integrity, react, pipeline-reviewer
+   Path: heavy (5 reviewers, 12 files, 340 LOC) — review-fanout workflow with verify
+   ```
+
+5. **Fan out — light path (inline):**
+
+   When the gate selects "Light", issue the reviewer `Agent` calls in parallel (one assistant
+   message, multiple tool-use blocks). No workflow, no skeptics. Each reviewer returns the
+   reviewer-output JSON shape documented in `workflows/review-fanout.js` (`reviewerOutputSchema`).
+   After all reviewers return, do minimal synthesis inline: validate findings against the
+   required fields, dedupe by `file + line_bucket(±3) + normalized title` (keep highest
+   severity/confidence, union evidence), apply the confidence gate (suppress <0.60, rescue p1
+   at ≥0.50), separate `pre_existing: true`, sort by severity → confidence → file → line,
+   and partition into `{inSkillFixer, residualActionable, reportOnly}` per the routing in
+   step 6. With only 2 reviewers the dedup/boost machinery is trivial — keep the code in
+   the skill.
+
+   Skip steps 5a-5c below — they are for the heavy path only.
+
+5a. **Fan out — heavy path (workflow):**
+
+   When the gate selects "Heavy", invoke the workflow:
+
+   ```
+   result = Workflow({
+     name: "review-fanout",
+     args: {
+       reviewers: [
+         { key: "code-quality", model: "sonnet", focus: "...",
+           references: ["references/python-standards.md", ...] },
+         { key: "architecture-security-performance", model: "opus", focus: "...",
+           references: ["references/architecture.md", ...] },
+         // ...plus conditional + project-persona reviewers from step 3
+       ],
+       intent: "<2-3 line intent from plan/commits>",
+       files: ["<changed files>"],
+       diffSummary: "<git diff --stat output or short narrative>",
+       mode: "interactive" | "autofix" | "report-only" | "headless"
+     }
+   })
+   ```
+
+5b. **Result shape (both paths produce the same object):**
+
+   ```
+   {
+     findings: [...],               // current-diff findings, sorted
+     pre_existing: [...],           // segregated
+     partitions: {                  // drives step 6 routing
+       inSkillFixer: [...],         // safe_auto → review-fixer
+       residualActionable: [...],   // gated_auto|manual → downstream-resolver
+       reportOnly: [...]            // advisory + human-owned
+     },
+     suppressed: <N>,               // for the Coverage output block
+     coverage: { residual_risks, testing_gaps },
+     stats: { ... }                 // diagnostic counters (heavy path only)
+   }
+   ```
+
+5c. **What the heavy path adds over the light path:**
+
+   - Structured output enforced at the tool layer (schema retry on mismatch)
+   - Cross-reviewer agreement boost (+0.10 confidence per additional reviewer)
+   - Adversarial 2-skeptic verify on borderline findings (0.55 ≤ confidence < 0.80)
+     — consensus-boosted findings ≥0.80 skip verify entirely, saving tokens
+   - Workflow journal: can resume with `resumeFromRunId` if iterating
 
 6. **Store findings** as review_todo artifacts:
    ```
@@ -230,21 +309,13 @@ reference issues caught in similar past implementations.
 
 ## Synthesis Methodology
 
-When merging findings from multiple reviewer agents:
+Synthesis (validate → confidence gate → dedup → cross-reviewer boost → separate pre-existing
+→ normalize routing → partition → sort → coverage union) lives in
+`workflows/review-fanout.js`. The heavy path runs it inside the workflow; the light path
+runs an inlined subset in this skill (see step 5).
 
-### 1. Validate
-
-Check each reviewer's JSON return for required fields. Drop malformed returns.
-Required per finding: title, severity, file, line, confidence, autofix_class, owner,
-requires_verification, pre_existing, evidence, why_it_matters.
-
-### 2. Confidence gate
-
-**Suppress findings below 0.60 confidence.** Exception: p1 findings at 0.50+ survive —
-critical-but-uncertain issues must not be silently dropped. Record suppressed count.
-
-**Memory-assisted confidence upgrade:** Before suppressing a medium-confidence finding
-(0.50-0.69), search autodev-memory:
+**Memory-assisted confidence upgrade (skill-side, both paths):** Before reporting findings
+in the 0.50–0.69 band that the gate would otherwise suppress, search the memory service:
 
 ```
 mcp__autodev-memory__search(
@@ -256,46 +327,9 @@ mcp__autodev-memory__search(
 )
 ```
 
-If memory confirms the pattern (past incident, known gotcha), upgrade confidence to 0.80+
-and include the memory entry as evidence. Memory-confirmed findings are high confidence
-regardless of how speculative they seemed from code alone.
-
-### 3. Deduplicate
-
-Compute fingerprint: `normalize(file) + line_bucket(line, +/-3) + normalize(title)`.
-When fingerprints match, merge: keep highest severity, keep highest confidence, note
-which reviewers flagged it.
-
-### 4. Cross-reviewer agreement
-
-When 2+ independent reviewers flag the same issue (same fingerprint), boost confidence
-by 0.10 (capped at 1.0). Note agreement in the output (e.g., "code-quality, architecture").
-
-### 5. Separate pre-existing
-
-Pull out findings with `pre_existing: true` into a separate list. These don't count
-toward the review verdict.
-
-### 6. Normalize routing
-
-For each merged finding, set final `autofix_class` and `owner`. If reviewers disagree,
-keep the most conservative route. Synthesis may narrow `safe_auto` to `gated_auto` but
-must not widen without evidence.
-
-### 7. Partition
-
-Build three queues:
-- **In-skill fixer:** `safe_auto -> review-fixer` only
-- **Residual actionable:** unresolved `gated_auto` or `manual` with `owner: downstream-resolver`
-- **Report-only:** `advisory` plus anything owned by `human`
-
-### 8. Sort
-
-Order by severity (p1 first) -> confidence (descending) -> file path -> line number.
-
-### 9. Collect coverage
-
-Union `residual_risks` and `testing_gaps` across all reviewers.
+If memory confirms the pattern (past incident, known gotcha), upgrade the finding's
+confidence to 0.80+ and include the memory entry as evidence. This runs in the skill, not
+the workflow, because the workflow doesn't have MCP access.
 
 ---
 
