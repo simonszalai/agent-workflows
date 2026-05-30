@@ -5,8 +5,9 @@ description: Research how something is implemented across the entire codebase. F
 
 # Research
 
-Spawn a `researcher` agent to search the codebase for patterns, implementations, and
-architectural decisions relevant to the research question.
+Research a codebase question using either a single researcher agent (light path) or a
+multi-modal sweep with loop-until-dry completeness checking (heavy path), then store the
+findings as a ticket artifact.
 
 ## Usage
 
@@ -14,6 +15,8 @@ architectural decisions relevant to the research question.
 /research F0014 "how is historical pricing calculated"   # Add research to existing ticket
 /research B0009 "where do timeout errors originate"      # Add research to bug ticket
 /research "how is error handling done"                   # Creates new research ticket
+/research F0014 "..." --deep                             # Force heavyweight workflow path
+/research F0014 "..." --light                            # Force single-agent path
 ```
 
 ## When to Use
@@ -33,6 +36,7 @@ architectural decisions relevant to the research question.
 ```
 # Project: from <!-- mem:project=X --> in CLAUDE.md
 # Repo: from git remote — basename -s .git $(git config --get remote.origin.url)
+# Repo root: git rev-parse --show-toplevel
 ```
 
 ## Ticket Setup
@@ -60,34 +64,153 @@ ticket = mcp__autodev-memory__create_ticket(
 
 ## Process
 
-1. **Parse the research question** - What pattern/implementation are we looking for?
+1. **Parse the research question.** Identify subject (concept being researched) and scope
+   (entire codebase vs specific layer).
 
-2. **Spawn researcher agent** with the research question:
+2. **Decide the execution path — complexity gate:**
+
+   Heavy path runs a multi-modal sweep, loop-until-dry completeness check, and opus-driven
+   synthesis. It pays off when the question is broad enough that one researcher would miss
+   things. Light path uses a single researcher agent — cheaper, faster, fine for narrow
+   questions.
+
+   Use this gate (top-to-bottom, first match wins):
+
+   | Condition                                                              | Path  |
+   | ---------------------------------------------------------------------- | ----- |
+   | User passed `--deep`                                                   | Heavy |
+   | User passed `--light`                                                  | Light |
+   | Question contains "across", "all", "every", "entire", "everywhere"     | Heavy |
+   | Question names a specific file or symbol (e.g. "X in path/to/Y.ts")    | Light |
+   | Question word count ≥ 12                                               | Heavy |
+   | Otherwise                                                              | Light |
+
+   Announce the chosen path before fanning out:
 
    ```
-   Task(subagent_type="researcher", prompt="
-     Research question: [question]
-     Ticket: [ticket_id]
-
-     Search the codebase to answer this question. Focus on:
-     - Finding ALL relevant implementations
-     - Identifying architectural patterns used
-     - Noting any inconsistencies between implementations
-     - Understanding WHY patterns are used (read context, not just grep)
-
-     Return findings using the research output template.
-   ")
+   Question: how is authentication implemented
+   Path: heavy (broad-scope keyword "implemented" + word count) — research-fanout workflow
    ```
 
-3. **Agent returns findings** — orchestrator stores as artifact
+3. **Discover zones (heavy path only — optional):**
 
-4. **Store research as artifact:**
+   Check the project's `CLAUDE.md` or `AGENTS.md` for zone definitions. If present, pass
+   them as `args.zones`. If absent, the workflow falls back to modality-only search.
+   A zone is `{ key, description, paths: [glob patterns] }`.
+
+4. **Fan out — light path (inline):**
+
+   When the gate selects "Light", spawn ONE researcher agent:
+
+   ```
+   Agent(
+     subagent_type="researcher",
+     prompt="
+       Research question: {question}
+       Repository root: {REPO_ROOT}
+
+       Search the codebase to answer this question. Focus on:
+       - Finding ALL relevant implementations
+       - Identifying architectural patterns
+       - Noting inconsistencies between implementations
+       - Reading context, not just grep
+       - Each occurrence: file, line, snippet (1-5 lines), pattern_variant
+
+       Return per the searcher output schema (see workflows/research-fanout.js).
+     "
+   )
+   ```
+
+   After the agent returns, validate the occurrence shape (drop entries missing
+   `file`/`line`/`snippet`/`pattern_variant`; count drops into `invalid_occurrences`).
+   No critic, no gap-fill loop, no separate synthesis — the researcher does its own
+   pattern/inconsistency call. Assemble the same return shape as the heavy path
+   (zero-fill the loop-related stats fields).
+
+   Skip steps 4a-4b below — those are for the heavy path only.
+
+4a. **Fan out — heavy path (workflow):**
+
+   When the gate selects "Heavy", invoke the workflow via `scriptPath`. Resolve `$HOME`
+   at invocation time so the path works in every environment (local, NanoClaw, cloud):
+
+   ```
+   import os
+   workflow_path = f"{os.environ['HOME']}/.claude/workflows/research-fanout.js"
+
+   result = Workflow({
+     scriptPath: workflow_path,
+     args: {
+       question: "<original research question>",
+       zones: [
+         { key: "routes", description: "...", paths: ["app/api/**", ...] },
+         // optional; omit to use modality-only search
+       ],
+       modalities: [
+         // optional; defaults to by-grep, by-symbol, by-tests, by-config
+       ],
+       repoRoot: "<absolute path>",
+       mode: "interactive" | "headless",
+       loopCap: 2,    // optional; max gap-fill rounds (default 2)
+     }
+   })
+   ```
+
+4b. **Result shape (both paths produce this object):**
+
+   ```
+   {
+     question: "...",
+     summary: "narrative answer to the question",
+     patterns: [
+       {
+         name: "...",
+         description: "...",
+         canonical_example: { file: "...", line: N },
+         usage_example: "code snippet"
+       }
+     ],
+     inconsistencies: [
+       {
+         description: "...",
+         locations: [{file, line}, ...],
+         impact: "...",
+         severity: "high" | "medium" | "low",
+         recommendation: "..."
+       }
+     ],
+     occurrences: [
+       { file, line, snippet, pattern_variant, notes, sources: ["zone-or-modality-key"] }
+     ],
+     zones_searched: ["zone-key", ...],
+     modalities_searched: ["modality-key", ...],
+     searcher_summaries: [
+       { key, files_searched, occurrences_found, summary }
+     ],
+     loop_iterations: N,   // heavy path; light always 0
+     residual_gaps: ["unanswered question 1", ...],
+     stats: {
+       searchers, searcher_errors, invalid_occurrences,
+       unique_occurrences, multi_source_occurrences,
+       gap_iterations, gaps_identified, gaps_filled
+     }
+   }
+   ```
+
+   The light path must zero-fill the loop-related stats (`gap_iterations: 0`,
+   `gaps_identified: 0`, `gaps_filled: 0`) and report `loop_iterations: 0`. Downstream
+   step 5 must not branch on path.
+
+5. **Render and store the artifact:**
+
+   Format `result` into the Research Output Template below (replace the markdown placeholders
+   with values from `result`). Store via MCP:
 
    ```
    mcp__autodev-memory__create_artifact(
      project=PROJECT, ticket_id=ID, repo=REPO,
      artifact_type="investigation",
-     content="<research findings>",
+     content="<rendered markdown>",
      title="Research: <question>",
      command="/research"
    )
@@ -95,161 +218,78 @@ ticket = mcp__autodev-memory__create_ticket(
 
 ## Research Output Template (MANDATORY)
 
-The researcher agent MUST use this template:
-
 ```markdown
 # Research Findings
 
-**Question:** [original question]
-**Date:** YYYY-MM-DD
+**Question:** [result.question]
+**Path:** [light | heavy] — searchers: [count], occurrences: [N], loop iterations: [N]
 
 ## Summary
 
-[3-5 sentence overview of what was found]
+[result.summary]
 
-## Key Architectural Patterns (MANDATORY)
+## Key Architectural Patterns
 
-### Pattern 1: [name]
+### [pattern.name]
 
-**What:** [brief description]
-**Where:** `file:line` - canonical example
-**Why:** [why this pattern exists]
-**Usage:** [code example showing correct usage]
-
-## Findings
-
-### [Topic 1]
-
-**Locations:**
-- `file:line` - description
-
-**Implementation:**
-[Description of how this works]
-
-## Inconsistencies Found
-
-### Inconsistency 1: [description]
-
-**Locations:**
-- `file:line` - uses approach A
-- `file:line` - uses approach B
-
-**Impact:** [why this matters]
-**Recommendation:** [which approach to standardize on]
+**What:** [pattern.description]
+**Where:** `[pattern.canonical_example.file]:[pattern.canonical_example.line]` - canonical example
+**Usage:**
 ```
+[pattern.usage_example]
+```
+
+## Findings (Occurrences)
+
+| File | Line | Pattern Variant | Sources |
+|------|------|----------------|---------|
+| `[occurrence.file]` | [line] | [pattern_variant] | [sources joined] |
+
+## Inconsistencies
+
+### [inconsistency.description]
+
+**Severity:** [severity]
+**Locations:**
+- `[location.file]:[line]`
+
+**Impact:** [impact]
+**Recommendation:** [recommendation]
+
+## Coverage
+
+- Searchers run: [searcher_summaries[].key joined]
+- Total occurrences: [stats.unique_occurrences]
+- Multi-source occurrences (found by ≥2 searchers): [stats.multi_source_occurrences]
+- Gap-fill iterations: [stats.gap_iterations] / cap
+- Invalid occurrences dropped: [stats.invalid_occurrences]
+- Searcher errors: [stats.searcher_errors]
+
+## Residual Gaps
+
+- [residual_gap entry]
 
 ---
 
-# Research Methodology
-
-Standards for conducting **exhaustive codebase research** and storing findings as ticket
-artifacts via `mcp__autodev-memory__create_artifact`. NEVER write research output to
-`.context/` or any local file — all results go to ticket artifacts.
-
-## Critical Requirement: Complete Coverage
-
-Research MUST be exhaustive. Every relevant file must be examined. This is achieved through:
-
-1. **Zone partitioning** - Codebase divided into non-overlapping zones
-2. **Parallel agents** - One agent per zone, all running simultaneously
-3. **Explicit file lists** - Agents must enumerate files they searched
-4. **Coverage verification** - Synthesis checks all zones were covered
-
-## Zone Definitions
-
-Zones are project-specific. Check AGENTS.md for the project's zone definitions. A typical
-partitioning divides the codebase into 3-6 non-overlapping zones based on architectural layers:
-
-| Zone Example | Typical Contents                          |
-| ------------ | ----------------------------------------- |
-| Routes/API   | Request handlers, endpoints, page views   |
-| Components   | UI components, shared widgets             |
-| Models/Data  | Database access, schemas, repositories    |
-| Core/Lib     | Utilities, hooks, type definitions        |
-| Config       | Project configuration, infrastructure     |
-
-## Sub-Agent Behavior (CRITICAL)
-
-**Zone agents must:**
-
-- **Search EVERY file** in their assigned zone - no sampling
-- **Document file count** - "Searched X files in zone Y"
-- **List every occurrence** of the pattern being researched
-- **Note variations** between files
-- **Return findings directly** - do NOT create files
-- The orchestrator synthesizes all findings and stores them as a ticket artifact
-
-## Agent Output Format
-
-Each zone agent returns:
-
-```markdown
-## Zone: {zone_name}
-
-**Files searched:** {count}
-**Files with matches:** {count}
-
-### Occurrences
-
-#### {file_path}:{line_number}
-```{language}
-{code snippet}
-```
-**Pattern variant:** {description of how this implements the pattern}
-**Notes:** {any issues or variations}
-
-#### {file_path}:{line_number}
-...
-
-### Zone Summary
-
-- **Dominant pattern:** {most common implementation}
-- **Variations found:** {count}
-- **Potential issues:** {list}
-
-### Questions for Synthesis
-
-- {questions about patterns that need cross-zone context}
-```
-
-## Synthesis Methodology
-
-When combining findings from zone agents:
-
-1. **Verify coverage** - Confirm all zones reported, check file counts
-2. **Catalog patterns** - Group similar implementations
-3. **Identify dominant pattern** - What's most common across zones
-4. **Flag inconsistencies** - Where does implementation differ
-5. **Rank by impact** - Which inconsistencies matter most
-6. **Recommend standardization** - Suggest which pattern to adopt
-
-## Inconsistency Severity
-
-| Severity | Definition                                           |
-| -------- | ---------------------------------------------------- |
-| HIGH     | Could cause bugs, data loss, or security issues      |
-| MEDIUM   | Makes code harder to maintain, confusing             |
-| LOW      | Cosmetic, style preference, minor deviation          |
-
-## Output Template
-
-Use the template at `templates/research.md` for output format.
-
 **Formatting:** Limit lines to 100 chars (tables exempt).
-
-## Research Process
-
-1. **Understand topic** - What pattern/implementation to research
-2. **Spawn zone agents** - All zones in parallel
-3. **Collect findings** - Wait for ALL agents
-4. **Verify coverage** - Check file counts, ensure completeness
-5. **Synthesize patterns** - Catalog variations
-6. **Store findings** - Create ticket artifact (artifact_type="investigation")
+```
 
 ## Quality Standards
 
-- **No sampling** - Every file must be checked
-- **Code evidence** - Include snippets for each occurrence
-- **Exact locations** - File paths and line numbers
-- **Quantified results** - Counts of patterns, files, variations
-- **Actionable output** - Clear recommendations for standardization
+- **No sampling** — every relevant file must be checked by some searcher
+- **Code evidence** — every pattern's canonical_example must point to a real occurrence
+- **Exact locations** — file paths and line numbers throughout
+- **Quantified results** — counts of patterns, files, variations come from `stats`
+- **Honest gaps** — `residual_gaps` should be non-empty whenever coverage is partial;
+  do not over-claim completeness
+
+## What the Heavy Path Adds Over the Light Path
+
+- Structured occurrence output enforced at the tool layer (schema retry on mismatch)
+- Multi-modal sweep: parallel searchers using different search angles (by-grep, by-symbol,
+  by-tests, by-config) catch what a single zone-by-zone walk misses
+- Loop-until-dry: completeness critic identifies gaps, gap-fillers run, repeat (up to
+  `loopCap` rounds) — fixes the "we found 3, assumed that's all, missed 7 more" failure
+- Cross-searcher confirmation: `sources` on each occurrence shows which searchers found it;
+  multi-source occurrences are typically the dominant pattern
+- Diagnostic stats so the skill can report how much coverage was actually achieved
