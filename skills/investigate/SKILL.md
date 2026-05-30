@@ -16,6 +16,8 @@ of problems, not designing solutions.
 /investigate "Service failing with timeout error"
 /investigate B0003                             # Existing bug ticket
 /investigate 009                               # Legacy NNN format
+/investigate B0003 --deep                      # Force heavyweight workflow (multi-angle hypothesis + skeptics)
+/investigate B0003 --light                     # Force single-investigator path
 ```
 
 ## When to Use
@@ -136,9 +138,105 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
      )
      ```
 
-3. **Select agents and spawn** - Pick relevant agents (often 2-3)
-   - Single message, multiple Task calls for parallel investigation
-   - Brief agents with the symptom AND the backward trace so far
+3. **Decide the execution path — complexity gate:**
+
+   The heavy path runs the `investigate-fanout` workflow: parallel hypothesis generators
+   from different angles (stack-trace, recent-commits, code-pattern, data-state), dedup
+   with cross-angle confidence boost, parallel evidence gathering, and adversarial
+   skeptics on confirmed hypotheses. Premature convergence on the wrong root cause causes
+   regressions, so for ambiguous or high-stakes bugs the skeptic pass is the load-bearing
+   step.
+
+   Use this gate (top-to-bottom, first match wins):
+
+   | Condition                                                              | Path  |
+   | ---------------------------------------------------------------------- | ----- |
+   | User passed `--deep`                                                    | Heavy |
+   | User passed `--light`                                                   | Light |
+   | Bug description contains "intermittent", "flaky", "race", "only in"     | Heavy |
+   | Bug already had a prior /investigate that didn't find the root cause    | Heavy |
+   | Production incident (environment: prod)                                 | Heavy |
+   | Clear stack trace pointing to a specific line + single-component scope  | Light |
+   | Otherwise                                                               | Light |
+
+   Announce the chosen path:
+
+   ```
+   Path: heavy (production incident — investigate-fanout workflow with skeptics)
+   ```
+
+4. **Fan out — light path (inline):**
+
+   When the gate selects "Light", pick 2-3 relevant agents from the dispatch table below
+   and spawn them in parallel (single message, multiple `Agent` tool-use blocks). Brief
+   each with the symptom and the backward trace so far. Each agent returns hypotheses
+   matching `hypothesisSchema` in `workflows/investigate-fanout.js` — validate against
+   the required fields (`statement`, `evidence`, `testable_prediction`, `category`,
+   `initial_confidence`).
+
+   No dedup phase, no separate skeptic pass — but you should still apply the methodology
+   in step 5+ below (test predictions, attempt to refute the strongest hypothesis, gate
+   the causal chain). Assemble the same return shape as the heavy path with empty
+   `skeptic_verdicts` arrays and zero-filled stats for the heavy-only fields.
+
+   Skip steps 4a-4b below — those are for the heavy path only.
+
+4a. **Fan out — heavy path (workflow):**
+
+   When the gate selects "Heavy", invoke the workflow by name:
+
+   ```
+   result = Workflow({
+     name: "investigate-fanout",
+     args: {
+       bug: "<bug description from source artifact + user input>",
+       environment: "prod" | "staging" | "local",
+       errorEvidence: "<stack trace / log lines / observed behavior, if collected>",
+       angles: [
+         { key: "stack-trace", description: "..." },
+         { key: "recent-commits", description: "..." },
+         { key: "code-pattern", description: "..." },
+         { key: "data-state", description: "..." },
+         // Workflow defaults to these four if angles omitted.
+       ],
+       repoRoot: "<absolute path>",
+       mode: "interactive" | "headless",
+       testTopN: 6
+     }
+   })
+   ```
+
+4b. **Result shape (both paths produce this object):**
+
+   ```
+   {
+     bug: "...",
+     environment: "...",
+     root_cause: {
+       statement, confidence, evidence_summary, survived_skeptics
+     } | null,                              // null is HONEST — do not invent
+     causal_chain: ["trigger", ..., "symptom"],   // no gaps allowed
+     recommended_remediation: "short paragraph; this is /investigate not /plan",
+     hypotheses: [
+       { id, statement, category, source_angles, initial_confidence,
+         verdict, final_confidence, evidence_gathered, skeptic_verdicts }
+     ],
+     refuted_hypotheses: [{ statement, why_refuted }],
+     inconclusive_hypotheses: [{ statement, what_still_needs_checking }],
+     residual_unknowns: [...],
+     stats: { angles_attempted, raw_hypotheses, after_dedup, tested,
+              confirmed, refuted_in_test, inconclusive_in_test,
+              skeptic_attempts, root_cause_found }
+   }
+   ```
+
+   The light path must zero-fill heavy-only stats fields. Downstream steps 5+ must not
+   branch on path. Specifically: if `result.root_cause` is null, downstream MUST honor
+   that — do not draft a fix in the artifact based on an unconfirmed hypothesis.
+
+**Reference: Agent Dispatch Table** (for the light path)
+
+Choose agents based on problem symptoms. Refer to AGENTS.md for available investigator agents.
 
 Before any evidence-gathering MCP call in steps 1-3, apply **Tool-Skill
 Bootstrap** above. If the first MCP call returns a known bootstrap/setup error
