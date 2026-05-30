@@ -38,6 +38,8 @@ designing the solution. No separate investigation needed.
 /plan B0003                               # Bug ticket B0003
 /plan F0009 additional context            # Ticket with extra context
 /plan "Add new integration"               # Create new ticket and plan
+/plan F0009 --deep                        # Force heavyweight workflow (panel + critics + revise)
+/plan F0009 --light                       # Force single-planner path
 ```
 
 ## What the Plan Contains
@@ -128,15 +130,122 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    - It searches for similar past tickets automatically via `get_similar_tickets`
    - Extracts architectural decisions, tradeoffs, and learnings
 
-3. **Spawn planner agent** with all inputs:
-   - For features: includes codebase research findings
-   - For bugs: includes investigation findings
-   - Planner designs architecture and solution approach
+3. **Decide the execution path — complexity gate:**
 
-4. **Handle additional research needs:**
-   - If planner needs more codebase patterns: spawn `researcher` agent
-   - If planner needs production state (bugs): spawn investigator agents
-   - Collect findings and re-run planner
+   The heavy path runs 2 parallel plan drafts with different framings (MVP-first,
+   risk-first), synthesizes them, sends the result through 3 parallel critics
+   (completeness, correctness, YAGNI), and applies ONE bounded revision. No open
+   convergence loop — the YAGNI critic exists specifically to counter the natural
+   pressure of completeness critics, and a single revision is enough to integrate it.
+   Heavy is appropriate when the plan needs diverse framings or independent critique;
+   light is appropriate when the change is small or well-understood.
+
+   Use this gate (top-to-bottom, first match wins):
+
+   | Condition                                                          | Path  |
+   | ------------------------------------------------------------------ | ----- |
+   | User passed `--deep`                                                | Heavy |
+   | User passed `--light`                                               | Light |
+   | Bug ticket (B-prefix) with investigation artifact present           | Light |
+   | Feature ticket source artifact ≥ 500 chars OR ≥ 80 words            | Heavy |
+   | Request involves multi-component, migration, or cross-cutting work  | Heavy |
+   | Otherwise                                                           | Light |
+
+   Announce the chosen path:
+
+   ```
+   Plan path: heavy (feature with 1200-char source) — plan-fanout workflow
+   ```
+
+   or:
+
+   ```
+   Plan path: light (bug fix with investigation in place) — inline planner
+   ```
+
+4. **Fan out — light path (inline):**
+
+   When the gate selects "Light", spawn ONE planner agent with all inputs (source,
+   codebase research findings if features, investigation findings if bugs). The agent
+   returns a plan object matching `planSchema` in `workflows/plan-fanout.js` — validate
+   the returned object against the required fields (`title`, `what`, `why`, `how`,
+   `tradeoffs`, `alternatives_considered`, `risks`, `verification_strategy`,
+   `side_effects`, `elimination`, `open_questions`). If validation fails, re-prompt
+   the planner with the schema rather than accepting a partial plan.
+
+   No critics, no synthesis, no revision. Assemble the same return shape as the heavy
+   path with empty `drafts_considered`, `critic_findings`, `revision_log` arrays and
+   zero-filled stats for the heavy-only fields (`framings_attempted: 1`,
+   `critics_succeeded: 0`, `total_findings: 0`, etc.).
+
+   Skip steps 4a-4b below — those are for the heavy path only.
+
+4a. **Fan out — heavy path (workflow):**
+
+   When the gate selects "Heavy", invoke the workflow via `scriptPath`. Resolve `$HOME`
+   at invocation time:
+
+   ```
+   import os
+   workflow_path = f"{os.environ['HOME']}/.claude/workflows/plan-fanout.js"
+
+   result = Workflow({
+     scriptPath: workflow_path,
+     args: {
+       question: "<the planning question/spec from source artifact + user input>",
+       sourceArtifact: "<source artifact content>",
+       codebaseResearch: "<research artifact content if /research ran first; null otherwise>",
+       framings: [
+         { key: "mvp-first", description: "..." },
+         { key: "risk-first", description: "..." },
+         // Optionally add { key: "integration-first", ... } for cross-system features.
+         // Workflow defaults to mvp-first + risk-first if framings omitted.
+       ],
+       repoRoot: "<absolute path>",
+       mode: "interactive" | "headless"
+     }
+   })
+   ```
+
+4b. **Result shape (both paths produce this object):**
+
+   ```
+   {
+     question: "...",
+     plan: {
+       title, what, why, how, tradeoffs,
+       alternatives_considered: [{name, why_rejected}],
+       risks: [{risk, mitigation}],
+       verification_strategy, side_effects, elimination,
+       open_questions: [...]
+     },
+     revision_log: {
+       incorporated: [{finding_title, critic_lens, how_addressed}],
+       rejected:     [{finding_title, critic_lens, why_rejected}],
+       tension_resolutions: [{tension, resolution}]   // completeness vs YAGNI conflicts
+     },
+     drafts_considered: [{framing, framing_notes}],
+     critic_findings: [{title, severity, area, issue, suggestion, critic_lens}],
+     stats: {
+       framings_attempted, drafts_succeeded, critics_succeeded,
+       total_findings, must_address_findings,
+       incorporated, rejected, tensions_resolved
+     }
+   }
+   ```
+
+   The light path must zero-fill the heavy-only fields. Downstream step 5 must not
+   branch on path.
+
+4c. **Handle additional research needs (both paths):**
+
+   - If the returned plan has `open_questions` that need codebase patterns: spawn
+     `researcher` agent (or invoke `/research`) and re-run the path with the new
+     findings as `codebaseResearch`.
+   - If the plan has `open_questions` requiring production state for a bug: spawn
+     investigator agents and re-run.
+   - For the heavy path, prefer to satisfy open questions BEFORE re-running rather
+     than running the workflow twice (it's not idempotent and not cheap).
 
 5. **Write output** as a plan artifact:
    ```
