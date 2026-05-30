@@ -167,9 +167,11 @@ resolution path:
    | Build todo research requirement | `.claude/skills/create-build-todos/SKILL.md`        |
    | Build verification step         | `.claude/skills/build/SKILL.md`                     |
 
-9. **Update plan.md:**
+9. **Update the plan artifact:**
 
-   Add completion summary section (before Work Log):
+   Append a completion summary to the ticket's `plan` artifact via
+   `mcp__autodev-memory__update_artifact` (the plan lives in MCP, not on disk).
+   Insert the section below before the existing Work Log:
 
    ```markdown
    ---
@@ -275,7 +277,7 @@ Next: /create-pr {ID} (commit, push, and create PR)
 
 - Updated `review_todos/` with resolutions
 - Code fixes for accepted findings
-- Updated `plan.md` with Review Resolution Summary and work log entry
+- Updated the `plan` artifact (via `update_artifact`) with Review Resolution Summary and work log entry
 - `deployment-guide.md` with deployment instructions
 - Optional memory entries via `/compound`
 - Process improvements applied to:

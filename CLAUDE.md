@@ -9,7 +9,8 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 - Never deploy or run production operations without explicit instruction
 - Always create database migrations when schema changes require them (they are auto-deployed
   by CI on merge). Omitting a migration means the column won't exist at runtime.
-- **Never put ticket artifacts in `.context/`** - see File Storage Rules below
+- **Never put MCP-tracked ticket artifacts in `.context/`** - see File Storage Rules below.
+  Workflows that run without a ticket (e.g. `/lfg`) may use `.context/` for their own scratch.
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace
   that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`). The
   `~/dev/*` paths are the main checkouts and must not be touched unless explicitly requested.
@@ -20,18 +21,19 @@ When running inside Conductor, each workspace has a `.context/` directory. This 
 **only for ephemeral inter-agent scratch data** (e.g., temporary intermediate results passed
 between parallel subagents within a single session). It is gitignored and disposable.
 
-**All ticket artifacts are stored in the MCP ticket system**, not on the local filesystem.
+**Ticket artifacts are stored in the MCP ticket system**, not on the local filesystem.
 Use `mcp__autodev-memory__create_artifact` to store plans, build todos, review findings, etc.
 
 **Never use `.context/` for:**
 
-- Plans, build todos, review findings, or any ticket artifact
+- Plans, build todos, review findings, or any artifact that belongs to a tracked ticket
 - Anything that needs to survive across sessions
 
 **Only use `.context/` for:**
 
 - Temporary data passed between parallel subagents in a single session
 - Scratch computations that are consumed immediately and then discarded
+- Scratch state for ticketless autonomous workflows (e.g. `/lfg`) that have no ticket to write to
 
 ## Code Style (All Projects)
 
@@ -57,13 +59,9 @@ configuration:
 2. **Agents** - Tool-specific role definitions (the WHO)
    - Define a specialized agent's purpose, methodology, skills to load, tool access
    - Get project context from project instructions - not hardcoded
-   - Claude file: `agents/<name>.md`
-   - Codex file: `.codex/agents/<name>.toml`
-
-3. **Legacy commands** - Claude-only workflow wrappers (the WHAT)
-   - Keep only where slash-command compatibility is still needed
-   - Prefer invoking the equivalent skill directly in new docs
-   - File: `commands/<name>.md`
+   - Claude (user-level shared): `agents/<name>.md` in agent-workflows
+   - Claude (project-level): `.claude/agents/<name>.md` in the project repo
+   - Codex: `.codex/agents/<name>.toml`
 
 ### User-Level vs Project-Level
 
@@ -174,47 +172,45 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                                                          | Action                        |
 | ------------------------------------------------------------------ | ----------------------------- |
-| "save this", "remember this", "store this"                         | Run `/save`                   |
-| "define X", "X means", "glossary", "add term"                      | Run `/glossary`               |
-| "wtf", "why didn't you know this", "you should have known"         | Run `/wtf`                    |
+| "save this", "remember this", "store this"                         | Run `/compound`               |
 | "compound", "document this", "save this learning"                  | Run `/compound`               |
 | "what did we learn", "learn from review", "learn from this"        | Run `/compound`               |
-| "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/save`     |
-| "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/save`     |
-| "retrospect", "autodev-retrospect", "what went wrong", "post-mortem"                     | Run `/autodev-retrospect`             |
+| "wtf", "why didn't you know this", "you should have known"         | Run `/autodev-wtf`            |
+| "retrospect", "what went wrong", "post-mortem"                     | Run `/autodev-wtf-workflows`  |
+| "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/compound` |
+| "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/compound` |
 
 **Correction detection:** When the user explicitly corrects Claude's approach or output,
-proactively ask: "Should I `/save` this to the memory system?" This ensures corrections become
-permanent knowledge. Use `/compound` when the correction also implies workflow/skill changes.
+proactively ask: "Should I `/compound` this so it sticks?" `/compound` decides whether the
+correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow change.
 
 ### Maintenance
 
 | User says                                                       | Action                 |
 | --------------------------------------------------------------- | ---------------------- |
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
-| "heal work items", "clean up work items"                        | Run `/heal-work-items` |
 | "consolidate memories", "audit memories", "clean up memories"   | Run `/consolidate`     |
 
-### Work Item Management
+### Ticket Management
 
-| User says                                               | Action                  |
-| ------------------------------------------------------- | ----------------------- |
-| "exclude from scope", "defer this", "out of scope"      | Spawn work-item-curator |
-| "new work item", "track this as", "create backlog item" | Spawn work-item-curator |
-| "add to F003", "update source.md", "add context to"     | Spawn work-item-curator |
+| User says                                                | Action                |
+| -------------------------------------------------------- | --------------------- |
+| "exclude from scope", "defer this", "out of scope"       | Spawn ticket-curator  |
+| "new ticket", "track this as", "create backlog item"     | Spawn ticket-curator  |
+| "add to F003", "update ticket source", "add context to"  | Spawn ticket-curator  |
 
 ### Agent Workflow Modification
 
-| User says                                          | Action                              |
-| -------------------------------------------------- | ----------------------------------- |
-| "add a skill", "create an agent", "new command"    | Load agent-workflow-authoring skill |
-| "update workflows", "modify agent", "change skill" | Load agent-workflow-authoring skill |
+No dedicated authoring skill exists. When the user wants to add/modify a skill, agent, or
+command, work directly on the files under `skills/`, `agents/`, or `commands/` in
+agent-workflows. Follow the conventions in this file and the patterns in neighboring skills.
 
 ## Parallelism
 
-When spawning multiple independent agents (e.g., /review spawns multiple reviewer instances),
-ALWAYS use parallel Task tool calls in a single message. Never spawn
-sequentially when agents don't depend on each other's output.
+When spawning multiple independent agents (e.g., `/review` spawns multiple reviewer
+instances), ALWAYS issue the `Agent` tool calls in parallel — multiple tool-use blocks in a
+single assistant message. Never spawn sequentially when agents don't depend on each other's
+output.
 
 ## Ticket System (MCP-Based)
 
@@ -270,13 +266,21 @@ IDs are **repo-scoped** — each repo maintains its own sequence per type prefix
 
 ### Ticket Statuses
 
+Full lifecycle (as used by the autonomous workflows):
+
 ```
-backlog → active → to_verify → completed
-                 → abandoned
+backlog → planning → planned → approved → building → ready_to_deploy_staging
+                                                  → to_verify_staging
+                                                  → to_verify_prod
+                                                  → completed
+                                                  → abandoned
 ```
 
-Use `update_ticket(status="active")` to start work, `update_ticket(status="completed")`
-to close, etc.
+`active` is accepted as a synonym for the in-progress state when no finer-grained status
+fits. Use `update_ticket(status="...")` to advance the ticket. Skills like `/auto-plan`,
+`/auto-build`, `/auto-deploy`, `/auto-verify` set the more specific statuses (`planning`,
+`building`, `ready_to_deploy_staging`, `to_verify_staging`, `to_verify_prod`) as they
+progress.
 
 ### Cross-Repository Tickets
 
@@ -312,13 +316,16 @@ create_ticket(
 
 ## Knowledge System
 
-| Tier   | Location                         | Purpose             | Always in Context |
-| ------ | -------------------------------- | ------------------- | ----------------- |
-| Tier 1 | CLAUDE.md                        | Critical rules      | Yes               |
-| Tier 2 | Memory service (autodev-memory)  | Detailed references | Auto-injected     |
+| Tier   | Location                              | Purpose                                       | Always in Context |
+| ------ | ------------------------------------- | --------------------------------------------- | ----------------- |
+| Tier 1 | CLAUDE.md                             | Project conventions (stack, branches, rules)  | Yes — auto-loaded |
+| Tier 2 | Starred memory entry (autodev-memory) | Critical gotchas / rules that must always apply | Yes — auto-injected by memory hook |
+| Tier 3 | Memory service (unstarred)            | Detailed references, gotchas, solutions       | No — surfaced via `mcp__autodev-memory__search` |
 
-Knowledge is stored in the memory service via `mcp__autodev-memory`. Context is auto-injected
-by hooks and can be explicitly searched via `mcp__autodev-memory__search`.
+Knowledge lives in the memory service via `mcp__autodev-memory`. Tier 2 entries are
+auto-injected with the same authority as CLAUDE.md; Tier 3 entries are pulled in on
+demand. The `/compound` skill is the canonical authority on which tier a new piece of
+knowledge belongs in.
 
 ### When to Search Memory Service
 
