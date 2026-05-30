@@ -3,17 +3,21 @@
 // Phase shape (mirrors skills/review/SKILL.md Synthesis Methodology 1-9):
 //   1. BARRIER: parallel() all reviewers, wait for every one.
 //   2. Validate + flatten + union coverage.
-//   3. Dedup by fingerprint, then apply +0.10 cross-reviewer boost (capped at 1.0).
+//   3. Dedup with true +/-3 line-window matching, then +0.10 cross-reviewer boost (cap 1.0).
 //   4. Confidence gate (<0.60 suppressed; p1 >=0.50 rescued).
-//   5. Adversarial verify: ONLY borderline (0.55 <= c < 0.80). Consensus-boosted
-//      findings already past 0.80 skip skeptics entirely. Skeptics run in parallel.
-//   6. Apply skeptic verdicts (both-refute -> drop; both-uphold -> +0.10; attach counter-evidence).
+//   5. Adversarial verify: every surviving finding below the 0.80 skip-verify threshold
+//      gets 2 independent skeptics in parallel. Consensus-boosted findings at >=0.80 skip.
+//   6. Apply skeptic verdicts:
+//        - <2 verdicts received: keep finding, requires_verification stays true (track in stats).
+//        - 2 unanimous refute: drop.
+//        - 2 unanimous uphold: +0.10 confidence, clear requires_verification.
+//        - Mixed: keep, requires_verification = true.
 //   7. Separate pre-existing.
 //   8. Sort.
-//   9. Partition into {inSkillFixer, residualActionable, reportOnly}.
+//   9. Normalize routing (coherence between autofix_class and owner) then partition.
 //
-// Returns the synthesized object only. MCP persistence, mode behavior, and
-// presentation stay in the skill — the workflow never touches MCP.
+// Returns the synthesized object only. MCP persistence, mode behavior, and presentation
+// stay in the skill — the workflow never touches MCP.
 //
 // WHY A BARRIER (load-bearing): the +0.10 cross-reviewer boost can lift a 0.70 finding
 // past the 0.80 verify-skip threshold. Pipeline-streaming would launch skeptics on
@@ -22,9 +26,7 @@
 
 export const meta = {
   name: 'review-fanout',
-  description:
-    'Fan out reviewers under a barrier, dedup with cross-reviewer boost, adversarially ' +
-    'verify only borderline findings, partition results. Skill handles MCP and presentation.',
+  description: 'Fan out reviewers under a barrier, dedup with cross-reviewer boost, adversarially verify only borderline findings, partition results. Skill handles MCP and presentation.',
   phases: [
     { title: 'Fan out', detail: 'all reviewers in parallel (barrier)' },
     { title: 'Verify', detail: 'adversarial 2-skeptic verify on borderline findings only' },
@@ -69,9 +71,9 @@ const reviewerOutputSchema = {
 
 const verifyVerdictSchema = {
   type: 'object',
-  required: ['fingerprint', 'verdict', 'rationale'],
+  required: ['finding_key', 'verdict', 'rationale'],
   properties: {
-    fingerprint: { type: 'string' },
+    finding_key: { type: 'string' },
     verdict: { type: 'string', enum: ['refute', 'uphold', 'unsure'] },
     rationale: { type: 'string', minLength: 8 },
     counter_evidence: { type: 'array', items: { type: 'string' } },
@@ -86,12 +88,13 @@ function normalizeTitle(t) {
 function normalizeFile(f) {
   return String(f || '').replace(/\\/g, '/').replace(/^\.\//, '').trim()
 }
-function lineBucket(line) {
-  const n = Number.isFinite(+line) ? Math.max(0, +line | 0) : 0
-  return Math.floor(n / 7)
+function lineNumber(f) {
+  return Number.isFinite(+f?.line) ? Math.max(0, +f.line | 0) : 0
 }
-function fingerprint(f) {
-  return [normalizeFile(f.file), lineBucket(f.line), normalizeTitle(f.title)].join('|')
+// Stable per-finding key for skeptic-verdict matching. Not fuzzy — each finding has
+// exactly one key. Dedup uses a separate +/-3 window comparator (see dedupAndMerge).
+function findingKey(f) {
+  return [normalizeFile(f.file), lineNumber(f), normalizeTitle(f.title)].join('|')
 }
 function severityRank(s) {
   return { p1: 0, p2: 1, p3: 2 }[s] ?? 3
@@ -105,13 +108,51 @@ function validFinding(f) {
   return true
 }
 
+// Dedup: true +/-3 line window. O(n^2) but n is small (<100 in practice).
+// Two findings collapse iff: same normalized file, same normalized title, AND |line diff|
+// <= 3 against ANY existing member of a group (not just the first). Anchoring on the first
+// member only would break the +/-3 contract when a group spans more than 3 lines.
+// Known limitation: semantically-identical findings with divergent titles will NOT merge.
+// Fixing that requires embedding similarity; out of scope for the deterministic core.
+function dedupAndMerge(findings) {
+  const groups = []
+  for (const f of findings) {
+    const file = normalizeFile(f.file)
+    const title = normalizeTitle(f.title)
+    const line = lineNumber(f)
+    const matchedGroup = groups.find(g => g.some(ref =>
+      normalizeFile(ref.file) === file &&
+      normalizeTitle(ref.title) === title &&
+      Math.abs(lineNumber(ref) - line) <= 3
+    ))
+    if (matchedGroup) matchedGroup.push(f)
+    else groups.push([f])
+  }
+  return groups.map(g => g.reduce((acc, x) => mergeFinding(acc, x)))
+}
+
 function mergeFinding(a, b) {
-  // Conservative narrowing per SKILL.md "Normalize routing": narrow allowed, widen not.
-  const autofixOrder = ['manual', 'gated_auto', 'safe_auto', 'advisory']
-  const autofix_class = autofixOrder.indexOf(a.autofix_class) <= autofixOrder.indexOf(b.autofix_class)
-    ? a.autofix_class : b.autofix_class
+  // Autofix narrowing rule — disagreement-aware:
+  //   both advisory      -> advisory
+  //   one of each kind   -> gated_auto (disagreement deserves human-in-the-loop)
+  //   both actionable    -> most cautious (manual > gated_auto > safe_auto)
+  const isAdvisory = c => c === 'advisory'
+  let autofix_class
+  if (isAdvisory(a.autofix_class) && isAdvisory(b.autofix_class)) {
+    autofix_class = 'advisory'
+  } else if (isAdvisory(a.autofix_class) || isAdvisory(b.autofix_class)) {
+    autofix_class = 'gated_auto'
+  } else {
+    const actionableOrder = ['manual', 'gated_auto', 'safe_auto']
+    autofix_class = actionableOrder.indexOf(a.autofix_class) <= actionableOrder.indexOf(b.autofix_class)
+      ? a.autofix_class
+      : b.autofix_class
+  }
+  // owner is just a hint here; normalizeRouting() re-derives it from autofix_class
+  // before partitioning so the (class, owner) pair is always coherent.
   const ownerOrder = ['human', 'downstream-resolver', 'review-fixer']
   const owner = ownerOrder.indexOf(a.owner) <= ownerOrder.indexOf(b.owner) ? a.owner : b.owner
+
   const moreSevere = severityRank(a.severity) <= severityRank(b.severity) ? a : b
   return {
     ...moreSevere,
@@ -136,8 +177,20 @@ function passesConfidenceGate(f) {
   return f.confidence >= 0.6
 }
 
+// Everything that survived the gate but isn't yet at the verify-skip threshold gets verified.
 function isBorderline(f) {
-  return f.confidence >= 0.55 && f.confidence < 0.8
+  return f.confidence < 0.80
+}
+
+// Re-derive owner from autofix_class so (class, owner) is always coherent. Without this,
+// a reviewer returning {gated_auto, review-fixer} would silently fall into reportOnly
+// because partition() requires gated_auto + downstream-resolver.
+function normalizeRouting(f) {
+  let owner = f.owner
+  if (f.autofix_class === 'safe_auto') owner = 'review-fixer'
+  else if (f.autofix_class === 'gated_auto' || f.autofix_class === 'manual') owner = 'downstream-resolver'
+  else if (f.autofix_class === 'advisory') owner = 'human'
+  return { ...f, owner }
 }
 
 function sortFindings(arr) {
@@ -145,16 +198,16 @@ function sortFindings(arr) {
     const s = severityRank(a.severity) - severityRank(b.severity); if (s) return s
     const c = (b.confidence || 0) - (a.confidence || 0); if (c) return c
     const f = normalizeFile(a.file).localeCompare(normalizeFile(b.file)); if (f) return f
-    return (a.line || 0) - (b.line || 0)
+    return lineNumber(a) - lineNumber(b)
   })
 }
 
 function partition(findings) {
+  // Routing is normalized upstream; partition is just bucketing.
   const inSkillFixer = [], residualActionable = [], reportOnly = []
   for (const f of findings) {
-    if (f.autofix_class === 'safe_auto' && f.owner === 'review-fixer') inSkillFixer.push(f)
-    else if ((f.autofix_class === 'gated_auto' || f.autofix_class === 'manual') &&
-             f.owner === 'downstream-resolver') residualActionable.push(f)
+    if (f.autofix_class === 'safe_auto') inSkillFixer.push(f)
+    else if (f.autofix_class === 'gated_auto' || f.autofix_class === 'manual') residualActionable.push(f)
     else reportOnly.push(f)
   }
   return { inSkillFixer, residualActionable, reportOnly }
@@ -183,6 +236,7 @@ function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
     `- confidence is code-grounded. >=0.80 requires direct evidence.`,
     `- pre_existing: true if the issue exists on main and the diff did not introduce it.`,
     `- autofix_class safe_auto only if the fix is mechanical and obviously correct.`,
+    `- owner: review-fixer for safe_auto fixes; downstream-resolver for gated_auto/manual; human for advisory.`,
     `- Set reviewer_key to "${reviewer.key}".`,
   ].join('\n')
 }
@@ -205,7 +259,7 @@ function skepticPrompt(finding, idx, intent, diffSummary) {
     (finding.evidence || []).map(e => `    - ${e}`).join('\n'),
     ``,
     `Open the file at the line. Read +/- 30 lines of context.`,
-    `Return per verifyVerdictSchema. fingerprint must equal "${fingerprint(finding)}".`,
+    `Return per verifyVerdictSchema. finding_key must equal "${findingKey(finding)}".`,
   ].join('\n')
 }
 
@@ -240,23 +294,27 @@ for (const result of reviewerResults) {
 }
 log(`Fan-out: ${reviewerResults.length} reviewers, ${allFindings.length} valid findings (${invalidDropped} invalid, ${reviewerErrors} reviewer errors)`)
 
-// Phase 3: dedup + cross-reviewer boost
-const byFingerprint = new Map()
-for (const f of allFindings) {
-  const fp = fingerprint(f)
-  byFingerprint.set(fp, byFingerprint.has(fp) ? mergeFinding(byFingerprint.get(fp), f) : f)
-}
-let merged = Array.from(byFingerprint.values()).map(applyCrossReviewerBoost)
+// Phase 3: dedup (+/- 3 line window) + cross-reviewer boost
+const beforeDedup = allFindings.length
+const merged0 = dedupAndMerge(allFindings)
+const dedupCollapsed = beforeDedup - merged0.length
+const merged = merged0.map(applyCrossReviewerBoost)
 
 // Phase 4: confidence gate
+//
+// Findings in [0.50, gate-threshold) are returned separately as `pre_gate_suppressed` so
+// the skill can run a memory-assisted upgrade pass on them (the workflow has no MCP
+// access). Without this the memory-upgrade step documented in the skill would be dead
+// code on the heavy path.
 const beforeGate = merged.length
-merged = merged.filter(passesConfidenceGate)
-const suppressedByGate = beforeGate - merged.length
+const gated = merged.filter(passesConfidenceGate)
+const preGateSuppressed = merged.filter(f => !passesConfidenceGate(f) && f.confidence >= 0.50)
+const suppressedByGate = beforeGate - gated.length
 
 // Phase 5: adversarial verify on borderline only
 phase('Verify')
-const borderline = merged.filter(isBorderline)
-const skipsVerify = merged.filter(f => !isBorderline(f))
+const borderline = gated.filter(isBorderline)
+const skipsVerify = gated.filter(f => !isBorderline(f))
 log(`Verify: ${borderline.length} borderline -> 2 skeptics each; ${skipsVerify.length} skip verify`)
 
 const skepticCalls = []
@@ -264,52 +322,86 @@ for (const f of borderline) {
   for (let i = 1; i <= 2; i++) {
     skepticCalls.push(() => agent(
       skepticPrompt(f, i, intent, diffSummary),
-      { label: `skeptic:${fingerprint(f)}:${i}`, phase: 'Verify', model: 'sonnet', schema: verifyVerdictSchema }
+      { label: `skeptic:${findingKey(f)}:${i}`, phase: 'Verify', model: 'sonnet', schema: verifyVerdictSchema }
     ))
   }
 }
 const verdicts = skepticCalls.length ? await parallel(skepticCalls) : []
 
-const verdictsByFp = new Map()
+const verdictsByKey = new Map()
 for (const v of verdicts) {
-  if (!v || !v.fingerprint) continue
-  if (!verdictsByFp.has(v.fingerprint)) verdictsByFp.set(v.fingerprint, [])
-  verdictsByFp.get(v.fingerprint).push(v)
+  if (!v || !v.finding_key) continue
+  if (!verdictsByKey.has(v.finding_key)) verdictsByKey.set(v.finding_key, [])
+  verdictsByKey.get(v.finding_key).push(v)
 }
 
 // Phase 6: apply verdicts
 const verifiedBorderline = []
 let verifyDropped = 0
+let skepticFailures = 0      // borderline findings that got <2 verdicts
+let contestedKept = 0         // borderline findings with mixed verdicts
+
 for (const f of borderline) {
-  const vs = verdictsByFp.get(fingerprint(f)) || []
-  const refutes = vs.filter(v => v.verdict === 'refute').length
+  const vs = verdictsByKey.get(findingKey(f)) || []
+
+  // Insufficient verdicts: keep finding, requires_verification stays true. Conservative.
+  if (vs.length < 2) {
+    skepticFailures += 1
+    verifiedBorderline.push({ ...f, requires_verification: true })
+    continue
+  }
+
+  // The prompt tells skeptics to default to "refute" when uncertain, so "unsure" is
+  // treated as a non-uphold (counts toward dropping). This avoids the silent-survive
+  // path where 1 refute + 1 unsure would otherwise keep a finding that no skeptic upheld.
   const upholds = vs.filter(v => v.verdict === 'uphold').length
-  if (vs.length >= 2 && refutes === vs.length) { verifyDropped++; continue }
-  let adj = f
-  if (vs.length >= 2 && upholds === vs.length) {
-    adj = { ...f, confidence: Math.min(1.0, f.confidence + 0.1) }
+  const nonUpholds = vs.length - upholds
+
+  // No skeptic upheld: drop.
+  if (nonUpholds === vs.length) {
+    verifyDropped += 1
+    continue
   }
+
   const counter = vs.flatMap(v => v.counter_evidence || [])
-  if (counter.length) {
-    adj = { ...adj, evidence: [...(adj.evidence || []), ...counter.map(c => `[skeptic] ${c}`)] }
+  const evidence = counter.length
+    ? [...(f.evidence || []), ...counter.map(c => `[skeptic] ${c}`)]
+    : f.evidence
+
+  // Unanimous uphold: +0.10 confidence, requires_verification cleared.
+  if (upholds === vs.length) {
+    verifiedBorderline.push({
+      ...f,
+      confidence: Math.min(1.0, f.confidence + 0.1),
+      requires_verification: false,
+      evidence,
+    })
+    continue
   }
-  adj = { ...adj, requires_verification: false }
-  verifiedBorderline.push(adj)
+
+  // Mixed verdict (split refute/uphold/unsure): keep but flag for human review.
+  contestedKept += 1
+  verifiedBorderline.push({ ...f, requires_verification: true, evidence })
 }
 
-// Phase 7-9: recombine, separate pre-existing, sort, partition
+// Phase 7-9: recombine, separate pre-existing, sort, normalize routing, partition
 const finalFindings = [...skipsVerify, ...verifiedBorderline]
 const preExisting = finalFindings.filter(f => f.pre_existing === true)
-const currentDiffFindings = finalFindings.filter(f => f.pre_existing !== true)
-const sortedCurrent = sortFindings(currentDiffFindings)
-const sortedPreExisting = sortFindings(preExisting)
+const currentDiff = finalFindings.filter(f => f.pre_existing !== true)
+const sortedCurrent = sortFindings(currentDiff).map(normalizeRouting)
+const sortedPreExisting = sortFindings(preExisting).map(normalizeRouting)
 const partitions = partition(sortedCurrent)
 
 return {
   findings: sortedCurrent,
   pre_existing: sortedPreExisting,
+  // Findings in [0.50, gate-threshold) that the skill can re-admit via memory upgrade.
+  // These are NOT in `findings` or `partitions` — they're parked for skill-side rescue.
+  pre_gate_suppressed: preGateSuppressed.map(normalizeRouting),
   partitions,
-  suppressed: suppressedByGate + verifyDropped + invalidDropped,
+  // Total findings removed from the verdict for any reason. Each addend is also reported
+  // separately in stats so callers can break down where the loss happened.
+  suppressed: invalidDropped + dedupCollapsed + suppressedByGate + verifyDropped,
   coverage: {
     residual_risks: Array.from(residualRisks),
     testing_gaps: Array.from(testingGaps),
@@ -317,12 +409,16 @@ return {
   stats: {
     reviewers: reviewers.length,
     reviewer_errors: reviewerErrors,
-    raw_findings: allFindings.length,
+    raw_findings: beforeDedup,
     invalid_dropped: invalidDropped,
-    after_dedup: byFingerprint.size,
-    after_gate: beforeGate - suppressedByGate,
+    dedup_collapsed: dedupCollapsed,
+    after_dedup: merged.length,
+    after_gate: gated.length,
+    suppressed_by_gate: suppressedByGate,
     borderline_verified: borderline.length,
     verify_dropped: verifyDropped,
+    skeptic_failures: skepticFailures,   // <2 verdicts arrived
+    contested_kept: contestedKept,        // mixed-verdict, requires_verification=true
     final: sortedCurrent.length,
   },
 }

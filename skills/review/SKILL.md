@@ -159,16 +159,20 @@ reference issues caught in similar past implementations.
    2-skeptic verification per borderline finding). They pay off only when there is enough
    material to dedup and verify across. For small diffs the orchestration cost dwarfs the work.
 
-   Use this gate:
+   Use this gate (evaluated top-to-bottom — first match wins):
 
    | Condition                                                        | Path    |
    | ---------------------------------------------------------------- | ------- |
    | User passed `--deep`                                             | Heavy   |
    | User passed `--light`                                            | Light   |
-   | ≥3 reviewers selected (always-on pair + ≥1 conditional/persona)  | Heavy   |
+   | ≥1 conditional or project-persona reviewer fires                 | Heavy   |
    | ≥5 files changed                                                 | Heavy   |
    | ≥200 LOC changed (added + removed via `git diff --shortstat`)    | Heavy   |
-   | Otherwise                                                        | Light   |
+   | Otherwise (only the always-on pair fires on a small diff)        | Light   |
+
+   The "conditional or persona reviewer fires" signal is what previously read as
+   "≥3 reviewers" — it's the same trigger expressed honestly (the always-on pair is
+   always 2, so any third reviewer means a conditional or persona qualified).
 
    Announce the chosen path alongside the review team:
 
@@ -188,24 +192,47 @@ reference issues caught in similar past implementations.
 
    When the gate selects "Light", issue the reviewer `Agent` calls in parallel (one assistant
    message, multiple tool-use blocks). No workflow, no skeptics. Each reviewer returns the
-   reviewer-output JSON shape documented in `workflows/review-fanout.js` (`reviewerOutputSchema`).
-   After all reviewers return, do minimal synthesis inline: validate findings against the
-   required fields, dedupe by `file + line_bucket(±3) + normalized title` (keep highest
-   severity/confidence, union evidence), apply the confidence gate (suppress <0.60, rescue p1
-   at ≥0.50), separate `pre_existing: true`, sort by severity → confidence → file → line,
-   and partition into `{inSkillFixer, residualActionable, reportOnly}` per the routing in
-   step 6. With only 2 reviewers the dedup/boost machinery is trivial — keep the code in
-   the skill.
+   reviewer-output JSON shape documented in `workflows/review-fanout.js`
+   (`reviewerOutputSchema`).
+
+   The light path does **not** get schema enforcement at the tool layer (the `Agent` tool
+   has no `schema:` parameter). Validate manually: for each reviewer's findings, drop any
+   that don't have all of `title`, `severity`, `file`, `line`, `confidence`, `autofix_class`,
+   `owner`, `requires_verification`, `pre_existing`, `evidence` (non-empty array),
+   `why_it_matters`. Count dropped findings into `suppressed`. Mirror the `validFinding`
+   function in `workflows/review-fanout.js`.
+
+   Then do minimal synthesis inline:
+   1. Dedupe by `(file, normalized title, |line diff| ≤ 3)` pairwise comparison — match
+      against any existing group member, not just the first (keep highest severity and
+      confidence, union evidence, AND-merge `pre_existing`).
+   2. Apply cross-reviewer boost: for each merged finding, `confidence += 0.10 *
+      (reviewers.length - 1)`, capped at 1.0. With 2 reviewers this only fires on
+      consensus findings (rare in light path) but preserves the same-shape contract
+      with the heavy path.
+   3. Apply the confidence gate (suppress <0.60, rescue p1 at ≥0.50).
+   4. Separate `pre_existing: true`.
+   5. Sort by severity → confidence → file → line.
+   6. Normalize routing: `safe_auto` → owner=review-fixer; `gated_auto|manual` →
+      owner=downstream-resolver; `advisory` → owner=human.
+   7. Partition into `{inSkillFixer, residualActionable, reportOnly}`.
 
    Skip steps 5a-5c below — they are for the heavy path only.
 
 5a. **Fan out — heavy path (workflow):**
 
-   When the gate selects "Heavy", invoke the workflow:
+   When the gate selects "Heavy", invoke the workflow via `scriptPath`. Use the symlinked
+   path under `$HOME/.claude/workflows/` so it resolves in every environment (local,
+   NanoClaw mount, cloud SessionStart copy) — agent-workflows is symlinked to `~/.claude/`
+   in all of them. Resolve `$HOME` to its absolute value at invocation time; do not paste
+   a machine-specific absolute path:
 
    ```
+   import os
+   workflow_path = f"{os.environ['HOME']}/.claude/workflows/review-fanout.js"
+
    result = Workflow({
-     name: "review-fanout",
+     scriptPath: workflow_path,
      args: {
        reviewers: [
          { key: "code-quality", model: "sonnet", focus: "...",
@@ -222,30 +249,47 @@ reference issues caught in similar past implementations.
    })
    ```
 
-5b. **Result shape (both paths produce the same object):**
+5b. **Result shape (both paths must produce this object):**
 
    ```
    {
      findings: [...],               // current-diff findings, sorted
      pre_existing: [...],           // segregated
+     pre_gate_suppressed: [...],    // in [0.50, gate-threshold) — for memory upgrade
      partitions: {                  // drives step 6 routing
        inSkillFixer: [...],         // safe_auto → review-fixer
        residualActionable: [...],   // gated_auto|manual → downstream-resolver
        reportOnly: [...]            // advisory + human-owned
      },
-     suppressed: <N>,               // for the Coverage output block
+     suppressed: <N>,               // sum of invalid + dedup + gate + verify drops
      coverage: { residual_risks, testing_gaps },
-     stats: { ... }                 // diagnostic counters (heavy path only)
+     stats: {                       // diagnostic counters
+       reviewers, reviewer_errors, raw_findings, invalid_dropped,
+       dedup_collapsed, after_dedup, after_gate, suppressed_by_gate,
+       borderline_verified, verify_dropped, skeptic_failures,
+       contested_kept, final
+     }
    }
    ```
+
+   The light path must assemble this same object after its inline synthesis — populate
+   the fields it computes (`findings`, `pre_existing`, `pre_gate_suppressed`, `partitions`,
+   `suppressed`, `coverage`) and zero-fill the verify-related stats fields
+   (`borderline_verified: 0`, `verify_dropped: 0`, `skeptic_failures: 0`,
+   `contested_kept: 0`). Downstream steps (6–8) must not branch on path.
 
 5c. **What the heavy path adds over the light path:**
 
    - Structured output enforced at the tool layer (schema retry on mismatch)
    - Cross-reviewer agreement boost (+0.10 confidence per additional reviewer)
-   - Adversarial 2-skeptic verify on borderline findings (0.55 ≤ confidence < 0.80)
+   - Adversarial 2-skeptic verify on every gated finding below 0.80 confidence
      — consensus-boosted findings ≥0.80 skip verify entirely, saving tokens
+   - Skeptic verdict handling: unanimous refute drops, unanimous uphold boosts +0.10
+     and clears `requires_verification`, mixed verdict or <2 skeptics keeps the finding
+     with `requires_verification: true` so downstream can surface it
    - Workflow journal: can resume with `resumeFromRunId` if iterating
+   - Diagnostic stats: `raw_findings`, `after_dedup`, `after_gate`, `borderline_verified`,
+     `verify_dropped`, `skeptic_failures`, `contested_kept`, `final`
 
 6. **Store findings** as review_todo artifacts:
    ```
@@ -314,8 +358,9 @@ Synthesis (validate → confidence gate → dedup → cross-reviewer boost → s
 `workflows/review-fanout.js`. The heavy path runs it inside the workflow; the light path
 runs an inlined subset in this skill (see step 5).
 
-**Memory-assisted confidence upgrade (skill-side, both paths):** Before reporting findings
-in the 0.50–0.69 band that the gate would otherwise suppress, search the memory service:
+**Memory-assisted confidence upgrade (skill-side, both paths):** Iterate
+`result.pre_gate_suppressed` (findings in [0.50, gate-threshold) that the gate dropped).
+For each one, search the memory service:
 
 ```
 mcp__autodev-memory__search(
@@ -328,8 +373,14 @@ mcp__autodev-memory__search(
 ```
 
 If memory confirms the pattern (past incident, known gotcha), upgrade the finding's
-confidence to 0.80+ and include the memory entry as evidence. This runs in the skill, not
-the workflow, because the workflow doesn't have MCP access.
+confidence to 0.80+, include the memory entry as evidence, and re-admit it into
+`result.findings` + `result.partitions` (re-run sort + normalizeRouting). Decrement
+`result.suppressed` and `result.stats.suppressed_by_gate` accordingly so the Coverage
+output reflects what actually shipped.
+
+This step runs in the skill, not the workflow, because the workflow doesn't have MCP
+access. The workflow surfaces the rescue candidates via `pre_gate_suppressed` so this
+isn't dead code.
 
 ---
 
