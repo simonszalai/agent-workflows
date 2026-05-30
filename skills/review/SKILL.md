@@ -221,18 +221,13 @@ reference issues caught in similar past implementations.
 
 5a. **Fan out — heavy path (workflow):**
 
-   When the gate selects "Heavy", invoke the workflow via `scriptPath`. Use the symlinked
-   path under `$HOME/.claude/workflows/` so it resolves in every environment (local,
-   NanoClaw mount, cloud SessionStart copy) — agent-workflows is symlinked to `~/.claude/`
-   in all of them. Resolve `$HOME` to its absolute value at invocation time; do not paste
-   a machine-specific absolute path:
+   When the gate selects "Heavy", invoke the workflow by name. The runtime resolves
+   `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
+   environment (local, NanoClaw, cloud SessionStart copy):
 
    ```
-   import os
-   workflow_path = f"{os.environ['HOME']}/.claude/workflows/review-fanout.js"
-
    result = Workflow({
-     scriptPath: workflow_path,
+     name: "review-fanout",
      args: {
        reviewers: [
          { key: "code-quality", model: "sonnet", focus: "...",
@@ -287,7 +282,7 @@ reference issues caught in similar past implementations.
    - Skeptic verdict handling: unanimous refute drops, unanimous uphold boosts +0.10
      and clears `requires_verification`, mixed verdict or <2 skeptics keeps the finding
      with `requires_verification: true` so downstream can surface it
-   - Workflow journal: can resume with `resumeFromRunId` if iterating
+   - Workflow journal (developer-only): can resume with `resumeFromRunId` when iterating on the script itself
    - Diagnostic stats: `raw_findings`, `after_dedup`, `after_gate`, `borderline_verified`,
      `verify_dropped`, `skeptic_failures`, `contested_kept`, `final`
 

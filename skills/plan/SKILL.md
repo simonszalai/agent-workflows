@@ -182,15 +182,13 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
 
 4a. **Fan out — heavy path (workflow):**
 
-   When the gate selects "Heavy", invoke the workflow via `scriptPath`. Resolve `$HOME`
-   at invocation time:
+   When the gate selects "Heavy", invoke the workflow by name. The runtime resolves
+   `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
+   environment:
 
    ```
-   import os
-   workflow_path = f"{os.environ['HOME']}/.claude/workflows/plan-fanout.js"
-
    result = Workflow({
-     scriptPath: workflow_path,
+     name: "plan-fanout",
      args: {
        question: "<the planning question/spec from source artifact + user input>",
        sourceArtifact: "<source artifact content>",
