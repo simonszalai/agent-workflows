@@ -163,6 +163,44 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    Plan path: light (bug fix with investigation in place) — inline planner
    ```
 
+3b. **Gather prior knowledge (heavy path only):**
+
+   The heavy-path workflow spawns generic subagents — they receive NO knowledge-menu
+   injection and do NOT load the `autodev-search` skill, unlike the inline `planner` agent
+   used on the light path, which searches the memory system and past tickets itself. So
+   when going heavy, gather prior knowledge in the skill and pass it into the workflow:
+
+   ```
+   # Related memories (gotchas, patterns, architecture)
+   memories = mcp__autodev-memory__search(
+     project=PROJECT,
+     queries=[{ "keywords": [<feature/bug area>], "text": "<what is being planned>" },
+              { "keywords": [<technology>],       "text": "<technology> gotchas pitfalls" }],
+     limit=8
+   )
+
+   # Similar past work — proven approaches, tradeoffs, risks that materialized
+   similar = mcp__autodev-memory__get_similar_tickets(
+     project=PROJECT, ticket_id=ID, repo=REPO, status="completed"
+   )
+   ticket_hits = mcp__autodev-memory__search_tickets(
+     project=PROJECT, query="<keywords>"
+   )
+   ```
+
+   Render the hits into a compact markdown blob (omit a section if it is empty) and pass
+   it as `args.priorKnowledge` in step 4a, where it is injected into the drafter,
+   synthesizer, critic, and reviser prompts so the plan reuses proven approaches and avoids
+   documented gotchas. Pass `null` if nothing relevant turns up — never fabricate entries.
+
+   ```markdown
+   ## Related memories
+   - [<title>] (<type>): <one-line takeaway>
+
+   ## Related past work
+   - <TICKET_ID> "<title>" (<status>): <approach / key learning>
+   ```
+
 4. **Fan out — light path (inline):**
 
    When the gate selects "Light", spawn ONE planner agent with all inputs (source,
@@ -193,6 +231,7 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
        question: "<the planning question/spec from source artifact + user input>",
        sourceArtifact: "<source artifact content>",
        codebaseResearch: "<research artifact content if /research ran first; null otherwise>",
+       priorKnowledge: "<rendered blob from step 3b, or null>",
        framings: [
          { key: "mvp-first", description: "..." },
          { key: "risk-first", description: "..." },

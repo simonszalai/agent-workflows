@@ -98,6 +98,46 @@ ticket = mcp__autodev-memory__create_ticket(
    them as `args.zones`. If absent, the workflow falls back to modality-only search.
    A zone is `{ key, description, paths: [glob patterns] }`.
 
+3b. **Gather prior knowledge (heavy path only):**
+
+   The heavy-path workflow spawns generic subagents — they receive NO knowledge-menu
+   injection and do NOT load the `autodev-search` skill, so they are blind to the memory
+   system unless you feed it to them. Before invoking the workflow, search autodev for
+   memories and past work related to the question:
+
+   ```
+   # Related memories (gotchas, patterns, architecture)
+   memories = mcp__autodev-memory__search(
+     project=PROJECT,
+     queries=[{ "keywords": [<2-4 terms from the question>],
+                "text": "<the research question>" }],
+     limit=8
+   )
+
+   # Related past work — by similarity to this ticket and by keyword
+   similar = mcp__autodev-memory__get_similar_tickets(
+     project=PROJECT, ticket_id=ID, repo=REPO, status="completed"
+   )
+   ticket_hits = mcp__autodev-memory__search_tickets(
+     project=PROJECT, query="<keywords from the question>"
+   )
+   ```
+
+   Render the hits into a compact markdown blob (omit a section if it is empty):
+
+   ```markdown
+   ## Related memories
+   - [<title>] (<type>): <one-line takeaway>
+
+   ## Related past work
+   - <TICKET_ID> "<title>" (<status>): <approach / key learning>
+   ```
+
+   This blob becomes `args.priorKnowledge` in step 4a, where it is injected into the
+   completeness-critic and synthesis prompts. If nothing relevant turns up, pass `null` —
+   do not fabricate entries. (The light path skips this step: its single `researcher` agent
+   loads `autodev-search` and searches the memory system itself.)
+
 4. **Fan out — light path (inline):**
 
    When the gate selects "Light", spawn ONE researcher agent:
@@ -140,6 +180,7 @@ ticket = mcp__autodev-memory__create_ticket(
      name: "research-fanout",
      args: {
        question: "<original research question>",
+       priorKnowledge: "<rendered blob from step 3b, or null>",
        zones: [
          { key: "routes", description: "...", paths: ["app/api/**", ...] },
          // optional; omit to use modality-only search

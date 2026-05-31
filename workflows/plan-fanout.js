@@ -21,7 +21,10 @@
 // and a single revision is enough to integrate it.
 //
 // Returns the synthesized plan object only. MCP persistence stays in the skill — the
-// workflow never touches MCP.
+// workflow never touches MCP. Related autodev memories + past tickets are gathered by the
+// skill and passed in as args.priorKnowledge (a rendered markdown string); the workflow
+// feeds it to the drafters, synthesizer, critics, and reviser so the plan reuses proven
+// approaches and avoids documented gotchas.
 
 export const meta = {
   name: 'plan-fanout',
@@ -183,7 +186,7 @@ function validFinding(f) {
 
 // ---------- Prompts ----------
 
-function draftPrompt(framing, question, sourceArtifact, codebaseResearch, repoRoot) {
+function draftPrompt(framing, question, sourceArtifact, codebaseResearch, repoRoot, priorKnowledge) {
   return [
     `You are drafting a high-level architecture plan using the "${framing.key}" framing.`,
     `Framing: ${framing.description}`,
@@ -195,6 +198,7 @@ function draftPrompt(framing, question, sourceArtifact, codebaseResearch, repoRo
     ``,
     sourceArtifact ? `Source artifact (ticket description):\n${sourceArtifact}\n` : '',
     codebaseResearch ? `Existing codebase research (use this, do not re-do it):\n${codebaseResearch}\n` : '',
+    priorKnowledge ? `Prior knowledge from autodev (related memories + past tickets) — reuse proven\napproaches and avoid the documented gotchas:\n${priorKnowledge}\n` : '',
     ``,
     `Read the codebase as needed (Read, Bash, Grep) to understand existing patterns. Then`,
     `produce a plan that explicitly embodies your framing. Two planners using different`,
@@ -216,7 +220,7 @@ function draftPrompt(framing, question, sourceArtifact, codebaseResearch, repoRo
   ].filter(Boolean).join('\n')
 }
 
-function synthesizePrompt(question, drafts, repoRoot) {
+function synthesizePrompt(question, drafts, repoRoot, priorKnowledge) {
   return [
     `You are synthesizing ${drafts.length} parallel plan drafts into a single plan.`,
     ``,
@@ -230,6 +234,12 @@ function synthesizePrompt(question, drafts, repoRoot) {
     `What to plan:`,
     question,
     ``,
+    ...(priorKnowledge ? [
+      `Prior knowledge from autodev (related memories + past tickets) — keep the merged plan`,
+      `consistent with proven approaches and clear of documented gotchas:`,
+      priorKnowledge,
+      ``,
+    ] : []),
     `Drafts:`,
     drafts.map((d, i) => d ? `\n--- DRAFT ${i + 1} (framing: ${d.framing}) ---\n${JSON.stringify(d.plan, null, 2)}\nFraming notes: ${d.framing_notes}\n` : `\n--- DRAFT ${i + 1}: FAILED ---\n`).join(''),
     ``,
@@ -238,7 +248,7 @@ function synthesizePrompt(question, drafts, repoRoot) {
   ].join('\n')
 }
 
-function criticPrompt(lens, plan, question, codebaseResearch, repoRoot) {
+function criticPrompt(lens, plan, question, codebaseResearch, repoRoot, priorKnowledge) {
   const lensInstructions = {
     completeness: [
       `Your lens is COMPLETENESS. Identify what's missing.`,
@@ -300,6 +310,7 @@ function criticPrompt(lens, plan, question, codebaseResearch, repoRoot) {
     JSON.stringify(plan, null, 2),
     ``,
     codebaseResearch ? `Existing codebase research (context):\n${codebaseResearch}\n` : '',
+    priorKnowledge ? `Prior knowledge from autodev (related memories + past tickets) — flag where the\nplan contradicts a documented gotcha or ignores a proven past approach:\n${priorKnowledge}\n` : '',
     ``,
     `Return per criticOutputSchema:`,
     `- lens: "${lens}"`,
@@ -317,7 +328,7 @@ function criticPrompt(lens, plan, question, codebaseResearch, repoRoot) {
   ].filter(Boolean).join('\n')
 }
 
-function revisePrompt(plan, critiques, question, codebaseResearch, repoRoot) {
+function revisePrompt(plan, critiques, question, codebaseResearch, repoRoot, priorKnowledge) {
   return [
     `You are revising a plan based on critic findings. This is the SINGLE revision pass —`,
     `there is no second round, so make it count. Do NOT chase every finding; resolve`,
@@ -334,6 +345,7 @@ function revisePrompt(plan, critiques, question, codebaseResearch, repoRoot) {
     `Critic findings, by lens:`,
     critiques.map(c => c ? `\n--- ${c.lens.toUpperCase()} CRITIC ---\nOverall: ${c.overall_assessment}\nFindings:\n${JSON.stringify(c.findings, null, 2)}\n` : '\n--- CRITIC FAILED ---\n').join(''),
     ``,
+    priorKnowledge ? `Prior knowledge to respect (autodev memories + related past tickets) — the revised\nplan must not reintroduce a documented gotcha:\n${priorKnowledge}\n` : '',
     `Revision rules:`,
     `1. Incorporate ALL must-address findings unless a YAGNI finding directly contradicts.`,
     `2. When completeness/correctness wants something added and YAGNI wants it cut,`,
@@ -359,6 +371,7 @@ const {
   question,
   sourceArtifact = null,
   codebaseResearch = null,
+  priorKnowledge = null,
   framings = DEFAULT_FRAMINGS,
   repoRoot,
   mode = 'interactive',
@@ -378,7 +391,7 @@ if (!Array.isArray(framings) || framings.length < 2) {
 phase('Draft')
 const draftResults = await parallel(
   framings.map(f => () => agent(
-    draftPrompt(f, question, sourceArtifact, codebaseResearch, repoRoot),
+    draftPrompt(f, question, sourceArtifact, codebaseResearch, repoRoot, priorKnowledge),
     { label: `draft:${f.key}`, phase: 'Draft', schema: draftOutputSchema }
   ))
 )
@@ -398,7 +411,7 @@ if (validDrafts.length === 1) {
   synthesized = validDrafts[0]
 } else {
   synthesized = await agent(
-    synthesizePrompt(question, validDrafts, repoRoot),
+    synthesizePrompt(question, validDrafts, repoRoot, priorKnowledge),
     { label: 'synthesize', phase: 'Synthesize', model: 'opus', schema: draftOutputSchema }
   )
   if (!synthesized || !synthesized.plan) {
@@ -411,7 +424,7 @@ if (validDrafts.length === 1) {
 phase('Critique')
 const critiqueResults = await parallel(
   ['completeness', 'correctness', 'yagni'].map(lens => () => agent(
-    criticPrompt(lens, synthesized.plan, question, codebaseResearch, repoRoot),
+    criticPrompt(lens, synthesized.plan, question, codebaseResearch, repoRoot, priorKnowledge),
     { label: `critic:${lens}`, phase: 'Critique', schema: criticOutputSchema }
   ))
 )
@@ -436,7 +449,7 @@ if (validCritiques.length === 0 || totalFindings === 0) {
   }
 } else {
   final = await agent(
-    revisePrompt(synthesized.plan, validCritiques, question, codebaseResearch, repoRoot),
+    revisePrompt(synthesized.plan, validCritiques, question, codebaseResearch, repoRoot, priorKnowledge),
     { label: 'revise', phase: 'Revise', model: 'opus', schema: revisedOutputSchema }
   )
   if (!final || !final.plan) {

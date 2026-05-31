@@ -13,7 +13,9 @@
 //   4. Synthesize: opus agent produces patterns, inconsistencies, recommendation
 //
 // Returns the synthesized object only. MCP persistence (storing the artifact) stays in
-// the skill — the workflow never touches MCP.
+// the skill — the workflow never touches MCP. Related autodev memories + past tickets are
+// likewise gathered by the skill and passed in as args.priorKnowledge (a rendered markdown
+// string); the workflow only consumes it in the critic and synthesis prompts.
 
 export const meta = {
   name: 'research-fanout',
@@ -205,7 +207,7 @@ function modalityPrompt(modality, question, repoRoot) {
   ].join('\n')
 }
 
-function criticPrompt(question, occurrences, searcherSummaries, iter, repoRoot) {
+function criticPrompt(question, occurrences, searcherSummaries, iter, repoRoot, priorKnowledge) {
   const occByFile = new Map()
   for (const o of occurrences) {
     const f = normalizeFile(o.file)
@@ -216,6 +218,14 @@ function criticPrompt(question, occurrences, searcherSummaries, iter, repoRoot) 
     ``,
     `Research question: ${question}`,
     `Repository root: ${repoRoot}`,
+    ...(priorKnowledge ? [
+      ``,
+      `Prior knowledge from autodev (related memories + past tickets):`,
+      priorKnowledge,
+      `Use it to spot coverage gaps — subsystems, files, or concerns these reference that the`,
+      `sweep may have under-covered. Treat it as a lead, not ground truth; the codebase is`,
+      `authoritative.`,
+    ] : []),
     ``,
     `Coverage so far — ${occurrences.length} occurrences across ${occByFile.size} files.`,
     `Searcher summaries:`,
@@ -259,12 +269,20 @@ function gapFillerPrompt(gap, question, repoRoot) {
   ].join('\n')
 }
 
-function synthesisPrompt(question, occurrences, searcherSummaries, residualQuestions, iterations) {
+function synthesisPrompt(question, occurrences, searcherSummaries, residualQuestions, iterations, priorKnowledge) {
   return [
     `You are the research synthesizer. Produce the final research findings.`,
     ``,
     `Research question:`,
     question,
+    ...(priorKnowledge ? [
+      ``,
+      `Prior knowledge from autodev (related memories + past tickets):`,
+      priorKnowledge,
+      `Cross-reference your findings against this: confirm where the codebase matches`,
+      `documented patterns/gotchas, and FLAG (in inconsistencies or residual_gaps) where it`,
+      `diverges or where documented knowledge now looks stale. Codebase evidence wins ties.`,
+    ] : []),
     ``,
     `Total occurrences: ${occurrences.length} (after dedup and ${iterations} sweep iterations).`,
     `Searchers run: ${searcherSummaries.map(s => s.key).join(', ')}`,
@@ -298,6 +316,7 @@ const {
   repoRoot,
   mode = 'interactive',
   loopCap = 2,
+  priorKnowledge = null,
 } = args
 
 if (!question || typeof question !== 'string') {
@@ -376,7 +395,7 @@ while (iter < loopCap && dryRounds < 1) {
   iter += 1
   const occurrencesArr = Array.from(occurrenceByKey.values())
   const critic = await agent(
-    criticPrompt(question, occurrencesArr, searcherSummaries, iter, repoRoot),
+    criticPrompt(question, occurrencesArr, searcherSummaries, iter, repoRoot, priorKnowledge),
     { label: `critic:r${iter}`, phase: 'Gap-fill loop', schema: criticSchema }
   )
 
@@ -419,7 +438,7 @@ const finalOccurrences = Array.from(occurrenceByKey.values())
   })
 
 const synth = await agent(
-  synthesisPrompt(question, finalOccurrences, searcherSummaries, Array.from(residualQuestions), iter),
+  synthesisPrompt(question, finalOccurrences, searcherSummaries, Array.from(residualQuestions), iter, priorKnowledge),
   { label: 'synthesize', phase: 'Synthesize', model: 'opus', schema: synthesisSchema }
 ) || { summary: '(synthesis failed)', patterns: [], inconsistencies: [], residual_gaps: [] }
 
