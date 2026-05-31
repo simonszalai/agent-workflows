@@ -8,6 +8,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 - **Agents** - Tool-specific specialized agent roles (reviewer, planner, researcher, etc.)
 - **Hooks** - Shared shell hooks for autodev-memory context injection
 - **Commands** - Legacy Claude command wrappers kept only where still needed
+- **bin/** - Shared executables, notably `project-mcp` (the MCP launcher every repo's `.mcp.json` points at)
 
 ## Distribution
 
@@ -27,6 +28,7 @@ ln -s ~/dev/agent-workflows/skills ~/.claude/skills
 ln -s ~/dev/agent-workflows/skills ~/.agents/skills
 ln -s ~/dev/agent-workflows/hooks ~/.claude/hooks
 ln -s ~/dev/agent-workflows/hooks ~/.codex/hooks
+ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
 ```
 
 ### Cloud setup (automatic)
@@ -104,6 +106,53 @@ hooks fail silently on resume/compact triggers with "AUTODEV_MEMORY_API_TOKEN no
 | `mem-lib.sh` | (shared library) | Logging, env parsing, HTTP, entry loading |
 | `mem-err-trap.sh` | (shared library) | Error trapping for clean hook output |
 
+
+## project-mcp launcher (`bin/project-mcp`)
+
+Every repo's `.mcp.json` / `.codex/config.toml` sets its MCP server `command` to
+`~/.local/bin/project-mcp <project> <server>` (e.g. `shared autodev-memory`,
+`ts postgres_prod`). That path is a **symlink to `bin/project-mcp` in this repo** — so the
+launcher is versioned here alongside the hooks and skills it sits next to.
+
+What it does, per invocation:
+
+1. Resolves secrets from **1Password** — either from a mounted `.env` FIFO (`mount_value`) or a
+   direct vault read by item ID (`op_read`), serialized with a lock so a parallel MCP startup
+   burst raises at most one biometric prompt.
+2. `guard_project_context` refuses to start a project's MCP from another project's workspace
+   (override with `ALLOW_CROSS_PROJECT_MCP=1`).
+3. `exec`s into the real backend: `mcp-remote` for remote HTTP servers (autodev-memory, render,
+   context7) or `postgres-mcp` for databases.
+
+It contains **no secrets** — only 1Password item-ID pointers and a mount path. Safe to commit.
+
+### Where it goes
+
+```bash
+ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
+chmod +x ~/dev/agent-workflows/bin/project-mcp   # if needed
+```
+
+`~/.local/bin` must be on `PATH`. The mounted 1Password env item must be configured per the
+paths near the top of the script (`TS_MCP_MOUNT_FILE`, etc.).
+
+### mcp-remote orphan reaping
+
+Remote servers run via `npx mcp-remote ... --transport http-only`. Because the launcher
+`exec`s into `mcp-remote` (no trap survives `exec`), a reconnect/crash can orphan the old
+proxy (reparented to PID 1). Orphans accumulate — each holds an HTTP client to a
+single-instance remote — and eventually starve real requests until MCP calls hang.
+
+Two defenses:
+
+- **In-launcher (primary):** `run_remote_bearer` calls `reap_stale_remote "$url"` before
+  spawning, killing stale proxies for that exact URL (scoped; never touches other servers).
+  `mcp-remote` is version-pinned via `MCP_REMOTE_VERSION` for reproducibility.
+- **launchd safety net (per machine, not in this repo):** `~/.local/bin/mcp-remote-reaper`
+  + `~/Library/LaunchAgents/com.simon.mcp-remote-reaper.plist` (runs every 30 min) reaps
+  `mcp-remote` processes that are **both** old (>3h) **and** orphaned (PPID 1), catching the
+  pure-crash case where the launcher never re-runs. An active session's proxy has a live
+  parent and is always spared.
 
 ## Two-way updates
 
