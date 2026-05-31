@@ -185,11 +185,33 @@ Wait for CI:
 gh pr checks <pr_number> --watch
 ```
 
-If CI fails, fix in the promotion worktree, push, and wait again. When green, merge with the repository’s preferred linear-history method unless the repo requires merge commits for staging rollups:
+If CI fails, fix in the promotion worktree, push, and wait again. When green, merge using the method that matches the mode:
+
+**All-staging mode — MUST use a real merge commit:**
+
+```bash
+gh pr merge <pr_number> --merge --delete-branch
+```
+
+Never `--squash` or `--rebase` for an all-staging rollup. Both collapse staging's
+commits into new SHAs on `main` with no link back to `staging`, breaking the
+`main`↔`staging` merge-base. Once broken, every staging-rooted branch (including
+fresh Conductor workspaces) shows hundreds of *phantom* changes when diffed against
+`main`, even though the content is identical — because the three-dot diff falls
+back to the last genuinely shared ancestor. A `--merge` commit keeps both branches'
+histories linked so the merge-base stays current. (This is exactly what broke after
+PR #310's squash; recovery required a manual `git merge --no-ff origin/staging` to
+re-link the histories.)
+
+**Ticket-only mode — linear history is fine:**
 
 ```bash
 gh pr merge <pr_number> --rebase --delete-branch
 ```
+
+Cherry-picked ticket promotions already create new commits and do not aim to keep
+`main` and `staging` at parity, so `--rebase` (or the repo's preferred linear method)
+is acceptable here.
 
 After merge, fetch and verify `origin/main` contains the promoted commits:
 
