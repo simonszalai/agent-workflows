@@ -253,9 +253,38 @@ ts_prod_postgres_value() {
   RESOLVED_VALUE="$(postgres_url_for_database "$base_url" "$database_name")"
 }
 
+# Reap orphaned postgres-mcp servers (and their python children) before launching a
+# fresh one. Counterpart to reap_stale_remote for the postgres path: project-mcp execs
+# into `uv run postgres-mcp`, so on a session reconnect/crash the old server orphans
+# (reparents to PID 1) and piles up — each holding a database connection until the
+# Postgres pool is exhausted (we saw ~300 accumulate across dead sessions). postgres-mcp
+# keeps its DATABASE_URI in the environment, not argv, so we cannot scope by database
+# the way reap_stale_remote scopes by url; instead we only touch processes reparented
+# to PID 1 — a live server from another session keeps a living parent and is spared.
+# The periodic launchd reaper (mcp-remote-reaper) is the backstop for the pure-crash
+# case where no new launch happens.
+reap_stale_postgres() {
+  local mypid=$$
+  local parent=${PPID:-0}
+  ps -Ao pid,ppid,command 2>/dev/null | while IFS= read -r pid ppid rest; do
+    [[ "$ppid" == "1" ]] || continue
+    [[ "$pid" == "$mypid" || "$pid" == "$parent" ]] && continue
+    case "$rest" in
+      *postgres-mcp*)
+        local child
+        for child in ${(f)"$(pgrep -P "$pid" 2>/dev/null)"}; do
+          [[ -n "$child" ]] && kill "$child" 2>/dev/null || true
+        done
+        kill "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
 run_postgres_uri() {
   local uri="$1"
   local access_mode="$2"
+  reap_stale_postgres
   export DATABASE_URI="$uri"
   exec "$UV_BIN" --project "$POSTGRES_MCP_PROJECT_DIR" run postgres-mcp --access-mode="$access_mode"
 }
