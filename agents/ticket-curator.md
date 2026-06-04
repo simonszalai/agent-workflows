@@ -188,7 +188,7 @@ mcp__autodev-memory__update_ticket(
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="active" | "backlog" | "building" | "to_verify" | "completed" | "abandoned",
+  status="backlog" | "planning" | "planned" | "building" | "merged" | "ready_to_deploy_production" | "to_verify_prod" | "completed" | "abandoned" | "on_ice",
   reason="<optional reason for status change>",
   command="/curator", agent="ticket-curator"
 )
@@ -240,7 +240,7 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id="F0003", rep
 results = mcp__autodev-memory__search_tickets(project=PROJECT, query="keyword")
 
 # List by status
-tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="active", repo=REPO)
+tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="building", repo=REPO)
 ```
 
 ## Output Guidelines

@@ -58,8 +58,8 @@ Auto-Flow detects its input source automatically:
 1.  Parse Input          -> Extract type (bug/feature), requirements from issue OR conversation
 2.  Create Ticket        -> Feature (FNNN) or Bug (BNNN) via MCP (status: backlog)
 3.  /auto-plan {ID}      -> Research + plan (backlog -> planning -> planned)
-4.  Approve Plan         -> Set status to "approved" (auto-approved in auto-flow)
-5.  /auto-build {ID}     -> Build + test + review + push branch (approved -> ready_to_deploy_staging)
+4.  Approve Plan         -> Auto-approved (no status write; approval = leaving `planned`)
+5.  /auto-build {ID}     -> Build + test + review + push branch (planned -> building -> merged [epic member] / ready_to_deploy_production [standalone])
 6.  /auto-polish-web {ID} -> Web UI polish on the pushed branch (self-gates; skips for non-UI or non-web repos)
 ```
 
@@ -161,12 +161,16 @@ Determine input source and extract requirements.
    | ---------------- | --------------- |
    | `backlog`        | Phase 3 (auto-plan) |
    | `planning`       | Phase 3 (auto-plan — will resume) |
-   | `planned`        | Phase 4 (approve) |
-   | `approved`       | Phase 5 (auto-build) |
+   | `planned`        | Phase 5 (auto-build) |
    | `building`       | Phase 5 (auto-build — will resume) |
-   | `ready_to_deploy_staging`| STOP — already complete, run /auto-deploy |
+   | `merged` / `ready_to_deploy_production` | STOP — already complete, run /auto-deploy |
 
 ### Phase 2: Create Ticket
+
+> **Scope:** auto-flow creates and drives **standalone** tickets only (it never sets
+> `epic_id`). Epic membership is assigned separately via `assign_ticket_to_epic`, and
+> epic-member flow is driven per-member under the epic — not by auto-flow. So every status
+> handoff below is the standalone path (finishes at `ready_to_deploy_production`).
 
 Resolve project and repo from CLAUDE.md (`<!-- mem:project=X -->`) and git remote.
 
@@ -209,15 +213,10 @@ Run `/auto-plan {ticket_id}` — this handles:
 
 ### Phase 4: Approve Plan
 
-In auto-flow mode, the plan is **auto-approved** (no user confirmation needed).
-
-```
-mcp__autodev-memory__update_ticket(
-  project=PROJECT, ticket_id=ID, repo=REPO,
-  status="approved",
-  command="/auto-flow"
-)
-```
+In auto-flow mode, the plan is **auto-approved** (no user confirmation needed). There is no
+`approved` status — approval is simply the act of leaving `planned`, which `/auto-build`
+performs when it advances the ticket to `building`. So this phase writes **no status**; it
+just proceeds to Phase 5.
 
 ### Phase 5: Auto-Build
 
@@ -226,17 +225,16 @@ Pass `--skip-verify` flag if `/auto-flow --skip-verify` was used.
 Run `/auto-build {ticket_id}` — this handles:
 
 - Setting status to `building`
-- Creating branch
 - Running `/create-build-todos`
 - Running `/build`
 - Running `/write-tests` (MANDATORY)
 - Running `/review` + `/resolve-review` loop
 - Running `/compound`
 - Creating deployment guide
-- Pushing the feature branch (no PR yet)
-- Setting status to `ready_to_deploy_staging`
+- Pushing the feature branch (no PR yet — the workspace already provides the branch)
+- Setting status to `merged` (epic member) or `ready_to_deploy_production` (standalone)
 
-**On failure:** STOP, report error. Ticket status reverts to `approved`.
+**On failure:** STOP, report error. Ticket status reverts to `planned`.
 
 ### Phase 6: Auto-Polish-Web
 
@@ -252,7 +250,7 @@ The skill self-gates:
 - Otherwise iterates critique → change → verify up to 10 times, commits per iteration
 
 Polish commits land on the same feature branch that auto-build pushed. Ticket status
-stays at `ready_to_deploy_staging` throughout.
+stays at `merged` / `ready_to_deploy_production` throughout.
 
 **On failure:** Non-blocking. Log outcome, auto-flow still terminates successfully. The
 next step (`/auto-deploy`) will pick up the branch regardless of polish outcome.
@@ -302,7 +300,7 @@ Artifacts are created by the delegated skills (auto-plan, auto-build).
 ```
 Auto-flow complete!
 
-PR: https://github.com/org/repo/pull/456
+Branch: auto-build/F0042 (pushed; no PR yet — /auto-deploy opens it)
 Issue: #123                              # Only shown if source was GitHub issue
 
 Summary:
@@ -310,7 +308,7 @@ Summary:
 - Tests: 12 passing / 12 total (4 unit, 6 integration, 2 e2e)
 - Review: 3 iterations, all P1/P2 resolved
 
-Ticket: F0042 (ready_to_deploy_staging)
+Ticket: F0042 (ready_to_deploy_production)
 Next: /auto-deploy F0042
 ```
 
@@ -319,7 +317,7 @@ Next: /auto-deploy F0042
 ```
 Auto-flow needs attention!
 
-PR: https://github.com/org/repo/pull/456 (marked needs attention)
+Branch: auto-build/F0042 (pushed; no PR yet)
 Issue: #123                              # Only shown if source was GitHub issue
 
 Summary:
@@ -327,7 +325,7 @@ Summary:
 - Tests: 11 passing / 12 total (1 flaky e2e)
 - 2 P3 findings remain (not blocking)
 
-Ticket: F0042 (ready_to_deploy_staging)
+Ticket: F0042 (ready_to_deploy_production)
 Next: /auto-deploy F0042
 ```
 
@@ -351,7 +349,7 @@ See ticket F0042 for partial progress
 | Plan approval   | You review plan first | Auto-approved                         |
 | Review handling | You decide on findings| Loop until no P1/P2                   |
 | Scope           | Any ticket            | Creates ticket from issue/conversation |
-| Stops at        | Wherever you stop     | ready_to_deploy_staging (PR created)          |
+| Stops at        | Wherever you stop     | merged / ready_to_deploy_production (no PR yet) |
 
 ## Pipeline Position
 
@@ -385,15 +383,15 @@ Should integrate with existing analytics.
 1. Parse: source=github, type=feature, title="Add user activity dashboard"
 2. Create: `ticket F0042 via MCP` (status: backlog)
 3. /auto-plan F0042: research + plan (backlog -> planning -> planned)
-4. Approve: set status to approved
-5. /auto-build F0042: build + test + review + PR (approved -> ready_to_deploy_staging)
+4. Approve: auto-approved (no status write)
+5. /auto-build F0042: build + test + review + push branch, no PR (planned -> building -> ready_to_deploy_production; F0042 is standalone)
 
 **Output:**
 
 ```
 Auto-flow complete!
 
-PR: https://github.com/org/repo/pull/456
+Branch: auto-build/F0042 (pushed; no PR yet)
 Issue: #123
 
 Summary:
@@ -401,7 +399,7 @@ Summary:
 - Tests: 12 passing / 12 total
 - Review: 3 iterations, all P1/P2 resolved
 
-Ticket: F0042 (ready_to_deploy_staging)
+Ticket: F0042 (ready_to_deploy_production)
 Next: /auto-deploy F0042
 ```
 
@@ -420,22 +418,22 @@ finalized invoices should be exportable."
 1. Parse: source=conversation, type=feature, title="Bulk invoice PDF export"
 2. Create: `ticket F0043 via MCP` (status: backlog)
 3. /auto-plan F0043: research + plan
-4. Approve: auto-approved
-5. /auto-build F0043: build + test + review + PR
+4. Approve: auto-approved (no status write)
+5. /auto-build F0043: build + test + review + push branch (no PR)
 
 **Output:**
 
 ```
 Auto-flow complete!
 
-PR: https://github.com/org/repo/pull/790
+Branch: auto-build/F0043 (pushed; no PR yet)
 
 Summary:
 - Implemented bulk invoice PDF export
 - Tests: 6 passing / 6 total (2 unit, 3 integration, 1 e2e)
 - Review: 2 iterations, all P1/P2 resolved
 
-Ticket: F0043 (ready_to_deploy_staging)
+Ticket: F0043 (ready_to_deploy_production)
 Next: /auto-deploy F0043
 ```
 
@@ -453,21 +451,21 @@ failed at 14:23 UTC with exit code -9"
 1. Parse: source=conversation, type=bug, service=main-processor, error=OOM
 2. Create: `ticket B0001 via MCP` (status: backlog)
 3. /auto-plan B0001: investigate (hypotheses + evaluation) + plan
-4. Approve: auto-approved
-5. /auto-build B0001: build + test + review + PR
+4. Approve: auto-approved (no status write)
+5. /auto-build B0001: build + test + review + push branch (no PR)
 
 **Output:**
 
 ```
 Auto-flow complete!
 
-PR: https://github.com/org/repo/pull/456
+Branch: lfg/B0001 (pushed; no PR yet)
 
 Root cause: Memory exhaustion on large batches (>500 items)
 Fix: Added batch size limit of 200 items with chunked processing
 Tests: 5 passing / 5 total
 Review: No critical findings
 
-Ticket: B0001 (ready_to_deploy_staging)
+Ticket: B0001 (ready_to_deploy_production)
 Next: /auto-deploy B0001
 ```

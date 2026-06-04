@@ -15,7 +15,7 @@ data, seeds records, runs flows, or triggers any process.
 ```
 /auto-verify staging F007           # Verify feature F007 on staging
 /auto-verify prod B003              # Verify bug fix B003 in production
-/auto-verify staging                # (scheduled) Pick up next to_verify_staging ticket
+/auto-verify staging                # (scheduled) Pick up next to_verify_staging epic (staging is epic-only)
 /auto-verify prod F001 --lookback 24h  # Custom lookback window
 ```
 
@@ -54,7 +54,9 @@ it's the same across all environments.
 
 ## Prerequisites
 
-- Ticket must exist with status `to_verify_staging` or `to_verify_prod`
+- A standalone ticket at `to_verify_prod`, or an epic at `to_verify_staging` /
+  `to_verify_prod`. (`to_verify_staging` is an `epic_status` — staging verify operates on the
+  **epic**, never on an individual member; members are never staging-verified on their own.)
 - Plan artifact must exist with verification strategy
 - For staging: PR must exist and be deployed
 
@@ -67,7 +69,11 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 ```
 
 - If not found: STOP - "Ticket not found"
-- If status is not `to_verify_{env}`: STOP - "Ticket status is {status}, expected to_verify_{env}"
+- The unit must be at `to_verify_{env}`: a standalone **ticket** (`to_verify_prod`) or an
+  **epic** (`to_verify_staging` / `to_verify_prod`). If not: STOP - "Status is {status},
+  expected to_verify_{env}"
+- Note whether the ticket is an **epic member** (`epic_id` is set) — this changes the PASS
+  handling in Phase 7
 - Read plan artifact for verification strategy
 - Read source artifact for acceptance criteria
 
@@ -252,27 +258,44 @@ Every piece of evidence MUST include:
 
 ### Phase 7: Update Ticket
 
-**On PASS:**
+**On PASS** — branch on what is being verified:
 
-Staging:
-1. Merge PR to main: `gh pr merge {pr_number} --merge`
-2. Set status to `to_verify_prod`
-
-Production:
-1. Set status to `completed`
+- **Standalone ticket (prod):** set the ticket to `completed`. (Its PR was already merged to
+  main by `/auto-deploy`; auto-verify does not merge.)
+- **Epic-member ticket (staging):** **do NOT merge the member PR to main** and do NOT advance
+  the member. Report the PASS verdict **up to the parent epic** (write a verification artifact
+  on the epic via `create_epic_artifact`). The **epic** owns the integrated staging gate and
+  the ordered prod promote, so the member stays at `merged`. This is the one epic-aware
+  behavior in the per-member skills.
+- **Epic (staging):** the integrated staging gate passed — advance the epic to
+  `ready_to_deploy_production` (the ordered cross-repo prod promote is hand-orchestrated for
+  now; automated walk is deferred).
+- **Epic (prod):** set the epic to `completed`; its members flip to `completed`.
 
 ```
+# Ticket (standalone prod):
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="{next_status}",
+  status="completed",
+  command="/auto-verify"
+)
+
+# Epic (staging PASS -> prod queue, or prod PASS -> completed):
+mcp__autodev-memory__update_epic(
+  project=PROJECT, epic_id=EPIC_ID,
+  status="{ready_to_deploy_production|completed}",
   command="/auto-verify"
 )
 ```
 
+**Never auto-merge an epic member to main on staging PASS** — the epic owns the ordered
+promote. Only a standalone ticket reaches main, and that merge is done by `/auto-deploy`.
+
 **On FAIL:**
 
 1. Create verification report artifact documenting what failed
-2. Set status to `verify_{env}_failed`
+2. Set status to `verify_{env}_failed` — `verify_staging_failed` is an `epic_status` (set on
+   the epic), `verify_prod_failed` is set on the ticket (standalone) or epic
 3. Do NOT close/merge the PR — leave open for investigation
 
 **On NEEDS_MORE_TIME:**
@@ -495,5 +518,5 @@ uv run prefect flow-run logs <run-id>
 | Validate | Wrong status         | STOP, report                       |
 | Find PR  | No PR found          | STOP, report (staging only)        |
 | Observe  | Environment down     | STOP, report (don't change status) |
-| Merge    | Merge conflict       | STOP, set verify_staging_failed    |
-| Merge    | CI checks failing    | STOP, set verify_staging_failed    |
+| Verdict  | Staging FAIL         | Set epic to verify_staging_failed  |
+| Verdict  | Prod FAIL            | Set status to verify_prod_failed   |

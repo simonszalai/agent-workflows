@@ -93,11 +93,11 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
      mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
      ```
      - Read the source artifact for requirements/context
-     - If ticket status is `backlog`, update to `active`:
+     - If ticket status is `backlog`, update to `planning`:
        ```
        mcp__autodev-memory__update_ticket(
          project=PROJECT, ticket_id=ID, repo=REPO,
-         status="active", command="/plan"
+         status="planning", command="/plan"
        )
        ```
    - **If description given** (no ID): Create a new ticket:
@@ -107,7 +107,7 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
        title="<synthesized title>",
        type="bug",  # or "feature" based on context
        description="<user's description>",
-       status="active",
+       status="planning",
        command="/plan"
      )
      ```
