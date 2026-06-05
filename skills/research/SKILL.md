@@ -57,7 +57,7 @@ ticket = mcp__autodev-memory__create_ticket(
   title="Research: <slug from question>",
   type="refactor",
   description="Research question: <user's question>",
-  status="active",
+  status="planning",
   command="/research"
 )
 ```

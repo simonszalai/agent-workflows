@@ -45,11 +45,11 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 ```
 
 - Read the source artifact for context
-- If status is `backlog`, update to `active`:
+- If status is `backlog`, update to `planning`:
   ```
   mcp__autodev-memory__update_ticket(
     project=PROJECT, ticket_id=ID, repo=REPO,
-    status="active", command="/investigate"
+    status="planning", command="/investigate"
   )
   ```
 
@@ -65,7 +65,7 @@ mcp__autodev-memory__create_ticket(
   title="<synthesized title>",
   type="bug",
   description="<user's description>",
-  status="active",
+  status="planning",
   command="/investigate"
 )
 ```
