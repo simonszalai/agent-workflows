@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Install: cp this to ~/Library/LaunchAgents/ then `launchctl load -w ~/Library/LaunchAgents/com.simon.mcp-gateway.plist`
+     The first start triggers ONE 1Password biometric prompt (op signin + render token reads); after that the
+     daemon serves all workspaces with pooled upstream connections and no further prompts for its lifetime. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.simon.mcp-gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/simon/dev/agent-workflows/mcp-gateway/start-gateway.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/mcp-gateway.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mcp-gateway.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

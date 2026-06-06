@@ -1,0 +1,71 @@
+#!/usr/bin/env zsh
+# mcp-remote-reaper — safety net for leaked MCP server processes.
+#
+# Root cause it guards against: project-mcp execs into `npx mcp-remote` (stdio<->HTTP
+# proxy for the remote MCP servers: autodev-memory, render, context7) and into
+# `uv run postgres-mcp` (the postgres MCP servers). When a Claude Code / Codex /
+# Conductor session reconnects or crashes, the old child can orphan (reparent to
+# PID 1) instead of being signalled. Orphans pile up:
+#   - mcp-remote orphans each hold an HTTP client to a (often single-instance) remote
+#     and eventually starve real requests until MCP calls hang for hours;
+#   - postgres-mcp orphans each hold a database connection and exhaust the Postgres
+#     connection pool. We have observed ~300 postgres-mcp orphans accumulate across
+#     dead sessions (6+ stale workspaces), which is why this reaper now covers them.
+#
+# project-mcp reaps same-resource processes on each launch; this catches the leftover
+# case where no new launch happens (pure crash). It kills orphaned (PPID 1) mcp-remote
+# AND postgres-mcp processes whose elapsed runtime exceeds MAX_AGE_MIN, plus their
+# direct children (the connection/HTTP-holding `python`/`node` under the `uv`/`npm`
+# launcher). Age + orphan together make it safe: an active session's process keeps a
+# living parent (PPID != 1) and is spared regardless of age. postgres-mcp carries its
+# DATABASE_URI in the environment, not argv, so we cannot scope by database — the
+# orphan (PPID 1) guard, not a per-database match, is what keeps us off live servers.
+
+set -uo pipefail
+
+MAX_AGE_MIN="${MCP_REAPER_MAX_AGE_MIN:-180}"   # 3h: well beyond any real call
+LOG="${MCP_REAPER_LOG:-/Users/simon/.local/var/log/mcp-remote-reaper.log}"
+
+now_ts=$(date '+%Y-%m-%dT%H:%M:%S')
+killed=0
+
+# Reap an orphan and its direct children. Orphan trees are two levels:
+# `uv run postgres-mcp` -> python child, or `npm exec mcp-remote` -> node child.
+# Children are killed first so the connection/HTTP holder dies with the launcher
+# instead of reparenting to PID 1 and surviving until the next reaper cycle. Only
+# ever called on a root already proven orphaned (PPID 1) and older than MAX_AGE_MIN,
+# so its children belong to the same dead session and are safe to take down.
+reap_with_children() {
+  local root="$1" child
+  for child in ${(f)"$(pgrep -P "$root" 2>/dev/null)"}; do
+    [[ -n "$child" ]] && kill "$child" 2>/dev/null
+  done
+  kill "$root" 2>/dev/null
+}
+
+# All candidate MCP processes, with pid, ppid, elapsed-seconds. The bracket-class
+# patterns ([m]/[p]) keep grep from matching its own argv.
+while IFS= read -r line; do
+  pid=$(print -r -- "$line" | awk '{print $1}')
+  ppid=$(print -r -- "$line" | awk '{print $2}')
+  etime=$(print -r -- "$line" | awk '{print $3}')   # [[dd-]hh:]mm:ss
+
+  # Only reap orphans (parent gone -> reparented to launchd/PID 1).
+  [[ "$ppid" == "1" ]] || continue
+
+  # Convert etime to seconds.
+  secs=$(print -r -- "$etime" | awk -F'[-:]' '{
+    n=NF;
+    s=$n; m=(n>=2?$(n-1):0); h=(n>=3?$(n-2):0); d=(n>=4?$(n-3):0);
+    print ((d*24+h)*60+m)*60+s
+  }')
+  (( secs > MAX_AGE_MIN*60 )) || continue
+
+  if reap_with_children "$pid"; then
+    print -r -- "$now_ts reaped orphan MCP tree pid=$pid age=${secs}s" >> "$LOG"
+    (( killed++ ))
+  fi
+done < <(ps -axo pid,ppid,etime,command | grep -E "[m]cp-remote|[p]ostgres-mcp" )
+
+(( killed > 0 )) && print -r -- "$now_ts done, reaped=$killed" >> "$LOG"
+exit 0

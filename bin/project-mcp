@@ -1,0 +1,411 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+project="${1:-}"
+server="${2:-}"
+if [[ -z "$project" || -z "$server" ]]; then
+  print -u2 "usage: project-mcp <project> <server-name>"
+  exit 2
+fi
+
+# 1Password local .env mount destination. All projects use the same mounted MCP environment item.
+TS_MCP_MOUNT_FILE="${TS_MCP_MOUNT_FILE:-/Users/simon/Library/Application Support/6b18dff57e135dcf477c9180dc0d3c88/71e2f97219e5f7cc8fe3b17d4ff23de6}"
+SHARED_MCP_MOUNT_FILE="${SHARED_MCP_MOUNT_FILE:-$TS_MCP_MOUNT_FILE}"
+AMARU_MCP_MOUNT_FILE="${AMARU_MCP_MOUNT_FILE:-$TS_MCP_MOUNT_FILE}"
+WORKFLOW_MCP_MOUNT_FILE="${WORKFLOW_MCP_MOUNT_FILE:-$TS_MCP_MOUNT_FILE}"
+
+# Per-project 1Password items used for direct vault reads of highly sensitive
+# values (e.g. Render API keys) that are intentionally not in the mount file.
+# Reference each item by its 1Password item ID so renames in the UI don't break
+# the wrapper.
+TS_OP_ITEM="${TS_MCP_OP_ITEM:-op://Personal/6vfcrew2nps7r3po7f4zxssjva}"
+WORKFLOW_OP_ITEM="${WORKFLOW_MCP_OP_ITEM:-op://Personal/w2imwaf7f3o3p7okpifswnxdmm}"
+AMARU_OP_ITEM="${AMARU_MCP_OP_ITEM:-op://Personal/pm2niiuqvqq26ytb2oimytrrdm}"
+OP_ACCOUNT="${TS_MCP_OP_ACCOUNT:-my.1password.com}"
+OP_BIN="${OP_BIN:-/opt/homebrew/bin/op}"
+UV_BIN="${UV_BIN:-/Users/simon/.local/bin/uv}"
+NPX_BIN="${NPX_BIN:-/Users/simon/.nvm/versions/node/v24.14.1/bin/npx}"
+POSTGRES_MCP_PROJECT_DIR="${POSTGRES_MCP_PROJECT_DIR:-/Users/simon/dev/ts-prefect}"
+if [[ ! -x "$UV_BIN" ]]; then UV_BIN="$(command -v uv)"; fi
+if [[ ! -x "$NPX_BIN" ]]; then NPX_BIN="$(command -v npx)"; fi
+if [[ ! -x "$OP_BIN" ]]; then OP_BIN="$(command -v op)"; fi
+if [[ ! -f "$POSTGRES_MCP_PROJECT_DIR/pyproject.toml" ]]; then
+  POSTGRES_MCP_PROJECT_DIR="/Users/simon/conductor/workspaces/ts-prefect/nairobi-v3"
+fi
+
+RESOLVED_VALUE=""
+
+typeset -gA MOUNT_CACHE
+
+typeset -gA MOUNT_LOADED
+
+# Shared across all parallel MCP server launches. Without this, Claude Code / Codex /
+# Conductor can start several project-mcp instances at once and each one independently
+# triggers a 1Password biometric prompt. The mount-file lock also prevents partial /
+# interleaved reads when 1Password's Local destination is a FIFO that multiple
+# subprocesses open simultaneously.
+OP_SIGNIN_LOCK_DIR="${TS_MCP_MOUNT_FILE}.op-signin.lock"
+
+mount_lock_dir_for() {
+  print -r -- "$1.lock"
+}
+
+fail() {
+  print -u2 "project-mcp: $*"
+  exit 2
+}
+
+acquire_lock_dir() {
+  local lock_dir="$1"
+  local description="$2"
+  local i=0
+  local pid=""
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    if [[ -r "$lock_dir/pid" ]]; then
+      pid="$(<"$lock_dir/pid")"
+      if [[ "$pid" =~ '^[0-9]+$' ]] && ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$lock_dir/pid" 2>/dev/null || true
+        rmdir "$lock_dir" 2>/dev/null || true
+        continue
+      fi
+    fi
+    (( i += 1 ))
+    (( i < 600 )) || fail "timed out waiting for $description lock: $lock_dir"
+    sleep 0.05
+  done
+  print -r -- "$$" > "$lock_dir/pid"
+}
+
+release_lock_dir() {
+  local lock_dir="$1"
+  rm -f "$lock_dir/pid" 2>/dev/null || true
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+
+detect_project_from_pwd() {
+  local dir="${PWD:-}"
+  case "$dir" in
+    *"/ts-prefect"*|*"/ts-dashboard"*|*"/ts-scraper"*|*"/ts-decrypt-proxy"*|*"/ts-decrypt-chrome-ext"*) print -r -- "ts" ;;
+    *"/amaru-"*|*"/amaru_"*|*"/amaruplatform-"*) print -r -- "amaru" ;;
+    *"/workflow_pro"*|*"/workflow-pro"*|*"/workflow-pdf"*|*"/workflow-pricing"*) print -r -- "workflow" ;;
+    *) print -r -- "" ;;
+  esac
+}
+
+guard_project_context() {
+  [[ "$project" == "shared" ]] && return
+  [[ "${ALLOW_CROSS_PROJECT_MCP:-}" == "1" ]] && return
+  local detected
+  detected="$(detect_project_from_pwd)"
+  if [[ -n "$detected" && "$detected" != "$project" ]]; then
+    fail "refusing to start $project/$server from detected $detected workspace: $PWD (set ALLOW_CROSS_PROJECT_MCP=1 to override)"
+  fi
+}
+
+mount_file_for_project() {
+  case "$1" in
+    ts) print -r -- "$TS_MCP_MOUNT_FILE" ;;
+    shared) print -r -- "$SHARED_MCP_MOUNT_FILE" ;;
+    amaru) print -r -- "$AMARU_MCP_MOUNT_FILE" ;;
+    workflow) print -r -- "$WORKFLOW_MCP_MOUNT_FILE" ;;
+    *) fail "unknown project: $1" ;;
+  esac
+}
+
+# CAVEAT — 1Password FIFO mount can still cost extra prompts.
+# The mount destination ($TS_MCP_MOUNT_FILE) is a named pipe (FIFO): 1Password
+# re-renders it from the vault on EACH reader-open. Per ts startup burst up to 5
+# servers open it (postgres_prod, postgres_prod_prefect, postgres_staging,
+# postgres_dev, postgres_autodev_ts). The per-file lock below serializes those
+# opens — so if 1Password caches CLI/app access for a window, only the first
+# render is "cold" and the rest are silent. But the lock only DEDUPES CONCURRENCY,
+# not the render itself: each server still opens the FIFO once (MOUNT_CACHE is
+# per-process, so it can't be shared across the separate project-mcp processes).
+# If a fresh-workspace launch still raises multiple 1Password prompts after the
+# op_read() single-flight fix, the FIFO re-render is the cause, and there are two
+# mitigations — each with a trade-off, so neither is applied here by default:
+#   1. Script side: have the first server to win this lock cache the parsed env to
+#      a 0600 file (short TTL, auto-unlinked) and let siblings read that instead of
+#      re-opening the FIFO. Collapses 5 renders -> 1, but rendered secrets briefly
+#      touch disk — against the FIFO's "no secrets at rest" intent.
+#   2. 1Password side (zero code): switch this item's mount from a FIFO to a
+#      regular file. 1Password keeps it 0600 and removes it on lock, and reads stop
+#      re-rendering. Cleaner, but the rendered env then persists on disk while the
+#      app is unlocked.
+load_mount() {
+  local file="$1"
+  [[ -n "${MOUNT_LOADED[$file]-}" ]] && return
+  [[ -r "$file" ]] || fail "1Password local env destination is not mounted/readable for $project. Configure 1Password to mount it at: $file"
+
+  local lock_dir
+  lock_dir="$(mount_lock_dir_for "$file")"
+  acquire_lock_dir "$lock_dir" "mounted 1Password env"
+  {
+    local line key val cache_key
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line//$'\r'/}"
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      key="${line%%=*}"
+      val="${line#*=}"
+      key="${key//[[:space:]]/}"
+      [[ "$key" =~ '^[A-Za-z_][A-Za-z0-9_]*$' ]] || continue
+      val="${val# }"
+      val="${val% }"
+      if [[ "${val[1]:-}" == '"' && "${val[-1]:-}" == '"' ]]; then
+        val="${val[2,-2]}"
+      elif [[ "${val[1]:-}" == "'" && "${val[-1]:-}" == "'" ]]; then
+        val="${val[2,-2]}"
+      fi
+      cache_key="$file::$key"
+      MOUNT_CACHE[$cache_key]="$val"
+    done < "$file"
+  } always {
+    release_lock_dir "$lock_dir"
+  }
+  MOUNT_LOADED[$file]=1
+}
+
+mount_value() {
+  local proj="$1"
+  local key="$2"
+  local file cache_key
+  file="$(mount_file_for_project "$proj")"
+  load_mount "$file"
+  cache_key="$file::$key"
+  [[ -n "${MOUNT_CACHE[$cache_key]-}" ]] || fail "mounted 1Password env for $proj is missing required key: $key"
+  RESOLVED_VALUE="${MOUNT_CACHE[$cache_key]}"
+}
+
+# 1Password CLI signin AND the secret reads are performed together as a single
+# locked critical section inside op_read() — see the comment there for why the
+# read itself must be serialized, not just the signin. (Previously a standalone
+# ensure_op_signed_in() serialized only signin; because `op whoami` succeeds
+# without authorizing CLI *read* access, the parallel first-reads from each MCP
+# server still raced and each raised its own 1Password authorization prompt.)
+
+op_item_for_project() {
+  case "$1" in
+    ts) print -r -- "$TS_OP_ITEM" ;;
+    workflow) print -r -- "$WORKFLOW_OP_ITEM" ;;
+    amaru) print -r -- "$AMARU_OP_ITEM" ;;
+    *) fail "no 1Password item configured for project: $1" ;;
+  esac
+}
+
+op_read() {
+  local proj="$1"
+  local key="$2"
+  local item
+  item="$(op_item_for_project "$proj")"
+  [[ -x "$OP_BIN" ]] || fail "1Password CLI not found for sensitive MCP: $project/$server"
+
+  # Single-flight the whole 1Password CLI critical section (signin + the secret
+  # read) across the parallel MCP startup burst. The MCP client spawns one
+  # project-mcp process per server concurrently, and several read secrets at once
+  # (postgres_prod, postgres_prod_prefect, render). `op whoami` succeeding does
+  # NOT mean CLI read access is authorized, so serializing only signin let each
+  # process trigger its own authorization prompt on the first `op read`. Holding
+  # the lock across the read means the first process warms CLI access for the
+  # whole burst and the siblings read within the cached window, silently. Reads
+  # are one-shot at server startup, so always taking the lock costs nothing.
+  acquire_lock_dir "$OP_SIGNIN_LOCK_DIR" "1Password access"
+  {
+    if ! "$OP_BIN" whoami >/dev/null 2>&1; then
+      if [[ -n "$OP_ACCOUNT" ]]; then
+        "$OP_BIN" signin --account "$OP_ACCOUNT" >/dev/null
+      else
+        "$OP_BIN" signin >/dev/null
+      fi
+    fi
+    "$OP_BIN" read "$item/$key"
+  } always {
+    release_lock_dir "$OP_SIGNIN_LOCK_DIR"
+  }
+}
+
+# Backwards-compatible alias for existing ts call sites.
+ts_op_read() {
+  op_read ts "$1"
+}
+
+postgres_url_for_database() {
+  local base_url="$1"
+  local database_name="$2"
+  local url_without_query query_suffix
+  if [[ "$base_url" == *\?* ]]; then
+    url_without_query="${base_url%%\?*}"
+    query_suffix="?${base_url#*\?}"
+  else
+    url_without_query="$base_url"
+    query_suffix=""
+  fi
+  url_without_query="${url_without_query%/}"
+  print -r -- "$url_without_query/$database_name$query_suffix"
+}
+
+ts_prod_postgres_value() {
+  local database_name_key="$1"
+  local database_name base_url
+  mount_value ts "$database_name_key"
+  database_name="$RESOLVED_VALUE"
+  base_url="$(ts_op_read TS_PROD_POSTGRES_URL_BASE)"
+  [[ -n "$base_url" ]] || fail "1Password returned empty TS_PROD_POSTGRES_URL_BASE"
+  RESOLVED_VALUE="$(postgres_url_for_database "$base_url" "$database_name")"
+}
+
+# Reap orphaned postgres-mcp servers (and their python children) before launching a
+# fresh one. Counterpart to reap_stale_remote for the postgres path: project-mcp execs
+# into `uv run postgres-mcp`, so on a session reconnect/crash the old server orphans
+# (reparents to PID 1) and piles up — each holding a database connection until the
+# Postgres pool is exhausted (we saw ~300 accumulate across dead sessions). postgres-mcp
+# keeps its DATABASE_URI in the environment, not argv, so we cannot scope by database
+# the way reap_stale_remote scopes by url; instead we only touch processes reparented
+# to PID 1 — a live server from another session keeps a living parent and is spared.
+# The periodic launchd reaper (mcp-remote-reaper) is the backstop for the pure-crash
+# case where no new launch happens.
+reap_stale_postgres() {
+  local mypid=$$
+  local parent=${PPID:-0}
+  ps -Ao pid,ppid,command 2>/dev/null | while IFS= read -r pid ppid rest; do
+    [[ "$ppid" == "1" ]] || continue
+    [[ "$pid" == "$mypid" || "$pid" == "$parent" ]] && continue
+    case "$rest" in
+      *postgres-mcp*)
+        local child
+        for child in ${(f)"$(pgrep -P "$pid" 2>/dev/null)"}; do
+          [[ -n "$child" ]] && kill "$child" 2>/dev/null || true
+        done
+        kill "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+run_postgres_uri() {
+  local uri="$1"
+  local access_mode="$2"
+  reap_stale_postgres
+  export DATABASE_URI="$uri"
+  exec "$UV_BIN" --project "$POSTGRES_MCP_PROJECT_DIR" run postgres-mcp --access-mode="$access_mode"
+}
+
+# Pin mcp-remote for reproducibility (currently the latest published version).
+# Bump deliberately rather than letting `-y mcp-remote` drift between npx-cache
+# versions across machines/sessions.
+MCP_REMOTE_VERSION="${MCP_REMOTE_VERSION:-0.1.38}"
+
+# Reap orphaned mcp-remote proxies for THIS url before launching a new one.
+# Claude Code / Codex / Conductor reconnect MCP servers by spawning a fresh
+# project-mcp; because we exec into mcp-remote (no trap survives exec), the old
+# proxy orphans (reparents to PID 1) and piles up. We observed 12 stale autodev
+# proxies accumulate over one session, each holding an HTTP client to the
+# single-instance remote — which starves real requests until calls hang.
+# Scoped to the exact url so we never touch a different server's proxy, and
+# excludes our own process tree.
+reap_stale_remote() {
+  local url="$1"
+  local mypid=$$
+  local ppid=${PPID:-0}
+  pgrep -f "mcp-remote.*${url}" 2>/dev/null | while IFS= read -r pid; do
+    [[ "$pid" == "$mypid" || "$pid" == "$ppid" ]] && continue
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
+run_remote_bearer() {
+  local url="$1"
+  local token="$2"
+  reap_stale_remote "$url"
+  export AUTH_HEADER="Bearer $token"
+  exec "$NPX_BIN" -y "mcp-remote@${MCP_REMOTE_VERSION}" "$url" --transport http-only --header 'Authorization:${AUTH_HEADER}' --silent
+}
+
+guard_project_context
+
+case "$project:$server" in
+  shared:context7)
+    mount_value shared CONTEXT7_API_KEY
+    export CONTEXT7_API_KEY="$RESOLVED_VALUE"
+    exec "$NPX_BIN" -y mcp-remote "https://mcp.context7.com/mcp" --transport http-only --header 'CONTEXT7_API_KEY:${CONTEXT7_API_KEY}' --silent
+    ;;
+  shared:autodev-memory)
+    mount_value shared AUTODEV_MEMORY_API_URL
+    autodev_url="${RESOLVED_VALUE%/}/mcp"
+    mount_value shared AUTODEV_MEMORY_API_TOKEN
+    run_remote_bearer "$autodev_url" "$RESOLVED_VALUE"
+    ;;
+  shared:postgres_autodev_global)
+    mount_value shared AUTODEV_GLOBAL_DATABASE_URL_EXTERNAL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+
+  ts:postgres_prod)
+    ts_prod_postgres_value TS_PROD_DATABASE_NAME
+    run_postgres_uri "$RESOLVED_VALUE" restricted
+    ;;
+  ts:postgres_prod_prefect)
+    ts_prod_postgres_value TS_PROD_PREFECT_DATABASE_NAME
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  ts:postgres_staging)
+    mount_value ts TS_STAGING_DATABASE_URL_EXTERNAL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  ts:postgres_dev)
+    if [[ -n "${TS_DEV_DATABASE_URL:-}" ]]; then
+      run_postgres_uri "$TS_DEV_DATABASE_URL" unrestricted
+    else
+      mount_value ts TS_DEV_DATABASE_URL
+      run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    fi
+    ;;
+  ts:postgres_autodev_ts)
+    mount_value ts TS_PROD_MEM_TS_DATABASE_URL_EXTERNAL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  ts:render)
+    token="$(ts_op_read TS_RENDER_API_KEY)"
+    [[ -n "$token" ]] || fail "1Password returned empty TS_RENDER_API_KEY"
+    run_remote_bearer "https://mcp.render.com/mcp" "$token"
+    ;;
+
+  amaru:postgres_prod)
+    mount_value amaru AMARU_PROD_DATABASE_URL
+    run_postgres_uri "$RESOLVED_VALUE" restricted
+    ;;
+  amaru:postgres_staging)
+    mount_value amaru AMARU_STAGING_DATABASE_URL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  amaru:postgres_dev)
+    mount_value amaru AMARU_DEV_DATABASE_URL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  amaru:render)
+    token="$(op_read amaru AMARU_RENDER_API_KEY)"
+    [[ -n "$token" ]] || fail "1Password returned empty AMARU_RENDER_API_KEY"
+    run_remote_bearer "https://mcp.render.com/mcp" "$token"
+    ;;
+
+  workflow:postgres_prod)
+    mount_value workflow WORKFLOW_PROD_DATABASE_URL
+    run_postgres_uri "$RESOLVED_VALUE" restricted
+    ;;
+  workflow:postgres_staging)
+    mount_value workflow WORKFLOW_STAGING_DATABASE_URL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  workflow:postgres_dev)
+    mount_value workflow WORKFLOW_DEV_DATABASE_URL
+    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    ;;
+  workflow:render)
+    token="$(op_read workflow WORKFLOW_RENDER_API_KEY)"
+    [[ -n "$token" ]] || fail "1Password returned empty WORKFLOW_RENDER_API_KEY"
+    run_remote_bearer "https://mcp.render.com/mcp" "$token"
+    ;;
+
+  *)
+    fail "unknown MCP: $project/$server"
+    ;;
+esac
