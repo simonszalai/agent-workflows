@@ -229,4 +229,4 @@ Keep it short; star instead.
 | `/autodev-retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
 | `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
 | `/auto-build`     | Calls `/compound` after review resolution                             |
-| `/consolidate`    | Audits existing entries. `/compound` adds new ones                    |
+| `/dream`    | Audits existing entries. `/compound` adds new ones                    |

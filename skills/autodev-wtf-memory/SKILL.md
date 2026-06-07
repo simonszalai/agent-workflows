@@ -10,7 +10,7 @@ an error the user just encountered. Traces the search pipeline for the specific 
 diagnoses the root cause, and recommends a fix.
 
 **Scope:** One failure, one pipeline trace, one verdict. This is NOT a broad system audit
-(use `/consolidate` for that) and NOT a workflow gap analysis (use `/autodev-wtf-workflows`
+(use `/dream` for that) and NOT a workflow gap analysis (use `/autodev-wtf-workflows`
 for that). This traces a single memory retrieval execution to find where it broke.
 
 ## Usage
@@ -34,7 +34,7 @@ for that). This traces a single memory retrieval execution to find where it brok
 | Situation | Use Instead |
 |---|---|
 | Bug slipped through agent workflows | `/autodev-wtf-workflows` |
-| Broad memory system audit | `/consolidate` |
+| Broad memory system audit | `/dream` |
 | Bug root cause investigation | `/investigate` |
 | Learning moment after a correction | `/compound` |
 

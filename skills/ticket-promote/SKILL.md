@@ -1,0 +1,108 @@
+---
+name: ticket-promote
+description: Promote one or more staging-verified tickets from staging to main/production branch. Lands code only; does not deploy or verify. Usually called automatically by ticket-verify staging on PASS.
+max_turns: 150
+---
+
+# Ticket Promote
+
+Promote tickets that passed staging verification from `staging` to `main`. This is a landing
+skill, not a deploy/verify skill.
+
+## Usage
+
+```text
+/ticket-promote F0123
+/ticket-promote F0123 B0042
+/ticket-promote --all-passed-staging
+```
+
+`/ticket-verify staging` normally calls this automatically for each staging PASS.
+
+## Boundaries
+
+- Do not run deployment commands.
+- Do not verify production behavior.
+- Do not promote unrelated staging commits in ticket mode.
+- Use an isolated worktree under `.context/`; never mutate the user's current workspace for
+  promotion conflict resolution.
+
+## Preconditions
+
+A ticket should be in `to_verify_staging` with a PASS verification report, or the caller must be
+`/ticket-verify staging` passing a fresh PASS verdict. If no PASS evidence exists, stop.
+
+## Process
+
+### 1. Establish scope
+
+For each ticket:
+
+1. Fetch `origin main staging --prune`.
+2. Identify the ticket's staging PR/commits.
+3. Prove each commit is reachable from `origin/staging` and not from `origin/main`.
+4. Reject the promotion if the commit list includes unrelated tickets or requires unrelated
+   staging dependencies without explicit approval.
+
+### 2. Isolated worktree
+
+```bash
+SCOPE="F0123"
+STAMP=$(date +%Y%m%d-%H%M%S)
+BRANCH="ticket-promote/${SCOPE}-${STAMP}"
+WT=".context/ticket-promote/${SCOPE}-${STAMP}"
+git worktree add -b "$BRANCH" "$WT" origin/main
+cd "$WT"
+```
+
+Write a manifest with commits, PRs, changed files, conflicts, checks, and final action.
+
+### 3. Apply changes
+
+Ticket mode uses the minimal isolated commit set:
+
+```bash
+git cherry-pick -x <sha1> <sha2> ...
+```
+
+If conflicts reveal an undeclared dependency on unrelated staging work, stop and report. Do not
+silently widen scope.
+
+### 4. Local checks
+
+Run project-appropriate local checks in the promotion worktree. Do not start dev servers unless
+project docs explicitly require it for a check.
+
+### 5. Land to main
+
+Create and merge a promotion PR, or use the repo's approved merge path:
+
+```bash
+git push -u origin "$BRANCH"
+gh pr create --base main --head "$BRANCH" --title "Promote F0123 to production" --body-file manifest.md
+gh pr merge --rebase --delete-branch
+```
+
+Use the merge strategy required by project policy if it differs.
+
+### 6. Status update
+
+After the promotion commit lands on `main`:
+
+```text
+update_ticket(status="to_verify_prod", reason="Promoted from staging to main; production verification pending")
+```
+
+Do not set `completed`; `/ticket-verify production` does that after evidence collection.
+
+## Output
+
+```text
+Ticket promote complete: F0123
+Promoted: staging -> main
+Status: to_verify_prod
+Deploy: not run
+Production verification: not run
+
+Next: /ticket-verify production F0123
+```

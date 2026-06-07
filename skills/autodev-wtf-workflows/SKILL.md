@@ -38,7 +38,7 @@ have caught this, and why didn't it?"
 |---|---|
 | Memory system didn't surface knowledge | `/autodev-wtf-memory` |
 | Need to find the bug's root cause | `/investigate` |
-| Broad system audit | `/consolidate` |
+| Broad system audit | `/dream` |
 | Learning moment after correction | `/compound` |
 | Bug not yet in production | Fix directly |
 

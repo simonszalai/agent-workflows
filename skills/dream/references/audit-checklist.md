@@ -41,41 +41,67 @@
 - Is the content self-contained and actionable?
 - Does the entry include WHY, not just WHAT?
 
+### F. Utility & Recall — does the entry earn its place?
+
+Borrowed from offline "memory consolidation" / agent "dreaming" research (Auto-Dreamer,
+Active Dreaming Memory). Dimensions A–C ask "is it true?"; this asks "would a future task fail
+or regress if it were gone?" An accurate but never-load-bearing entry is still token cost.
+
+The autodev-memory API exposes **no per-entry usage signals** (no recall count, query
+diversity, or last-surfaced timestamp — `get_entry`/`list_entries` return only `id`, `title`,
+`entry_type`, `summary`, `content`, `tags`, `repos`, `scope`, `created_at`, `updated_at`,
+`token_estimate`). So judge utility **structurally and counterfactually**, not from data:
+
+- **Counterfactual test:** Imagine the entry deleted. Does any realistic future task get worse
+  — a bug reintroduced, a settled decision relitigated, time wasted rediscovering it? If
+  nothing breaks, it does not earn its place.
+- **Discoverability:** Would the search pipeline ever surface it? An entry whose summary/tags
+  don't match the vocabulary of the tasks it should inform is effectively invisible — flag for
+  IMPROVE SUMMARY / RETAG, or DELETE if it has no audience at all.
+- **Redundant with always-loaded context:** If the fact is already obvious from CLAUDE.md, a
+  starred entry, or the code itself, it is dead weight.
+- **One-off trivia:** A detail that mattered for exactly one closed ticket and has no recurring
+  relevance rarely earns its place.
+
+Flag earn-its-place failures as **DELETE (low-utility)** candidates even when the content is
+accurate — and state in the reason that the deletion is on utility grounds, not correctness,
+so it isn't mistaken for a staleness call.
+
 ## Cross-Entry Analysis (Step 5)
 
-### F. Duplicates & Overlaps
+### G. Duplicates & Overlaps
 
 - Entries with similar titles covering the same topic.
 - Entries where one is a subset of another (the smaller one can be deleted).
 - Entries that say the same thing with different wording.
 
-### G. Merge Candidates
+### H. Merge Candidates
 
 - Multiple small entries on closely related topics that would be clearer as one entry.
 - Entries that form a natural group (e.g., 3 separate gotchas about the same library
   could become one "Library X Gotchas" entry).
 - Entries where merging would stay under ~1,500 tokens.
 
-### H. Split Candidates
+### I. Split Candidates
 
 - Entries over ~1,500 tokens that cover multiple distinct topics.
 - Entries where different sections have different scopes (part is global, part is
   project-specific).
 
-### I. Contradiction Detection
+### J. Contradiction Detection
 
 - Entries that give conflicting advice on the same topic.
 - A newer entry that implicitly contradicts an older one without superseding it.
 - Preferences that conflict with patterns or architecture entries.
 
-### J. Tag & Type Consistency
+### K. Tag & Type Consistency
 
 - Entries with missing or inconsistent tags.
 - Entries whose `entry_type` doesn't match their content (e.g., a "gotcha" that reads
   like a "reference").
 - Entries with fewer than 2 or more than 5 tags (outside the recommended range).
 
-### K. Tag Vocabulary Audit
+### L. Tag Vocabulary Audit
 
 Fetch the complete tag vocabulary for both scopes:
 
@@ -113,3 +139,29 @@ Analyze the full tag list for:
   Prefer singular.
 
 For each tag merge, identify all affected entries so the user knows the blast radius.
+
+### M. Abstraction Candidates
+
+Borrowed from "dreaming" consolidators that rewrite task-specific instances into general
+rules. Distinct from MERGE (combine two related entries into one) and SIMPLIFY (trim a single
+entry): abstraction **raises the altitude** of the knowledge so it covers cases that haven't
+happened yet.
+
+Look for:
+
+- **Instances of one rule.** Several narrow entries that are each a case of the same
+  underlying principle — e.g. "set `server_default` on table A's timestamp", "…on table B's
+  timestamp", "…on table C's" → one rule: "all timestamp columns need
+  `server_default CURRENT_TIMESTAMP`". Propose ABSTRACT into a single rule entry.
+- **An over-specific lone entry** whose lesson plainly generalizes beyond the one case it
+  documents. Propose rewriting it as the general rule, keeping the original case as a worked
+  example inside the entry.
+
+When proposing ABSTRACT:
+
+- Name every instance being subsumed so the user sees the blast radius.
+- Confirm the general rule loses **no** case-specific caveat that still matters. Abstraction is
+  forgetting-by-omission — it is only safe when the omitted specifics are genuinely redundant.
+  If an instance has a real exception, preserve it; do not flatten it into the rule.
+- Ground the rewrite in provenance (see SKILL.md principle 9): check what created each instance
+  before assuming they're interchangeable.

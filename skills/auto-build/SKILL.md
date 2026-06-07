@@ -54,6 +54,32 @@ branch. PR creation is deferred to `/auto-deploy`.
 UI polish (`/auto-polish-web`) runs as a separate sibling step orchestrated by
 `/auto-flow`, after auto-build and before auto-deploy.
 
+## Unrelated errors → fix them, in a separate commit
+
+While building, the type checker, linter, and reviewers will sometimes surface
+errors that are **not caused by this work** — pre-existing problems in files the
+ticket never touched, latent type errors, lint violations, dead imports, broken
+references, etc.
+
+Do not ignore them, and do not fold them into the feature/fix work. Instead:
+
+1. **Fix them** when the fix is clear and low-risk: a few lines, an obvious
+   correction, no behavior change to unrelated features.
+2. **Keep them out of the main diff.** Commit the unrelated fixes **separately**
+   from the ticket's work (its own commit, before the push in Phase 9), with their
+   own conventional message:
+   ```
+   fix: resolve pre-existing lint/type errors surfaced during /auto-build
+   ```
+   List the files and the specific errors fixed in the body.
+3. **Don't balloon scope.** If an unrelated error needs a real change (a risky
+   refactor, ambiguous intent, or it touches a feature you can't verify), do
+   **not** fix it — note it in the ticket and the final report as a follow-up.
+
+Track unrelated errors and their fixes as you encounter them across the build and
+review phases so Phase 9 can commit them as one clean, independently reviewable
+unit. This applies to `/auto-flow` too, since it delegates building to this skill.
+
 ## Detailed Process
 
 ### Phase 1: Validate and Setup
@@ -109,6 +135,11 @@ Run `/build` internally for each build todo:
 2. If still failing: Log details, continue to write tests phase
 3. Review will flag remaining issues
 
+**On unrelated type/lint errors** (pre-existing failures in files this ticket
+didn't touch): fix the clear, low-risk ones and track them for the separate
+commit in Phase 9; defer the risky/ambiguous ones to a follow-up note on the
+ticket. See [Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
+
 ### Phase 4: Write Tests
 
 Run `/write-tests {work-item-id}` internally:
@@ -147,6 +178,11 @@ For each finding in `review_todos/`:
 | p1 (critical)   | Auto-fix, these are clear bugs         |
 | p2 (important)  | Auto-fix, these improve quality        |
 | p3 (suggestion) | Auto-fix, these are worth implementing |
+
+Reviewers may also flag problems that are **unrelated** to this work (pre-existing
+issues in untouched code). Fix the clear, low-risk ones and track them for the
+separate Phase 9 commit; defer the rest as a follow-up note on the ticket. See
+[Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
 
 - Run `/resolve-review` logic
 - Re-run affected tests
@@ -202,6 +238,19 @@ Run `/create-deployment-guide` internally:
 Commit any remaining staged changes and push the **current** branch to the remote. **Do NOT
 create a PR here** — PR creation is the first action of `/auto-deploy`.
 
+First, if any **unrelated** lint/type/review fixes were made during the build (see
+[Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit)),
+commit just those files **on their own**, so the cleanup stays separate from the
+feature/fix diff and is independently reviewable/revertable:
+
+```bash
+# only if unrelated fixes exist — stage just those files explicitly
+git add <unrelated-files...>
+git commit -m "fix: resolve pre-existing lint/type errors surfaced during /auto-build"
+```
+
+Then commit the ticket's own outstanding changes and push:
+
 ```bash
 git add -A
 git commit -m "<descriptive message for any outstanding changes>" || true  # ok if nothing to commit
@@ -248,6 +297,8 @@ mcp__autodev-memory__update_ticket(
 | Build Todos  | Agent failure            | STOP, report                            |
 | Build        | Test failure             | Retry 2x, then continue                 |
 | Build        | Type error               | Attempt fix, continue                   |
+| Build/Resolve| Unrelated error, clear   | Fix it; commit separately in Phase 9    |
+| Build/Resolve| Unrelated error, risky   | Don't fix; note on ticket as follow-up  |
 | Write Tests  | Test creation fails      | Log, continue to review (non-blocking)  |
 | Write Tests  | New tests fail           | Fix tests, retry once, then continue    |
 | Review       | Agent failure            | Log, continue with partial review       |
@@ -284,6 +335,7 @@ Summary:
 - Tests: 15 passing / 15 total (8 unit, 5 integration, 2 e2e)
 - Verification: PASS
 - Review: 4 findings resolved
+- Unrelated fixes: 1 pre-existing lint error in untouched code (separate commit)
 
 Ticket: F0007 (status: ready_to_deploy_staging)
 

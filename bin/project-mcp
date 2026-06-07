@@ -266,7 +266,7 @@ ts_prod_postgres_value() {
 reap_stale_postgres() {
   local mypid=$$
   local parent=${PPID:-0}
-  ps -Ao pid,ppid,command 2>/dev/null | while IFS= read -r pid ppid rest; do
+  ps -Ao pid,ppid,command 2>/dev/null | while read -r pid ppid rest; do
     [[ "$ppid" == "1" ]] || continue
     [[ "$pid" == "$mypid" || "$pid" == "$parent" ]] && continue
     case "$rest" in
@@ -300,14 +300,19 @@ MCP_REMOTE_VERSION="${MCP_REMOTE_VERSION:-0.1.38}"
 # proxy orphans (reparents to PID 1) and piles up. We observed 12 stale autodev
 # proxies accumulate over one session, each holding an HTTP client to the
 # single-instance remote — which starves real requests until calls hang.
-# Scoped to the exact url so we never touch a different server's proxy, and
-# excludes our own process tree.
+#
+# CRITICAL: only reap ORPHANS (PPID 1), like reap_stale_postgres and the periodic
+# mcp-remote-reaper. The remote url (e.g. autodev-memory, render) is IDENTICAL
+# across every session, so a plain url-match — sparing only our own pid/ppid —
+# kills the LIVE proxy of every OTHER active session, disconnecting their MCP
+# mid-call. The proxies we actually want to reap (this session's reconnect/crash
+# leftovers) reparent to PID 1, so the orphan gate catches exactly them while a
+# live proxy from another session keeps a living parent (PPID != 1) and is spared.
 reap_stale_remote() {
-  local url="$1"
-  local mypid=$$
-  local ppid=${PPID:-0}
+  local url="$1" pid pp
   pgrep -f "mcp-remote.*${url}" 2>/dev/null | while IFS= read -r pid; do
-    [[ "$pid" == "$mypid" || "$pid" == "$ppid" ]] && continue
+    pp="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ "$pp" == "1" ]] || continue
     kill "$pid" 2>/dev/null || true
   done
 }

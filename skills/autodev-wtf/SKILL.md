@@ -33,7 +33,7 @@ a unified verdict.
 | Only workflow gap suspected | `/autodev-wtf-workflows` directly |
 | Need to find the bug's root cause | `/investigate` first, then `/autodev-wtf` |
 | Learning moment, not a prod bug | `/compound` |
-| Broad system audit | `/consolidate` |
+| Broad system audit | `/dream` |
 
 ## Process
 

@@ -33,6 +33,32 @@ These are hard rules. Never violate them:
 
 If you find yourself reaching for any of those, stop and report back instead.
 
+## Unrelated errors → fix them, in a separate commit
+
+While building, the type checker, linter, and reviewers will sometimes surface
+errors that are **not caused by this work** — pre-existing problems in files the
+task never touched, latent type errors, lint violations, dead imports, broken
+references, etc.
+
+Do not ignore them, and do not fold them into the main feature/fix commit. Instead:
+
+1. **Fix them** when the fix is clear and low-risk: a few lines, an obvious
+   correction, no behavior change to unrelated features.
+2. **Keep them out of the main diff.** Stage and commit the unrelated fixes
+   **separately** from the work commit, with their own conventional message:
+   ```
+   fix: resolve pre-existing lint/type errors surfaced during /lfg
+   ```
+   List the files and the specific errors fixed in the body.
+3. **Don't balloon scope.** If an unrelated error needs a real change (a risky
+   refactor, ambiguous intent, or it touches a feature you can't verify), do
+   **not** fix it — note it in the final report as a follow-up instead.
+
+The result is up to three independently reviewable commits: the Phase 0
+checkpoint (if any), the unrelated-fixes commit (if any), and the main work
+commit. Track unrelated errors and their fixes in `.context/unrelated-fixes.md`
+as you encounter them across phases.
+
 ## Usage
 
 ```
@@ -86,7 +112,12 @@ LFG detects its input source automatically:
 9.  Compound            -> /compound (learn from review, apply improvements)
 10. Deploy Guide        -> /create-deployment-guide
 11. Final commit        -> Commit the LFG work on the current branch (no push, no PR)
+                           + a separate commit for any unrelated lint/type/review fixes
 ```
+
+Throughout the build/review phases, unrelated errors surfaced by the type
+checker, linter, or reviewers are fixed and tracked for their **own** commit —
+see [Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
 
 ## Detailed Process
 
@@ -249,6 +280,12 @@ Run `/build` internally for each build todo:
 2. If still failing: Log details, continue to write tests phase
 3. Review will flag remaining issues
 
+**On unrelated type/lint errors** (pre-existing failures in files this work
+didn't touch): fix the clear, low-risk ones and record them in
+`.context/unrelated-fixes.md` for the separate commit in Phase 11. Leave the
+risky/ambiguous ones for the follow-up report. See
+[Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
+
 ### Phase 6: Write Tests
 
 Run `/write-tests` internally:
@@ -279,6 +316,12 @@ Run `/resolve-review` internally:
 | p1 (critical)   | Auto-fix, these are clear bugs         |
 | p2 (important)  | Auto-fix, these improve quality        |
 | p3 (suggestion) | Auto-fix, these are worth implementing |
+
+Reviewers may also flag problems that are **unrelated** to this work (pre-existing
+issues in untouched code). Fix the clear, low-risk ones and record them in
+`.context/unrelated-fixes.md` for the separate Phase 11 commit; defer the rest to
+the follow-up report. See
+[Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
 
 - Re-run affected tests after fixes
 - Run type checker
@@ -314,10 +357,20 @@ when they invoked `/lfg`. **Do not** create a branch, push, or open a PR.
 For each repo that LFG touched:
 
 1. Confirm still on the same branch as Phase 0.
-2. Stage only the files LFG changed (be specific — avoid `git add -A` so
-   unrelated working-tree state isn't swept in). If the user had pre-existing
-   uncommitted changes, those are already in the Phase 0 checkpoint commit.
-3. Create the final commit. Subject is a one-line conventional summary; the
+2. **Commit unrelated fixes first, separately.** If
+   `.context/unrelated-fixes.md` recorded any pre-existing lint/type/review
+   fixes, stage just those files and commit them on their own:
+   ```
+   fix: resolve pre-existing lint/type errors surfaced during /lfg
+   ```
+   List the files and specific errors in the body. This keeps the feature diff
+   clean and the cleanup independently reviewable/revertable. Skip this commit
+   if there were no unrelated fixes.
+3. Stage only the files LFG changed for the feature/fix itself (be specific —
+   avoid `git add -A` so unrelated working-tree state isn't swept in). If the
+   user had pre-existing uncommitted changes, those are already in the Phase 0
+   checkpoint commit.
+4. Create the final work commit. Subject is a one-line conventional summary; the
    body describes what was done and (briefly) why. Do not include a "Test
    plan" or PR-style sections — this is a commit, not a PR.
 
@@ -325,8 +378,10 @@ If multiple repos were touched, repeat per repo. Each repo gets its own
 checkpoint + final commit on its current branch. No cross-repo PRs.
 
 Report back with:
-- Each repo's branch name and the SHAs of the checkpoint + final commits
+- Each repo's branch name and the SHAs of the checkpoint + unrelated-fixes +
+  final commits (whichever were made)
 - A short summary of what was done
+- Any unrelated errors that were fixed (and which were deferred as too risky)
 - Any follow-ups the user may want to handle (uncommitted state, separate cleanup)
 
 ## Error Handling
@@ -344,6 +399,7 @@ Report back with:
 | Write Tests     | Test creation fails    | Log, continue to review (non-blocking)  |
 | Review          | Agent failure          | Log, continue with partial review       |
 | Resolve         | Fix introduces error   | Revert fix, mark as deferred            |
+| Build/Resolve   | Unrelated error, risky | Don't fix; record as a follow-up        |
 | Compound        | Analysis failure       | Log, continue (non-blocking)            |
 | Deploy Guide    | Generation failure     | Log, continue (non-blocking)            |
 | Final commit    | Commit fails           | Report; leave changes staged            |
@@ -360,6 +416,7 @@ All artifacts live in `.context/` (gitignored), not the ticket system:
 | `.context/plan.md`          | Phase 3         | Implementation plan              |
 | `.context/build_todos/`     | Phase 4         | Build steps                      |
 | `.context/review_todos/`    | Phase 7         | Review findings                  |
+| `.context/unrelated-fixes.md` | Phases 5/8    | Pre-existing errors fixed → separate commit |
 | `.context/deployment-guide.md` | Phase 10     | Deployment instructions          |
 
 ## Output
@@ -371,13 +428,15 @@ LFG complete!
 
 Branch: feature/whatever-was-checked-out
 Commits:
-  abc1234 chore: checkpoint before /lfg            # if Phase 0 made one
+  abc1234 chore: checkpoint before /lfg                        # if Phase 0 made one
+  bcd2345 fix: resolve pre-existing lint/type errors ...       # if any unrelated fixes
   def5678 fix: <one-line summary of LFG work>
 
 Summary:
 - Implemented user dashboard feature
 - Tests: 12 passing / 12 total (4 unit, 6 integration, 2 e2e)
 - Review: 3 iterations, all P1/P2 resolved
+- Unrelated fixes: 2 pre-existing type errors in untouched files (separate commit)
 
 Next: review the diff, then push and open a PR when you're ready.
 ```

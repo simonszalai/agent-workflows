@@ -156,8 +156,8 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                                       | Action                         |
 | ----------------------------------------------- | ------------------------------ |
-| "verify staging", "check staging"               | Run `/auto-verify staging`     |
-| "verify production", "verify deployed"          | Run `/auto-verify prod`        |
+| "verify staging", "check staging"               | Run `/ticket-verify staging`   |
+| "verify production", "verify deployed"          | Run `/ticket-verify production` |
 | "create deployment guide"                       | Run `/create-deployment-guide` |
 | "create PR", "make a PR", "open PR"             | Run `/create-pr`               |
 
@@ -165,8 +165,9 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                               | Action            |
 | --------------------------------------- | ----------------- |
-| "auto-build", "build it end to end"     | Run `/auto-build` |
-| "auto-fix", "fix this bug autonomously" | Run `/lfg`        |
+| "auto-build", "build this ticket end to end" | Run `/ticket-flow` |
+| "auto-flow", "ticket flow"              | Run `/ticket-flow` |
+| "auto-fix", "fix this bug autonomously" | Run `/lfg`         |
 
 ### Learning & Correction Detection
 
@@ -189,7 +190,7 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 | User says                                                       | Action                 |
 | --------------------------------------------------------------- | ---------------------- |
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
-| "consolidate memories", "audit memories", "clean up memories"   | Run `/consolidate`     |
+| "consolidate memories", "audit memories", "clean up memories", "dream" | Run `/dream`     |
 
 ### Ticket Management
 
@@ -266,21 +267,25 @@ IDs are **repo-scoped** — each repo maintains its own sequence per type prefix
 
 ### Ticket Statuses
 
-Full lifecycle (as used by the autonomous workflows):
+Canonical lifecycles live in `skills/references/ticket-lifecycle.md` and
+`skills/references/epic-lifecycle.md`. Short version:
 
-```
-backlog → planning → planned → approved → building → ready_to_deploy_staging
-                                                  → to_verify_staging
-                                                  → to_verify_prod
-                                                  → completed
-                                                  → abandoned
+```text
+# standalone ticket, direct main
+backlog → planning → planned → building → to_verify_prod → completed
+
+# standalone ticket, staging first
+backlog → planning → planned → building → to_verify_staging
+                                      → ticket-promote → to_verify_prod → completed
+
+# epic step ticket
+backlog → planning → planned → building → merged
 ```
 
-`active` is accepted as a synonym for the in-progress state when no finer-grained status
-fits. Use `update_ticket(status="...")` to advance the ticket. Skills like `/auto-plan`,
-`/auto-build`, `/auto-deploy`, `/auto-verify` set the more specific statuses (`planning`,
-`building`, `ready_to_deploy_staging`, `to_verify_staging`, `to_verify_prod`) as they
-progress.
+There is no `approved` ticket status; approval is the decision to leave `planned` and begin
+`building`. `active` is accepted only as a loose synonym when no finer-grained state fits.
+Ticket execution skills may land code, but deployment and environment verification are owned by
+`/ticket-verify` and `/ticket-promote` (or future epic gate orchestrators).
 
 ### Cross-Repository Tickets
 
@@ -310,9 +315,12 @@ create_ticket(
 
 ### Autonomous Workflows
 
-- `/auto-build`: Steps 2-8 + creates PR (for features with approved plans)
-- `/lfg`: Autonomous end-to-end (no tickets) — research -> plan -> build -> review -> PR
-- `/auto-flow`: Like `/lfg` but with full ticket lifecycle tracking (FNNN/BNNN)
+- `/ticket-flow`: Autonomous single-ticket execution — context -> plan/critique -> build -> review -> land; no deploy/verify
+- `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
+- `/ticket-verify`: Timer-friendly staging/production verification; staging PASS calls `/ticket-promote`
+- `/ticket-promote`: Promote staging-verified tickets to main; no production verification
+- `/epic-plan`, `/epic-split`, `/epic-milestone-flow`, `/epic-auto`: Epic/milestone orchestration over ticket-flow
+- `/auto-flow` and `/auto-verify`: Legacy aliases for `/ticket-flow` and `/ticket-verify`
 
 ## Knowledge System
 
