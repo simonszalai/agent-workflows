@@ -33,6 +33,17 @@ if [[ ! -f "$POSTGRES_MCP_PROJECT_DIR/pyproject.toml" ]]; then
   POSTGRES_MCP_PROJECT_DIR="/Users/simon/conductor/workspaces/ts-prefect/nairobi-v3"
 fi
 
+# uvx (ships with uv) — used by the read-only analyst entries to launch postgres-mcp
+# without a synced project venv (analyst machines don't have the ts-prefect dev env).
+UVX_BIN="${UVX_BIN:-}"
+if [[ -z "$UVX_BIN" || ! -x "$UVX_BIN" ]]; then UVX_BIN="$(command -v uvx 2>/dev/null || true)"; fi
+
+# Read-only analyst (e.g. Thomas): one 1Password item holds full READ-ONLY connection
+# strings + scoped tokens, read directly via `op read` (no mount file). Override these if
+# the vault/item/url differ. Consumed only by the ts:*_ro entries below.
+TS_ANALYST_OP_ITEM="${TS_ANALYST_OP_ITEM:-op://TS/Thomas Local Agent Secrets}"
+TS_ANALYST_AUTODEV_URL="${TS_ANALYST_AUTODEV_URL:-https://autodev-memory.onrender.com}"
+
 RESOLVED_VALUE=""
 
 typeset -gA MOUNT_CACHE
@@ -44,7 +55,12 @@ typeset -gA MOUNT_LOADED
 # triggers a 1Password biometric prompt. The mount-file lock also prevents partial /
 # interleaved reads when 1Password's Local destination is a FIFO that multiple
 # subprocesses open simultaneously.
-OP_SIGNIN_LOCK_DIR="${TS_MCP_MOUNT_FILE}.op-signin.lock"
+OP_SIGNIN_LOCK_DIR="${OP_SIGNIN_LOCK_DIR:-${TS_MCP_MOUNT_FILE}.op-signin.lock}"
+# On machines without Simon's 1Password mount (e.g. an analyst laptop), the derived path's
+# parent dir won't exist; fall back to a writable temp location so mkdir-based locking works.
+if [[ ! -d "${OP_SIGNIN_LOCK_DIR:h}" ]]; then
+  OP_SIGNIN_LOCK_DIR="${TMPDIR:-/tmp}/project-mcp.op-signin.lock"
+fi
 
 mount_lock_dir_for() {
   print -r -- "$1.lock"
@@ -228,6 +244,28 @@ ts_op_read() {
   op_read ts "$1"
 }
 
+# Read one field from the analyst 1Password item ($TS_ANALYST_OP_ITEM), reusing the same
+# signin single-flight lock as op_read so a parallel MCP startup burst (Claude Code /
+# Conductor spawning several servers at once) triggers at most one biometric prompt. Used by
+# the read-only ts:*_ro entries; resolves directly via `op read` with no mount file.
+analyst_read() {
+  local field="$1"
+  [[ -x "$OP_BIN" ]] || fail "1Password CLI not found for analyst MCP: $project/$server"
+  acquire_lock_dir "$OP_SIGNIN_LOCK_DIR" "1Password access"
+  {
+    if ! "$OP_BIN" whoami >/dev/null 2>&1; then
+      if [[ -n "$OP_ACCOUNT" ]]; then
+        "$OP_BIN" signin --account "$OP_ACCOUNT" >/dev/null
+      else
+        "$OP_BIN" signin >/dev/null
+      fi
+    fi
+    "$OP_BIN" read "$TS_ANALYST_OP_ITEM/$field"
+  } always {
+    release_lock_dir "$OP_SIGNIN_LOCK_DIR"
+  }
+}
+
 postgres_url_for_database() {
   local base_url="$1"
   local database_name="$2"
@@ -287,6 +325,17 @@ run_postgres_uri() {
   reap_stale_postgres
   export DATABASE_URI="$uri"
   exec "$UV_BIN" --project "$POSTGRES_MCP_PROJECT_DIR" run postgres-mcp --access-mode="$access_mode"
+}
+
+# Like run_postgres_uri but launches postgres-mcp via `uvx` (no synced project venv) — used
+# by the read-only analyst entries on machines without the ts-prefect dev environment.
+run_postgres_uvx() {
+  local uri="$1"
+  local access_mode="$2"
+  [[ -n "$UVX_BIN" && -x "$UVX_BIN" ]] || fail "uvx not found (install uv) — needed for analyst postgres MCP"
+  reap_stale_postgres
+  export DATABASE_URI="$uri"
+  exec "$UVX_BIN" postgres-mcp --access-mode="$access_mode"
 }
 
 # Pin mcp-remote for reproducibility (currently the latest published version).
@@ -371,6 +420,37 @@ case "$project:$server" in
   ts:render)
     token="$(ts_op_read TS_RENDER_API_KEY)"
     [[ -n "$token" ]] || fail "1Password returned empty TS_RENDER_API_KEY"
+    run_remote_bearer "https://mcp.render.com/mcp" "$token"
+    ;;
+
+  # --- Read-only analyst (e.g. Thomas) -------------------------------------------------
+  # Full read-only connection strings + scoped tokens, resolved directly from
+  # $TS_ANALYST_OP_ITEM via `op read`. Same project-mcp mechanism Simon uses; works under
+  # Conductor because each server resolves its own secret at spawn time. All postgres
+  # entries run in `restricted` (read-only) mode on top of a SELECT-only DB role.
+  ts:postgres_prod_ro)
+    RESOLVED_VALUE="$(analyst_read database_url_prod)"
+    [[ -n "$RESOLVED_VALUE" ]] || fail "1Password returned empty database_url_prod"
+    run_postgres_uvx "$RESOLVED_VALUE" restricted
+    ;;
+  ts:postgres_staging_ro)
+    RESOLVED_VALUE="$(analyst_read database_url_staging)"
+    [[ -n "$RESOLVED_VALUE" ]] || fail "1Password returned empty database_url_staging"
+    run_postgres_uvx "$RESOLVED_VALUE" restricted
+    ;;
+  ts:postgres_prod_prefect_ro)
+    RESOLVED_VALUE="$(analyst_read database_url_prod_prefect)"
+    [[ -n "$RESOLVED_VALUE" ]] || fail "1Password returned empty database_url_prod_prefect"
+    run_postgres_uvx "$RESOLVED_VALUE" restricted
+    ;;
+  ts:autodev_ro)
+    token="$(analyst_read autodev_token)"
+    [[ -n "$token" ]] || fail "1Password returned empty autodev_token"
+    run_remote_bearer "${TS_ANALYST_AUTODEV_URL%/}/mcp" "$token"
+    ;;
+  ts:render_ro)
+    token="$(analyst_read render_token)"
+    [[ -n "$token" ]] || fail "1Password returned empty render_token"
     run_remote_bearer "https://mcp.render.com/mcp" "$token"
     ;;
 
