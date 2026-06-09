@@ -44,7 +44,7 @@ directory is used.
 - Bugs: `B0023` (type: "bug")
 - Refactors: `R0023` (type: "refactor")
 
-**Statuses:** backlog, active, building, to_verify, completed, abandoned
+**Statuses:** backlog, up_next, in_progress, planned, merged, to_verify_prod, completed, abandoned
 
 **Context resolution:**
 ```
@@ -61,7 +61,7 @@ directory is used.
 **Steps:**
 
 1. **Determine ticket type and status:**
-   - Bug/incident → type: "bug", status: "active"
+   - Bug/incident → type: "bug", status: "in_progress" when investigation starts; otherwise "backlog"
    - Feature → type: "feature", status: "backlog"
 
 2. **Create ticket via MCP** (ID auto-generated):
@@ -72,9 +72,7 @@ directory is used.
      title="<title>",
      type="feature" | "bug",
      description="<description content>",
-     status="backlog" | "active",
-     priority="p1" | "p2" | null,
-     quarter="2026Q2",
+     status="backlog" | "in_progress",
      command="/curator", agent="ticket-curator"
    )
    ```
@@ -188,7 +186,7 @@ mcp__autodev-memory__update_ticket(
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="active" | "backlog" | "building" | "to_verify" | "completed" | "abandoned",
+  status="backlog" | "up_next" | "in_progress" | "planned" | "merged" | "to_verify_prod" | "completed" | "abandoned",
   reason="<optional reason for status change>",
   command="/curator", agent="ticket-curator"
 )
@@ -240,7 +238,7 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id="F0003", rep
 results = mcp__autodev-memory__search_tickets(project=PROJECT, query="keyword")
 
 # List by status
-tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="active", repo=REPO)
+tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="in_progress", repo=REPO)
 ```
 
 ## Output Guidelines

@@ -38,7 +38,7 @@ branch. PR creation is deferred to `/auto-deploy`.
 
 ```
 1.  Validate     -> Check ticket exists, plan artifact is present, on a feature branch
-2.  Setup        -> Set status to "building", verify environment (branch already exists)
+2.  Setup        -> Set status to "in_progress", verify environment (branch already exists)
 3.  Build Todos  -> /create-build-todos (deep research)
 4.  Build        -> /build (implement each step)
 5.  Write Tests  -> /write-tests (test coverage for new code)
@@ -96,11 +96,11 @@ unit. This applies to `/auto-flow` too, since it delegates building to this skil
      provides a dedicated branch; creating another one branches off mid-flow and causes
      confusion.
 
-3. **Set status to building:**
+3. **Set status to in_progress:**
    ```
    mcp__autodev-memory__update_ticket(
      project=PROJECT, ticket_id=ID, repo=REPO,
-     status="building",
+     status="in_progress",
      command="/auto-build"
    )
    ```

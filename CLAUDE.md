@@ -244,10 +244,10 @@ IDs are **repo-scoped** — each repo maintains its own sequence per type prefix
 |---|---|
 | `create_ticket` | Create a new ticket (description becomes source artifact) |
 | `get_ticket` | Get ticket with all artifacts and events |
-| `list_tickets` | List tickets filtered by status/type/priority/repo |
-| `update_ticket` | Update status, priority, title, etc. |
+| `list_tickets` | List tickets filtered by status/type/repo |
+| `update_ticket` | Update status, title, tags, epic assignment, etc. |
 | `search_tickets` | Semantic + BM25 search across all ticket artifacts |
-| `next_ticket` | Get highest-priority active ticket |
+| `next_ticket` | Get the next planned/backlog ticket |
 | `get_similar_tickets` | Find similar completed tickets |
 | `create_artifact` | Add plan, build_todo, review_todo, etc. to a ticket |
 | `update_artifact` | Update artifact content or status |
@@ -272,18 +272,19 @@ Canonical lifecycles live in `skills/references/ticket-lifecycle.md` and
 
 ```text
 # standalone ticket, direct main
-backlog → planning → planned → building → to_verify_prod → completed
+backlog → up_next → in_progress → planned → in_progress → to_verify_prod → completed
 
 # standalone ticket, staging first
-backlog → planning → planned → building → to_verify_staging
-                                      → ticket-promote → to_verify_prod → completed
+backlog → up_next → in_progress → planned → in_progress → to_verify_staging
+                                                → ticket-promote → to_verify_prod → completed
 
 # epic step ticket
-backlog → planning → planned → building → merged
+backlog → up_next → in_progress → planned → in_progress → merged
 ```
 
 There is no `approved` ticket status; approval is the decision to leave `planned` and begin
-`building`. `active` is accepted only as a loose synonym when no finer-grained state fits.
+work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
+are retired; use the single actual active-work status `in_progress`.
 Ticket execution skills may land code, but deployment and environment verification are owned by
 `/ticket-verify` and `/ticket-promote` (or future epic gate orchestrators).
 
@@ -303,14 +304,14 @@ create_ticket(
 
 ### Ticket Lifecycle
 
-1. **Create** — `create_ticket(status="backlog")` or `create_ticket(status="active")`
-2. **Start** — `update_ticket(status="active")`
+1. **Create** — `create_ticket(status="backlog")`
+2. **Start** — `update_ticket(status="in_progress")`
 3. **Plan** — `create_artifact(artifact_type="plan", content=...)`
 4. **Build todos** — `create_artifact(artifact_type="build_todo", sequence=N, ...)`
 5. **Build** — `update_artifact(status="in_progress")` then `update_artifact(status="complete")`
 6. **Review** — `create_artifact(artifact_type="review_todo", sequence=N, ...)`
 7. **Resolve** — `update_artifact(status="resolved")` for each review finding
-8. **Verify** — `update_ticket(status="to_verify")`
+8. **Verify** — `update_ticket(status="to_verify_prod")`
 9. **Close** — `update_ticket(status="completed")`
 
 ### Autonomous Workflows

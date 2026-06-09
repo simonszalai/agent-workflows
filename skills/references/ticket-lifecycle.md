@@ -14,7 +14,7 @@ verify. Verification and promotion are separate timer-friendly skills.
 ## Standalone ticket statuses
 
 ```text
-backlog -> planning -> planned -> building
+backlog -> up_next -> in_progress -> planned -> in_progress
 ```
 
 After a successful landing:
@@ -30,6 +30,23 @@ to_verify_staging -> verify_staging_failed
 
 Use `abandoned` and `on_ice` only for explicit cancellation/deprioritization.
 
+## Blockers are metadata, not statuses
+
+Do not create or use a `blocked` lifecycle status. Any lifecycle column can have a blocker.
+When work/deploy/verification is waiting on an external dependency, keep the ticket in the
+correct lifecycle status and set independent blocker metadata:
+
+- `blocked_at`
+- `blocked_by`
+- `blocked_reason`
+- `blocked_context`
+
+Example: after an automatable production deploy is complete, a ticket should still move to
+`to_verify_prod`. If verification is waiting on a Thomas-only `ts-decrypt-proxy` production
+deploy, set `blocked_by="Thomas"` and include `{"repo":"ts-decrypt-proxy","target":"production"}`
+in `blocked_context`. The dashboard shows this as a red blocker indicator in the normal status
+column.
+
 ## Epic-step ticket statuses
 
 Epic source tickets are parked as `absorbed_into_epic` and never land. Epic step tickets are
@@ -38,7 +55,7 @@ milestone/integration target, they move to `merged`; the parent epic or mileston
 staging/prod verification.
 
 ```text
-backlog -> planning -> planned -> building -> merged
+backlog -> up_next -> in_progress -> planned -> in_progress -> merged
 ```
 
 ## Required MCP support
@@ -54,4 +71,5 @@ migration is missing. Do not emulate status with tags or free-form metadata.
 ## Approval
 
 There is no `approved` ticket status. Approval is the decision to leave `planned` and start
-`building`.
+work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
+are retired; use `in_progress` for any ticket-related flow that has started.

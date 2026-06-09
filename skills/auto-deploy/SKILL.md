@@ -9,6 +9,12 @@ max_turns: 100
 Autonomous deployment that picks up `ready_to_deploy_staging` or `ready_to_deploy_production`
 tickets, deploys their PR to the target environment, and advances the ticket status.
 
+Auto-deploy is also the canonical place to record deployment blockers. "Blocked" is not a
+ticket lifecycle status: a ticket can be blocked in any column. If an automatable deployment
+finishes but a known external/manual dependency remains, advance the ticket to the correct next
+verification status and set the independent blocker metadata (`blocked_at`, `blocked_by`,
+`blocked_reason`, `blocked_context`) so the dashboard can show the red blocker indicator.
+
 ## Usage
 
 ```
@@ -62,7 +68,7 @@ must exist but can be in any active status (not `completed` or `abandoned`).
 7.  Merge PR       -> Merge PR to target branch
 8.  Deploy Steps   -> Run project-specific deployment steps for target environment
 9.  Verify         -> Confirm each deployment step succeeded
-10. Set Status     -> Update to next status based on target environment
+10. Set Status + Blockers -> Update next status and independent blocker metadata
 ```
 
 **PR creation moved here from auto-build.** Auto-build now pushes a feature branch
@@ -82,7 +88,7 @@ ticket = mcp__autodev-memory__get_ticket(
 - If not found: STOP - "Ticket not found"
 - Parse arguments: if second arg is `staging` or `production`, use as target override
 - If no override: check ticket status is `ready_to_deploy_staging` or `ready_to_deploy_production`
-- If override provided: accept any active ticket status
+- If override provided: accept any non-terminal ticket status
 - Determine target environment and corresponding deploy config
 
 ### Phase 2: Find or Create PR
@@ -193,6 +199,26 @@ blocks, Prefect config, DAG nodes, etc. Detect all categories it specifies.
 
 Store detection results for use in Phase 8.
 
+Also detect **external/manual deploy blockers**. These do not prevent advancing the ticket to the
+next verification status after all automatable deploy work is complete, but they must be recorded
+as blocker metadata before returning.
+
+Known blocker rules:
+
+| Condition | Blocker metadata |
+| --------- | ---------------- |
+| Ticket changes or depends on `ts-decrypt-proxy` production deployment | `blocked_by="Thomas"`, `blocked_reason="Waiting for Thomas to deploy ts-decrypt-proxy to production"`, `blocked_context={"repo":"ts-decrypt-proxy","target":"production","manual_deploy_owner":"Thomas"}` |
+
+How to detect the `ts-decrypt-proxy` blocker:
+
+- the ticket's primary repo is `ts-decrypt-proxy`; or
+- the ticket artifacts/deployment guide mention `ts-decrypt-proxy` production deployment; or
+- the diff/PR includes coordinated changes in `ts-decrypt-proxy`; or
+- the user/project memory says this ticket is waiting on a decrypt-proxy deploy.
+
+Operational memory to load when in doubt: "ts-decrypt-proxy production deployment is
+Thomas-only". Do not attempt to deploy `ts-decrypt-proxy` production yourself.
+
 ### Phase 7: Merge PR
 
 ```bash
@@ -268,7 +294,7 @@ Deployment verification:
   Project-specific:  [list each step and result]
 ```
 
-### Phase 10: Set Status
+### Phase 10: Set Status + Blockers
 
 Set status based on the target environment:
 
@@ -287,6 +313,36 @@ mcp__autodev-memory__update_ticket(
   command="/auto-deploy"
 )
 ```
+
+If a blocker was detected, set the status **and** blocker metadata in the same final update when
+the MCP surface supports it:
+
+```
+mcp__autodev-memory__update_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  status="to_verify_prod",
+  blocked=True,
+  blocked_by="Thomas",
+  blocked_reason="Waiting for Thomas to deploy ts-decrypt-proxy to production",
+  blocked_context={
+    "repo": "ts-decrypt-proxy",
+    "target": "production",
+    "manual_deploy_owner": "Thomas"
+  },
+  command="/auto-deploy"
+)
+```
+
+If the MCP tool schema in the current session has not yet refreshed to expose blocker fields,
+do not fall back to a fake `blocked` status and do not hide the blocker in `tags`. Instead:
+
+1. set the lifecycle status normally (`to_verify_prod` / `to_verify_staging`);
+2. add/log a ticket event or comment with the blocker details if available;
+3. explicitly report that blocker metadata could not be written because the MCP schema is stale
+   or the autodev-memory blocker migration/API is not deployed.
+
+When blocker metadata is written successfully, the dashboard should show the ticket in its normal
+status column with a red blocker indicator/hover card.
 
 ## On Failure — Revert Status
 

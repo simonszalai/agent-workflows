@@ -40,9 +40,23 @@ const LOCAL_TOKEN = process.env.MCP_GATEWAY_TOKEN || ""
 
 // One pooled agent per protocol, shared across ALL routes and sessions. This is
 // the connection pooling: bounded keep-alive sockets to each upstream host
-// instead of one fresh client per workspace.
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, keepAliveMsecs: 30_000 })
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, keepAliveMsecs: 30_000 })
+// instead of one fresh client per workspace. maxFreeSockets caps how many idle
+// sockets we retain per origin — keeping it small limits how many stale/half-open
+// sockets can pile up when an upstream (e.g. a Render instance) is recycled.
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8, keepAliveMsecs: 30_000 })
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8, keepAliveMsecs: 30_000 })
+
+// Time-to-first-byte guards. A pooled keep-alive socket whose peer was silently
+// torn down (Render idle-spindown / instance recycle behind Cloudflare, where TCP
+// keepalive can't detect the dead origin) black-holes our write: the request
+// would otherwise hang until OS TCP retransmit exhaustion (minutes). attempt 1
+// uses a short guard so we fail fast and retry; the retry opens a fresh socket
+// and uses a longer guard that also tolerates a genuine cold start.
+const FIRST_BYTE_MS = Number(process.env.MCP_GATEWAY_FIRST_BYTE_MS || 10_000)
+const RETRY_BYTE_MS = Number(process.env.MCP_GATEWAY_RETRY_BYTE_MS || 45_000)
+// Connection-level failures that are safe to retry on a fresh socket (only ever
+// before any response byte has been relayed to the client).
+const RETRYABLE = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ECONNABORTED", "EHOSTUNREACH", "ENETUNREACH"])
 
 function loadRoutes() {
 	const raw = JSON.parse(readFileSync(join(__dirname, "routes.json"), "utf8"))
@@ -137,22 +151,79 @@ const server = http.createServer((req, res) => {
 	const agent = target.protocol === "https:" ? httpsAgent : httpAgent
 	const transport = target.protocol === "https:" ? https : http
 
-	const upstream = transport.request(
-		target,
-		{ method: req.method, headers, agent },
-		(ures) => {
-			res.writeHead(ures.statusCode || 502, ures.headers)
-			ures.pipe(res)
-		},
-	)
-
-	upstream.on("error", (err) => {
-		log("upstream error", route.prefix, "->", target.host, String(err.message || err))
-		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" })
-		res.end(JSON.stringify({ error: `upstream error: ${String(err.message || err)}` }))
+	// Buffer the (small) MCP request body so a first attempt that lands on a dead
+	// pooled keep-alive socket can be transparently retried on a fresh one. MCP
+	// request bodies are short JSON POSTs (or empty GETs for SSE), so buffering is
+	// cheap and lets us send an accurate Content-Length instead of chunked.
+	let body = null
+	let clientAborted = false
+	const bodyChunks = []
+	req.on("data", (c) => bodyChunks.push(c))
+	req.on("aborted", () => { clientAborted = true })
+	req.on("error", () => { clientAborted = true })
+	req.on("end", () => {
+		if (clientAborted) return
+		body = bodyChunks.length ? Buffer.concat(bodyChunks) : null
+		if (body) headers["content-length"] = String(body.length)
+		else delete headers["content-length"]
+		send(1)
 	})
 
-	req.pipe(upstream)
+	// attempt 1 reuses the pooled socket with a short time-to-first-byte guard; if
+	// that socket is a half-open corpse the guard fires fast and attempt 2 opens a
+	// brand-new socket (agent:false) with a longer guard that also tolerates a
+	// Render cold start. We only ever retry before any response byte has been
+	// relayed, so the client sees exactly one clean response and a side-effecting
+	// call is never double-relayed mid-stream.
+	function send(attempt) {
+		const first = attempt === 1
+		let responded = false
+		let timer
+
+		const upstream = transport.request(
+			target,
+			{ method: req.method, headers, agent: first ? agent : false },
+			(ures) => {
+				responded = true
+				clearTimeout(timer)
+				res.writeHead(ures.statusCode || 502, ures.headers)
+				ures.pipe(res)
+			},
+		)
+
+		// TCP keepalive probes reap dead direct-origin sockets. (No help when a CDN
+		// keeps its edge socket up while the origin behind it is gone — that case is
+		// exactly what the time-to-first-byte guard below catches.)
+		upstream.on("socket", (s) => s.setKeepAlive(true, 15_000))
+
+		// Guard only the time to response *headers*, then clear it — never time out
+		// a healthy long-lived SSE stream that is legitimately idle after headers.
+		timer = setTimeout(() => {
+			if (!responded) {
+				upstream.destroy(Object.assign(new Error("upstream time-to-first-byte timeout"), { code: "ETIMEDOUT" }))
+			}
+		}, first ? FIRST_BYTE_MS : RETRY_BYTE_MS)
+
+		upstream.on("error", (err) => {
+			clearTimeout(timer)
+			const code = err.code || ""
+			const retryable = RETRYABLE.has(code) || /timeout|socket hang up/i.test(String(err.message))
+			if (first && retryable && !res.headersSent && !clientAborted) {
+				log("upstream retry", route.prefix, "->", target.host, code || String(err.message))
+				send(2)
+				return
+			}
+			log("upstream error", route.prefix, "->", target.host, String(err.message || err))
+			if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" })
+			res.end(JSON.stringify({ error: `upstream error: ${String(err.message || err)}` }))
+		})
+
+		// If the client disconnects before we finish, tear down the upstream too.
+		res.on("close", () => { if (!responded) upstream.destroy() })
+
+		if (body) upstream.end(body)
+		else upstream.end()
+	}
 })
 
 server.listen(PORT, HOST, () => {

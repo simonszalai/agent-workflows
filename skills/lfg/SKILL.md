@@ -81,7 +81,7 @@ as you encounter them across phases.
 | Aspect      | `/lfg`                                     | `/auto-flow`                          |
 | ----------- | ------------------------------------------ | ------------------------------------- |
 | Ticket      | No ticket created                          | Creates and manages ticket lifecycle  |
-| Status      | No status tracking                         | backlog -> planning -> planned -> ... |
+| Status      | No status tracking                         | backlog -> in_progress -> planned -> ... |
 | Artifacts   | Filesystem only (.context/)                | Stored in ticket system via MCP       |
 | Resume      | Cannot resume from ticket                  | Resume via BNNN/FNNN                  |
 | Branches    | Current branch only — no new branches      | May create branches                   |

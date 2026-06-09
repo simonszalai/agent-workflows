@@ -60,11 +60,11 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 
 ## Process
 
-1. **Set ticket status to building:**
+1. **Set ticket status to in_progress:**
    ```
    mcp__autodev-memory__update_ticket(
      project=PROJECT, ticket_id=ID, repo=REPO,
-     status="building",
+     status="in_progress",
      command="/build"
    )
    ```

@@ -32,7 +32,7 @@ one is created automatically.
 ```
 1.  Resolve Ticket -> Find existing ticket OR create one
 2.  OUTPUT         -> Print ticket ID immediately (FIRST output line)
-3.  Set Status     -> Update to "planning"
+3.  Set Status     -> Update to "in_progress"
 4.  Research       -> /research for features, /investigate for bugs
 5.  Plan           -> Spawn planner agent, create plan artifact
 6.  Set Status     -> Update to "planned"
@@ -92,12 +92,12 @@ ticket = mcp__autodev-memory__create_ticket(
 This single line is emitted immediately so the user (or calling agent) can reference the
 ticket while planning proceeds. All subsequent output follows after this line.
 
-### Phase 2: Set Status to Planning
+### Phase 2: Set Status to In Progress
 
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="planning",
+  status="in_progress",
   command="/auto-plan"
 )
 ```
