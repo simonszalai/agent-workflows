@@ -1,7 +1,8 @@
 ---
 name: investigator
 description: "Investigate issues using MCP tools. Spawned with a specific focus (database, infrastructure) and tool set."
-model: inherit
+model: sonnet
+effort: medium
 max_turns: 50
 skills:
   - investigate

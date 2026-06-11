@@ -1,7 +1,7 @@
 ---
 name: planner
 description: "Create implementation plans for fixes and features."
-model: inherit
+model: fable
 max_turns: 50
 skills:
   - plan
