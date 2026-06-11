@@ -6,8 +6,14 @@ max_turns: 100
 
 # Auto-Deploy Command
 
-Autonomous deployment that picks up `ready_to_deploy_staging` or `ready_to_deploy_production`
-tickets, deploys their PR to the target environment, and advances the ticket status.
+Autonomous deployment that picks up a unit ready to deploy, deploys its PR to the target
+environment, and advances its status. The **staging segment is epic-only**: a standalone
+ticket at `ready_to_deploy_production` deploys straight to prod (it never enters staging);
+an **epic** at `ready_to_deploy_staging` (an `epic_status`) deploys to staging first. Epic
+members are carried by the epic — they reach `merged` and are not deployed individually by a
+scheduled pickup. The per-member merge to main happens during the epic's **ordered prod
+promote**, which is part of the deferred epic-walk orchestrator — no per-member skill performs
+it today (it is hand-orchestrated).
 
 Auto-deploy is also the canonical place to record deployment blockers. "Blocked" is not a
 ticket lifecycle status: a ticket can be blocked in any column. If an automatable deployment
@@ -22,20 +28,23 @@ verification status and set the independent blocker metadata (`blocked_at`, `blo
 /auto-deploy F007 staging           # Deploy to staging (overrides ticket status detection)
 /auto-deploy F007 production        # Deploy to production (overrides ticket status detection)
 /auto-deploy B003                   # Deploy bug fix B003
-/auto-deploy                        # (scheduled) Pick up next ready_to_deploy_staging or ready_to_deploy_production ticket
+/auto-deploy                        # (scheduled) Pick up next standalone ticket at ready_to_deploy_production, or epic at ready_to_deploy_staging
 ```
 
 ## When to Use
 
-- After `/auto-build` completes and PR is ready (deploys to staging)
-- After staging verification passes (deploys to production)
-- Scheduled agent picks up `ready_to_deploy_staging` or `ready_to_deploy_production` tickets automatically
-- Manual trigger when you want to deploy a specific ticket
+- After `/auto-build` completes for a standalone ticket (deploys to production)
+- For an epic: after members are `merged` (deploys the epic to staging), and again after
+  staging verification passes (deploys to production)
+- Scheduled agent picks up standalone `ready_to_deploy_production` tickets and
+  `ready_to_deploy_staging` epics automatically
+- Manual trigger when you want to deploy a specific ticket or epic
 
 ## Prerequisites
 
-- Ticket must exist with status `ready_to_deploy_staging` or `ready_to_deploy_production`
-  (unless target is overridden via argument)
+- A standalone ticket at `ready_to_deploy_production`, or an epic at
+  `ready_to_deploy_staging` / `ready_to_deploy_production` (unless target is overridden via
+  argument)
 - Feature branch must exist on remote (created + pushed by `/auto-build`)
 - A PR is NOT required upfront — this skill creates the PR as its first action if one
   does not already exist for the branch
@@ -48,13 +57,14 @@ The target environment is determined by **argument override first**, then ticket
 1. If a second argument is provided (`staging` or `production`), use that directly
 2. Otherwise, infer from ticket status:
 
-| Ticket Status                | Deploy Target | Next Status          |
-| ---------------------------- | ------------- | -------------------- |
-| `ready_to_deploy_staging`    | Staging       | `to_verify_staging`  |
-| `ready_to_deploy_production` | Production    | `to_verify_prod`     |
+| Status                       | Applies to  | Deploy Target | Next Status          |
+| ---------------------------- | ----------- | ------------- | -------------------- |
+| `ready_to_deploy_staging`    | Epic only   | Staging       | `to_verify_staging`  |
+| `ready_to_deploy_production` | Ticket/Epic | Production    | `to_verify_prod`     |
 
-When the target is overridden via argument, the ticket status check is relaxed — the ticket
-must exist but can be in any active status (not `completed` or `abandoned`).
+The staging row writes `epic_status` on the epic; a standalone ticket only ever uses the
+production row. When the target is overridden via argument, the status check is relaxed — the
+unit must exist but can be in any active status (not `completed` or `abandoned`).
 
 ## Process Overview
 
@@ -299,15 +309,15 @@ Deployment verification:
 Set status based on the target environment:
 
 ```
-# For staging deploys:
-mcp__autodev-memory__update_ticket(
-  project=PROJECT, ticket_id=ID, repo=REPO,
+# For staging deploys (EPIC ONLY — to_verify_staging is an epic_status):
+mcp__autodev-memory__update_epic(
+  project=PROJECT, epic_id=EPIC_ID,
   status="to_verify_staging",
   command="/auto-deploy"
 )
 
-# For production deploys:
-mcp__autodev-memory__update_ticket(
+# For production deploys (standalone ticket, or the epic itself):
+mcp__autodev-memory__update_ticket(   # or update_epic for an epic
   project=PROJECT, ticket_id=ID, repo=REPO,
   status="to_verify_prod",
   command="/auto-deploy"
@@ -346,11 +356,20 @@ status column with a red blocker indicator/hover card.
 
 ## On Failure — Revert Status
 
-If deploy fails at any phase, revert status to what it was before:
+If deploy fails at any phase, revert status to what it was before — on the same unit that was
+being deployed (branch on unit type, mirroring Phase 10):
 
 ```
+# Standalone ticket deploy:
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
+  status="{original_status}",
+  command="/auto-deploy"
+)
+
+# Epic deploy (staging or prod) — original_status may be an epic-only value:
+mcp__autodev-memory__update_epic(
+  project=PROJECT, epic_id=EPIC_ID,
   status="{original_status}",
   command="/auto-deploy"
 )
@@ -370,7 +389,7 @@ mcp__autodev-memory__update_ticket(
 | Merge          | Merge failure        | STOP, report (don't change status)  |
 | Deploy Steps   | Step failure         | STOP at failed step, report         |
 | Deploy Steps   | Manual step needed   | Flag to user, wait for confirmation |
-| Verify         | Verification failure | Set status to verify_failed, report |
+| Verify         | Verification failure | Set verify_staging_failed (epic) / verify_prod_failed (ticket or epic), report |
 
 ## Output
 
@@ -409,7 +428,7 @@ Status reverted to: {original_status}
 
 | Command        | When to Use                                          |
 | -------------- | ---------------------------------------------------- |
-| `/auto-build`  | Previous step — creates PR, sets ready_to_deploy_staging |
-| `/auto-deploy` | This command — rebases, merges, deploys, verifies    |
+| `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / ready_to_deploy_production (standalone) |
+| `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies |
 | `/auto-verify` | Next step — verifies changes are working             |
 | `/deploy`      | Project-specific deployment (consumed by auto-deploy)|

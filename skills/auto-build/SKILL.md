@@ -28,7 +28,7 @@ branch. PR creation is deferred to `/auto-deploy`.
 
 ## Prerequisites
 
-- `plan.md` must exist
+- A `plan` artifact must exist on the ticket (read via `get_ticket`)
 - Must be on a feature branch — **not** `main` or `staging`. Conductor workspaces always
   start on a dedicated branch; cloud sessions are similarly pre-branched. Auto-build will
   refuse to run on `main` or `staging` and will NOT create a new branch on its own.
@@ -47,7 +47,7 @@ branch. PR creation is deferred to `/auto-deploy`.
 8.  Compound     -> /compound (learn from review, apply improvements)
 9.  Deploy Guide -> /create-deployment-guide (deployment instructions)
 10. Push Branch  -> Push the current branch to remote (NO PR created here)
-11. Set Status   -> Update to "ready_to_deploy_staging"
+11. Set Status   -> epic member -> "merged"; standalone ticket -> "ready_to_deploy_production"
 ```
 
 **This skill does NOT create a PR.** PR creation is the first action of `/auto-deploy`.
@@ -266,12 +266,23 @@ Reasons the PR is deferred to auto-deploy:
   artifacts (plan, build_todos, review_todos, polish_report, deployment_guide)
 - Aligns the PR lifecycle with the deploy lifecycle — one PR, one merge, one deploy
 
-### Phase 10: Set Status to Ready to Deploy Staging
+### Phase 10: Set Status (member vs standalone)
+
+Branch on epic membership — a ticket is an **epic member** iff its `epic_id` is set (check
+the `get_ticket` response from Phase 1):
 
 ```
+# Epic member: the epic owns staging/prod, so the member stops at `merged`.
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="ready_to_deploy_staging",
+  status="merged",
+  command="/auto-build"
+)
+
+# Standalone ticket: goes straight to the prod deploy queue (no staging segment).
+mcp__autodev-memory__update_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  status="ready_to_deploy_production",
   command="/auto-build"
 )
 ```
@@ -279,7 +290,7 @@ mcp__autodev-memory__update_ticket(
 ## On Failure — Revert Status
 
 If the build fails at any phase, revert status to the prior status the ticket had when
-auto-build started (typically `planned` or `approved`):
+auto-build started (typically `planned`):
 
 ```
 mcp__autodev-memory__update_ticket(
@@ -337,7 +348,7 @@ Summary:
 - Review: 4 findings resolved
 - Unrelated fixes: 1 pre-existing lint error in untouched code (separate commit)
 
-Ticket: F0007 (status: ready_to_deploy_staging)
+Ticket: F0007 (status: merged [epic member] | ready_to_deploy_production [standalone])
 
 Next: /auto-polish-web {ID} (UI polish, optional) then /auto-deploy {ID} (creates PR + deploys)
 ```
@@ -373,20 +384,18 @@ See ticket F0007 for partial progress
 
 ## Work Log Entry
 
-After completion, adds to `plan.md`:
-
-```markdown
-| YYYY-MM-DD | auto-build | Autonomous build complete | Branch: {name}, Status: {status} |
-```
+Progress is tracked via ticket status changes and artifacts (build_todos, review_todos,
+deployment_guide) in the MCP ticket system — the `update_ticket` status transitions are
+themselves logged as ticket events. No `plan.md` work-log file is written.
 
 ## Relation to Other Commands
 
 | Command                | When to Use                                          |
 | ---------------------- | ---------------------------------------------------- |
 | `/auto-plan`           | Previous step — creates plan, sets status to planned |
-| `/auto-build`          | This command — picks up approved, builds + pushes branch (no PR) |
+| `/auto-build`          | This command — picks up `planned`, builds + pushes branch (no PR) |
 | `/auto-polish-web`     | Next step (sibling) — UI polish on the pushed branch before deploy |
-| `/auto-deploy`         | Next step — deploys PR, sets to_verify_staging       |
+| `/auto-deploy`         | Next step — creates PR, deploys, sets to_verify_prod  |
 | `/auto-verify`         | After deploy — observes staging/prod, collects evidence |
 | `/build`               | For manual step-by-step building                     |
 | `/review`              | For manual review (auto-build includes this)         |

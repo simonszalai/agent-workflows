@@ -1,7 +1,8 @@
 ---
 name: build-planner
 description: "Create detailed build todos with deep research into patterns and rules."
-model: inherit
+model: fable
+effort: medium
 max_turns: 50
 skills:
   - create-build-todos

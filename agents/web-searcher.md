@@ -2,6 +2,7 @@
 name: web-searcher
 description: "Research external services, libraries, APIs, and documentation using web search. No browser required."
 model: sonnet
+effort: low
 max_turns: 50
 allowedTools:
   - WebSearch
