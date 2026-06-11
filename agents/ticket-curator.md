@@ -10,6 +10,7 @@ description: |
   - "document this rule" (when about work item conventions)
   Spawn this agent to handle work item CRUD operations while you continue with the main task.
 model: sonnet
+effort: low
 max_turns: 50
 skills:
 ---

@@ -84,13 +84,13 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 | Agent    | Model    | Review References                                                                    | Focus                                |
 | -------- | -------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
 | reviewer | `sonnet` | references/python-standards.md or typescript-standards.md, references/simplicity.md, references/patterns.md | Code quality, YAGNI, design patterns |
-| reviewer | `opus`   | references/architecture.md, references/security.md, references/performance.md        | Architecture, security, performance  |
+| reviewer | `fable`  | references/architecture.md, references/security.md, references/performance.md        | Architecture, security, performance  |
 
 **Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching):
 
 | Condition                        | Agent    | Model  | Review References                                                  | Select when diff touches...                |
 | -------------------------------- | -------- | ------ | ------------------------------------------------------------------ | ------------------------------------------ |
-| Database/model/migration changes | reviewer | `opus` | references/data-integrity.md, references/migrations.md, references/deployment.md | Model files, migrations, schema changes    |
+| Database/model/migration changes | reviewer | `fable` | references/data-integrity.md, references/migrations.md, references/deployment.md | Model files, migrations, schema changes    |
 | React/frontend changes           | reviewer | `sonnet` | references/react-router.md, references/react-performance.md       | React components, routes, hooks, UI state  |
 | Data pipeline changes            | reviewer | `sonnet` | references/data-adequacy.md                                       | Pipeline contracts, DAG nodes, data flow   |
 
@@ -232,7 +232,7 @@ reference issues caught in similar past implementations.
        reviewers: [
          { key: "code-quality", model: "sonnet", focus: "...",
            references: ["references/python-standards.md", ...] },
-         { key: "architecture-security-performance", model: "opus", focus: "...",
+         { key: "architecture-security-performance", model: "fable", focus: "...",
            references: ["references/architecture.md", ...] },
          // ...plus conditional + project-persona reviewers from step 3
        ],

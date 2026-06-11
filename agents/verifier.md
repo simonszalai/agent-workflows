@@ -2,6 +2,7 @@
 name: verifier
 description: "Observe environments to collect evidence that features are deployed and working. Strictly read-only."
 model: sonnet
+effort: medium
 max_turns: 50
 tools:
   [

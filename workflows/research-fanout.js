@@ -332,11 +332,11 @@ phase('Sweep')
 const initialCalls = [
   ...zones.map(z => () => agent(
     zonePrompt(z, question, repoRoot),
-    { label: `zone:${z.key}`, phase: 'Sweep', schema: searcherOutputSchema }
+    { label: `zone:${z.key}`, phase: 'Sweep', model: 'sonnet', schema: searcherOutputSchema }
   )),
   ...modalities.map(m => () => agent(
     modalityPrompt(m, question, repoRoot),
-    { label: `modality:${m.key}`, phase: 'Sweep', schema: searcherOutputSchema }
+    { label: `modality:${m.key}`, phase: 'Sweep', model: 'sonnet', schema: searcherOutputSchema }
   )),
 ]
 
@@ -411,7 +411,7 @@ while (iter < loopCap && dryRounds < 1) {
   const gapResults = await parallel(
     critic.gaps_identified.map((gap, i) => () => agent(
       gapFillerPrompt(gap, question, repoRoot),
-      { label: `gap:r${iter}:${gap.suggested_key || i}`, phase: 'Gap-fill loop', schema: searcherOutputSchema }
+      { label: `gap:r${iter}:${gap.suggested_key || i}`, phase: 'Gap-fill loop', model: 'sonnet', schema: searcherOutputSchema }
     ))
   )
 
