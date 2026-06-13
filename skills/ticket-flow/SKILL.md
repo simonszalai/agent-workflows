@@ -94,8 +94,9 @@ Follow `execution-phases.md`:
 - implement each step;
 - keep unrelated lint/type/review fixes in a separate commit;
 - write focused tests;
-- run review;
-- resolve safe findings;
+- run the cross-review iteration loop (review skill, `mode:cross`): each round adds external
+  Codex + Grok reviewers to Claude's self-review and resolves actionable findings, up to 3
+  rounds or until none remain;
 - stop for unresolved design decisions.
 
 ### 4. Local verification
