@@ -1,7 +1,9 @@
 ---
 name: planner
 description: "Create implementation plans for fixes and features."
-model: fable
+# TODO: revert to `model: fable` once available
+model: opus
+effort: xhigh
 max_turns: 50
 skills:
   - plan
