@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""external-review — run an external provider (Codex or Grok) as a code reviewer.
+
+Provider-independent cross-review adapter. Claude stays the in-process orchestrator;
+this script lets Claude delegate a *review pass* to a different model's CLI and get
+back findings in the exact same shape Claude's own reviewers produce, so the review
+skill can merge all of them with one synthesis path.
+
+Output: a single JSON object on stdout (or --out FILE) matching the reviewer-output
+contract used by workflows/review-fanout.js (reviewerOutputSchema):
+
+    { "reviewer_key": str, "findings": [...], "residual_risks": [...], "testing_gaps": [...] }
+
+That envelope (top-level "reviewer_key") is the integration contract. Each *finding item*
+follows skills/review/references/findings-schema.json — that schema file documents the item
+shape under a legacy "reviewer" wrapper key; the live consumer is reviewerOutputSchema, which
+wraps with "reviewer_key".
+
+The methodology fed to the external model is the *existing* review skill
+(skills/review/SKILL.md + the relevant references), so Codex and Grok review by the
+same rules as Claude's native reviewers — no provider-specific review logic.
+
+Usage:
+    external-review --provider codex|grok [--base origin/main] [--model M]
+                    [--repo DIR] [--out FILE] [--timeout SECS] [--skill-dir DIR]
+
+Exit codes: 0 ok; 2 provider produced no valid findings (a valid empty envelope with
+a residual_risk note is still printed); 1 usage/setup error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+# Always-on review references (mirror skills/review SKILL.md Step 2 "always-on" pair),
+# plus core simplicity/patterns. Language- and domain-specific refs are added by
+# select_references() based on the changed files.
+CORE_REFS = ["simplicity.md", "patterns.md", "architecture.md",
+             "security.md", "performance.md"]
+
+DIFF_CHAR_CAP = 180_000   # keep the prompt well under provider context limits
+GIT_TIMEOUT = 60          # seconds; git prep must not hang the whole run
+GROK_DEFAULT_MODEL = "grok-build"   # most capable agentic/reasoning grok; overridable
+VALID_SEVERITY = {"p1", "p2", "p3"}
+VALID_AUTOFIX = {"safe_auto", "gated_auto", "manual", "advisory"}
+VALID_OWNER = {"review-fixer", "downstream-resolver", "human"}
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"external-review: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- skill discovery
+def resolve_skill_dir(override: str | None) -> Path:
+    """Find skills/review. Works whether invoked from the repo or an installed path."""
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    env = os.environ.get("AGENT_WORKFLOWS_SKILLS")
+    if env:
+        candidates.append(Path(env) / "review")
+    home = Path.home()
+    candidates += [
+        home / ".claude" / "skills" / "review",
+        home / ".agents" / "skills" / "review",
+        # relative to this script: <repo>/bin/external-review -> <repo>/skills/review
+        Path(__file__).resolve().parent.parent / "skills" / "review",
+    ]
+    for c in candidates:
+        if (c / "SKILL.md").is_file():
+            return c
+    die("could not locate skills/review (set --skill-dir or AGENT_WORKFLOWS_SKILLS)")
+    raise AssertionError  # unreachable
+
+
+# ---------------------------------------------------------------- git diff
+def run_git(args: list[str], repo: Path) -> str:
+    try:
+        res = subprocess.run(["git", "-C", str(repo), *args],
+                             capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return ""
+    return res.stdout if res.returncode == 0 else ""
+
+
+def resolve_base(base: str, repo: Path) -> str:
+    """Use the requested base if it resolves; else fall back through sensible defaults."""
+    for ref in [base, "origin/main", "main", "origin/master", "master"]:
+        if not ref:
+            continue
+        try:
+            res = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", ref],
+                                 capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            continue
+        if res.returncode == 0:
+            return ref
+    die(f"no valid base ref (tried {base}, origin/main, main, ...)")
+    raise AssertionError
+
+
+def run_git_allow_fail(args: list[str], repo: Path) -> str:
+    """git that returns stdout even on non-zero exit (e.g. `diff --no-index` returns 1)."""
+    try:
+        res = subprocess.run(["git", "-C", str(repo), *args],
+                             capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return ""
+    return res.stdout
+
+
+def collect_diff(base: str, repo: Path) -> tuple[list[str], str, str]:
+    tracked = [f for f in run_git(["diff", "--name-only", base], repo).splitlines() if f]
+    # Untracked-but-not-ignored files won't show in `git diff` — include them so brand-new
+    # files get reviewed. We never mutate the index to do this.
+    untracked = [f for f in run_git(
+        ["ls-files", "--others", "--exclude-standard"], repo).splitlines() if f]
+    changed = tracked + untracked
+    stat = run_git(["diff", "--stat", base], repo)
+    diff = run_git(["diff", base], repo)
+    for f in untracked:
+        # --no-index against /dev/null renders the whole new file as an addition; exit 1.
+        # Append to BOTH the diffstat and the full diff so new files show in scope/size.
+        stat += run_git_allow_fail(["diff", "--stat", "--no-index", "--", "/dev/null", f], repo)
+        diff += "\n" + run_git_allow_fail(["diff", "--no-index", "--", "/dev/null", f], repo)
+    truncated = False
+    if len(diff) > DIFF_CHAR_CAP:
+        diff = diff[:DIFF_CHAR_CAP]
+        truncated = True
+    if truncated:
+        diff += ("\n\n[... diff truncated by external-review at "
+                 f"{DIFF_CHAR_CAP} chars — read files directly for the rest ...]")
+    return changed, stat, diff
+
+
+# ---------------------------------------------------------------- reference selection
+def select_references(changed: list[str], skill_dir: Path) -> list[str]:
+    refs = list(CORE_REFS)
+    has_py = any(f.endswith(".py") for f in changed)
+    has_ts = any(f.endswith((".ts", ".tsx")) for f in changed)
+    has_react = any(f.endswith(".tsx") for f in changed) or \
+        any("/components/" in f or "/routes/" in f for f in changed)
+    has_data = any(("/models/" in f and f.endswith(".py")) or "migrations/versions/" in f
+                   or "ts_schemas/models/" in f for f in changed)
+    if has_py:
+        refs.append("python-standards.md")
+    if has_ts:
+        refs.append("typescript-standards.md")
+    if has_react:
+        refs += ["react-router.md", "react-performance.md"]
+    if has_data:
+        refs += ["data-integrity.md", "migrations.md", "deployment.md"]
+    # de-dup preserving order, keep only refs that exist on disk
+    seen, out = set(), []
+    for r in refs:
+        if r in seen:
+            continue
+        seen.add(r)
+        if (skill_dir / "references" / r).is_file():
+            out.append(r)
+    return out
+
+
+def read_text(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------- prompt assembly
+OUTPUT_CONTRACT = """\
+## Your output contract (MANDATORY)
+
+Return EXACTLY ONE JSON object and nothing else — no prose, no markdown fences, no
+commentary before or after. It must match this shape:
+
+{
+  "reviewer_key": "<PROVIDER>",
+  "findings": [
+    {
+      "title": "short specific title (<= 10 words)",
+      "severity": "p1" | "p2" | "p3",
+      "file": "relative/path/from/repo/root",
+      "line": <integer >= 0>,
+      "why_it_matters": "what breaks or degrades, not just what is wrong",
+      "autofix_class": "safe_auto" | "gated_auto" | "manual" | "advisory",
+      "owner": "review-fixer" | "downstream-resolver" | "human",
+      "requires_verification": <bool>,
+      "suggested_fix": "<concrete minimal fix, or null>",
+      "confidence": <number 0.0-1.0>,
+      "evidence": ["code-grounded evidence, at least one item"],
+      "pre_existing": <bool>
+    }
+  ],
+  "residual_risks": ["risks noticed but not confirmed as findings"],
+  "testing_gaps": ["missing test coverage you identified"]
+}
+
+Rules:
+- Set "reviewer_key" to exactly "<PROVIDER>".
+- Empty "findings": [] is valid and correct when the diff is clean. Do NOT invent findings.
+- Apply the confidence/severity/autofix-class definitions from the review skill above.
+- Suppress speculative noise: confidence < 0.60 should not be reported (p1 may go to 0.50).
+- "evidence" must be non-empty for every finding.
+- You MAY read other files in the repository for context, but DO NOT modify any files.
+"""
+
+
+def build_prompt(provider: str, skill_dir: Path, refs: list[str],
+                 changed: list[str], stat: str, diff: str) -> str:
+    parts: list[str] = []
+    parts.append(
+        "You are an expert code reviewer invoked as an external cross-reviewer. "
+        "Review the diff below by the methodology that follows, and return findings "
+        "as strict JSON. You are one of several independent reviewers; another model "
+        "will merge your findings with others, so be precise and well-calibrated.\n")
+    parts.append("=" * 78)
+    parts.append("# REVIEW METHODOLOGY (skills/review/SKILL.md)\n")
+    parts.append(read_text(skill_dir / "SKILL.md"))
+    for r in refs:
+        parts.append("\n" + "=" * 78)
+        parts.append(f"# REFERENCE: references/{r}\n")
+        parts.append(read_text(skill_dir / "references" / r))
+    parts.append("\n" + "=" * 78)
+    parts.append(OUTPUT_CONTRACT.replace("<PROVIDER>", provider))
+    parts.append("\n" + "=" * 78)
+    parts.append("# CHANGES UNDER REVIEW\n")
+    parts.append(f"Changed files ({len(changed)}):\n" + "\n".join(changed) + "\n")
+    parts.append("Diffstat:\n" + stat + "\n")
+    parts.append("Full diff:\n```diff\n" + diff + "\n```\n")
+    parts.append(
+        f"\nNow review the changes above and output the single JSON object for "
+        f'reviewer_key "{provider}". Output JSON only.')
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------- codex strict schema
+def codex_strict_schema() -> dict:
+    """reviewerOutputSchema rebuilt for OpenAI strict mode: additionalProperties:false
+    everywhere and every property listed in required (optional fields become nullable)."""
+    finding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["title", "severity", "file", "line", "why_it_matters",
+                     "autofix_class", "owner", "requires_verification",
+                     "suggested_fix", "confidence", "evidence", "pre_existing"],
+        "properties": {
+            "title": {"type": "string"},
+            "severity": {"type": "string", "enum": ["p1", "p2", "p3"]},
+            "file": {"type": "string"},
+            "line": {"type": "integer"},
+            "why_it_matters": {"type": "string"},
+            "autofix_class": {"type": "string",
+                              "enum": ["safe_auto", "gated_auto", "manual", "advisory"]},
+            "owner": {"type": "string",
+                      "enum": ["review-fixer", "downstream-resolver", "human"]},
+            "requires_verification": {"type": "boolean"},
+            "suggested_fix": {"type": ["string", "null"]},
+            "confidence": {"type": "number"},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "pre_existing": {"type": "boolean"},
+        },
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["reviewer_key", "findings", "residual_risks", "testing_gaps"],
+        "properties": {
+            "reviewer_key": {"type": "string"},
+            "findings": {"type": "array", "items": finding},
+            "residual_risks": {"type": "array", "items": {"type": "string"}},
+            "testing_gaps": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+
+# ---------------------------------------------------------------- provider runners
+def run_codex(prompt: str, model: str | None, repo: Path, timeout: int) -> str:
+    """Returns the raw final-message text (expected to be the JSON object)."""
+    with tempfile.TemporaryDirectory() as td:
+        schema_file = Path(td) / "schema.json"
+        last_file = Path(td) / "last.json"
+        schema_file.write_text(json.dumps(codex_strict_schema()), encoding="utf-8")
+        cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo),
+               "-s", "read-only",
+               "--output-schema", str(schema_file),
+               "-o", str(last_file)]
+        if model:
+            cmd += ["-m", model]
+        try:
+            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.TimeoutExpired:
+            print("external-review: codex timed out", file=sys.stderr)
+            return ""
+        if last_file.is_file() and last_file.read_text(encoding="utf-8").strip():
+            return last_file.read_text(encoding="utf-8")
+        # No usable final message — surface a bounded slice of codex stderr for debugging.
+        err = (res.stderr or "").strip()
+        if err:
+            print("external-review: codex produced no output; stderr tail:\n"
+                  + err[-800:], file=sys.stderr)
+        return ""
+
+
+def run_grok(prompt: str, model: str | None, repo: Path, timeout: int) -> str:
+    """Returns the model's answer text (expected to be the JSON object)."""
+    with tempfile.TemporaryDirectory() as td:
+        prompt_file = Path(td) / "prompt.txt"
+        prompt_file.write_text(prompt, encoding="utf-8")
+        # No --always-approve: a reviewer must never auto-approve write/exec tools. The full
+        # diff is inlined in the prompt, so Grok can review without filesystem access; if it
+        # requests a tool it is left unapproved (fail-closed) and the --timeout backstops any
+        # hang. This keeps the Grok path read-only, matching codex's `-s read-only`.
+        cmd = ["grok", "--prompt-file", str(prompt_file),
+               "--output-format", "json",
+               "--cwd", str(repo),
+               "-m", model or GROK_DEFAULT_MODEL,
+               "--system-prompt-override",
+               "You are a meticulous code reviewer. Review only from the diff provided in "
+               "the prompt; do not modify any files. Output only the requested JSON object."]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return ""
+        out = res.stdout.strip()
+        if not out:
+            return ""
+        try:
+            env = json.loads(out)
+        except json.JSONDecodeError:
+            return out   # maybe grok already printed raw text
+        return env.get("text", "") if isinstance(env, dict) else ""
+
+
+# ---------------------------------------------------------------- parse / validate
+def extract_json_object(raw: str) -> dict | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    # strip markdown fences if present
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        if raw.rstrip().endswith("```"):
+            raw = raw.rstrip()[:-3]
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # fall back to the outermost {...} span
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(raw[start:end + 1])
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def owner_from_autofix(autofix: str) -> str:
+    if autofix == "safe_auto":
+        return "review-fixer"
+    if autofix in ("gated_auto", "manual"):
+        return "downstream-resolver"
+    return "human"
+
+
+def coerce_finding(f: object) -> dict | None:
+    """Light coercion of one finding; drop it if it can't be made schema-valid."""
+    if not isinstance(f, dict):
+        return None
+    title = str(f.get("title", "")).strip()
+    file = str(f.get("file", "")).strip()
+    why = str(f.get("why_it_matters", "")).strip()
+    if not title or not file or not why:
+        return None
+    sev = f.get("severity")
+    if sev not in VALID_SEVERITY:
+        sev = "p2"
+    autofix = f.get("autofix_class")
+    if autofix not in VALID_AUTOFIX:
+        autofix = "advisory"
+    owner = f.get("owner")
+    if owner not in VALID_OWNER:
+        owner = owner_from_autofix(autofix)
+    try:
+        line = max(0, int(f.get("line", 0)))
+    except (TypeError, ValueError):
+        line = 0
+    try:
+        conf = float(f.get("confidence", 0.6))
+    except (TypeError, ValueError):
+        conf = 0.6
+    conf = min(1.0, max(0.0, conf))
+    evidence = f.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        evidence = [title]
+    evidence = [str(e) for e in evidence if str(e).strip()] or [title]
+    sug = f.get("suggested_fix")
+    sug = sug if (sug is None or isinstance(sug, str)) else str(sug)
+    return {
+        "title": title[:100],
+        "severity": sev,
+        "file": file,
+        "line": line,
+        "why_it_matters": why,
+        "autofix_class": autofix,
+        "owner": owner,
+        "requires_verification": bool(f.get("requires_verification", False)),
+        "suggested_fix": sug,
+        "confidence": conf,
+        "evidence": evidence,
+        "pre_existing": bool(f.get("pre_existing", False)),
+    }
+
+
+def validate_envelope(obj: dict | None, provider: str) -> tuple[dict | None, str]:
+    if obj is None:
+        return None, "no JSON object found in output"
+    if "findings" not in obj or not isinstance(obj["findings"], list):
+        return None, "missing or non-array 'findings'"
+    findings, dropped = [], 0
+    for f in obj["findings"]:
+        cf = coerce_finding(f)
+        if cf is None:
+            dropped += 1
+        else:
+            findings.append(cf)
+    rr = obj.get("residual_risks")
+    tg = obj.get("testing_gaps")
+    env = {
+        "reviewer_key": provider,
+        "findings": findings,
+        "residual_risks": [str(x) for x in rr] if isinstance(rr, list) else [],
+        "testing_gaps": [str(x) for x in tg] if isinstance(tg, list) else [],
+    }
+    if dropped:
+        env["residual_risks"].append(
+            f"external-review: dropped {dropped} malformed finding(s) from {provider}")
+    return env, ""
+
+
+# ---------------------------------------------------------------- main
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="external-review", add_help=True)
+    ap.add_argument("--provider", required=True, choices=["codex", "grok"])
+    ap.add_argument("--base", default=os.environ.get("EXTERNAL_REVIEW_BASE", "origin/main"))
+    ap.add_argument("--model", default=None,
+                    help="model override (default: codex config default / grok-build)")
+    ap.add_argument("--repo", default=None, help="repo dir (default: git toplevel of cwd)")
+    ap.add_argument("--out", default=None, help="write envelope here (default: stdout)")
+    ap.add_argument("--timeout", type=int,
+                    default=int(os.environ.get("EXTERNAL_REVIEW_TIMEOUT", "900")))
+    ap.add_argument("--skill-dir", default=None)
+    args = ap.parse_args()
+
+    if shutil.which(args.provider) is None:
+        die(f"provider CLI '{args.provider}' not found on PATH")
+
+    if args.model is None:
+        env_model = os.environ.get(
+            "CODEX_REVIEW_MODEL" if args.provider == "codex" else "GROK_REVIEW_MODEL")
+        args.model = env_model  # may stay None -> provider default
+
+    repo = Path(args.repo) if args.repo else Path(
+        run_git(["rev-parse", "--show-toplevel"], Path.cwd()).strip() or ".")
+    if not (repo / ".git").exists() and not run_git(["rev-parse", "--git-dir"], repo):
+        die(f"not a git repository: {repo}")
+
+    skill_dir = resolve_skill_dir(args.skill_dir)
+    base = resolve_base(args.base, repo)
+    changed, stat, diff = collect_diff(base, repo)
+
+    def emit(env: dict, code: int) -> None:
+        text = json.dumps(env, indent=2)
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+        print(text)
+        sys.exit(code)
+
+    if not changed:
+        emit({"reviewer_key": args.provider, "findings": [],
+              "residual_risks": [f"no changes vs {base}"], "testing_gaps": []}, 0)
+
+    refs = select_references(changed, skill_dir)
+    prompt = build_prompt(args.provider, skill_dir, refs, changed, stat, diff)
+    runner = run_codex if args.provider == "codex" else run_grok
+
+    print(f"external-review: provider={args.provider} base={base} "
+          f"files={len(changed)} refs={len(refs)} "
+          f"model={args.model or '(default)'}", file=sys.stderr)
+
+    last_err = ""
+    for attempt in (1, 2):
+        p = prompt if attempt == 1 else (
+            prompt + f"\n\nYOUR PREVIOUS OUTPUT WAS REJECTED: {last_err}. "
+            "Re-emit ONLY one valid JSON object matching the contract — no other text.")
+        raw = runner(p, args.model, repo, args.timeout)
+        env, err = validate_envelope(extract_json_object(raw), args.provider)
+        if env is not None:
+            print(f"external-review: {args.provider} returned "
+                  f"{len(env['findings'])} finding(s) (attempt {attempt})", file=sys.stderr)
+            emit(env, 0)
+        last_err = err or "empty output"
+        print(f"external-review: attempt {attempt} invalid ({last_err})", file=sys.stderr)
+
+    # Both attempts failed — emit a valid empty envelope so the orchestrator can proceed.
+    emit({"reviewer_key": args.provider, "findings": [],
+          "residual_risks": [
+              f"external-review: {args.provider} failed to produce valid findings "
+              f"after 2 attempts ({last_err})"],
+          "testing_gaps": []}, 2)
+
+
+if __name__ == "__main__":
+    main()

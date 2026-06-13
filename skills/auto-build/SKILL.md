@@ -42,8 +42,8 @@ branch. PR creation is deferred to `/auto-deploy`.
 3.  Build Todos  -> /create-build-todos (deep research)
 4.  Build        -> /build (implement each step)
 5.  Write Tests  -> /write-tests (test coverage for new code)
-6.  Review       -> /review (parallel review agents)
-7.  Resolve      -> Auto-resolve p1/p2 findings
+6.  Review       -> /review mode:cross (Claude + Codex + Grok, merged)  ┐ cross-review
+7.  Resolve      -> Claude fixes actionable findings; re-review         ┘ loop, ≤3 rounds
 8.  Compound     -> /compound (learn from review, apply improvements)
 9.  Deploy Guide -> /create-deployment-guide (deployment instructions)
 10. Push Branch  -> Push the current branch to remote (NO PR created here)
@@ -157,36 +157,30 @@ Run `/write-tests {work-item-id}` internally:
 
 **On failure:** Log details, continue to review phase. Review will catch test gaps.
 
-### Phase 5: Review
+### Phase 5–6: Cross-Review Iteration Loop (review + resolve)
 
-Run `/review` internally:
+Run the **Cross-Review Iteration Loop** from the `review` skill instead of a single
+review-then-resolve pass. Each round:
 
-- Spawn review agents in parallel:
-  - `reviewer` (quality, YAGNI, patterns)
-  - `reviewer` (architecture, security, performance)
-  - `reviewer` (data — if database changes)
-- Store findings as review_todo artifacts
+1. Run `/review mode:cross` — Claude's native reviewers (quality/YAGNI/patterns;
+   architecture/security/performance; data if DB changes) **plus** external Codex and Grok
+   reviewers, dispatched in parallel via the `external-review` adapter. All findings merge
+   through one synthesis with a cross-provider confidence boost, and store as review_todo
+   artifacts.
+2. Resolve the actionable findings (Claude fixes — `safe_auto` inline, `gated_auto`/`manual`
+   via `/resolve-review` logic), re-run affected tests, run the type checker.
 
-**If `--review-pause`:** Stop here, notify user, wait for decisions.
+Repeat up to **3 rounds**, or stop earlier when the merged result has no actionable
+(`safe_auto`/`gated_auto`/`manual`) findings. `advisory` and gate-suppressed nits do not
+re-trigger a round. After round 3, surface any remaining `gated_auto`/`manual` findings.
 
-### Phase 6: Resolve Review Findings
+**If `--review-pause`:** stop after the first round's review, notify the user, wait for
+decisions.
 
-For each finding in `review_todos/`:
-
-| Priority        | Action                                 |
-| --------------- | -------------------------------------- |
-| p1 (critical)   | Auto-fix, these are clear bugs         |
-| p2 (important)  | Auto-fix, these improve quality        |
-| p3 (suggestion) | Auto-fix, these are worth implementing |
-
-Reviewers may also flag problems that are **unrelated** to this work (pre-existing
-issues in untouched code). Fix the clear, low-risk ones and track them for the
-separate Phase 9 commit; defer the rest as a follow-up note on the ticket. See
+Reviewers may also flag problems that are **unrelated** to this work (pre-existing issues in
+untouched code). Fix the clear, low-risk ones and track them for the separate Phase 9 commit;
+defer the rest as a follow-up note on the ticket. See
 [Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
-
-- Run `/resolve-review` logic
-- Re-run affected tests
-- Run type checker
 
 ### Phase 7: Compound Learnings
 

@@ -8,7 +8,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 - **Agents** - Tool-specific specialized agent roles (reviewer, planner, researcher, etc.)
 - **Hooks** - Shared shell hooks for autodev-memory context injection
 - **Commands** - Legacy Claude command wrappers kept only where still needed
-- **bin/** - Shared executables, notably `project-mcp` (the MCP launcher every repo's `.mcp.json` points at)
+- **bin/** - Shared executables: `project-mcp` (the MCP launcher every repo's `.mcp.json` points at) and `external-review` (cross-provider review adapter — runs Codex or Grok as a code reviewer that emits findings in Claude's review schema)
 
 ## Distribution
 
@@ -29,7 +29,11 @@ ln -s ~/dev/agent-workflows/skills ~/.agents/skills
 ln -s ~/dev/agent-workflows/hooks ~/.claude/hooks
 ln -s ~/dev/agent-workflows/hooks ~/.codex/hooks
 ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
+ln -s ~/dev/agent-workflows/bin/external-review ~/.local/bin/external-review
 ```
+
+`external-review` shells out to the `codex` and `grok` CLIs, so both must be installed and
+authenticated for `/review mode:cross` and the cross-review loop to use them.
 
 ### Cloud setup (automatic)
 

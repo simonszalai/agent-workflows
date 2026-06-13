@@ -17,6 +17,7 @@ modes for different contexts (interactive, autonomous, read-only, programmatic).
 /review F001 mode:autofix                # Autonomous — apply safe fixes only
 /review F001 mode:report-only            # Read-only — no mutations
 /review F001 mode:headless               # Programmatic — structured output for callers
+/review F001 mode:cross                  # Add external Codex + Grok reviewers, merge with Claude's
 /review F001 --deep                      # Force heavyweight workflow path (overrides gate)
 /review F001 --light                     # Force inline path (overrides gate, skips verify)
 ```
@@ -31,6 +32,7 @@ Parse `mode:` token from arguments. Default is interactive.
 | **Autofix** | `mode:autofix` | No user interaction. Apply safe_auto only, write artifacts, never commit/push |
 | **Report-only** | `mode:report-only` | Read-only. Review and report, no edits or artifacts |
 | **Headless** | `mode:headless` | Programmatic. Structured text output for skill-to-skill composition |
+| **Cross** | `mode:cross` | Autofix-style synthesis, but the reviewer set is extended with external Codex + Grok reviewers. See Cross-Provider Reviewers below. |
 
 ### Autofix mode rules
 
@@ -137,6 +139,89 @@ This is progress reporting, not a blocking confirmation.
 reference issues caught in similar past implementations.
 
 **All reviewer instances** return structured JSON per `references/findings-schema.json`.
+
+### Cross-Provider Reviewers (mode:cross)
+
+`mode:cross` keeps Claude as the orchestrator and self-reviewer (the native reviewers above
+run exactly as in any other mode) and **adds two external reviewers — Codex and Grok — that
+review the same diff by this same skill.** This catches model-specific blind spots: a finding
+all three providers independently surface is far more likely real, and the cross-reviewer
+confidence boost rewards that agreement automatically.
+
+External reviewers are not Claude subagents (Claude must stay in-process on the subscription —
+never shell out to `claude -p`). They are invoked through the `external-review` adapter
+(`bin/external-review` in agent-workflows; symlink it onto `PATH`). The adapter feeds the
+provider this skill (`SKILL.md` + the relevant `references/`) and the diff, and returns a
+**reviewer-output envelope** (`{reviewer_key, findings, residual_risks, testing_gaps}`) whose
+finding items match `references/findings-schema.json` — the exact shape Claude's own reviewers
+return, so external findings flow through the *same* synthesis path with no special-casing.
+
+Dispatch both providers **in parallel** with the Claude native reviewers (they each take
+1–3 minutes, so never serialize them):
+
+```bash
+base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
+mkdir -p .context/review
+external-review --provider codex --base "$base" --out .context/review/codex.json \
+  2>.context/review/codex.log &
+external-review --provider grok  --base "$base" --out .context/review/grok.json \
+  2>.context/review/grok.log &
+wait
+```
+
+Then fold the two envelopes into the reviewer set:
+
+1. Read `.context/review/codex.json` and `.context/review/grok.json`. Each is one reviewer
+   output (`reviewer_key` = `codex` / `grok`). A provider that failed still returns a valid
+   envelope with empty `findings` and a `residual_risks` note (adapter exit 2) — it simply
+   contributes no findings; surface its note but do not block.
+2. Add codex and grok to the reviewer list passed into synthesis alongside the Claude native
+   reviewers. **Do not run a separate synthesis for them** — they are reviewers, not a second
+   review.
+3. Run the normal synthesis (light inline or heavy `review-fanout`): dedup by
+   `(file, normalized title, |line diff| ≤ 3)`, then the cross-reviewer boost
+   `confidence += 0.10 * (reviewers.length - 1)` now counts Codex and Grok as reviewers, so a
+   finding Claude + Codex + Grok all report is boosted by +0.20. Gate, partition, route as usual.
+
+Finding handling follows the **autofix** rules (apply `safe_auto`, write artifacts for the
+rest, never commit). `mode:cross` is the per-round review used by the Cross-Review Iteration
+Loop below.
+
+`.context/review/*.json` are ephemeral inter-agent scratch consumed immediately by synthesis —
+correct use of `.context/` per the File Storage Rules. The merged findings are persisted as
+review artifacts exactly as in any other mode.
+
+### Cross-Review Iteration Loop
+
+The loop autonomous orchestrators use to drive build → review → fix → re-review with external
+providers. Provider-neutral; lives here so `auto-build`, `ticket-flow`
+(via `references/execution-phases.md`), and `lfg` all share one definition.
+
+```
+round = 1
+while round <= 3:
+    run /review mode:cross          # Claude self-review ∥ Codex ∥ Grok, merged + deduped + boosted
+    actionable = partitions.inSkillFixer + partitions.residualActionable
+                 # i.e. findings routed to review-fixer (safe_auto) or
+                 #      downstream-resolver (gated_auto | manual)
+    if actionable is empty:
+        break                       # converged — only advisory / gate-suppressed nits remain
+    Claude resolves actionable findings (apply safe_auto inline; resolve gated_auto/manual)
+    re-run affected tests + type check
+    round += 1
+```
+
+**Termination — break when EITHER holds:**
+
+- the merged result has **no actionable findings** — actionable means at or above the
+  autofix/gated tiers (`safe_auto`, `gated_auto`, `manual`). `advisory` findings and
+  confidence-gate-suppressed (<0.60) nits do **not** keep the loop alive; or
+- **3 rounds** have run. Do not loop forever chasing literal agreement — after round 3, stop
+  and surface any remaining `gated_auto`/`manual` findings for a human.
+
+**Cost note:** each round spawns 2 external CLI agents (run in parallel). The loop is the
+expensive part of the workflow, which is why termination is aggressive — only genuinely
+actionable findings re-trigger a round.
 
 ## Process
 

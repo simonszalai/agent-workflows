@@ -107,8 +107,8 @@ LFG detects its input source automatically:
 4.  Build Todos         -> /create-build-todos (deep research into implementation steps)
 5.  Build               -> /build (implement each step)
 6.  Write Tests         -> /write-tests (test coverage for new code)
-7.  Review              -> /review (parallel review agents)
-8.  Resolve             -> /resolve-review (auto-fix p1/p2/p3 findings)
+7.  Review              -> /review mode:cross (Claude + Codex + Grok, merged)  ┐ cross-review
+8.  Resolve             -> Claude fixes actionable findings; re-review         ┘ loop, ≤3 rounds
 9.  Compound            -> /compound (learn from review, apply improvements)
 10. Deploy Guide        -> /create-deployment-guide
 11. Final commit        -> Commit the LFG work on the current branch (no push, no PR)
@@ -297,34 +297,27 @@ Run `/write-tests` internally:
 
 **On failure:** Log details, continue to review phase (non-blocking).
 
-### Phase 7: Review
+### Phase 7–8: Cross-Review Iteration Loop (review + resolve)
 
-Run `/review` internally:
+Run the **Cross-Review Iteration Loop** from the `review` skill. Each round:
 
-- Spawn review agents in parallel:
-  - `reviewer` (quality, YAGNI, patterns)
-  - `reviewer` (architecture, security, performance)
-  - `reviewer` (data — if database changes)
-- Store findings in `.context/review_todos/`
+1. Run `/review mode:cross` — Claude's native reviewers (quality/YAGNI/patterns;
+   architecture/security/performance; data if DB changes) **plus** external Codex and Grok
+   reviewers dispatched in parallel via the `external-review` adapter, all merged through one
+   synthesis with a cross-provider confidence boost. Store findings in `.context/review_todos/`.
+2. Resolve the actionable findings (Claude fixes — `safe_auto` inline, `gated_auto`/`manual`
+   via `/resolve-review` logic), re-run affected tests, run the type checker.
 
-### Phase 8: Resolve Review Findings
-
-Run `/resolve-review` internally:
-
-| Priority        | Action                                 |
-| --------------- | -------------------------------------- |
-| p1 (critical)   | Auto-fix, these are clear bugs         |
-| p2 (important)  | Auto-fix, these improve quality        |
-| p3 (suggestion) | Auto-fix, these are worth implementing |
+Repeat up to **3 rounds**, or stop earlier when no actionable
+(`safe_auto`/`gated_auto`/`manual`) findings remain. `advisory` and gate-suppressed nits do
+not re-trigger a round. After round 3, record any remaining `gated_auto`/`manual` findings in
+the follow-up report.
 
 Reviewers may also flag problems that are **unrelated** to this work (pre-existing
 issues in untouched code). Fix the clear, low-risk ones and record them in
 `.context/unrelated-fixes.md` for the separate Phase 11 commit; defer the rest to
 the follow-up report. See
 [Unrelated errors → fix them, in a separate commit](#unrelated-errors--fix-them-in-a-separate-commit).
-
-- Re-run affected tests after fixes
-- Run type checker
 
 ### Phase 9: Compound Learnings
 

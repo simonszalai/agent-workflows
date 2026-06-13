@@ -13,11 +13,15 @@ its existing ticketless `.context` behavior and is not changed by this reference
 5. **Build todos** — create detailed implementation steps with discovered patterns/gotchas.
 6. **Build** — implement in dependency order; keep unrelated fixes in a separate commit.
 7. **Write tests** — add focused tests for the changed behavior.
-8. **Review** — run code/architecture/data/domain reviewers as applicable.
-9. **Resolve review** — auto-apply safe fixes; stop on unresolved design decisions.
-10. **Local verification** — run targeted checks and project health commands.
-11. **Land if policy allows** — merge to `main` or `staging`; no deploy; no environment verify.
-12. **Status update** — set the ticket/epic-step state according to ticket-lifecycle.md.
+8. **Review + resolve (cross-review loop)** — run the Cross-Review Iteration Loop from the
+   `review` skill: each round runs `/review mode:cross` (Claude self-review plus external Codex
+   and Grok reviewers, merged and deduped with a cross-provider confidence boost), then Claude
+   resolves the actionable findings. Repeat up to 3 rounds, or stop earlier when no actionable
+   (`safe_auto`/`gated_auto`/`manual`) findings remain. Stop on unresolved design decisions and
+   surface any remaining `gated_auto`/`manual` findings for a human.
+9. **Local verification** — run targeted checks and project health commands.
+10. **Land if policy allows** — merge to `main` or `staging`; no deploy; no environment verify.
+11. **Status update** — set the ticket/epic-step state according to ticket-lifecycle.md.
 
 ## Plan critic loop
 
