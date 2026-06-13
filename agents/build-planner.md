@@ -1,8 +1,9 @@
 ---
 name: build-planner
 description: "Create detailed build todos with deep research into patterns and rules."
-model: fable
-effort: medium
+# TODO: revert to `model: fable` (effort: medium) once available
+model: opus
+effort: xhigh
 max_turns: 50
 skills:
   - create-build-todos

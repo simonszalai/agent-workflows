@@ -412,7 +412,8 @@ if (validDrafts.length === 1) {
 } else {
   synthesized = await agent(
     synthesizePrompt(question, validDrafts, repoRoot, priorKnowledge),
-    { label: 'synthesize', phase: 'Synthesize', model: 'fable', schema: draftOutputSchema }
+    // TODO: revert to model: 'fable' once available (effort xhigh not settable via agent())
+    { label: 'synthesize', phase: 'Synthesize', model: 'opus', schema: draftOutputSchema }
   )
   if (!synthesized || !synthesized.plan) {
     log('Synthesis failed; falling back to first draft')
@@ -450,7 +451,8 @@ if (validCritiques.length === 0 || totalFindings === 0) {
 } else {
   final = await agent(
     revisePrompt(synthesized.plan, validCritiques, question, codebaseResearch, repoRoot, priorKnowledge),
-    { label: 'revise', phase: 'Revise', model: 'fable', schema: revisedOutputSchema }
+    // TODO: revert to model: 'fable' once available (effort xhigh not settable via agent())
+    { label: 'revise', phase: 'Revise', model: 'opus', schema: revisedOutputSchema }
   )
   if (!final || !final.plan) {
     log('Revision failed; returning synthesized plan unrevised')
