@@ -8,7 +8,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 - **Agents** - Tool-specific specialized agent roles (reviewer, planner, researcher, etc.)
 - **Hooks** - Shared shell hooks for autodev-memory context injection
 - **Commands** - Legacy Claude command wrappers kept only where still needed
-- **bin/** - Shared executables: `project-mcp` (the MCP launcher every repo's `.mcp.json` points at) and `external-review` (cross-provider review adapter — runs Codex or Grok as a code reviewer that emits findings in Claude's review schema)
+- **bin/** - Shared executables: `project-mcp` (the MCP launcher every repo's `.mcp.json` points at) and `external-agent` (cross-provider adapter — runs Codex or Grok as a review reviewer, investigation hypothesis generator, or research searcher, each emitting results in Claude's native schema for that task; `external-review` is a back-compat shim for `external-agent --task review`)
 
 ## Distribution
 
@@ -29,11 +29,16 @@ ln -s ~/dev/agent-workflows/skills ~/.agents/skills
 ln -s ~/dev/agent-workflows/hooks ~/.claude/hooks
 ln -s ~/dev/agent-workflows/hooks ~/.codex/hooks
 ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
-ln -s ~/dev/agent-workflows/bin/external-review ~/.local/bin/external-review
+ln -s ~/dev/agent-workflows/bin/external-agent ~/.local/bin/external-agent
+ln -s ~/dev/agent-workflows/bin/external-review ~/.local/bin/external-review   # back-compat shim
 ```
 
-`external-review` shells out to the `codex` and `grok` CLIs, so both must be installed and
-authenticated for `/review mode:cross` and the cross-review loop to use them.
+`external-agent` shells out to the `codex` and `grok` CLIs, so both must be installed and
+authenticated. Cross-provider participation is **on by default** in `/review`, `/investigate`,
+and `/research` (opt out per-run with `mode:solo` / `--solo`). Both providers run **read-only
+with repo access** so they can grep/read code to ground their output — Codex via `-s read-only`,
+Grok via a read/search-only tool allowlist (`--tools Read,Grep,Glob`, no Bash/Write/Edit).
+Neither can modify the repo.
 
 ### Cloud setup (automatic)
 

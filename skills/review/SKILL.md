@@ -17,14 +17,25 @@ modes for different contexts (interactive, autonomous, read-only, programmatic).
 /review F001 mode:autofix                # Autonomous — apply safe fixes only
 /review F001 mode:report-only            # Read-only — no mutations
 /review F001 mode:headless               # Programmatic — structured output for callers
-/review F001 mode:cross                  # Add external Codex + Grok reviewers, merge with Claude's
+/review F001 mode:cross                  # Explicit alias for the default (Claude + Codex + Grok)
+/review F001 mode:solo                   # Opt OUT of external reviewers — Claude native only (fast/cheap)
 /review F001 --deep                      # Force heavyweight workflow path (overrides gate)
 /review F001 --light                     # Force inline path (overrides gate, skips verify)
 ```
 
 ## Mode Detection
 
-Parse `mode:` token from arguments. Default is interactive.
+Two orthogonal axes:
+
+1. **Synthesis style** — parse the `mode:` token. Default is interactive.
+2. **Reviewer set** — external cross-provider reviewers (Codex + Grok) are **ON by default**
+   in every synthesis style. `mode:solo` turns them off (Claude native reviewers only).
+   `mode:cross` is an explicit alias for the default and exists only so callers can be
+   explicit; it is identical to passing no reviewer-set token.
+
+So a plain `/review` runs Claude's native reviewers **plus** Codex and Grok, merged through
+one synthesis path. See **Cross-Provider Reviewers** below for the mechanics. Use `mode:solo`
+when you want a fast, cheap, Claude-only pass (e.g. a quick manual sanity check).
 
 | Mode | When | Behavior |
 | ---- | ---- | -------- |
@@ -32,7 +43,8 @@ Parse `mode:` token from arguments. Default is interactive.
 | **Autofix** | `mode:autofix` | No user interaction. Apply safe_auto only, write artifacts, never commit/push |
 | **Report-only** | `mode:report-only` | Read-only. Review and report, no edits or artifacts |
 | **Headless** | `mode:headless` | Programmatic. Structured text output for skill-to-skill composition |
-| **Cross** | `mode:cross` | Autofix-style synthesis, but the reviewer set is extended with external Codex + Grok reviewers. See Cross-Provider Reviewers below. |
+| **Cross** (default reviewer set) | `mode:cross` or no token | Extend the reviewer set with external Codex + Grok reviewers. See Cross-Provider Reviewers below. **On by default.** |
+| **Solo** | `mode:solo` | Opt OUT of external reviewers — Claude native reviewers only. Fast/cheap. |
 
 ### Autofix mode rules
 
@@ -140,21 +152,29 @@ reference issues caught in similar past implementations.
 
 **All reviewer instances** return structured JSON per `references/findings-schema.json`.
 
-### Cross-Provider Reviewers (mode:cross)
+### Cross-Provider Reviewers (default; opt out with `mode:solo`)
 
-`mode:cross` keeps Claude as the orchestrator and self-reviewer (the native reviewers above
-run exactly as in any other mode) and **adds two external reviewers — Codex and Grok — that
-review the same diff by this same skill.** This catches model-specific blind spots: a finding
-all three providers independently surface is far more likely real, and the cross-reviewer
-confidence boost rewards that agreement automatically.
+External reviewers are **on by default**. Unless the caller passed `mode:solo`, you MUST run
+the dispatch block below — it is a required step of the review, not an optional enhancement.
+Do not skip it, summarize it, or simulate its output by reasoning about what Codex/Grok
+"would" say; the only valid way to add their findings is to actually run the commands and read
+the files they write. Skipping the shell-out is the one failure mode that silently drops
+cross-provider coverage.
+
+This keeps Claude as the orchestrator and self-reviewer (the native reviewers above run exactly
+as always) and **adds two external reviewers — Codex and Grok — that review the same diff by
+this same skill.** This catches model-specific blind spots: a finding all three providers
+independently surface is far more likely real, and the cross-reviewer confidence boost rewards
+that agreement automatically.
 
 External reviewers are not Claude subagents (Claude must stay in-process on the subscription —
-never shell out to `claude -p`). They are invoked through the `external-review` adapter
-(`bin/external-review` in agent-workflows; symlink it onto `PATH`). The adapter feeds the
-provider this skill (`SKILL.md` + the relevant `references/`) and the diff, and returns a
-**reviewer-output envelope** (`{reviewer_key, findings, residual_risks, testing_gaps}`) whose
-finding items match `references/findings-schema.json` — the exact shape Claude's own reviewers
-return, so external findings flow through the *same* synthesis path with no special-casing.
+never shell out to `claude -p`). They are invoked through the `external-agent` adapter
+(`bin/external-agent` in agent-workflows, symlinked onto `PATH`; the legacy `external-review`
+name still works as a `--task review` shim). The adapter feeds the provider this skill
+(`SKILL.md` + the relevant `references/`) and the diff, and returns a **reviewer-output
+envelope** (`{reviewer_key, findings, residual_risks, testing_gaps}`) whose finding items match
+`references/findings-schema.json` — the exact shape Claude's own reviewers return, so external
+findings flow through the *same* synthesis path with no special-casing.
 
 Dispatch both providers **in parallel** with the Claude native reviewers (they each take
 1–3 minutes, so never serialize them):
@@ -162,9 +182,9 @@ Dispatch both providers **in parallel** with the Claude native reviewers (they e
 ```bash
 base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
 mkdir -p .context/review
-external-review --provider codex --base "$base" --out .context/review/codex.json \
+external-agent --task review --provider codex --base "$base" --out .context/review/codex.json \
   2>.context/review/codex.log &
-external-review --provider grok  --base "$base" --out .context/review/grok.json \
+external-agent --task review --provider grok  --base "$base" --out .context/review/grok.json \
   2>.context/review/grok.log &
 wait
 ```

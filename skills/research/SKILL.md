@@ -17,6 +17,7 @@ findings as a ticket artifact.
 /research "how is error handling done"                   # Creates new research ticket
 /research F0014 "..." --deep                             # Force heavyweight workflow path
 /research F0014 "..." --light                            # Force single-agent path
+/research F0014 "..." --solo                             # Skip external Codex searcher (Claude only)
 ```
 
 ## When to Use
@@ -239,6 +240,48 @@ ticket = mcp__autodev-memory__create_ticket(
    The light path must zero-fill the loop-related stats (`gap_iterations: 0`,
    `gaps_identified: 0`, `gaps_filled: 0`) and report `loop_iterations: 0`. Downstream
    step 5 must not branch on path.
+
+4c. **Cross-provider searchers (on by default — both paths):**
+
+   After the chosen path produces its occurrences, add external Codex and Grok searchers that
+   answer the same question over the same repo **unless** the user passed `--solo`. Both run
+   read-only with real repo access (Codex via its sandbox, Grok via a read/search-only tool
+   allowlist), so they grep and read files independently — an occurrence multiple searchers
+   find is the dominant pattern; one only an external provider finds is a coverage gap Claude's
+   sweep missed. This is a required step, not optional: you MUST run the commands below and
+   read the files they write. Do NOT simulate their output.
+
+   External providers are not Claude subagents (Claude stays in-process on the subscription —
+   never shell out to `claude -p`). They run through the `external-agent` adapter
+   (`bin/external-agent` in agent-workflows, symlinked onto `PATH`) and each returns a searcher
+   envelope `{key, files_searched, occurrences, summary, questions_for_synthesis}` whose
+   occurrence items match `occurrenceSchema` in `workflows/research-fanout.js` — the same shape
+   your searchers produce, so they merge with no special-casing.
+
+   ```bash
+   mkdir -p .context/research
+   # Write the question to a file so it survives shell quoting.
+   Q="$(cat .context/research/question.txt)"
+   external-agent --task research --provider codex --question "$Q" \
+     --out .context/research/codex.json 2>.context/research/codex.log &
+   external-agent --task research --provider grok  --question "$Q" \
+     --out .context/research/grok.json 2>.context/research/grok.log &
+   wait
+   ```
+
+   Then fold both envelopes into the occurrence set:
+
+   1. Read `.context/research/codex.json` and `.context/research/grok.json`. A failed run still
+      returns a valid envelope with empty `occurrences` and a note — surface the note, do not block.
+   2. Merge external occurrences into `result.occurrences`, deduping by `(file, line,
+      pattern_variant)`. For each occurrence, append the provider key to its `sources`; an
+      occurrence found by both a Claude searcher and an external provider is multi-source (the
+      strongest signal).
+   3. Add `codex`/`grok` to `result.modalities_searched` and fold `files_searched` /
+      `questions_for_synthesis` into the coverage stats and `residual_gaps` as appropriate.
+
+   `.context/research/*.json` are ephemeral inter-agent scratch consumed immediately by
+   synthesis — correct use of `.context/` per the File Storage Rules.
 
 5. **Render and store the artifact:**
 
