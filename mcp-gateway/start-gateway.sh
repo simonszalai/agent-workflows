@@ -59,11 +59,42 @@ op_read() { # item-ref key
   "$OP_BIN" read "$1/$2"
 }
 
+# Join a base postgres URL and a database name, preserving any query string.
+# Mirrors bin/project-mcp's postgres_url_for_database so prod URLs come out identical.
+postgres_url_for_database() { # base-url database-name
+  local base="$1" db="$2" head tail
+  if [[ "$base" == *\?* ]]; then head="${base%%\?*}"; tail="?${base#*\?}"; else head="$base"; tail=""; fi
+  head="${head%/}"
+  print -r -- "$head/$db$tail"
+}
+
 export AUTODEV_MEMORY_API_TOKEN="${MOUNT[AUTODEV_MEMORY_API_TOKEN]:-}"
 export CONTEXT7_API_KEY="${MOUNT[CONTEXT7_API_KEY]:-}"
 export TS_RENDER_API_KEY="$(op_read "$TS_OP_ITEM" TS_RENDER_API_KEY)"
 export AMARU_RENDER_API_KEY="$(op_read "$AMARU_OP_ITEM" AMARU_RENDER_API_KEY)"
 export WORKFLOW_RENDER_API_KEY="$(op_read "$WORKFLOW_OP_ITEM" WORKFLOW_RENDER_API_KEY)"
+
+# --- Phase 2: postgres DATABASE_URIs (resolved ONCE; mirror bin/project-mcp) ---
+# The daemon spawns one long-lived `postgres-mcp --transport sse` per DB from these,
+# replacing the per-workspace `project-mcp ts postgres_*` stdio spawns (and their
+# per-workspace 1Password reads). Direct mount values:
+export TS_POSTGRES_DEV_URL="${MOUNT[TS_DEV_DATABASE_URL]:-}"
+export TS_POSTGRES_STAGING_URL="${MOUNT[TS_STAGING_DATABASE_URL_EXTERNAL]:-}"
+export TS_POSTGRES_AUTODEV_TS_URL="${MOUNT[TS_PROD_MEM_TS_DATABASE_URL_EXTERNAL]:-}"
+# Prod + prod_prefect: base URL is a high-sensitivity op:// read, joined with the DB
+# name from the mount (same as project-mcp's ts_prod_postgres_value). One `op read`,
+# in the same biometric window as the render tokens above.
+ts_prod_base="$(op_read "$TS_OP_ITEM" TS_PROD_POSTGRES_URL_BASE 2>/dev/null || true)"
+if [[ -n "$ts_prod_base" ]]; then
+  export TS_POSTGRES_PROD_URL="$(postgres_url_for_database "$ts_prod_base" "${MOUNT[TS_PROD_DATABASE_NAME]:-}")"
+  export TS_POSTGRES_PROD_PREFECT_URL="$(postgres_url_for_database "$ts_prod_base" "${MOUNT[TS_PROD_PREFECT_DATABASE_NAME]:-}")"
+else
+  print -u2 "mcp-gateway: warning — TS_PROD_POSTGRES_URL_BASE empty; ts/postgres_prod* routes will 502 until set"
+fi
+
+# postgres-mcp launcher the daemon spawns (one SSE server per DB). Absolute path to the
+# ts-prefect dev venv binary by default; override POSTGRES_MCP_BIN for another env.
+export POSTGRES_MCP_BIN="${POSTGRES_MCP_BIN:-/Users/simon/dev/ts-prefect/.venv/bin/postgres-mcp}"
 
 export MCP_GATEWAY_HOST="${MCP_GATEWAY_HOST:-127.0.0.1}"
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"

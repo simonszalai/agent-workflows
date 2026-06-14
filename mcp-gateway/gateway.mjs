@@ -29,6 +29,8 @@ import https from "node:https"
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
+import { spawn, execFileSync } from "node:child_process"
+import { Transform } from "node:stream"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -61,8 +63,16 @@ const RETRYABLE = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "
 function loadRoutes() {
 	const raw = JSON.parse(readFileSync(join(__dirname, "routes.json"), "utf8"))
 	// Sort prefixes longest-first so "/ts/postgres_prod_prefect" wins over "/ts".
+	// Keys starting with "_" are comments, not routes.
 	return Object.entries(raw.routes)
-		.map(([prefix, def]) => ({ prefix: prefix.replace(/^\/|\/$/g, ""), ...def }))
+		.filter(([prefix]) => !prefix.startsWith("_"))
+		.map(([prefix, def]) => {
+			const r = { prefix: prefix.replace(/^\/|\/$/g, ""), ...def }
+			// `spawn` routes are local children we supervise; their proxy target is the
+			// loopback port the child binds. Derive it so the proxy path is uniform.
+			if (r.spawn && !r.target) r.target = `http://127.0.0.1:${r.spawn.port}`
+			return r
+		})
 		.sort((a, b) => b.prefix.length - a.prefix.length)
 }
 
@@ -70,6 +80,137 @@ let ROUTES = loadRoutes()
 
 function log(...args) {
 	console.log(new Date().toISOString(), ...args)
+}
+
+// --- Phase 2: locally-supervised stdio MCP children (postgres-mcp over SSE) -----------
+// `spawn` routes are NOT remote upstreams: the daemon launches one long-lived child per
+// route, binds it to a loopback port, and proxies to it. This replaces the per-workspace
+// `project-mcp ts postgres_*` stdio spawns — secrets are resolved ONCE (start-gateway.sh
+// exports DATABASE_URIs), children are daemon-owned (so they die with the daemon instead
+// of orphaning), and the DB connection pool is shared across every workspace's sessions.
+const children = new Map() // prefix -> { proc, port, restarts, aliveTimer }
+let shuttingDown = false
+
+// Reap stray children from a previously-crashed daemon so their ports are free. We match
+// the exact `--sse-port <port>` we are about to bind, so we never touch another project's
+// or another tool's processes. (The daemon itself has no `--sse-port` in its argv.)
+function reapStrayChildren(ports) {
+	for (const port of ports) {
+		let out = ""
+		try {
+			// NOTE: macOS pgrep uses BSD extended regex — no `\b`. Anchor the port with a
+			// TRAILING SPACE instead (our children always pass `--sse-port <port> --access-mode…`,
+			// so the port is always followed by a space). This both works on BSD ERE and stops
+			// `8811` from matching `88110`.
+			out = execFileSync("pgrep", ["-f", `postgres-mcp.*--sse-port ${port} `], { encoding: "utf8" })
+		} catch {
+			continue // pgrep exits non-zero when nothing matches
+		}
+		for (const pid of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
+			try {
+				process.kill(Number(pid), "SIGTERM")
+				log(`reaped stray postgres-mcp pid=${pid} (:${port})`)
+			} catch {}
+		}
+	}
+}
+
+function startSpawnRoute(route) {
+	const s = route.spawn
+	const url = process.env[s.urlEnv]
+	if (!url) {
+		log(`spawn ${route.prefix}: env ${s.urlEnv} is unset — route will 502 until the daemon is restarted with it set`)
+		return
+	}
+	const bin = s.bin || process.env.POSTGRES_MCP_BIN || "postgres-mcp"
+	const args = ["--transport", "sse", "--sse-host", "127.0.0.1", "--sse-port", String(s.port), "--access-mode", s.accessMode || "restricted"]
+	// DATABASE_URI goes in the env, never argv, so the connection string stays out of `ps`.
+	const proc = spawn(bin, args, { env: { ...process.env, DATABASE_URI: url }, stdio: ["ignore", "pipe", "pipe"] })
+
+	const entry = children.get(route.prefix) || { restarts: 0 }
+	entry.proc = proc
+	entry.port = s.port
+	children.set(route.prefix, entry)
+
+	const tag = `[${route.prefix}]`
+	proc.stdout.on("data", (d) => log(tag, String(d).trimEnd()))
+	proc.stderr.on("data", (d) => log(tag, String(d).trimEnd()))
+	// Reset the restart counter once a child has been stable for a minute, so an
+	// occasional crash much later doesn't inherit a long backoff.
+	entry.aliveTimer = setTimeout(() => { entry.restarts = 0 }, 60_000)
+
+	proc.on("exit", (code, sig) => {
+		clearTimeout(entry.aliveTimer)
+		if (shuttingDown) return
+		const backoff = Math.min(30_000, 500 * 2 ** entry.restarts)
+		entry.restarts += 1
+		log(`spawn ${route.prefix} exited (code=${code} sig=${sig}); respawning in ${backoff}ms`)
+		setTimeout(() => { if (!shuttingDown) startSpawnRoute(route) }, backoff)
+	})
+	proc.on("error", (err) => {
+		// spawn failure (e.g. ENOENT: bad POSTGRES_MCP_BIN) emits "error" but NOT "exit",
+		// so the exit handler never runs. Clear the alive-timer and drop the stale Map entry
+		// so the route isn't wedged forever — a later SIGHUP (or restart) can retry it.
+		clearTimeout(entry.aliveTimer)
+		if (children.get(route.prefix) === entry) children.delete(route.prefix)
+		log(`spawn ${route.prefix} failed: ${String(err.message || err)}`)
+	})
+	log(`spawned ${route.prefix} -> postgres-mcp sse 127.0.0.1:${s.port} (${s.accessMode})`)
+}
+
+function startAllSpawnRoutes() {
+	const spawnRoutes = ROUTES.filter((r) => r.spawn)
+	if (!spawnRoutes.length) return
+	reapStrayChildren(spawnRoutes.map((r) => r.spawn.port))
+	for (const r of spawnRoutes) startSpawnRoute(r)
+}
+
+function shutdown(sig) {
+	if (shuttingDown) return
+	shuttingDown = true
+	const signum = sig === "SIGINT" ? 2 : 15
+	log(`received ${sig}; stopping ${children.size} child(ren) and exiting`)
+	for (const { proc } of children.values()) {
+		try { proc.kill("SIGTERM") } catch {}
+	}
+	// Exit with 128+signum (NOT 0) so launchd's KeepAlive(SuccessfulExit=false) still
+	// auto-restarts after an external kill — matching the pre-Phase-2 behavior where the
+	// signal itself (no handler) produced an "unsuccessful" exit. We just reap our
+	// children first so they don't orphan. A real `launchctl unload` removes the job (no
+	// restart); system shutdown won't restart either.
+	setTimeout(() => process.exit(128 + signum), 1500).unref()
+}
+
+// Rewrite the SSE `endpoint` event so a path-prefixed client POSTs back through THIS
+// route. postgres-mcp's legacy SSE transport advertises an absolute POST path
+// (`event: endpoint\ndata: /messages/?session_id=...`); resolved against the gateway
+// origin that would be `/messages/...` — a 404 here. We prepend the route prefix so it
+// becomes `/<prefix>/messages/?session_id=...`. Only the first (tiny, ASCII) endpoint
+// event is buffered/scanned; once rewritten, all further bytes pass through untouched so
+// SSE framing/flushing is unaffected. The trailing newline in the match guarantees we
+// only rewrite a COMPLETE data line (never a path split across chunks).
+function sseEndpointRewriter(prefix) {
+	let done = false
+	let buf = ""
+	const CAP = 64 * 1024
+	// `^…/m` anchors to a line start so we only match a real `endpoint` event frame, never
+	// the same text appearing inside an SSE comment line (`: event: endpoint`).
+	const re = /(^event:[ \t]*endpoint[ \t]*\r?\n)(data:[ \t]*)(\/[^\r\n]*)(\r?\n)/m
+	const finish = (self) => { self.push(buf); buf = ""; done = true }
+	return new Transform({
+		transform(chunk, _enc, cb) {
+			if (done) { this.push(chunk); return cb() }
+			buf += chunk.toString("utf8")
+			if (re.test(buf)) {
+				buf = buf.replace(re, (_m, ev, d, p, nl) => ev + d + prefix + p + nl)
+				finish(this)
+			} else if (buf.length >= CAP) {
+				finish(this) // endpoint event not found in a reasonable window — pass through as-is
+			}
+			cb()
+		},
+		flush(cb) { if (!done) finish(this); cb() },
+	})
 }
 
 function matchRoute(pathname) {
@@ -100,7 +241,18 @@ const server = http.createServer((req, res) => {
 	// Health check (no auth) so launchd / curl can probe liveness.
 	if (req.url === "/healthz") {
 		res.writeHead(200, { "content-type": "application/json" })
-		res.end(JSON.stringify({ ok: true, routes: ROUTES.map((r) => r.prefix) }))
+		res.end(
+			JSON.stringify({
+				ok: true,
+				routes: ROUTES.map((r) => r.prefix),
+				children: [...children.entries()].map(([prefix, e]) => ({
+					prefix,
+					port: e.port,
+					pid: e.proc?.pid ?? null,
+					alive: !!e.proc && e.proc.exitCode === null,
+				})),
+			}),
+		)
 		return
 	}
 
@@ -187,7 +339,14 @@ const server = http.createServer((req, res) => {
 				responded = true
 				clearTimeout(timer)
 				res.writeHead(ures.statusCode || 502, ures.headers)
-				ures.pipe(res)
+				// For spawned SSE children, rewrite the `endpoint` event so the client's
+				// POST comes back through this prefixed route (see sseEndpointRewriter).
+				const ct = ures.headers["content-type"] || ""
+				if (route.spawn && /text\/event-stream/i.test(ct)) {
+					ures.pipe(sseEndpointRewriter("/" + route.prefix)).pipe(res)
+				} else {
+					ures.pipe(res)
+				}
 			},
 		)
 
@@ -218,8 +377,13 @@ const server = http.createServer((req, res) => {
 			res.end(JSON.stringify({ error: `upstream error: ${String(err.message || err)}` }))
 		})
 
-		// If the client disconnects before we finish, tear down the upstream too.
-		res.on("close", () => { if (!responded) upstream.destroy() })
+		// If the client disconnects before the response is fully delivered, tear down the
+		// upstream too. For a long-lived SSE stream `responded` is already true (we got
+		// headers), so guarding on `responded` would LEAK the upstream — for a spawned
+		// postgres-mcp child that strands an SSE session holding a DB connection on every
+		// Claude Code restart/window-close. Guard on whether OUR response finished instead;
+		// destroying an already-finished request is a harmless no-op for completed calls.
+		res.on("close", () => { if (!res.writableFinished) upstream.destroy() })
 
 		if (body) upstream.end(body)
 		else upstream.end()
@@ -230,14 +394,28 @@ server.listen(PORT, HOST, () => {
 	log(`mcp-gateway listening on http://${HOST}:${PORT}`)
 	log(`routes: ${ROUTES.map((r) => r.prefix).join(", ")}`)
 	log(`local auth: ${LOCAL_TOKEN ? "required (x-mcp-gateway-token)" : "off (localhost only)"}`)
+	startAllSpawnRoutes()
 })
 
-// SIGHUP reloads routes.json without dropping the listener / pooled sockets.
+// SIGHUP reloads routes.json without dropping the listener / pooled sockets. For spawn
+// routes it is additive: newly-added children are started; already-running children are
+// left in place (so a reload never drops live MCP sessions). Removing a spawn route does
+// not stop its child until the next daemon restart.
 process.on("SIGHUP", () => {
 	try {
 		ROUTES = loadRoutes()
+		const fresh = ROUTES.filter((r) => r.spawn && !children.has(r.prefix))
+		if (fresh.length) {
+			reapStrayChildren(fresh.map((r) => r.spawn.port))
+			for (const r of fresh) startSpawnRoute(r)
+		}
 		log("reloaded routes:", ROUTES.map((r) => r.prefix).join(", "))
 	} catch (e) {
 		log("route reload failed:", String(e.message || e))
 	}
 })
+
+// Kill daemon-owned children on shutdown so launchd unload tears the whole tree down
+// (no orphaned postgres-mcp servers — the problem the per-session spawns used to cause).
+process.on("SIGTERM", () => shutdown("SIGTERM"))
+process.on("SIGINT", () => shutdown("SIGINT"))
