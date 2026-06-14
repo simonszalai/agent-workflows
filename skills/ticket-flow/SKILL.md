@@ -138,8 +138,9 @@ If auto-deploy reports an external/manual deploy dependency (for example a Thoma
 state (`to_verify_prod` for production) and the blocker should be captured in the ticket's
 independent blocker metadata, not as a lifecycle status.
 
-If the MCP server rejects `to_verify_staging`, stop and report that the ticket lifecycle enum is
-missing the staging verification statuses.
+The staging verification statuses (`to_verify_staging`, `verify_staging_failed`) exist on the
+ticket lifecycle enum as of migration 025, so a standalone staging landing advances the ticket
+to `to_verify_staging` directly — no epic required.
 
 ## Output
 
