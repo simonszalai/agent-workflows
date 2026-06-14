@@ -138,10 +138,10 @@ _mem_parse_env() {
 
   # Fetch topology
   local topo_raw topo_http topo_body
-  topo_raw=$(curl -sS --max-time 15 \
+  topo_raw=$(_mem_curl_with_retry -sS --max-time 15 \
     -w '\n%{http_code}' \
     -H "Authorization: Bearer $MEM_TOKEN" \
-    "$MEM_URL/topology?project=$MEM_PROJECT" 2>&1) || {
+    "$MEM_URL/topology?project=$MEM_PROJECT") || {
     echo "HOOK ERROR [mem-lib]: memory API unreachable at $MEM_URL: $topo_raw" >&2
     return 1
   }
@@ -267,6 +267,30 @@ Tell the user the memory system is offline so they can start it if needed.
 # HTTP requests
 # =============================================================================
 
+# Run curl with up to 3 attempts, retrying ONLY on transport-level failure
+# (connection refused/reset/timeout — curl's non-zero exit). HTTP error codes are
+# NOT retried: with -sS, curl exits 0 for 4xx/5xx, so those fall through to the
+# caller's own status handling (e.g. a 401 is not a blip). A short backoff between
+# attempts (1s, then 2s) absorbs the brief Render edge / TLS connection blips that
+# otherwise start a whole session OFFLINE. Echoes curl's merged output; returns
+# curl's exit status from the final attempt.
+_mem_curl_with_retry() {
+  local attempt out rc=1
+  for attempt in 1 2 3; do
+    # Capture curl's real exit status (set -e safe; an if/else here would mask it as 0).
+    out=$(curl "$@" 2>&1) && rc=0 || rc=$?
+    if [[ $rc -eq 0 ]]; then
+      printf '%s' "$out"
+      return 0
+    fi
+    if [[ $attempt -lt 3 ]]; then
+      sleep "$attempt"
+    fi
+  done
+  printf '%s' "$out"
+  return "$rc"
+}
+
 mem_curl() {
   local method="$1"
   local path="$2"
@@ -296,7 +320,7 @@ mem_curl() {
   fi
 
   local raw_output
-  raw_output=$(curl "${curl_args[@]}" "${MEM_URL}${path}" 2>&1) || {
+  raw_output=$(_mem_curl_with_retry "${curl_args[@]}" "${MEM_URL}${path}") || {
     echo "ERROR: curl failed: $raw_output"
     return 1
   }
