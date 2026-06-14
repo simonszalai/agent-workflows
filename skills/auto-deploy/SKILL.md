@@ -7,10 +7,12 @@ max_turns: 100
 # Auto-Deploy Command
 
 Autonomous deployment that picks up a unit ready to deploy, deploys its PR to the target
-environment, and advances its status. The **staging segment is epic-only**: a standalone
-ticket at `ready_to_deploy_production` deploys straight to prod (it never enters staging);
-an **epic** at `ready_to_deploy_staging` (an `epic_status`) deploys to staging first. Epic
-members are carried by the epic — they reach `merged` and are not deployed individually by a
+environment, and advances its status. **Both standalone tickets and epics can use the staging
+segment** (per-ticket staging statuses were added in migration 025): a unit at
+`ready_to_deploy_staging` deploys to staging and advances to `to_verify_staging`; a unit at
+`ready_to_deploy_production` deploys to prod and advances to `to_verify_prod`. A standalone
+ticket may be landed straight to prod or routed through staging first, depending on its target.
+Epic **members** are still carried by the epic — they reach `merged` and are not deployed individually by a
 scheduled pickup. The per-member merge to main happens during the epic's **ordered prod
 promote**, which is part of the deferred epic-walk orchestrator — no per-member skill performs
 it today (it is hand-orchestrated).
@@ -59,11 +61,12 @@ The target environment is determined by **argument override first**, then ticket
 
 | Status                       | Applies to  | Deploy Target | Next Status          |
 | ---------------------------- | ----------- | ------------- | -------------------- |
-| `ready_to_deploy_staging`    | Epic only   | Staging       | `to_verify_staging`  |
+| `ready_to_deploy_staging`    | Ticket/Epic | Staging       | `to_verify_staging`  |
 | `ready_to_deploy_production` | Ticket/Epic | Production    | `to_verify_prod`     |
 
-The staging row writes `epic_status` on the epic; a standalone ticket only ever uses the
-production row. When the target is overridden via argument, the status check is relaxed — the
+For a standalone ticket the next status is written on the ticket (`update_ticket`); for an epic
+it is written on the epic (`update_epic`, an `epic_status`). When the target is overridden via
+argument, the status check is relaxed — the
 unit must exist but can be in any active status (not `completed` or `abandoned`).
 
 ## Process Overview
@@ -306,18 +309,25 @@ Deployment verification:
 
 ### Phase 10: Set Status + Blockers
 
-Set status based on the target environment:
+Set status based on the target environment. Use `update_ticket` for a standalone ticket and
+`update_epic` for an epic — both staging and prod verification statuses now exist on each enum:
 
 ```
-# For staging deploys (EPIC ONLY — to_verify_staging is an epic_status):
+# Staging deploy — standalone ticket:
+mcp__autodev-memory__update_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  status="to_verify_staging",
+  command="/auto-deploy"
+)
+# Staging deploy — epic (to_verify_staging is also an epic_status):
 mcp__autodev-memory__update_epic(
   project=PROJECT, epic_id=EPIC_ID,
   status="to_verify_staging",
   command="/auto-deploy"
 )
 
-# For production deploys (standalone ticket, or the epic itself):
-mcp__autodev-memory__update_ticket(   # or update_epic for an epic
+# Production deploy — standalone ticket (or update_epic for the epic itself):
+mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
   status="to_verify_prod",
   command="/auto-deploy"

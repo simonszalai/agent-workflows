@@ -58,15 +58,17 @@ staging/prod verification.
 backlog -> up_next -> in_progress -> planned -> in_progress -> merged
 ```
 
-## Required MCP support
+## Staging verification statuses
 
-The workflow skills assume the ticket system accepts the staging verification statuses:
+The ticket lifecycle enum includes the staging segment as of **migration 025**:
 
+- `ready_to_deploy_staging`
 - `to_verify_staging`
 - `verify_staging_failed`
 
-If the MCP server rejects one of these statuses, stop and report that the autodev-memory enum
-migration is missing. Do not emulate status with tags or free-form metadata.
+A standalone ticket landed to staging advances to `to_verify_staging` directly (no epic
+required); the dashboard board surfaces it in the "Verify staging" lane. Do not emulate status
+with tags or free-form metadata.
 
 ## Approval
 
