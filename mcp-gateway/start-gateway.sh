@@ -92,6 +92,16 @@ else
   print -u2 "mcp-gateway: warning — TS_PROD_POSTGRES_URL_BASE empty; ts/postgres_prod* routes will 502 until set"
 fi
 
+# amaru / workflow / shared postgres DBs — all plain mount values (no op read). Access
+# modes (prod=restricted, others=unrestricted) live in routes.json, mirroring project-mcp.
+export AMARU_POSTGRES_DEV_URL="${MOUNT[AMARU_DEV_DATABASE_URL]:-}"
+export AMARU_POSTGRES_STAGING_URL="${MOUNT[AMARU_STAGING_DATABASE_URL]:-}"
+export AMARU_POSTGRES_PROD_URL="${MOUNT[AMARU_PROD_DATABASE_URL]:-}"
+export WORKFLOW_POSTGRES_DEV_URL="${MOUNT[WORKFLOW_DEV_DATABASE_URL]:-}"
+export WORKFLOW_POSTGRES_STAGING_URL="${MOUNT[WORKFLOW_STAGING_DATABASE_URL]:-}"
+export WORKFLOW_POSTGRES_PROD_URL="${MOUNT[WORKFLOW_PROD_DATABASE_URL]:-}"
+export AUTODEV_GLOBAL_POSTGRES_URL="${MOUNT[AUTODEV_GLOBAL_DATABASE_URL_EXTERNAL]:-}"
+
 # postgres-mcp launcher the daemon spawns (one SSE server per DB). Absolute path to the
 # ts-prefect dev venv binary by default; override POSTGRES_MCP_BIN for another env.
 export POSTGRES_MCP_BIN="${POSTGRES_MCP_BIN:-/Users/simon/dev/ts-prefect/.venv/bin/postgres-mcp}"
