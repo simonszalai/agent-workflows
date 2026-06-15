@@ -164,7 +164,8 @@ review-then-resolve pass. Each round:
 
 1. Run `/review mode:cross` — Claude's native reviewers (quality/YAGNI/patterns;
    architecture/security/performance; data if DB changes) **plus** external Codex and Grok
-   reviewers, dispatched in parallel via the `external-review` adapter. All findings merge
+   reviewers, each run inside an `external-reviewer` subagent (which calls the `external-agent`
+   adapter) in the same parallel batch. All findings merge
    through one synthesis with a cross-provider confidence boost, and store as review_todo
    artifacts.
 2. Resolve the actionable findings (Claude fixes — `safe_auto` inline, `gated_auto`/`manual`

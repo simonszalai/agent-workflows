@@ -154,12 +154,12 @@ reference issues caught in similar past implementations.
 
 ### Cross-Provider Reviewers (default; opt out with `mode:solo`)
 
-External reviewers are **on by default**. Unless the caller passed `mode:solo`, you MUST run
-the dispatch block below — it is a required step of the review, not an optional enhancement.
-Do not skip it, summarize it, or simulate its output by reasoning about what Codex/Grok
-"would" say; the only valid way to add their findings is to actually run the commands and read
-the files they write. Skipping the shell-out is the one failure mode that silently drops
-cross-provider coverage.
+External reviewers are **on by default**. Unless the caller passed `mode:solo`, you MUST spawn
+the two external-reviewer subagents described below — it is a required step of the review, not
+an optional enhancement. Do not skip it, summarize it, or simulate its output by reasoning
+about what Codex/Grok "would" say; the only valid way to add their findings is to actually run
+the providers and read the envelopes they return. Skipping the dispatch is the one failure mode
+that silently drops cross-provider coverage.
 
 This keeps Claude as the orchestrator and self-reviewer (the native reviewers above run exactly
 as always) and **adds two external reviewers — Codex and Grok — that review the same diff by
@@ -167,34 +167,40 @@ this same skill.** This catches model-specific blind spots: a finding all three 
 independently surface is far more likely real, and the cross-reviewer confidence boost rewards
 that agreement automatically.
 
-External reviewers are not Claude subagents (Claude must stay in-process on the subscription —
-never shell out to `claude -p`). They are invoked through the `external-agent` adapter
-(`bin/external-agent` in agent-workflows, symlinked onto `PATH`; the legacy `external-review`
-name still works as a `--task review` shim). The adapter feeds the provider this skill
-(`SKILL.md` + the relevant `references/`) and the diff, and returns a **reviewer-output
-envelope** (`{reviewer_key, findings, residual_risks, testing_gaps}`) whose finding items match
+**Why a subagent and not a foreground shell-out:** the providers are slow — Codex at xhigh
+reasoning takes ~9 minutes for a single review. A foreground `external-agent … & wait` exceeds
+the Bash tool's hard timeout cap and gets SIGKILLed mid-run, silently dropping the provider's
+findings (this was the original "Codex/Grok never produce output" bug). Spawning each provider
+inside a dedicated `external-reviewer` **subagent** sidesteps that cap entirely — an `Agent`
+call is not bound by the Bash timeout, so the subagent can launch the adapter in the background
+and wait the full ~9 minutes. The subagent stays in-process on the subscription (it is a normal
+Claude `Agent`, not a `claude -p` shell-out); only Codex/Grok themselves are external.
+
+Each `external-reviewer` subagent runs the `external-agent` adapter (`bin/external-agent` in
+agent-workflows, symlinked onto `PATH`; the legacy `external-review` name still works as a
+`--task review` shim). The adapter feeds the provider this skill (`SKILL.md` + the relevant
+`references/`) and the diff, and the subagent returns a **reviewer-output envelope**
+(`{reviewer_key, findings, residual_risks, testing_gaps}`) whose finding items match
 `references/findings-schema.json` — the exact shape Claude's own reviewers return, so external
 findings flow through the *same* synthesis path with no special-casing.
 
-Dispatch both providers **in parallel** with the Claude native reviewers (they each take
-1–3 minutes, so never serialize them):
+**Dispatch:** in the *same* parallel `Agent` batch as the Claude native reviewers (one assistant
+message, multiple tool-use blocks — never serialize them), spawn two `external-reviewer`
+subagents:
 
-```bash
-base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
-mkdir -p .context/review
-external-agent --task review --provider codex --base "$base" --out .context/review/codex.json \
-  2>.context/review/codex.log &
-external-agent --task review --provider grok  --base "$base" --out .context/review/grok.json \
-  2>.context/review/grok.log &
-wait
-```
+- `external-reviewer` with prompt `provider=codex` (plus the diff `base` if you already computed
+  it; otherwise the agent computes `git merge-base HEAD origin/main`).
+- `external-reviewer` with prompt `provider=grok`.
+
+Each subagent launches the adapter in the background, waits for it to finish (~1–9 min), and
+returns the envelope JSON as its final message. Read each subagent's returned envelope directly
+(it also writes `.context/review/<provider>.json` as a side effect).
 
 Then fold the two envelopes into the reviewer set:
 
-1. Read `.context/review/codex.json` and `.context/review/grok.json`. Each is one reviewer
-   output (`reviewer_key` = `codex` / `grok`). A provider that failed still returns a valid
-   envelope with empty `findings` and a `residual_risks` note (adapter exit 2) — it simply
-   contributes no findings; surface its note but do not block.
+1. Take the envelope returned by each `external-reviewer` subagent (`reviewer_key` = `codex` /
+   `grok`). A provider that failed still returns a valid envelope with empty `findings` and a
+   `residual_risks` note — it simply contributes no findings; surface its note but do not block.
 2. Add codex and grok to the reviewer list passed into synthesis alongside the Claude native
    reviewers. **Do not run a separate synthesis for them** — they are reviewers, not a second
    review.
@@ -299,7 +305,9 @@ actionable findings re-trigger a round.
    When the gate selects "Light", issue the reviewer `Agent` calls in parallel (one assistant
    message, multiple tool-use blocks). No workflow, no skeptics. Each reviewer returns the
    reviewer-output JSON shape documented in `workflows/review-fanout.js`
-   (`reviewerOutputSchema`).
+   (`reviewerOutputSchema`). **Unless `mode:solo`, include the two `external-reviewer` subagents
+   (`provider=codex`, `provider=grok`) in this same parallel batch** — see Cross-Provider
+   Reviewers above. They return the identical envelope shape and merge with no special-casing.
 
    The light path does **not** get schema enforcement at the tool layer (the `Agent` tool
    has no `schema:` parameter). Validate manually: for each reviewer's findings, drop any
@@ -350,6 +358,14 @@ actionable findings re-trigger a round.
      }
    })
    ```
+
+   **Unless `mode:solo`, spawn the two `external-reviewer` subagents (`provider=codex`,
+   `provider=grok`) in the same assistant message that kicks off the workflow** — the `Workflow`
+   call runs in the background while the two `Agent` calls run in parallel, so nothing
+   serializes. When all three return, merge each external envelope's `findings` into the
+   workflow's reviewer set (treat codex/grok as two more reviewers) *before* the cross-reviewer
+   boost and gate in 5b/6, so consensus across Claude + Codex + Grok is rewarded. Do not run a
+   separate synthesis for them.
 
 5b. **Result shape (both paths must produce this object):**
 
