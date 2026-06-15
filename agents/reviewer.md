@@ -200,7 +200,7 @@ orchestrator collects findings from all agents and creates artifacts.
 
 ```json
 {
-  "reviewer": "<your focus area>",
+  "reviewer_key": "<your focus area>",
   "findings": [
     {
       "title": "SQL injection via unescaped user input",

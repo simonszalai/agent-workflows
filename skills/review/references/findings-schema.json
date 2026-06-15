@@ -3,11 +3,11 @@
   "title": "Code Review Findings",
   "description": "Structured output schema for reviewer agents. Reviewers return compact JSON; the orchestrator merges, deduplicates, and gates findings.",
   "type": "object",
-  "required": ["reviewer", "findings", "residual_risks", "testing_gaps"],
+  "required": ["reviewer_key", "findings", "residual_risks", "testing_gaps"],
   "properties": {
-    "reviewer": {
+    "reviewer_key": {
       "type": "string",
-      "description": "Reviewer focus area that produced this output (e.g., 'code-quality', 'architecture', 'data-integrity')"
+      "description": "Reviewer that produced this output — focus area for native reviewers (e.g., 'code-quality', 'architecture', 'data-integrity') or provider for external reviewers ('codex', 'grok')"
     },
     "findings": {
       "type": "array",
