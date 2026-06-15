@@ -1,0 +1,844 @@
+#!/usr/bin/env python3
+"""external-agent — run an external provider (Codex or Grok) as a cross-provider
+participant in a Claude workflow: code review, bug investigation, or codebase research.
+
+Claude stays the in-process orchestrator (subscription-only; nothing ever shells out to
+`claude -p`). This adapter lets Claude delegate ONE pass of a task to a different model's
+CLI and get back results in the *exact same shape* Claude's own subagents produce, so each
+skill can merge external output through its existing synthesis path with no special-casing.
+
+Tasks (--task):
+
+  review       Review the working diff. Output matches workflows/review-fanout.js
+               reviewerOutputSchema:
+                   { "reviewer_key", "findings":[...], "residual_risks":[...], "testing_gaps":[...] }
+
+  investigate  Generate root-cause hypotheses for a bug. Output matches the generator
+               shape consumed by workflows/investigate-fanout.js (generatorOutputSchema):
+                   { "generator_key", "angle", "hypotheses":[...], "notes" }
+               Each hypothesis matches hypothesisSchema
+                   { statement, evidence[], testable_prediction, category, initial_confidence }
+
+  research     Search the codebase for a question. Output matches the searcher shape
+               consumed by workflows/research-fanout.js (searcherOutputSchema):
+                   { "key", "files_searched", "occurrences":[...], "summary", "questions_for_synthesis" }
+               Each occurrence matches occurrenceSchema
+                   { file, line, snippet, pattern_variant, notes }
+
+The methodology fed to the external model is the *existing* skill (skills/<task>/SKILL.md +
+relevant references), so Codex/Grok work by the same rules as Claude's native subagents.
+
+Both providers run read-only with repo access, so for investigate/research they can grep and
+read files to ground their output: Codex via `-s read-only`, Grok via a read/search-only tool
+allowlist (`--tools Read,Grep,Glob`, no Bash/Write/Edit). Neither can modify the repo.
+
+Usage:
+    external-agent --task review      --provider codex|grok [--base origin/main]
+    external-agent --task investigate --provider codex|grok --bug STR [--evidence-file F] [--environment ENV]
+    external-agent --task research    --provider codex      --question STR
+  common: [--model M] [--repo DIR] [--out FILE] [--timeout SECS] [--skill-dir DIR]
+
+Exit codes: 0 ok; 2 provider produced no valid output (a valid empty envelope with a
+residual note is still printed); 1 usage/setup error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+# Review reference selection. Always-on pair mirrors skills/review SKILL.md Step 2,
+# plus core simplicity/patterns. Language/domain refs added by select_review_references().
+REVIEW_CORE_REFS = ["simplicity.md", "patterns.md", "architecture.md",
+                    "security.md", "performance.md"]
+# Research always-on references (small set that exists in skills/research/references).
+RESEARCH_CORE_REFS = ["best-practices.md", "exhaustive.md", "repo-patterns.md"]
+
+DIFF_CHAR_CAP = 180_000   # keep the prompt well under provider context limits
+GIT_TIMEOUT = 60          # seconds; git prep must not hang the whole run
+GROK_DEFAULT_MODEL = "grok-build"   # most capable agentic/reasoning grok; overridable
+
+# review finding enums
+VALID_SEVERITY = {"p1", "p2", "p3"}
+VALID_AUTOFIX = {"safe_auto", "gated_auto", "manual", "advisory"}
+VALID_OWNER = {"review-fixer", "downstream-resolver", "human"}
+# investigate hypothesis enum
+VALID_CATEGORY = {"code", "data", "infrastructure", "config",
+                  "dependency", "concurrency", "environment", "other"}
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"external-agent: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- skill discovery
+def resolve_skill_dir(override: str | None, skill_name: str) -> Path:
+    """Find skills/<skill_name>. Works from the repo or an installed path."""
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    env = os.environ.get("AGENT_WORKFLOWS_SKILLS")
+    if env:
+        candidates.append(Path(env) / skill_name)
+    home = Path.home()
+    candidates += [
+        home / ".claude" / "skills" / skill_name,
+        home / ".agents" / "skills" / skill_name,
+        # relative to this script: <repo>/bin/external-agent -> <repo>/skills/<name>
+        Path(__file__).resolve().parent.parent / "skills" / skill_name,
+    ]
+    for c in candidates:
+        if (c / "SKILL.md").is_file():
+            return c
+    die(f"could not locate skills/{skill_name} (set --skill-dir or AGENT_WORKFLOWS_SKILLS)")
+
+
+# ---------------------------------------------------------------- git helpers
+def run_git(args: list[str], repo: Path) -> str:
+    try:
+        res = subprocess.run(["git", "-C", str(repo), *args],
+                             capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return ""
+    return res.stdout if res.returncode == 0 else ""
+
+
+def run_git_allow_fail(args: list[str], repo: Path) -> str:
+    """Some git diff modes exit non-zero by design (e.g. --no-index on changes)."""
+    try:
+        res = subprocess.run(["git", "-C", str(repo), *args],
+                             capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return ""
+    return res.stdout
+
+
+def resolve_base(base: str, repo: Path) -> str:
+    """Prefer the merge-base with the given base ref so the diff is just this branch."""
+    mb = run_git(["merge-base", "HEAD", base], repo).strip()
+    if mb:
+        return mb
+    # verify the base ref exists; otherwise fall back to HEAD~1 then empty tree
+    if run_git(["rev-parse", "--verify", "-q", base], repo).strip():
+        return base
+    h1 = run_git(["rev-parse", "--verify", "-q", "HEAD~1"], repo).strip()
+    return h1 or base
+
+
+def collect_diff(base: str, repo: Path) -> tuple[list[str], str, str]:
+    tracked = [f for f in run_git(["diff", "--name-only", base], repo).splitlines() if f]
+    # Untracked-but-not-ignored files won't show in `git diff` — include them so brand-new
+    # files get reviewed. We never mutate the index to do this.
+    untracked = [f for f in run_git(
+        ["ls-files", "--others", "--exclude-standard"], repo).splitlines() if f]
+    changed = tracked + untracked
+    stat = run_git(["diff", "--stat", base], repo)
+    diff = run_git(["diff", base], repo)
+    for f in untracked:
+        # --no-index against /dev/null renders the whole new file as an addition; exit 1.
+        stat += run_git_allow_fail(["diff", "--stat", "--no-index", "--", "/dev/null", f], repo)
+        diff += "\n" + run_git_allow_fail(["diff", "--no-index", "--", "/dev/null", f], repo)
+    if len(diff) > DIFF_CHAR_CAP:
+        diff = diff[:DIFF_CHAR_CAP] + (
+            "\n\n[... diff truncated by external-agent at "
+            f"{DIFF_CHAR_CAP} chars — read files directly for the rest ...]")
+    return changed, stat, diff
+
+
+def read_text(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------- reference selection
+def select_review_references(changed: list[str], skill_dir: Path) -> list[str]:
+    refs = list(REVIEW_CORE_REFS)
+    has_py = any(f.endswith(".py") for f in changed)
+    has_ts = any(f.endswith((".ts", ".tsx")) for f in changed)
+    has_react = any(f.endswith(".tsx") for f in changed) or \
+        any("/components/" in f or "/routes/" in f for f in changed)
+    has_data = any(("/models/" in f and f.endswith(".py")) or "migrations/versions/" in f
+                   or "ts_schemas/models/" in f for f in changed)
+    if has_py:
+        refs.append("python-standards.md")
+    if has_ts:
+        refs.append("typescript-standards.md")
+    if has_react:
+        refs += ["react-router.md", "react-performance.md"]
+    if has_data:
+        refs += ["data-integrity.md", "migrations.md", "deployment.md"]
+    return existing_refs(refs, skill_dir)
+
+
+def existing_refs(refs: list[str], skill_dir: Path) -> list[str]:
+    """De-dup preserving order; keep only refs that exist on disk."""
+    seen, out = set(), []
+    for r in refs:
+        if r in seen:
+            continue
+        seen.add(r)
+        if (skill_dir / "references" / r).is_file():
+            out.append(r)
+    return out
+
+
+def append_methodology(parts: list[str], skill_dir: Path, refs: list[str],
+                       title: str) -> None:
+    parts.append("=" * 78)
+    parts.append(f"# {title} (skills/{skill_dir.name}/SKILL.md)\n")
+    parts.append(read_text(skill_dir / "SKILL.md"))
+    for r in refs:
+        parts.append("\n" + "=" * 78)
+        parts.append(f"# REFERENCE: references/{r}\n")
+        parts.append(read_text(skill_dir / "references" / r))
+
+
+# ================================================================ REVIEW task
+REVIEW_CONTRACT = """\
+## Your output contract (MANDATORY)
+
+Return EXACTLY ONE JSON object and nothing else — no prose, no markdown fences, no
+commentary before or after. It must match this shape:
+
+{
+  "reviewer_key": "<PROVIDER>",
+  "findings": [
+    {
+      "title": "short specific title (<= 10 words)",
+      "severity": "p1" | "p2" | "p3",
+      "file": "relative/path/from/repo/root",
+      "line": <integer >= 0>,
+      "why_it_matters": "what breaks or degrades, not just what is wrong",
+      "autofix_class": "safe_auto" | "gated_auto" | "manual" | "advisory",
+      "owner": "review-fixer" | "downstream-resolver" | "human",
+      "requires_verification": <bool>,
+      "suggested_fix": "<concrete minimal fix, or null>",
+      "confidence": <number 0.0-1.0>,
+      "evidence": ["code-grounded evidence, at least one item"],
+      "pre_existing": <bool>
+    }
+  ],
+  "residual_risks": ["risks noticed but not confirmed as findings"],
+  "testing_gaps": ["missing test coverage you identified"]
+}
+
+Rules:
+- Set "reviewer_key" to exactly "<PROVIDER>".
+- Empty "findings": [] is valid and correct when the diff is clean. Do NOT invent findings.
+- Apply the confidence/severity/autofix-class definitions from the review skill above.
+- Suppress speculative noise: confidence < 0.60 should not be reported (p1 may go to 0.50).
+- "evidence" must be non-empty for every finding.
+- You MAY read other files in the repository for context, but DO NOT modify any files.
+"""
+
+
+def build_review_prompt(provider: str, skill_dir: Path, refs: list[str],
+                        changed: list[str], stat: str, diff: str) -> str:
+    parts: list[str] = []
+    parts.append(
+        "You are an expert code reviewer invoked as an external cross-reviewer. "
+        "Review the diff below by the methodology that follows, and return findings "
+        "as strict JSON. You are one of several independent reviewers; another model "
+        "will merge your findings with others, so be precise and well-calibrated.\n")
+    append_methodology(parts, skill_dir, refs, "REVIEW METHODOLOGY")
+    parts.append("\n" + "=" * 78)
+    parts.append(REVIEW_CONTRACT.replace("<PROVIDER>", provider))
+    parts.append("\n" + "=" * 78)
+    parts.append("# CHANGES UNDER REVIEW\n")
+    parts.append(f"Changed files ({len(changed)}):\n" + "\n".join(changed) + "\n")
+    parts.append("Diffstat:\n" + stat + "\n")
+    parts.append("Full diff:\n```diff\n" + diff + "\n```\n")
+    parts.append(
+        f"\nNow review the changes above and output the single JSON object for "
+        f'reviewer_key "{provider}". Output JSON only.')
+    return "\n".join(parts)
+
+
+def review_strict_schema() -> dict:
+    finding = {
+        "type": "object", "additionalProperties": False,
+        "required": ["title", "severity", "file", "line", "why_it_matters",
+                     "autofix_class", "owner", "requires_verification",
+                     "suggested_fix", "confidence", "evidence", "pre_existing"],
+        "properties": {
+            "title": {"type": "string"},
+            "severity": {"type": "string", "enum": ["p1", "p2", "p3"]},
+            "file": {"type": "string"},
+            "line": {"type": "integer"},
+            "why_it_matters": {"type": "string"},
+            "autofix_class": {"type": "string",
+                              "enum": ["safe_auto", "gated_auto", "manual", "advisory"]},
+            "owner": {"type": "string",
+                      "enum": ["review-fixer", "downstream-resolver", "human"]},
+            "requires_verification": {"type": "boolean"},
+            "suggested_fix": {"type": ["string", "null"]},
+            "confidence": {"type": "number"},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "pre_existing": {"type": "boolean"},
+        },
+    }
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": ["reviewer_key", "findings", "residual_risks", "testing_gaps"],
+        "properties": {
+            "reviewer_key": {"type": "string"},
+            "findings": {"type": "array", "items": finding},
+            "residual_risks": {"type": "array", "items": {"type": "string"}},
+            "testing_gaps": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+
+def owner_from_autofix(autofix: str) -> str:
+    if autofix == "safe_auto":
+        return "review-fixer"
+    if autofix in ("gated_auto", "manual"):
+        return "downstream-resolver"
+    return "human"
+
+
+def coerce_finding(f: object) -> dict | None:
+    if not isinstance(f, dict):
+        return None
+    title = str(f.get("title", "")).strip()
+    file = str(f.get("file", "")).strip()
+    why = str(f.get("why_it_matters", "")).strip()
+    if not title or not file or not why:
+        return None
+    sev = f.get("severity") if f.get("severity") in VALID_SEVERITY else "p2"
+    autofix = f.get("autofix_class") if f.get("autofix_class") in VALID_AUTOFIX else "advisory"
+    owner = f.get("owner") if f.get("owner") in VALID_OWNER else owner_from_autofix(autofix)
+    try:
+        line = max(0, int(f.get("line", 0)))
+    except (TypeError, ValueError):
+        line = 0
+    try:
+        conf = min(1.0, max(0.0, float(f.get("confidence", 0.6))))
+    except (TypeError, ValueError):
+        conf = 0.6
+    evidence = f.get("evidence")
+    if not isinstance(evidence, list):
+        evidence = []
+    evidence = [str(e) for e in evidence if str(e).strip()] or [title]
+    sug = f.get("suggested_fix")
+    sug = sug if (sug is None or isinstance(sug, str)) else str(sug)
+    return {
+        "title": title[:100], "severity": sev, "file": file, "line": line,
+        "why_it_matters": why, "autofix_class": autofix, "owner": owner,
+        "requires_verification": bool(f.get("requires_verification", False)),
+        "suggested_fix": sug, "confidence": conf, "evidence": evidence,
+        "pre_existing": bool(f.get("pre_existing", False)),
+    }
+
+
+def validate_review(obj: dict | None, provider: str) -> tuple[dict | None, str]:
+    if obj is None:
+        return None, "no JSON object found in output"
+    if "findings" not in obj or not isinstance(obj["findings"], list):
+        return None, "missing or non-array 'findings'"
+    findings, dropped = [], 0
+    for f in obj["findings"]:
+        cf = coerce_finding(f)
+        if cf is None:
+            dropped += 1
+        else:
+            findings.append(cf)
+    rr = obj.get("residual_risks")
+    tg = obj.get("testing_gaps")
+    env = {
+        "reviewer_key": provider, "findings": findings,
+        "residual_risks": [str(x) for x in rr] if isinstance(rr, list) else [],
+        "testing_gaps": [str(x) for x in tg] if isinstance(tg, list) else [],
+    }
+    if dropped:
+        env["residual_risks"].append(
+            f"external-agent: dropped {dropped} malformed finding(s) from {provider}")
+    return env, ""
+
+
+def empty_review(provider: str, reason: str) -> dict:
+    return {"reviewer_key": provider, "findings": [],
+            "residual_risks": [reason], "testing_gaps": []}
+
+
+# ================================================================ INVESTIGATE task
+INVESTIGATE_CONTRACT = """\
+## Your output contract (MANDATORY)
+
+Return EXACTLY ONE JSON object and nothing else — no prose, no markdown fences, no
+commentary before or after. It must match this shape:
+
+{
+  "generator_key": "<PROVIDER>",
+  "angle": "external:<PROVIDER>",
+  "hypotheses": [
+    {
+      "statement": "specific claim about the root cause (>= 16 chars). Name the component/condition/behavior concretely.",
+      "evidence": ["observation grounded in code, logs, or the symptom (at least one item)"],
+      "testable_prediction": "If this is the root cause, then when we check X we will see Y (>= 16 chars). Specific and falsifiable.",
+      "category": "code" | "data" | "infrastructure" | "config" | "dependency" | "concurrency" | "environment" | "other",
+      "initial_confidence": <number 0.0-1.0>
+    }
+  ],
+  "notes": "one line on how you approached this (>= 8 chars)"
+}
+
+Rules:
+- Set "generator_key" to exactly "<PROVIDER>" and "angle" to "external:<PROVIDER>".
+- Generate 2-5 DISTINCT, root-cause hypotheses — not symptoms. Be honest about confidence:
+  0.5 means "plausible but not strongly supported".
+- Every hypothesis MUST have a falsifiable testable_prediction and at least one evidence item.
+- Empty "hypotheses": [] is valid if you genuinely cannot form one — say why in "notes".
+- You have READ-ONLY access to the repository: grep and read files to ground your hypotheses
+  and evidence in real code. DO NOT modify any files.
+"""
+
+
+def build_investigate_prompt(provider: str, skill_dir: Path, bug: str,
+                             evidence: str, environment: str, repo: Path) -> str:
+    parts: list[str] = []
+    parts.append(
+        "You are an expert debugger invoked as an external cross-investigator. Generate "
+        "root-cause HYPOTHESES for the bug below, following the methodology that follows, "
+        "and return them as strict JSON. You are one of several independent investigators; "
+        "another model will dedup your hypotheses with others and adversarially test them, "
+        "so be precise, falsifiable, and well-calibrated.\n")
+    append_methodology(parts, skill_dir, [], "INVESTIGATION METHODOLOGY")
+    parts.append("\n" + "=" * 78)
+    parts.append(INVESTIGATE_CONTRACT.replace("<PROVIDER>", provider))
+    parts.append("\n" + "=" * 78)
+    parts.append("# BUG UNDER INVESTIGATION\n")
+    parts.append(f"Environment: {environment or 'unknown'}")
+    parts.append(f"Repository root: {repo}\n")
+    parts.append("Symptom / description:\n" + bug + "\n")
+    if evidence.strip():
+        parts.append("Error evidence (stack trace / logs / observed behavior):\n"
+                     "```\n" + evidence + "\n```\n")
+    parts.append(
+        f"\nNow read the relevant code, form hypotheses, and output the single JSON object "
+        f'for generator_key "{provider}". Output JSON only.')
+    return "\n".join(parts)
+
+
+def investigate_strict_schema() -> dict:
+    hyp = {
+        "type": "object", "additionalProperties": False,
+        "required": ["statement", "evidence", "testable_prediction",
+                     "category", "initial_confidence"],
+        "properties": {
+            "statement": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "testable_prediction": {"type": "string"},
+            "category": {"type": "string", "enum": sorted(VALID_CATEGORY)},
+            "initial_confidence": {"type": "number"},
+        },
+    }
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": ["generator_key", "angle", "hypotheses", "notes"],
+        "properties": {
+            "generator_key": {"type": "string"},
+            "angle": {"type": "string"},
+            "hypotheses": {"type": "array", "items": hyp},
+            "notes": {"type": "string"},
+        },
+    }
+
+
+def coerce_hypothesis(h: object) -> dict | None:
+    if not isinstance(h, dict):
+        return None
+    statement = str(h.get("statement", "")).strip()
+    pred = str(h.get("testable_prediction", "")).strip()
+    if len(statement) < 16 or len(pred) < 16:
+        return None
+    cat = h.get("category") if h.get("category") in VALID_CATEGORY else "other"
+    evidence = h.get("evidence")
+    if not isinstance(evidence, list):
+        evidence = [str(evidence)] if evidence else []
+    evidence = [str(e) for e in evidence if str(e).strip()]
+    if not evidence:
+        evidence = [statement]
+    try:
+        conf = min(1.0, max(0.0, float(h.get("initial_confidence", 0.5))))
+    except (TypeError, ValueError):
+        conf = 0.5
+    return {"statement": statement, "evidence": evidence,
+            "testable_prediction": pred, "category": cat, "initial_confidence": conf}
+
+
+def validate_investigate(obj: dict | None, provider: str) -> tuple[dict | None, str]:
+    if obj is None:
+        return None, "no JSON object found in output"
+    if "hypotheses" not in obj or not isinstance(obj["hypotheses"], list):
+        return None, "missing or non-array 'hypotheses'"
+    hyps, dropped = [], 0
+    for h in obj["hypotheses"]:
+        ch = coerce_hypothesis(h)
+        if ch is None:
+            dropped += 1
+        else:
+            hyps.append(ch)
+    notes = str(obj.get("notes", "")).strip() or f"external {provider} investigator"
+    if dropped:
+        notes += f" (dropped {dropped} malformed hypothesis(es))"
+    return {"generator_key": provider, "angle": f"external:{provider}",
+            "hypotheses": hyps, "notes": notes}, ""
+
+
+def empty_investigate(provider: str, reason: str) -> dict:
+    return {"generator_key": provider, "angle": f"external:{provider}",
+            "hypotheses": [], "notes": reason}
+
+
+# ================================================================ RESEARCH task
+RESEARCH_CONTRACT = """\
+## Your output contract (MANDATORY)
+
+Return EXACTLY ONE JSON object and nothing else — no prose, no markdown fences, no
+commentary before or after. It must match this shape:
+
+{
+  "key": "<PROVIDER>",
+  "files_searched": <integer >= 0>,
+  "occurrences": [
+    {
+      "file": "relative/path/from/repo/root",
+      "line": <integer >= 0>,
+      "snippet": "1-5 lines of the actual code at this location",
+      "pattern_variant": "short label describing what this instance demonstrates (>= 4 chars)",
+      "notes": "anything unusual, or null"
+    }
+  ],
+  "summary": "what you found, in 1-3 sentences (>= 8 chars)",
+  "questions_for_synthesis": ["open question another searcher should resolve"]
+}
+
+Rules:
+- Set "key" to exactly "<PROVIDER>".
+- One occurrence per relevant code location. Ground every occurrence in a REAL file/line you
+  actually read — file path relative to repo root, line 1-indexed, snippet copied from source.
+- Do NOT invent occurrences. Empty "occurrences": [] is valid if nothing relevant exists.
+- You have READ-ONLY access to the repository: grep and read files to find ALL relevant
+  locations. DO NOT modify any files.
+"""
+
+
+def build_research_prompt(provider: str, skill_dir: Path, refs: list[str],
+                          question: str, repo: Path) -> str:
+    parts: list[str] = []
+    parts.append(
+        "You are an expert codebase researcher invoked as an external cross-searcher. "
+        "Answer the research question below by searching the repository, following the "
+        "methodology that follows, and return occurrences as strict JSON. You are one of "
+        "several independent searchers; another model will dedup your occurrences with "
+        "others and synthesize patterns, so find real, exact locations.\n")
+    append_methodology(parts, skill_dir, refs, "RESEARCH METHODOLOGY")
+    parts.append("\n" + "=" * 78)
+    parts.append(RESEARCH_CONTRACT.replace("<PROVIDER>", provider))
+    parts.append("\n" + "=" * 78)
+    parts.append("# RESEARCH QUESTION\n")
+    parts.append(f"Repository root: {repo}\n")
+    parts.append(question + "\n")
+    parts.append(
+        f"\nNow search the codebase and output the single JSON object for key "
+        f'"{provider}". Output JSON only.')
+    return "\n".join(parts)
+
+
+def research_strict_schema() -> dict:
+    occ = {
+        "type": "object", "additionalProperties": False,
+        "required": ["file", "line", "snippet", "pattern_variant", "notes"],
+        "properties": {
+            "file": {"type": "string"},
+            "line": {"type": "integer"},
+            "snippet": {"type": "string"},
+            "pattern_variant": {"type": "string"},
+            "notes": {"type": ["string", "null"]},
+        },
+    }
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": ["key", "files_searched", "occurrences", "summary",
+                     "questions_for_synthesis"],
+        "properties": {
+            "key": {"type": "string"},
+            "files_searched": {"type": "integer"},
+            "occurrences": {"type": "array", "items": occ},
+            "summary": {"type": "string"},
+            "questions_for_synthesis": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+
+def coerce_occurrence(o: object) -> dict | None:
+    if not isinstance(o, dict):
+        return None
+    file = str(o.get("file", "")).strip()
+    snippet = str(o.get("snippet", "")).strip()
+    variant = str(o.get("pattern_variant", "")).strip()
+    if not file or not snippet or len(variant) < 4:
+        return None
+    try:
+        line = max(0, int(o.get("line", 0)))
+    except (TypeError, ValueError):
+        line = 0
+    notes = o.get("notes")
+    notes = notes if (notes is None or isinstance(notes, str)) else str(notes)
+    return {"file": file, "line": line, "snippet": snippet,
+            "pattern_variant": variant, "notes": notes}
+
+
+def validate_research(obj: dict | None, provider: str) -> tuple[dict | None, str]:
+    if obj is None:
+        return None, "no JSON object found in output"
+    if "occurrences" not in obj or not isinstance(obj["occurrences"], list):
+        return None, "missing or non-array 'occurrences'"
+    occs, dropped = [], 0
+    for o in obj["occurrences"]:
+        co = coerce_occurrence(o)
+        if co is None:
+            dropped += 1
+        else:
+            occs.append(co)
+    try:
+        fs = max(0, int(obj.get("files_searched", 0)))
+    except (TypeError, ValueError):
+        fs = 0
+    summary = str(obj.get("summary", "")).strip() or f"external {provider} searcher"
+    if dropped:
+        summary += f" (dropped {dropped} malformed occurrence(s))"
+    q = obj.get("questions_for_synthesis")
+    return {"key": provider, "files_searched": fs, "occurrences": occs,
+            "summary": summary,
+            "questions_for_synthesis": [str(x) for x in q] if isinstance(q, list) else []}, ""
+
+
+def empty_research(provider: str, reason: str) -> dict:
+    return {"key": provider, "files_searched": 0, "occurrences": [],
+            "summary": reason, "questions_for_synthesis": []}
+
+
+# ---------------------------------------------------------------- task registry
+TASKS = {
+    "review": {
+        "skill": "review",
+        "strict_schema": review_strict_schema,
+        "validate": validate_review,
+        "empty": empty_review,
+    },
+    "investigate": {
+        "skill": "investigate",
+        "strict_schema": investigate_strict_schema,
+        "validate": validate_investigate,
+        "empty": empty_investigate,
+    },
+    "research": {
+        "skill": "research",
+        "strict_schema": research_strict_schema,
+        "validate": validate_research,
+        "empty": empty_research,
+    },
+}
+
+
+# ---------------------------------------------------------------- provider runners
+def run_codex(prompt: str, schema: dict, model: str | None,
+              repo: Path, timeout: int) -> str:
+    """Returns the raw final-message text (expected to be the JSON object)."""
+    with tempfile.TemporaryDirectory() as td:
+        schema_file = Path(td) / "schema.json"
+        last_file = Path(td) / "last.json"
+        schema_file.write_text(json.dumps(schema), encoding="utf-8")
+        cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo),
+               "-s", "read-only",
+               "--output-schema", str(schema_file),
+               "-o", str(last_file)]
+        if model:
+            cmd += ["-m", model]
+        try:
+            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.TimeoutExpired:
+            print("external-agent: codex timed out", file=sys.stderr)
+            return ""
+        if last_file.is_file() and last_file.read_text(encoding="utf-8").strip():
+            return last_file.read_text(encoding="utf-8")
+        err = (res.stderr or "").strip()
+        if err:
+            print("external-agent: codex produced no output; stderr tail:\n"
+                  + err[-800:], file=sys.stderr)
+        return ""
+
+
+def run_grok(prompt: str, schema: dict, model: str | None,
+             repo: Path, timeout: int) -> str:
+    """Returns the model's answer text (expected to be the JSON object).
+
+    schema is accepted for signature parity with run_codex but Grok has no strict-schema
+    mode here; the contract is enforced via the prompt + post-hoc validation/coercion.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        prompt_file = Path(td) / "prompt.txt"
+        prompt_file.write_text(prompt, encoding="utf-8")
+        # Read-only repo access: allowlist ONLY read/search tools. With no Bash/Write/Edit,
+        # Grok can grep and read files to ground its output (needed for investigate/research,
+        # and useful for review context) but can never modify the repo or run commands —
+        # Grok's equivalent of codex's `-s read-only`. (Default headless Grok auto-runs ALL
+        # tools, including writes via Bash; do NOT rely on prompt instructions for safety.)
+        cmd = ["grok", "--prompt-file", str(prompt_file),
+               "--output-format", "json",
+               "--cwd", str(repo),
+               "-m", model or GROK_DEFAULT_MODEL,
+               "--tools", "Read,Grep,Glob",
+               "--system-prompt-override",
+               "You are a meticulous engineer with READ-ONLY access to the repository "
+               "(Read/Grep/Glob only). Read and search the code as needed to ground your "
+               "output; never attempt to modify anything. Output only the requested JSON "
+               "object."]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return ""
+        out = res.stdout.strip()
+        if not out:
+            return ""
+        try:
+            env = json.loads(out)
+        except json.JSONDecodeError:
+            return out   # maybe grok already printed raw text
+        return env.get("text", "") if isinstance(env, dict) else ""
+
+
+# ---------------------------------------------------------------- parse helpers
+def extract_json_object(raw: str) -> dict | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        if raw.rstrip().endswith("```"):
+            raw = raw.rstrip()[:-3]
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(raw[start:end + 1])
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+# ---------------------------------------------------------------- main
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="external-agent", add_help=True)
+    ap.add_argument("--task", default="review", choices=sorted(TASKS.keys()))
+    ap.add_argument("--provider", required=True, choices=["codex", "grok"])
+    ap.add_argument("--model", default=None,
+                    help="model override (default: codex config default / grok-build)")
+    ap.add_argument("--repo", default=None, help="repo dir (default: git toplevel of cwd)")
+    ap.add_argument("--out", default=None, help="write envelope here (default: stdout)")
+    ap.add_argument("--timeout", type=int,
+                    default=int(os.environ.get("EXTERNAL_AGENT_TIMEOUT",
+                                os.environ.get("EXTERNAL_REVIEW_TIMEOUT", "900"))))
+    ap.add_argument("--skill-dir", default=None)
+    # review-only
+    ap.add_argument("--base", default=os.environ.get("EXTERNAL_REVIEW_BASE", "origin/main"))
+    # investigate-only
+    ap.add_argument("--bug", default=None, help="bug symptom/description (investigate)")
+    ap.add_argument("--evidence-file", default=None,
+                    help="file with stack trace / logs / evidence (investigate)")
+    ap.add_argument("--environment", default=None, help="prod|staging|local (investigate)")
+    # research-only
+    ap.add_argument("--question", default=None, help="research question (research)")
+    args = ap.parse_args()
+
+    task = TASKS[args.task]
+
+    if shutil.which(args.provider) is None:
+        die(f"provider CLI '{args.provider}' not found on PATH")
+
+    if args.model is None:
+        args.model = os.environ.get(
+            "CODEX_REVIEW_MODEL" if args.provider == "codex" else "GROK_REVIEW_MODEL")
+
+    repo = Path(args.repo) if args.repo else Path(
+        run_git(["rev-parse", "--show-toplevel"], Path.cwd()).strip() or ".")
+    if not (repo / ".git").exists() and not run_git(["rev-parse", "--git-dir"], repo):
+        die(f"not a git repository: {repo}")
+
+    skill_dir = resolve_skill_dir(args.skill_dir, task["skill"])
+    schema = task["strict_schema"]()
+
+    def emit(env: dict, code: int) -> None:
+        text = json.dumps(env, indent=2)
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+        print(text)
+        sys.exit(code)
+
+    # ---- build the task-specific prompt
+    if args.task == "review":
+        base = resolve_base(args.base, repo)
+        changed, stat, diff = collect_diff(base, repo)
+        if not changed:
+            emit(task["empty"](args.provider, f"no changes vs {base}"), 0)
+        refs = select_review_references(changed, skill_dir)
+        prompt = build_review_prompt(args.provider, skill_dir, refs, changed, stat, diff)
+        meta = f"base={base} files={len(changed)} refs={len(refs)}"
+    elif args.task == "investigate":
+        if not args.bug:
+            die("--bug is required for --task investigate")
+        evidence = read_text(Path(args.evidence_file)) if args.evidence_file else ""
+        prompt = build_investigate_prompt(args.provider, skill_dir, args.bug,
+                                          evidence, args.environment or "", repo)
+        meta = f"env={args.environment or 'unknown'} evidence={len(evidence)}c"
+    else:  # research
+        if not args.question:
+            die("--question is required for --task research")
+        refs = existing_refs(RESEARCH_CORE_REFS, skill_dir)
+        prompt = build_research_prompt(args.provider, skill_dir, refs, args.question, repo)
+        meta = f"refs={len(refs)} q={len(args.question)}c"
+
+    runner = run_codex if args.provider == "codex" else run_grok
+    print(f"external-agent: task={args.task} provider={args.provider} {meta} "
+          f"model={args.model or '(default)'}", file=sys.stderr)
+
+    last_err = ""
+    for attempt in (1, 2):
+        p = prompt if attempt == 1 else (
+            prompt + f"\n\nYOUR PREVIOUS OUTPUT WAS REJECTED: {last_err}. "
+            "Re-emit ONLY one valid JSON object matching the contract — no other text.")
+        raw = runner(p, schema, args.model, repo, args.timeout)
+        env, err = task["validate"](extract_json_object(raw), args.provider)
+        if env is not None:
+            n = len(env.get("findings", env.get("hypotheses", env.get("occurrences", []))))
+            print(f"external-agent: {args.provider} returned {n} item(s) "
+                  f"(attempt {attempt})", file=sys.stderr)
+            emit(env, 0)
+        last_err = err or "empty output"
+        print(f"external-agent: attempt {attempt} invalid ({last_err})", file=sys.stderr)
+
+    emit(task["empty"](
+        args.provider,
+        f"external-agent: {args.provider} failed to produce valid output for "
+        f"{args.task} after 2 attempts ({last_err})"), 2)
+
+
+if __name__ == "__main__":
+    main()
