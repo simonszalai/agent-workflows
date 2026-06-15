@@ -39,13 +39,114 @@ instead of orphaning (we used to see ~300 orphaned `postgres-mcp` accumulate).
   (`.gateway-token`, 0600), exports `POSTGRES_MCP_BIN`, execs node.
 - `com.simon.mcp-gateway.plist` — launchd job (KeepAlive, RunAtLoad).
 
-## Install
+## Install (macOS — launchd)
 ```
 cp com.simon.mcp-gateway.plist ~/Library/LaunchAgents/
 launchctl load -w ~/Library/LaunchAgents/com.simon.mcp-gateway.plist
 # first start = ONE 1Password prompt; then:
 curl -s http://127.0.0.1:8765/healthz   # {"ok":true,"routes":[...]}
 ```
+
+## Running on Windows / WSL / Linux (a teammate's machine, agent-installable)
+
+The daemon itself — `gateway.mjs` — is **zero-dependency, OS-agnostic Node**; it runs
+unchanged anywhere Node runs. Only the *wrapper* is macOS-specific:
+
+| Piece | macOS | Linux / WSL2 | Windows-native |
+|---|---|---|---|
+| Process manager | launchd (`.plist`) | **systemd user service** (below) | recommend WSL2; or Task Scheduler "At log on" → `wsl …` |
+| Entrypoint | `start-gateway.sh` (zsh) | same script via `bash`/`zsh` | runs inside WSL |
+| Secret source | 1Password **FIFO mount** (`TS_MCP_MOUNT_FILE`) + `op read` | **`op read` only** (no FIFO mount on a teammate's box) | `op.exe` (Windows Hello), surfaced into WSL |
+| Biometric | Touch ID | 1Password desktop app ↔ WSL integration | Windows Hello |
+
+**Recommended for Windows: run the daemon inside WSL2.** The whole toolchain (Node, the
+`op` CLI, `postgres-mcp`, the bash/zsh entrypoint) works in WSL2 with no porting, and WSL2's
+localhost forwarding means a gateway bound to `127.0.0.1:8765` *inside* WSL is reachable at
+`http://127.0.0.1:8765` from **Windows-side** Claude Code — so `.mcp.json` URLs are identical
+to macOS. A native-Windows port (PowerShell rewrite of `start-gateway.sh` + a Task Scheduler
+job) is possible but unsupported; prefer WSL2.
+
+### Prerequisites (per machine)
+- **Node** ≥ 20 (`node -v`). Set `NODE_BIN` if it isn't on the service's `PATH`.
+- **1Password CLI** `op`, signed in and unlocked, with desktop-app integration enabled so
+  `op read` is biometric, not a password prompt. Set `OP_BIN` / `OP_ACCOUNT` if needed.
+  - WSL: enable "Integrate with 1Password CLI" + the WSL toggle in the Windows 1Password app
+    so `op` inside WSL authorizes via Windows Hello.
+- **`postgres-mcp`** binary on the box; `POSTGRES_MCP_BIN` must be a single absolute path to
+  it (the daemon `spawn`s it directly — no shell, so `uvx postgres-mcp` as two words won't
+  work). With `uv` installed: `uv tool install postgres-mcp`, then point
+  `POSTGRES_MCP_BIN` at the resulting `~/.local/bin/postgres-mcp`.
+
+### Secret sourcing without the FIFO mount
+`start-gateway.sh` reads most secrets from Simon's 1Password **FIFO mount** — a *Local
+destination* secrets mount that exists only on his Mac. On any other machine that mount is
+absent, so secrets must come from **`op read`** instead. The script already resolves the
+high-sensitivity values (`*_RENDER_API_KEY`, the prod postgres base) via `op read`; the
+remaining mount-backed vars must be exported before the daemon starts.
+
+For a **read-only analyst like Thomas**, the read-only connection strings + scoped tokens
+live in one item — `op://TS/Thomas Local Agent Secrets` (the same item the `ts:*_ro`
+`project-mcp` entries use). Export the env vars `start-gateway.sh` expects from that item, e.g.:
+
+```bash
+# names below are the env vars the gateway reads; map each to the matching field in the
+# analyst 1Password item (confirm field names with `op item get "Thomas Local Agent Secrets" --vault TS`)
+export AUTODEV_MEMORY_API_TOKEN="$(op read 'op://TS/Thomas Local Agent Secrets/AUTODEV_MEMORY_API_TOKEN')"
+export CONTEXT7_API_KEY="$(op read 'op://TS/Thomas Local Agent Secrets/CONTEXT7_API_KEY')"
+export TS_POSTGRES_DEV_URL="$(op read 'op://TS/Thomas Local Agent Secrets/TS_DEV_DATABASE_URL')"
+export TS_POSTGRES_STAGING_URL="$(op read 'op://TS/Thomas Local Agent Secrets/TS_STAGING_DATABASE_URL')"
+export TS_POSTGRES_PROD_URL="$(op read 'op://TS/Thomas Local Agent Secrets/TS_PROD_DATABASE_URL')"
+# …repeat for any other route in routes.json the teammate needs
+```
+
+To skip the FIFO entirely, point the mount path at an empty file so `load_mount` no-ops, and
+let the exports above provide everything:
+```bash
+export TS_MCP_MOUNT_FILE=/dev/null    # FIFO absent on this machine; secrets come from op read exports
+```
+> Heads-up for an installing agent: `start-gateway.sh` currently **`exit 2`s if
+> `TS_MCP_MOUNT_FILE` isn't readable** (it assumes Simon's mount). `/dev/null` is readable, so
+> the override above satisfies that check while contributing no keys. Any route whose env var
+> ends up empty is skipped and returns 502 — that's expected for routes the teammate lacks
+> access to (e.g. an analyst with no amaru/workflow DBs).
+
+### systemd user service (Linux / WSL2) — the launchd replacement
+Create `~/.config/systemd/user/mcp-gateway.service` (adjust the path and the `op read`
+exports; put the exports in `~/.config/mcp-gateway/secrets.env` referenced via `EnvironmentFile`,
+or in a small wrapper the service execs):
+```ini
+[Unit]
+Description=mcp-gateway (local MCP reverse proxy)
+After=network-online.target
+
+[Service]
+Type=simple
+# A wrapper that does the `op read` exports above, then execs start-gateway.sh:
+ExecStart=%h/dev/agent-workflows/mcp-gateway/start-gateway.sh
+Environment=TS_MCP_MOUNT_FILE=/dev/null
+Environment=MCP_GATEWAY_HOST=127.0.0.1
+Environment=MCP_GATEWAY_PORT=8765
+# Environment=POSTGRES_MCP_BIN=%h/.local/bin/postgres-mcp
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/tmp/mcp-gateway.log
+StandardError=append:/tmp/mcp-gateway.err
+
+[Install]
+WantedBy=default.target
+```
+```bash
+loginctl enable-linger "$USER"            # keep the user service alive across logout (WSL: ensure systemd is on)
+systemctl --user daemon-reload
+systemctl --user enable --now mcp-gateway
+curl -s http://127.0.0.1:8765/healthz | python3 -m json.tool   # same verification as macOS
+```
+> WSL2 needs systemd enabled (`/etc/wsl.conf` → `[boot]\nsystemd=true`, then `wsl --shutdown`).
+> Without systemd, run the wrapper from `~/.profile`/a startup task and rely on the gateway's
+> own child-supervision instead.
+
+After install, client config (`.mcp.json` / `~/.claude.json`) is **identical to macOS** —
+the URLs all point at `http://127.0.0.1:8765/…` (see next section).
 
 ## Client config migration (the cutover)
 Each server entry changes from a stdio `project-mcp` command to a `type: http` URL

@@ -40,6 +40,43 @@ with repo access** so they can grep/read code to ground their output — Codex v
 Grok via a read/search-only tool allowlist (`--tools Read,Grep,Glob`, no Bash/Write/Edit).
 Neither can modify the repo.
 
+### MCP gateway daemon — 1Password secrets loaded once (once per machine)
+
+Postgres and the remote MCP servers (autodev-memory, render, context7) get their secrets from
+**1Password**. Without the daemon, every `.mcp.json` server spawns a fresh `project-mcp` child
+**per session**, and each postgres child **re-reads 1Password on every spawn** — so launching
+several Conductor workspaces fires a *burst* of biometric prompts (with ~25 workspaces × 5 DBs
+that was ~114 `postgres-mcp` processes and a wall of prompts on every multi-workspace launch).
+
+The `mcp-gateway` launchd daemon fixes this: it resolves **all** MCP secrets from 1Password
+**once at daemon start** (a single biometric prompt), holds them in one long-lived process, and
+fronts every MCP server over localhost HTTP/SSE. Clients connect to `127.0.0.1:8765` and carry
+**no secrets** — so starting a workspace never re-prompts. Install it once per machine:
+
+```bash
+cd ~/dev/agent-workflows/mcp-gateway
+cp com.simon.mcp-gateway.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.simon.mcp-gateway.plist
+# first start = ONE 1Password prompt; then verify (all 5 postgres children should be alive):
+curl -s http://127.0.0.1:8765/healthz | python3 -m json.tool
+
+# Clients read the local listener token from the shell env — export it from your rc file:
+echo 'export MCP_GATEWAY_TOKEN="$(cat ~/dev/agent-workflows/mcp-gateway/.gateway-token)"' >> ~/.zshrc
+```
+
+After that, `.mcp.json` / `~/.claude.json` server entries point at the gateway
+(`type: http` for remote servers, `type: sse` for postgres) instead of running `project-mcp`.
+See **`mcp-gateway/README.md`** for the full client-config entries, the per-DB route table, the
+deliberate cutover plan, rollback, and troubleshooting. `project-mcp` (below) still works
+unchanged as the fallback / rollback path for any server not yet migrated.
+
+**On a teammate's non-Mac machine (Windows / WSL / Linux):** the daemon is plain Node and runs
+anywhere — only the launchd wrapper and the 1Password FIFO mount are Mac-specific. The
+`mcp-gateway/README.md` section **"Running on Windows / WSL / Linux"** has the agent-installable
+recipe: a systemd user service (launchd replacement), running it under WSL2 on Windows, the
+1Password biometric prerequisites per OS, and how to source secrets via `op read` (e.g. the
+read-only analyst item) when the Mac FIFO mount isn't present.
+
 ### Cloud setup (automatic)
 
 Each project's `deploy/cloud-setup.sh` handles cloning this repo and copying files into
@@ -117,6 +154,11 @@ hooks fail silently on resume/compact triggers with "AUTODEV_MEMORY_API_TOKEN no
 
 
 ## project-mcp launcher (`bin/project-mcp`)
+
+> **Note:** the **mcp-gateway daemon** (above) is now the preferred path — it loads 1Password
+> secrets once instead of re-prompting per spawn. `project-mcp` remains the fallback for servers
+> not yet cut over to the gateway, and the rollback target. It is still the canonical record of
+> *which* 1Password items back each server.
 
 Every repo's `.mcp.json` / `.codex/config.toml` sets its MCP server `command` to
 `~/.local/bin/project-mcp <project> <server>` (e.g. `shared autodev-memory`,
