@@ -138,12 +138,22 @@ Flag and handle:
 | Change | Detection |
 |---|---|
 | Prisma schema/migrations | `prisma/schema.prisma`, `prisma/migrations/**` |
+| Alembic migrations (ts-prefect) | `migrations/versions/**`, `migrations/env.py` |
 | Seed data | `prisma/data/**`, `prisma/seed.ts` |
 | Dependencies | `package.json`, `bun.lock*` |
 | Runtime/config/deploy | `Dockerfile`, Render/env/config files, `.github/workflows/**` |
 | Auth/API/contracts | route modules, webhook handlers, API utilities |
 
 If migrations are present, check for deployment gotchas in memory and ensure the deployment plan states whether migrations run automatically on push to main or need an explicit command.
+
+**Migration-bearing tickets need a parity check first.** When the change touches
+`migrations/`, run `/migration-parity-check` before merging. A migration-bearing ticket is
+**not** eligible for selective cherry-pick off a diverged branch: the migration chain is ordered
+global state, so cherry-picking forces a `down_revision` re-point that forks the graph and can
+strand migrations on a live env (`alembic upgrade head` becomes a silent no-op while objects are
+missing — the 2026-06-16 incident). For an all-staging rollup do the full parity merge;
+otherwise re-point onto the target head **and record the reconciliation debt**. Never judge
+divergence by commit count — use content/patch equivalence and per-env schema truth.
 
 ### 5. Verify Before Merge
 

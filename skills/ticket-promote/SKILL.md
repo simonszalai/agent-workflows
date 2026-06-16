@@ -68,6 +68,32 @@ git cherry-pick -x <sha1> <sha2> ...
 If conflicts reveal an undeclared dependency on unrelated staging work, stop and report. Do not
 silently widen scope.
 
+### 3b. Migration pre-flight (if the ticket carries a migration)
+
+If the cherry-picked diff touches `migrations/versions/`:
+
+```bash
+git diff --name-only origin/main...HEAD -- migrations/versions/
+```
+
+A migration cherry-picked onto a diverged `main` will point its `down_revision` at a
+staging-only revision that is not on `main`, forking the Alembic graph. Before continuing:
+
+1. **Run `/migration-parity-check`.** If it reports a stranded env or true divergence on the
+   migration chain, STOP — a migration-bearing ticket is not eligible for selective cherry-pick
+   off a diverged branch. Escalate to a full `staging→main` parity merge
+   (`/promote-to-production --all-staging`) instead.
+2. If parity is clean, **repair the graph**: set the promoted migration's `down_revision` (and
+   its `Revises:` docstring) to `main`'s actual head — `uv run alembic heads` — then confirm a
+   single head (`uv run alembic heads` → exactly one).
+3. **Record the reconciliation debt** in the manifest: the same revision id now exists on both
+   branches with a different `down_revision`; the next full `staging→main` sync must reconcile
+   it. Do not try to "fix" staging here.
+
+New migrations must already be order-independent (idempotent, additive, absolute-not-relative);
+CI (`cli_tools/lint_migrations.py`) enforces this and rejects re-pointing an already-released
+`down_revision`.
+
 ### 4. Local checks
 
 Run project-appropriate local checks in the promotion worktree. Do not start dev servers unless
