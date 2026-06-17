@@ -29,6 +29,8 @@ First argument must be `staging`, `prod`, or `production`.
   separate landing step, not part of evidence collection.
 - On production PASS, set ticket status to `completed`.
 - On failure, set `verify_staging_failed` or `verify_prod_failed`.
+- Verification stays read-only with ONE exception: on **production PASS**, a ticket may carry a
+  deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §7).
 
 ## Process
 
@@ -88,12 +90,30 @@ Use:
 | staging | PASS | call `/ticket-promote <ID>` unless `--no-promote` |
 | staging | FAIL | create verification report artifact; status `verify_staging_failed` |
 | staging | NEEDS_MORE_TIME | leave status unchanged |
-| production | PASS | create verification report artifact; status `completed` |
+| production | PASS | create verification report artifact; status `completed`; then run any deferred post-verification cleanup (see §7) |
 | production | FAIL | create verification report artifact; status `verify_prod_failed` |
 | production | NEEDS_MORE_TIME | leave status unchanged |
 
 When staging PASS calls `/ticket-promote`, the final status should usually become
 `to_verify_prod` after promotion lands on `main`.
+
+### 7. Deferred post-verification cleanup (production PASS only)
+
+Some tickets carry a cleanup action that must run only once the fix is confirmed live in
+production — never before. This is the single mutation ticket-verify may perform, and only
+after a `PASS` verdict has been recorded for that ticket.
+
+If a production-PASS ticket has a `flow-run-cleanup` artifact:
+
+1. Fetch the artifact and write its JSON body to a temp file.
+2. Run its `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation
+   boundary from §3>`, `--execute`, and any flag the command documents for non-interactive
+   use (e.g. `--yes`).
+3. Fold the command's reported counts into the verdict output.
+
+The artifact is the complete, self-describing contract — ticket-verify needs no
+project-specific knowledge; it just runs the command the artifact names. A ticket without
+such an artifact has no cleanup step, and a non-PASS verdict never triggers one.
 
 ## Output
 
