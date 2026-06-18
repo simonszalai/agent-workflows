@@ -137,7 +137,7 @@ After successful `/auto-deploy` handoff, trust auto-deploy's status update:
 | Epic step | milestone/staging target | `merged` |
 
 For epic steps, `merged` is a handoff to the parent milestone. Do not call `/ticket-verify` for
-the step directly; `/epic-auto` will invoke `/ticket-verify staging --epic <EPIC_ID> --milestone
+the step directly; `/epic-flow` will invoke `/ticket-verify staging --epic <EPIC_ID> --milestone
 <MILESTONE> --no-promote` after the full milestone has landed and deployed.
 
 If auto-deploy reports an external/manual deploy dependency (for example a Thomas-only

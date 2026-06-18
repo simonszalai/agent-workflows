@@ -30,12 +30,12 @@ First argument must be `staging`, `prod`, or `production`.
 - Verification evidence collection is read-only: no data mutation, no flow triggers, no deploys.
 - On standalone staging PASS, this skill normally invokes `/ticket-promote` for that ticket.
   Promotion is a separate landing step, not part of evidence collection.
-- In explicit `--epic`/`--milestone` mode, do **not** auto-promote. The parent `/epic-auto`
+- In explicit `--epic`/`--milestone` mode, do **not** auto-promote. The parent `/epic-flow`
   controls milestone progression and production promotion.
 - On production PASS, set standalone ticket status to `completed`. In epic mode, update the
   parent epic/milestone gate and included step tickets according to the epic lifecycle.
 - On failure, set `verify_staging_failed` or `verify_prod_failed` on the standalone ticket, or
-  record the failed epic/milestone gate and failed evidence rows for `/epic-auto`'s fix loop.
+  record the failed epic/milestone gate and failed evidence rows for `/epic-flow`'s fix loop.
 - Verification stays read-only with ONE exception: on **production PASS**, a ticket may carry a
   deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §8).
 
@@ -151,7 +151,7 @@ Epic/milestone mode:
 | Environment | Verdict | Action |
 |---|---|---|
 | staging | PASS | create gate report artifact; mark the milestone staging gate passed; set included step tickets to `staging_verified`/ready-for-parent-promotion when the lifecycle supports it; do **not** call `/ticket-promote` |
-| staging | FAIL | create gate report artifact with failed evidence-to-step mapping; leave the milestone unpassed for `/epic-auto` fix loop |
+| staging | FAIL | create gate report artifact with failed evidence-to-step mapping; leave the milestone unpassed for `/epic-flow` fix loop |
 | staging | NEEDS_MORE_TIME | create/update gate report artifact; leave milestone and step statuses unchanged |
 | production | PASS | create final production gate report; mark included step tickets `completed` when their parent epic owns completion; mark epic complete only if all milestones are done |
 | production | FAIL | create gate report artifact; mark epic/affected step production verification failed if supported, otherwise record blocker/failure metadata |

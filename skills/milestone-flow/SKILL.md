@@ -1,13 +1,13 @@
 ---
-name: epic-milestone-flow
-description: Execute one epic milestone's step-ticket DAG. Parallelizes independent cross-repo steps, serializes conflicting same-repo work, calls ticket-flow with epic context, and returns a gate package for epic-auto. No deploy or environment verification.
+name: milestone-flow
+description: Execute one epic milestone's step-ticket DAG. Parallelizes independent cross-repo steps, serializes conflicting same-repo work, calls ticket-flow with epic context, and returns a gate package for epic-flow. No deploy or environment verification.
 max_turns: 400
 ---
 
-# Epic Milestone Flow
+# Milestone Flow
 
 Execute one milestone of an epic. This is the milestone-level orchestrator over multiple
-`/ticket-flow` runs. It is normally called by `/epic-auto`.
+`/ticket-flow` runs. It is normally called by `/epic-flow`.
 
 ## Boundaries
 
@@ -16,13 +16,13 @@ Execute one milestone of an epic. This is the milestone-level orchestrator over 
 - Must pass epic context and contracts into each ticket-flow.
 - Does not deploy, promote, or verify environments.
 - Stops when the milestone's steps are landed/`merged` and a complete gate package exists.
-- Full-auto deploy/verify/promotion is owned by `/epic-auto` immediately after this skill returns.
+- Full-auto deploy/verify/promotion is owned by `/epic-flow` immediately after this skill returns.
 
 ## Usage
 
 ```text
-/epic-milestone-flow E0007 M2
-/epic-milestone-flow E0007 --next
+/milestone-flow E0007 M2
+/milestone-flow E0007 --next
 ```
 
 ## Process
@@ -42,7 +42,7 @@ Stop if:
 - any required blocker from an earlier milestone is not complete/merged;
 - cross-repo contracts are missing;
 - two same-repo steps are marked parallel but touch overlapping/conflicting areas;
-- the milestone has no staging evidence contract. Ask `/epic-auto`/planning to repair the
+- the milestone has no staging evidence contract. Ask `/epic-flow`/planning to repair the
   milestone before build work continues.
 
 ### 3. Build execution waves
@@ -83,11 +83,11 @@ Do not run deploy commands or environment verification.
 ## Output
 
 ```text
-Epic milestone flow complete: E0007 M2
+Milestone flow complete: E0007 M2
 Steps: 3/3 merged
 Gate package: deployment_guide artifact updated
 Deploy: not run
 Environment verify: not run
 
-Next: /epic-auto continues with staging deploy + milestone verification, or run the printed gate manually.
+Next: /epic-flow continues with staging deploy + milestone verification, or run the printed gate manually.
 ```

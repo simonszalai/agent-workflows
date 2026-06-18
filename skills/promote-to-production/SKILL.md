@@ -96,7 +96,7 @@ For epic mode:
 6. Reject the promotion if the commit list contains unrelated tickets, misses a required
    milestone dependency, or would promote an unverified milestone.
 
-The epic mode is the production half of `/epic-auto --full-auto`: it promotes verified epic work
+The epic mode is the production half of `/epic-flow --full-auto`: it promotes verified epic work
 only, deploys production, and leaves final behavior verification to
 `/ticket-verify production --epic <EPIC_ID>`.
 
