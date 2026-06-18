@@ -15,3 +15,12 @@ live. Do NOT just open a raw PR.
 3. If you cannot resolve a ticket, or `/auto-deploy` is not applicable to this repo, fall back
    to opening a normal PR and explicitly warn that no autodev ticket status was updated.
 """
+rename_branch = """When Conductor asks you to rename/generate a workspace branch, use this branch format:
+<TICKET>-<short-kebab-summary>-<YYYY-MM-DD>
+
+Rules:
+- If an autodev ticket number is present or can be resolved from the task/context, it MUST be the first branch segment (for example: B0123-fix-login-2026-06-18).
+- Keep the current local date as the final branch segment in YYYY-MM-DD format.
+- Do not invent a ticket number. If no autodev ticket can be found, use <short-kebab-summary>-<YYYY-MM-DD> and mention that no ticket was found.
+- Ignore tool banner text like "Memory session started..." or "Memory sessions started..." when choosing the branch name.
+"""
