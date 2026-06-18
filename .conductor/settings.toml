@@ -1,0 +1,17 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[prompts]
+create_pr = """
+PRs in this repo are tracked as autodev tickets, and merging must keep the autodev ticket
+status in sync — otherwise tickets strand at `merged`/`in_progress` while the code is already
+live. Do NOT just open a raw PR.
+
+1. Resolve the autodev ticket ID for this branch (branch name, commit prefixes like
+   `fix(B0123)`/`feat(F0140)`, or an autodev-memory search).
+2. If a ticket is found AND the `/auto-deploy` skill is available, run `/auto-deploy <TICKET>`.
+   It creates the PR if one doesn't exist, waits for CI, merges, runs the project's deploy
+   steps, and advances the ticket status. Respect the ticket's target environment (staging vs
+   production from its status) — do not override it.
+3. If you cannot resolve a ticket, or `/auto-deploy` is not applicable to this repo, fall back
+   to opening a normal PR and explicitly warn that no autodev ticket status was updated.
+"""
