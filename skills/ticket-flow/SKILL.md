@@ -94,9 +94,12 @@ Follow `execution-phases.md`:
 - implement each step;
 - keep unrelated lint/type/review fixes in a separate commit;
 - write focused tests;
-- run the cross-review iteration loop (review skill, `mode:cross`): each round adds external
-  Codex + Grok reviewers to Claude's self-review and resolves actionable findings, up to 3
-  rounds or until none remain;
+- run the cross-review iteration loop by **invoking the `review` skill in `mode:cross`** (do not
+  hand-roll review here): the skill orchestrates Claude-native (Anthropic) + Codex (OpenAI) +
+  Grok (xAI) reviewers and distills them into one set, then Claude resolves actionable findings,
+  up to 3 rounds or until none remain. A round is only complete when all three providers
+  contributed — confirm `.context/review/codex.json` and `.context/review/grok.json` exist per
+  the cross-coverage gate in `execution-phases.md`; a Claude-native-only round is a failed round;
 - stop for unresolved design decisions.
 
 ### 4. Local verification
