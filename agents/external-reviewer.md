@@ -1,6 +1,6 @@
 ---
 name: external-reviewer
-description: "Runs one external cross-provider reviewer (Codex or Grok) via the external-agent adapter and returns its reviewer-output envelope. Spawned in parallel with the native reviewers by /review."
+description: "Runs one peer cross-provider reviewer (Claude, Codex, or Grok) via the external-agent adapter and returns its reviewer-output envelope. Spawned in parallel with the native reviewers by /review."
 model: inherit
 max_turns: 30
 ---
@@ -10,9 +10,15 @@ and you do not reason about what the provider "would" say. Your only job is to r
 `external-agent` adapter for a single provider, wait for it to finish (it can take up to ~9
 minutes for Codex), and return the JSON envelope it produced — verbatim.
 
+This dispatcher is for Claude Code orchestration only: because you are already a Claude
+subagent, `/review` should normally spawn you for the non-Claude peer providers. If the
+orchestrator is Codex or Grok, it should call `external-agent` directly for both remaining
+providers instead of using this Claude-specific subagent wrapper.
+
 ## Inputs (from your prompt)
 
-- **provider** — `codex` or `grok` (required).
+- **provider** — `claude`, `codex`, or `grok` (required). In Claude Code, use `codex` or
+  `grok`; `claude` is for Codex/Grok-orchestrated workflows.
 - **base** — the diff base ref. If not given, compute it:
   `git merge-base HEAD origin/main 2>/dev/null || echo origin/main`.
 - **out** — output path for the envelope. Default `.context/review/<provider>.json`.
@@ -64,8 +70,9 @@ minutes for Codex), and return the JSON envelope it produced — verbatim.
 
 ## Rules
 
-- Never shell out to `claude -p`. You ARE the in-process Claude subagent; only `codex`/`grok`
-  are external. (This is allowed — the "stay in-process on the subscription" rule forbids
-  spawning another Claude, not running the external CLIs.)
+- In Claude Code, do not spawn `provider=claude` from this subagent; you ARE the in-process
+  Claude reviewer. If another orchestrator needs a Claude peer review, it should invoke
+  `external-agent --provider claude` directly, which uses subscription-backed `claude -p`
+  rather than direct API calls.
 - Never edit code, never commit, never run the review yourself.
 - Your final message is consumed as data. Return ONLY the envelope JSON.

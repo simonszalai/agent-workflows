@@ -17,7 +17,7 @@ findings as a ticket artifact.
 /research "how is error handling done"                   # Creates new research ticket
 /research F0014 "..." --deep                             # Force heavyweight workflow path
 /research F0014 "..." --light                            # Force single-agent path
-/research F0014 "..." --solo                             # Skip external Codex searcher (Claude only)
+/research F0014 "..." --solo                             # Skip peer providers (current runner only)
 ```
 
 ## When to Use
@@ -176,6 +176,13 @@ ticket = mcp__autodev-memory__create_ticket(
    `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
    environment:
 
+   If the current host tool does not expose Claude's `Workflow` tool (for example a
+   Codex/Grok-orchestrated run), execute the equivalent heavy-path search inline: fan out the
+   search modalities/agents the host supports, run the two peer providers in step 4c, dedup
+   occurrences, run the gap-fill loop if available, and synthesize the same result shape. Do
+   **not** downgrade to a one-provider search just because the Claude `Workflow` primitive is
+   absent.
+
    ```
    result = Workflow({
      name: "research-fanout",
@@ -243,41 +250,43 @@ ticket = mcp__autodev-memory__create_ticket(
 
 4c. **Cross-provider searchers (on by default — both paths):**
 
-   After the chosen path produces its occurrences, add external Codex and Grok searchers that
-   answer the same question over the same repo **unless** the user passed `--solo`. Both run
-   read-only with real repo access (Codex via its sandbox, Grok via a read/search-only tool
-   allowlist), so they grep and read files independently — an occurrence multiple searchers
-   find is the dominant pattern; one only an external provider finds is a coverage gap Claude's
-   sweep missed. This is a required step, not optional: you MUST run the commands below and
-   read the files they write. Do NOT simulate their output.
+   After the chosen path produces its occurrences, add the two providers that are not the current
+   main workflow runner as searchers that answer the same question over the same repo **unless**
+   the user passed `--solo`. If Claude runs the workflow, run Codex + Grok; if Codex runs it,
+   run Claude + Grok; if Grok runs it, run Claude + Codex. Peer providers run read-only with real
+   repo access, so they grep and read files independently — an occurrence multiple searchers find
+   is the dominant pattern; one only a peer provider finds is a coverage gap the main runner's
+   sweep missed. This is a required step, not optional: you MUST run the commands below and read
+   the files they write. Do NOT simulate their output.
 
-   External providers are not Claude subagents (Claude stays in-process on the subscription —
-   never shell out to `claude -p`). They run through the `external-agent` adapter
-   (`bin/external-agent` in agent-workflows, symlinked onto `PATH`) and each returns a searcher
-   envelope `{key, files_searched, occurrences, summary, questions_for_synthesis}` whose
-   occurrence items match `occurrenceSchema` in `workflows/research-fanout.js` — the same shape
-   your searchers produce, so they merge with no special-casing.
+   Peer providers run through the `external-agent` adapter (`bin/external-agent` in
+   agent-workflows, symlinked onto `PATH`) and each returns a searcher envelope
+   `{key, files_searched, occurrences, summary, questions_for_synthesis}` whose occurrence items
+   match `occurrenceSchema` in `workflows/research-fanout.js` — the same shape your searchers
+   produce, so they merge with no special-casing. Claude peers use subscription-backed
+   `claude -p`, never direct Anthropic API calls.
 
    ```bash
    mkdir -p .context/research
    # Write the question to a file so it survives shell quoting.
    Q="$(cat .context/research/question.txt)"
-   external-agent --task research --provider codex --question "$Q" \
-     --out .context/research/codex.json 2>.context/research/codex.log &
-   external-agent --task research --provider grok  --question "$Q" \
-     --out .context/research/grok.json 2>.context/research/grok.log &
+   for provider in $(agent-workflow-provider --peers); do
+     external-agent --task research --provider "$provider" --question "$Q" \
+       --out ".context/research/${provider}.json" 2>".context/research/${provider}.log" &
+   done
    wait
    ```
 
    Then fold both envelopes into the occurrence set:
 
-   1. Read `.context/research/codex.json` and `.context/research/grok.json`. A failed run still
-      returns a valid envelope with empty `occurrences` and a note — surface the note, do not block.
+   1. Read the two `.context/research/<provider>.json` files for the peer providers. A failed
+      run still returns a valid envelope with empty `occurrences` and a note — surface the note,
+      do not block.
    2. Merge external occurrences into `result.occurrences`, deduping by `(file, line,
       pattern_variant)`. For each occurrence, append the provider key to its `sources`; an
       occurrence found by both a Claude searcher and an external provider is multi-source (the
       strongest signal).
-   3. Add `codex`/`grok` to `result.modalities_searched` and fold `files_searched` /
+   3. Add the peer provider keys to `result.modalities_searched` and fold `files_searched` /
       `questions_for_synthesis` into the coverage stats and `residual_gaps` as appropriate.
 
    `.context/research/*.json` are ephemeral inter-agent scratch consumed immediately by

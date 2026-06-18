@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""external-agent — run an external provider (Codex or Grok) as a cross-provider
-participant in a Claude workflow: code review, bug investigation, or codebase research.
+"""external-agent — run a peer provider (Claude, Codex, or Grok) as a
+cross-provider participant in another agent's workflow: code review, bug
+investigation, or codebase research.
 
-Claude stays the in-process orchestrator (subscription-only; nothing ever shells out to
-`claude -p`). This adapter lets Claude delegate ONE pass of a task to a different model's
-CLI and get back results in the *exact same shape* Claude's own subagents produce, so each
-skill can merge external output through its existing synthesis path with no special-casing.
+The main workflow can be orchestrated by any one of Claude, Codex, or Grok. This adapter
+lets that orchestrator delegate ONE pass of a task to either of the other providers and get
+back results in the *exact same shape* its native reviewers/searchers/generators produce, so
+each skill can merge peer output through its existing synthesis path with no special-casing.
+
+When the peer provider is Claude, the adapter shells out to `claude -p` (the user's Claude
+subscription), never direct Anthropic API calls.
 
 Tasks (--task):
 
@@ -25,17 +29,18 @@ Tasks (--task):
                Each occurrence matches occurrenceSchema
                    { file, line, snippet, pattern_variant, notes }
 
-The methodology fed to the external model is the *existing* skill (skills/<task>/SKILL.md +
-relevant references), so Codex/Grok work by the same rules as Claude's native subagents.
+The methodology fed to the peer model is the *existing* skill (skills/<task>/SKILL.md +
+relevant references), so every provider works by the same task rules as the main runner.
 
-Both providers run read-only with repo access, so for investigate/research they can grep and
-read files to ground their output: Codex via `-s read-only`, Grok via a read/search-only tool
-allowlist (`--tools Read,Grep,Glob`, no Bash/Write/Edit). Neither can modify the repo.
+Peer providers run read-only with repo access, so for investigate/research they can grep and
+read files to ground their output: Claude via `claude -p` with only Read/Grep/Glob tools,
+Codex via `-s read-only`, and Grok via a read/search-only tool allowlist
+(`--tools Read,Grep,Glob`, no Bash/Write/Edit). None can modify the repo.
 
 Usage:
-    external-agent --task review      --provider codex|grok [--base origin/main]
-    external-agent --task investigate --provider codex|grok --bug STR [--evidence-file F] [--environment ENV]
-    external-agent --task research    --provider codex      --question STR
+    external-agent --task review      --provider claude|codex|grok [--base origin/main]
+    external-agent --task investigate --provider claude|codex|grok --bug STR [--evidence-file F] [--environment ENV]
+    external-agent --task research    --provider claude|codex|grok --question STR
   common: [--model M] [--repo DIR] [--out FILE] [--timeout SECS] [--skill-dir DIR]
 
 Exit codes: 0 ok; 2 provider produced no valid output (a valid empty envelope with a
@@ -653,6 +658,58 @@ TASKS = {
 
 
 # ---------------------------------------------------------------- provider runners
+def run_claude(prompt: str, schema: dict, model: str | None,
+               repo: Path, timeout: int) -> str:
+    """Returns Claude's final-message text (expected to be the JSON object).
+
+    Use Claude Code's subscription-backed print mode, not direct Anthropic API calls. The
+    peer reviewer/searcher/generator is read-only: it may Read/Grep/Glob inside the repo, but
+    cannot shell out or edit files.
+    """
+    cmd = ["claude", "-p",
+           "--safe-mode",
+           "--output-format", "json",
+           "--no-session-persistence",
+           "--permission-mode", "dontAsk",
+           "--allowedTools", "Read,Grep,Glob",
+           "--disallowedTools", "Bash,Edit,MultiEdit,Write,NotebookEdit",
+           "--add-dir", str(repo),
+           "--json-schema", json.dumps(schema)]
+    if model:
+        cmd += ["--model", model]
+    try:
+        res = subprocess.run(cmd, input=prompt, text=True, cwd=str(repo),
+                             capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print("external-agent: claude timed out", file=sys.stderr)
+        return ""
+    out = (res.stdout or "").strip()
+    if not out:
+        err = (res.stderr or "").strip()
+        if err:
+            print("external-agent: claude produced no output; stderr tail:\n"
+                  + err[-800:], file=sys.stderr)
+        return ""
+    try:
+        env = json.loads(out)
+    except json.JSONDecodeError:
+        return out
+    if isinstance(env, dict):
+        structured = env.get("structured_output") or env.get("structuredOutput")
+        if isinstance(structured, dict):
+            return json.dumps(structured)
+        # Claude Code --output-format json wraps the assistant text in `result`.
+        result = env.get("result")
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            return json.dumps(result)
+        # If --json-schema returned the object directly in this version, accept it.
+        if any(k in env for k in ("reviewer_key", "generator_key", "key")):
+            return json.dumps(env)
+    return out
+
+
 def run_codex(prompt: str, schema: dict, model: str | None,
               repo: Path, timeout: int) -> str:
     """Returns the raw final-message text (expected to be the JSON object)."""
@@ -748,9 +805,9 @@ def extract_json_object(raw: str) -> dict | None:
 def main() -> None:
     ap = argparse.ArgumentParser(prog="external-agent", add_help=True)
     ap.add_argument("--task", default="review", choices=sorted(TASKS.keys()))
-    ap.add_argument("--provider", required=True, choices=["codex", "grok"])
+    ap.add_argument("--provider", required=True, choices=["claude", "codex", "grok"])
     ap.add_argument("--model", default=None,
-                    help="model override (default: codex config default / grok-build)")
+                    help="model override (default: provider CLI default / grok-build)")
     ap.add_argument("--repo", default=None, help="repo dir (default: git toplevel of cwd)")
     ap.add_argument("--out", default=None, help="write envelope here (default: stdout)")
     ap.add_argument("--timeout", type=int,
@@ -774,8 +831,9 @@ def main() -> None:
         die(f"provider CLI '{args.provider}' not found on PATH")
 
     if args.model is None:
-        args.model = os.environ.get(
-            "CODEX_REVIEW_MODEL" if args.provider == "codex" else "GROK_REVIEW_MODEL")
+        task_env = f"{args.provider}_{args.task}_model".upper()
+        provider_env = f"{args.provider}_review_model".upper()
+        args.model = os.environ.get(task_env) or os.environ.get(provider_env)
 
     repo = Path(args.repo) if args.repo else Path(
         run_git(["rev-parse", "--show-toplevel"], Path.cwd()).strip() or ".")
@@ -815,7 +873,7 @@ def main() -> None:
         prompt = build_research_prompt(args.provider, skill_dir, refs, args.question, repo)
         meta = f"refs={len(refs)} q={len(args.question)}c"
 
-    runner = run_codex if args.provider == "codex" else run_grok
+    runner = {"claude": run_claude, "codex": run_codex, "grok": run_grok}[args.provider]
     print(f"external-agent: task={args.task} provider={args.provider} {meta} "
           f"model={args.model or '(default)'}", file=sys.stderr)
 

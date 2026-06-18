@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Detect which agent provider is currently running an agent-workflows flow.
+
+Output is one of: claude, codex, grok.
+
+Override:
+  AGENT_WORKFLOW_PROVIDER=claude|codex|grok
+
+Usage:
+  agent-workflow-provider          # prints current provider
+  agent-workflow-provider --peers  # prints the other two providers, one per line
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+PROVIDERS = ("claude", "codex", "grok")
+
+
+def valid(provider: str | None) -> str | None:
+    if not provider:
+        return None
+    p = provider.strip().lower()
+    return p if p in PROVIDERS else None
+
+
+def parent_commands(limit: int = 18) -> list[str]:
+    """Return the current process ancestry command paths/names, best-effort."""
+    out: list[str] = []
+    pid = os.getpid()
+    for _ in range(limit):
+        try:
+            res = subprocess.run(
+                ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+        except Exception:
+            break
+        if res.returncode != 0:
+            break
+        line = res.stdout.strip()
+        if not line:
+            break
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            break
+        ppid_s, comm = parts
+        out.append(comm)
+        try:
+            ppid = int(ppid_s)
+        except ValueError:
+            break
+        if ppid <= 1 or ppid == pid:
+            break
+        pid = ppid
+    return out
+
+
+def detect() -> str:
+    # Explicit override wins, but invalid values are ignored so a stale/bad env var does not
+    # silently break cross-provider coverage.
+    override = valid(os.environ.get("AGENT_WORKFLOW_PROVIDER"))
+    if override:
+        return override
+
+    env = os.environ
+
+    # Strong environment markers. Order matters: Codex sessions may inherit Claude-related
+    # hook/package variables; prefer provider-specific runtime ids first.
+    if any(k in env for k in ("CODEX_THREAD_ID", "CODEX_WORKING_DIR", "CODEX_CI")):
+        return "codex"
+    if env.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE") or env.get("CODEX_HOME"):
+        return "codex"
+
+    if any(k in env for k in ("GROK_SESSION_ID", "GROK_WORKING_DIR", "GROK_HOME")):
+        return "grok"
+
+    if any(k in env for k in (
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_PROJECT_DIR",
+        "CLAUDE_AGENT_SDK_VERSION",
+    )):
+        return "claude"
+
+    # Process ancestry catches Conductor and terminal-launched sessions even when env markers
+    # differ by version.
+    haystack = "\n".join(parent_commands()).lower()
+    for needle, provider in (
+        ("/codex", "codex"),
+        (" codex", "codex"),
+        ("codex-", "codex"),
+        ("/grok", "grok"),
+        (" grok", "grok"),
+        ("grok-", "grok"),
+        ("/claude", "claude"),
+        (" claude", "claude"),
+        ("claude-", "claude"),
+    ):
+        if needle in haystack:
+            return provider
+
+    # Default to Claude because agent-workflows originated as Claude Code skills and older
+    # environments may lack markers. This is a conservative compatibility fallback; modern
+    # Codex/Grok should hit env or process detection above.
+    return "claude"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--peers", action="store_true", help="print providers other than self")
+    ap.add_argument("--json", action="store_true", help="print a JSON array/object")
+    args = ap.parse_args()
+
+    self_provider = detect()
+    if args.peers:
+        peers = [p for p in PROVIDERS if p != self_provider]
+        if args.json:
+            import json
+
+            print(json.dumps(peers))
+        else:
+            print("\n".join(peers))
+        return
+
+    if args.json:
+        import json
+
+        print(json.dumps({"provider": self_provider}))
+    else:
+        print(self_provider)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)
