@@ -203,28 +203,29 @@ handles this automatically via its "Store in Memory Service" step.
 
 ### Phase 8: Create Deployment Guide
 
-Run `/create-deployment-guide` internally:
+Run `/create-deployment-guide` internally to **reconcile and finalize the `deployment_guide`
+artifact** against the real diff (it was drafted by `/plan` and finalized by
+`/create-build-todos`):
 
-1. **Analyze changes for deployment impact:**
-   - Database migrations
-   - New services/jobs
-   - Configuration changes
-   - Multi-service dependencies
+1. **Analyze the real diff for deployment impact:**
+   - Database migrations (concrete revision/file)
+   - New services/jobs, scheduler/worker deploys
+   - Secret/credential blocks, config/env-var changes
+   - Cross-repo deploy order + multi-service dependencies
 
-2. **Generate deployment-guide.md:**
-   - Pre-deployment checklist
-   - Deployment steps in order
-   - Post-deployment verification queries/commands
-   - Rollback plan
-   - Monitoring requirements
+2. **Update the `deployment_guide` artifact** (MCP, not a file):
+   - Cross-repo deploy order + steps in order, with the project's real commands
+   - Per-environment **Verification Evidence** (staging + prod): each item a reproducible
+     query/command + expected good output + bad-output interpretation
+   - Rollback plan; activation boundary
 
-3. **Check for special requirements:**
-   - Schema changes -> migration steps
-   - Multi-service -> coordination requirements
+3. **Mark `Status: FINALIZED`** once deploy steps and both env evidence sections are concrete.
 
-**Output:** `deployment-guide.md` in work item folder.
+**Output:** updated `deployment_guide` artifact on the ticket (read by `/auto-deploy`,
+`/create-pr`, `/ticket-verify`).
 
-**On trivial changes:** May skip if changes don't require deployment steps (e.g., doc-only).
+**On trivial changes:** still record the Verification Evidence — even a doc-only change states how
+it's confirmed; skip only the deploy-step mechanics that genuinely don't apply.
 
 **On error:** Log details, continue to verification (non-blocking).
 

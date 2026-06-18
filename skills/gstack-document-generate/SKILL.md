@@ -1,0 +1,1 @@
+/Users/simon/dev/agent-workflows/skills/gstack/document-generate/SKILL.md

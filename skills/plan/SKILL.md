@@ -294,6 +294,38 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    )
    ```
 
+6. **Write a DRAFT deployment guide** as a separate `deployment_guide` artifact. The plan knows
+   the architecture, so it can already commit the *shape* of deploy and verification even though
+   exact commands/revisions come later at build time. This draft is the seed that
+   `/create-build-todos` finalizes and `/ticket-verify` grades against — do not skip it.
+
+   Capture, from the architecture:
+   - **Deploy shape:** which repos/components are touched and in what **order** (and why — which
+     cross-repo contract or dependency forces it); whether there's a migration; whether a
+     scheduler/worker/service deploy is needed; whether any secret/credential block or env var
+     must be provisioned; whether code reaches runtime via git-pull or a service build. Name the
+     project's *real* deploy primitives — discover them from the project `CLAUDE.md`/`AGENTS.md`
+     and a memory search (`{"keywords": ["deploy", "migration"], "text": "deployment steps order"}`),
+     never generic placeholders. Mark anything not yet known as `TBD — finalize at build`.
+   - **Verification Evidence contract (per environment):** for **both staging and production**,
+     what evidence proves this works — each item a reproducible read-only query/command, an
+     expected good output, and a bad-output interpretation. This is the precise form of the plan's
+     `verification_strategy`: "what exactly proves the fix works", split by env. Plus the
+     **activation boundary** (how to know the new code is live).
+
+   ```
+   mcp__autodev-memory__create_artifact(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     artifact_type="deployment_guide",
+     content="<DRAFT filled from the template in the create-deployment-guide skill, Status: DRAFT>",
+     command="/plan"
+   )
+   ```
+
+   Use the template in the `create-deployment-guide` skill. Bugs and trivial single-file changes
+   still get a draft — the Verification Evidence section is the whole point, and even a one-line
+   fix needs a stated way to prove it in staging and prod.
+
 ## Agent Selection
 
 **For features:** Always spawn `researcher` to analyze codebase before planning.
@@ -582,6 +614,7 @@ Each ticket contains artifacts:
 - `source` — INPUT: Problem/feature description (auto-created with ticket)
 - `investigation` — INPUT (optional): From /investigate
 - `plan` — OUTPUT: High-level architecture plan
+- `deployment_guide` — OUTPUT: DRAFT deploy shape + per-env verification evidence contract
 - `build_todo` — OUTPUT: From /create-build-todos (separate step)
 
 ### Scope Completeness Rule (CRITICAL)

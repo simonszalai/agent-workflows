@@ -163,6 +163,41 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
    )
    ```
 
+5. **Finalize the deployment_guide artifact (MANDATORY):**
+
+   `/plan` left a DRAFT `deployment_guide` with the deploy *shape* and a first-cut verification
+   evidence contract. The deep research you just did is exactly what turns that draft into
+   actionable mechanics — do not leave it as a draft. Update it (`update_artifact`; create it if
+   the ticket skipped `/plan`) so the deploy steps name the **concrete** objects this build
+   produced:
+
+   - the actual **migration** revision id / filename (or "no migration"), and whether it must run
+     before the code deploy;
+   - the **cross-repo order** confirmed against what was actually built — which repo's change must
+     land first and why (the contract that forces it);
+   - the **real deploy commands/objects** for this project (discover from the project
+     `CLAUDE.md`/`AGENTS.md` + memory — e.g. how code reaches runtime, any scheduler/worker
+     deploy, any secret/credential block to provision, DAG/pipeline sync, env vars);
+   - the **Verification Evidence** rows refined to concrete queries/commands now that you know the
+     real table/column/log names — each with expected good output and a bad-output interpretation,
+     for both staging and production.
+
+   Use the template in the `create-deployment-guide` skill. Mark `Status: FINALIZED` only when the
+   deploy steps and both env evidence sections are concrete; otherwise leave the unknown rows as
+   `TBD` and note them.
+
+   Find the draft's `artifact_id` in the `get_ticket` response (the `deployment_guide` artifact)
+   and update by id; if the ticket skipped `/plan` and none exists, create one instead.
+
+   ```
+   mcp__autodev-memory__update_artifact(
+     project=PROJECT,
+     artifact_id="<deployment_guide artifact id from get_ticket>",
+     content="<finalized guide>",
+     command="/create-build-todos"
+   )
+   ```
+
 ## Research Depth
 
 The build-planner agent performs thorough research. See
@@ -364,7 +399,7 @@ If schema changes are needed:
 
 If new API keys or env vars are needed:
 
-1. Document in deployment notes section of plan.md
+1. Record them in the `deployment_guide` artifact (Steps + Env Var table), per environment
 2. Add to .env.example with placeholder values
 
 ## Post-Creation Validation

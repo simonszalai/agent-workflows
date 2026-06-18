@@ -289,6 +289,7 @@ After all deployment steps complete, verify each one succeeded:
 | Code pushed       | `git log origin/{target} -1` matches merge |
 | Migrations        | CI workflow completed successfully       |
 | Service health    | No new errors in logs since merge       |
+| Activation/content gates | If the deploy activates a DB-stored artifact (prompt version, feature flag, config row), **read the live row back and assert it equals the intended pinned value** — never assume the step set it, and never trust "latest". A project gate command (if any) must report the actual value, not the planned one |
 
 **Project-specific verification** (from `/deploy` command):
 

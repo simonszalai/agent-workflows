@@ -353,6 +353,11 @@ you have checked the matching `tool-*` skill.
 
 11. **Capture knowledge** - Store non-obvious findings in memory service
 
+12. **Report to the user** — end with a short summary: a 1-3 sentence statement of the
+    problem (and confirmed root cause), followed by **one or more proposed fixes**. See
+    the Output section for the required shape. Keep it concise — the detail lives in the
+    artifact, not the final message.
+
 ## Writing the Investigation Artifact
 
 ```
@@ -460,7 +465,24 @@ The investigation artifact contains:
 - Recommended fixes (high-level)
 - Hypotheses for verification (when applicable)
 
-The **solution design** happens in `/plan`, not here.
+### Final message to the user (required)
+
+After writing the artifact, your last message MUST be a short summary in this shape:
+
+```markdown
+**Problem:** <1-3 sentences: the symptom and the confirmed root cause.>
+
+**Proposed fixes:**
+1. <Option A — concise, one line of what + why.>
+2. <Option B — if there is a meaningful alternative.>
+```
+
+- Always give **at least one** proposed fix; give more only when there are genuinely
+  distinct options (e.g. "accept as noise" vs. "add targeted resilience").
+- If `root_cause` is null (unconfirmed), say so plainly and frame the fixes as
+  "next diagnostic steps" rather than fixes — do not invent a fix for an unconfirmed cause.
+- Keep it tight: this is a pointer to the artifact, not a duplicate of it. The full
+  **solution design** still happens in `/plan`, not here.
 
 ---
 

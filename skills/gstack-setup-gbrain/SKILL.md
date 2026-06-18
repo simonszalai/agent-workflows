@@ -1,0 +1,1 @@
+/Users/simon/dev/agent-workflows/skills/gstack/setup-gbrain/SKILL.md
