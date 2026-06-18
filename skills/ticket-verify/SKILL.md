@@ -47,7 +47,13 @@ verification.
 For each ticket:
 
 - `get_ticket` with artifacts/events;
-- read source, plan, deployment guide, review notes;
+- read source, plan, review notes;
+- read the **`deployment_guide` artifact** — its **Verification Evidence** section is the
+  contract you grade against. Each row is one evidence item: a reproducible query/command, an
+  expected good output, and a bad-output interpretation, listed per environment (staging / prod).
+  Also read its **Activation boundary**. If the artifact is missing or its evidence rows are still
+  `TBD`/empty, fall back to deriving evidence from source + plan acceptance criteria, and flag in
+  the report that the ticket shipped without a finalized evidence contract;
 - find PR/commit/landing branch from events, tags, PR title, or git history;
 - read `.claude/environments/{env}.md` when present.
 
@@ -62,7 +68,9 @@ Do not use naive wall-clock lookback when a commit boundary is available.
 
 ### 4. Collect evidence
 
-Spawn/read-only verification work as needed:
+Run **every** Verification Evidence item listed for the environment being verified (staging items
+for staging, prod items for prod) — execute each item's query/command and compare against its
+expected good output. Then supplement with read-only checks as needed:
 
 - affected flows/jobs since activation;
 - service logs since activation;
@@ -71,29 +79,43 @@ Spawn/read-only verification work as needed:
 - bug hypothesis re-evaluation when investigation artifacts contain confirmed hypotheses.
 
 Every claim must include a reproducible command/query, expected good output, and bad-output
-interpretation.
+interpretation. Record, per evidence item, whether it passed, failed, or had no post-activation
+data yet.
 
 ### 5. Verdict
 
-Use:
+The deployment_guide evidence contract is the gate — verdict is determined by the env's evidence
+items:
 
-- `PASS` — acceptance criteria met and no related failures;
-- `FAIL` — evidence shows broken behavior or missing expected activity;
-- `NEEDS_MORE_TIME` — not enough post-land activity yet.
+- `PASS` — **every** evidence item for this environment passed, and no related failures surfaced;
+- `FAIL` — any evidence item shows broken behavior or expected-but-missing activity;
+- `NEEDS_MORE_TIME` — one or more evidence items have no post-activation data yet (and none have
+  failed).
+
+When the evidence contract was missing/`TBD` and you fell back to acceptance criteria, say so in
+the report so the gap is visible rather than silently passing.
 
 ### 6. Status and promotion
 
 | Environment | Verdict | Action |
 |---|---|---|
-| staging | PASS | call `/ticket-promote <ID>` unless `--no-promote` |
+| staging | PASS | set status `staging_verified` (green "Ready for prod" flag), then call `/ticket-promote <ID>` unless `--no-promote` or the ticket is held for a batched promotion |
 | staging | FAIL | create verification report artifact; status `verify_staging_failed` |
 | staging | NEEDS_MORE_TIME | leave status unchanged |
 | production | PASS | create verification report artifact; status `completed` |
 | production | FAIL | create verification report artifact; status `verify_prod_failed` |
 | production | NEEDS_MORE_TIME | leave status unchanged |
 
-When staging PASS calls `/ticket-promote`, the final status should usually become
-`to_verify_prod` after promotion lands on `main`.
+`staging_verified` is the resting "passed staging, ready for prod" state — the
+green-flag counterpart of `verify_staging_failed`. It keeps a verified ticket
+visible on the board (Verify-staging lane) instead of leaving it
+indistinguishable from one still awaiting verification. Set it on every staging
+PASS, **including** tickets that must NOT be promoted individually (e.g. ones
+held for a batched epic promotion, or a ticket whose own artifacts forbid a solo
+cherry-pick): those rest in `staging_verified` rather than advancing.
+
+When staging PASS then calls `/ticket-promote`, the status advances from
+`staging_verified` to `to_verify_prod` once the promotion lands on `main`.
 
 ## Output
 

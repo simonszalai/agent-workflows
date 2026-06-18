@@ -22,6 +22,7 @@ Infer the mode from the request; if ambiguous, stop and ask for the mode.
 
 - Treat this as production-impacting. Prefer stopping over guessing.
 - Do all merge/cherry-pick/conflict work in a new temporary `git worktree`, never in the current Conductor workspace.
+- **Never `--delete-branch` (or otherwise delete) a long-lived branch — `staging` or `main`.** In all-staging mode the promotion PR's head is usually `staging` itself, and `staging` is *live infrastructure*: every staging Prefect deployment clones `--branch staging` at runtime, so deleting it on origin instantly CRASHes all staging flows on their next pull (B0174, 2026-06-17). `--delete-branch` is only ever for a throwaway feature/promotion branch.
 - Never use `git reset --hard`, `git checkout -- <file>`, `git restore`, `git clean`, or unscoped `git stash` in the shared workspace.
 - Do not rename the current branch.
 - Fetch before every branch comparison: `git fetch origin main staging --prune`.
@@ -197,10 +198,34 @@ gh pr checks <pr_number> --watch
 
 If CI fails, fix in the promotion worktree, push, and wait again. When green, merge using the method that matches the mode:
 
-**All-staging mode — MUST use a real merge commit:**
+**All-staging mode — MUST use a real merge commit; delete the head ONLY if it is disposable:**
 
 ```bash
-gh pr merge <pr_number> --merge --delete-branch
+# The all-staging PR head may be `staging` itself (long-lived). Never blanket --delete-branch.
+HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
+gh pr merge <pr_number> --merge        # real merge commit; do NOT pass --delete-branch
+case "$HEAD_BRANCH" in
+  staging|main) echo "Head is long-lived ($HEAD_BRANCH) — leave it." ;;
+  *)            git push origin --delete "$HEAD_BRANCH" ;;   # clean up throwaway promotion branch
+esac
+```
+
+Why not a blanket `--delete-branch`: the all-staging PR's head is often `staging` itself
+(you are promoting the whole `origin/main..origin/staging` range), and `staging` is
+long-lived *live infrastructure* — every staging Prefect deployment clones `--branch staging`
+at runtime, so deleting it on origin CRASHes all staging flows on their next pull. This is
+B0174 (2026-06-17): PR #390 merged `--merge --delete-branch` with head `staging` and took down
+all 24 staging flows until `staging` was re-pushed. The `case` above still deletes a throwaway
+`promote-to-production/<scope>-<stamp>` head, so **promotion branches do not accumulate** — it
+only ever spares `staging`/`main`.
+
+Immediately after merging, assert `staging` still exists on origin and restore it from
+`main` if it is gone (content-correct after a parity `--merge`):
+
+```bash
+git fetch origin --prune
+git ls-remote --heads origin staging | grep -q refs/heads/staging \
+  || git push origin origin/main:refs/heads/staging   # B0174 safety net
 ```
 
 Never `--squash` or `--rebase` for an all-staging rollup. Both collapse staging's
@@ -221,7 +246,8 @@ gh pr merge <pr_number> --rebase --delete-branch
 
 Cherry-picked ticket promotions already create new commits and do not aim to keep
 `main` and `staging` at parity, so `--rebase` (or the repo's preferred linear method)
-is acceptable here.
+is acceptable here. `--delete-branch` is safe in this mode because the head is the
+throwaway `promote-to-production/<scope>-<stamp>` branch, **not** `staging`.
 
 After merge, fetch and verify `origin/main` contains the promoted commits:
 
