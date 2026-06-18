@@ -107,8 +107,8 @@ LFG detects its input source automatically:
 4.  Build Todos         -> /create-build-todos (deep research into implementation steps)
 5.  Build               -> /build (implement each step)
 6.  Write Tests         -> /write-tests (test coverage for new code)
-7.  Review              -> /review mode:cross (Claude + Codex + Grok, merged)  ┐ cross-review
-8.  Resolve             -> Claude fixes actionable findings; re-review         ┘ loop, ≤3 rounds
+7.  Review              -> /review mode:cross (runner + two peers, merged)     ┐ cross-review
+8.  Resolve             -> runner fixes actionable findings; re-review         ┘ loop, ≤3 rounds
 9.  Compound            -> /compound (learn from review, apply improvements)
 10. Deploy Guide        -> /create-deployment-guide
 11. Final commit        -> Commit the LFG work on the current branch (no push, no PR)
@@ -301,19 +301,17 @@ Run `/write-tests` internally:
 
 Run the **Cross-Review Iteration Loop** from the `review` skill. Each round:
 
-1. Run `/review mode:cross` — Claude's native reviewers (quality/YAGNI/patterns;
-   architecture/security/performance; data if DB changes) **plus** external Codex and Grok
-   reviewers, each run inside an `external-reviewer` subagent (which calls the `external-agent`
-   adapter) in the same parallel batch, all merged through one synthesis with a cross-provider
+1. Run `/review mode:cross` — the current runner's native/self-review **plus** the other two
+   providers via `external-agent`, all merged through one synthesis with a cross-provider
    confidence boost. Store findings in `.context/review_todos/`.
 
-   **Cross-coverage gate — a round where only Claude-native reviewers ran is a failed round.**
-   Before treating the round as done, confirm both `.context/review/codex.json` and
-   `.context/review/grok.json` exist (a failed provider still writes a valid empty envelope with a
-   `residual_risks` note — that counts; a *missing* file means the `external-reviewer` subagent was
-   never spawned). If either is absent, spawn the missing `external-reviewer` subagent(s) and fold
-   its envelope into synthesis before continuing — do not skip codex/grok and proceed.
-2. Resolve the actionable findings (Claude fixes — `safe_auto` inline, `gated_auto`/`manual`
+   **Cross-coverage gate — a round where only one provider ran is a failed round.** Before
+   treating the round as done, confirm the two `.context/review/<provider>.json` files for peer
+   providers exist (a failed provider still writes a valid empty envelope with a `residual_risks`
+   note — that counts; a *missing* file means peer dispatch was never spawned). If either is
+   absent, spawn the missing peer provider(s) and fold its envelope into synthesis before
+   continuing — do not skip peer providers and proceed.
+2. Resolve the actionable findings (runner fixes — `safe_auto` inline, `gated_auto`/`manual`
    via `/resolve-review` logic), re-run affected tests, run the type checker.
 
 Repeat up to **3 rounds**, or stop earlier when no actionable

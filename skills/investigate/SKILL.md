@@ -18,7 +18,7 @@ of problems, not designing solutions.
 /investigate 009                               # Legacy NNN format
 /investigate B0003 --deep                      # Force heavyweight workflow (multi-angle hypothesis + skeptics)
 /investigate B0003 --light                     # Force single-investigator path
-/investigate B0003 --solo                      # Skip external Codex/Grok generators (Claude only)
+/investigate B0003 --solo                      # Skip peer providers (current runner only)
 ```
 
 ## When to Use
@@ -186,6 +186,13 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
    When the gate selects "Heavy", invoke the workflow by name:
 
+   If the current host tool does not expose Claude's `Workflow` tool (for example a
+   Codex/Grok-orchestrated run), execute the equivalent heavy-path investigation inline: fan out
+   the hypothesis angles the host supports, run the two peer providers in step 4c, dedup
+   hypotheses, run skeptic/testing loops where available, and assemble the same result shape. Do
+   **not** downgrade to a one-provider investigation just because the Claude `Workflow` primitive
+   is absent.
+
    ```
    result = Workflow({
      name: "investigate-fanout",
@@ -238,17 +245,18 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 4c. **Cross-provider hypothesis generators (on by default — both paths):**
 
    After the chosen path produces its hypotheses (light: inline agents; heavy: the
-   `investigate-fanout` workflow), add external Codex and Grok as additional, independent
-   hypothesis generators **unless** the user passed `--solo`. A root cause that an external
-   provider surfaces independently is a strong signal; one that only Claude proposed deserves
-   more skeptical testing. This is a required step, not optional — you MUST actually run the
-   commands below and read the files they write. Do NOT simulate what Codex/Grok "would" say.
+   `investigate-fanout` workflow), add the two providers that are not the current main workflow
+   runner as additional, independent hypothesis generators **unless** the user passed `--solo`.
+   If Claude runs the workflow, run Codex + Grok; if Codex runs it, run Claude + Grok; if Grok
+   runs it, run Claude + Codex. A root cause that a peer provider surfaces independently is a
+   strong signal; one that only the main runner proposed deserves more skeptical testing. This
+   is a required step, not optional — you MUST actually run the commands below and read the
+   files they write. Do NOT simulate what another provider "would" say.
 
-   External providers are not Claude subagents (Claude stays in-process on the subscription —
-   never shell out to `claude -p`). They run through the `external-agent` adapter
-   (`bin/external-agent` in agent-workflows, symlinked onto `PATH`). Codex runs read-only with
-   repo access, so it greps and reads code to ground its hypotheses; Grok reasons over the
-   inlined symptom + evidence. Each returns a generator envelope
+   Peer providers run through the `external-agent` adapter (`bin/external-agent` in
+   agent-workflows, symlinked onto `PATH`). Claude peers use subscription-backed `claude -p`,
+   never direct Anthropic API calls. Codex and Grok peers run read-only with repo access. Each
+   returns a generator envelope
    `{generator_key, angle, hypotheses, notes}` whose hypothesis items match `hypothesisSchema`
    in `workflows/investigate-fanout.js` — the same shape your inline/workflow generators
    produce, so they merge with no special-casing.
@@ -261,26 +269,25 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    #   .context/investigate/bug.txt       = one-line symptom/description
    #   .context/investigate/evidence.txt  = stack trace / log lines / observed behavior
    BUG="$(cat .context/investigate/bug.txt)"
-   external-agent --task investigate --provider codex --bug "$BUG" \
-     --evidence-file .context/investigate/evidence.txt --environment "$ENV" \
-     --out .context/investigate/codex.json 2>.context/investigate/codex.log &
-   external-agent --task investigate --provider grok  --bug "$BUG" \
-     --evidence-file .context/investigate/evidence.txt --environment "$ENV" \
-     --out .context/investigate/grok.json 2>.context/investigate/grok.log &
+   for provider in $(agent-workflow-provider --peers); do
+     external-agent --task investigate --provider "$provider" --bug "$BUG" \
+       --evidence-file .context/investigate/evidence.txt --environment "$ENV" \
+       --out ".context/investigate/${provider}.json" 2>".context/investigate/${provider}.log" &
+   done
    wait
    ```
 
    Then fold both envelopes into the hypothesis set:
 
-   1. Read `.context/investigate/codex.json` and `.context/investigate/grok.json`. A provider
-      that failed still returns a valid envelope with empty `hypotheses` and a note — surface
-      the note but do not block.
+   1. Read the two `.context/investigate/<provider>.json` files for the peer providers. A
+      provider that failed still returns a valid envelope with empty `hypotheses` and a note —
+      surface the note but do not block.
    2. Merge each external hypothesis into the path's hypothesis list. Dedup against existing
       hypotheses by `(normalized statement, category)`; when an external hypothesis matches a
-      Claude one, record the agreement (add the provider to its `source_angles`) and bump
+      main-runner one, record the agreement (add the provider to its `source_angles`) and bump
       confidence modestly — independent cross-provider agreement is corroborating evidence.
-   3. Tag genuinely new external hypotheses with `source_angles: ["external:codex"]` (or grok)
-      so step 5+ tests them like any other. The honest-null rule still holds: an unconfirmed
+   3. Tag genuinely new external hypotheses with `source_angles: ["external:<provider>"]` so
+      step 5+ tests them like any other. The honest-null rule still holds: an unconfirmed
       external hypothesis is NOT a root cause until its testable_prediction is verified.
 
    `.context/investigate/*.json` are ephemeral inter-agent scratch consumed immediately by the

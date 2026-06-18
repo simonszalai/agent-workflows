@@ -224,6 +224,12 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
    environment:
 
+   If the current host tool does not expose Claude's `Workflow` tool (for example a
+   Codex/Grok-orchestrated run), execute the equivalent heavy-path planning loop inline: generate
+   multiple framings, run critics, revise until critical findings are resolved or a user decision
+   is needed, then assemble the same result shape. Do **not** silently skip the critic loop just
+   because the Claude `Workflow` primitive is absent.
+
    ```
    result = Workflow({
      name: "plan-fanout",
