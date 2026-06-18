@@ -13,9 +13,9 @@ segment** (per-ticket staging statuses were added in migration 025): a unit at
 `ready_to_deploy_production` deploys to prod and advances to `to_verify_prod`. A standalone
 ticket may be landed straight to prod or routed through staging first, depending on its target.
 Epic **members** are still carried by the epic — they reach `merged` and are not deployed
-individually by a scheduled pickup. The ordered epic walk is owned by `/epic-auto --full-auto`:
+individually by a scheduled pickup. The ordered epic walk is owned by `/epic-flow --full-auto`:
 after each milestone it invokes this skill for the parent epic's staging deploy, then invokes the
-explicit epic/milestone verifier. After all milestone staging gates pass, `/epic-auto` uses
+explicit epic/milestone verifier. After all milestone staging gates pass, `/epic-flow` uses
 `/promote-to-production --epic` for the ordered production promotion/deploy path.
 
 Auto-deploy is also the canonical place to record deployment blockers. "Blocked" is not a
@@ -37,7 +37,7 @@ verification status and set the independent blocker metadata (`blocked_at`, `blo
 ## When to Use
 
 - After `/auto-build` completes for a standalone ticket (deploys to production)
-- For an epic staging gate: after milestone members are `merged`, when called by `/epic-auto`
+- For an epic staging gate: after milestone members are `merged`, when called by `/epic-flow`
   (deploys the parent epic to staging)
 - For epic production promotion/deploy: prefer `/promote-to-production --epic`, which owns the
   ordered verified-step promotion path
@@ -445,5 +445,5 @@ Status reverted to: {original_status}
 | `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / ready_to_deploy_production (standalone) |
 | `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies deployment mechanics |
 | `/ticket-verify` | Next step — verifies feature behavior/evidence in staging or production |
-| `/epic-auto` | Parent orchestrator for milestone-by-milestone epic deploy/verify gates |
+| `/epic-flow` | Parent orchestrator for milestone-by-milestone epic deploy/verify gates |
 | `/deploy`      | Project-specific deployment (consumed by auto-deploy)|

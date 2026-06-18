@@ -1,17 +1,17 @@
 ---
-name: epic-auto
+name: epic-flow
 description: Fully autonomous epic orchestrator. Plans/splits, runs milestone flows, deploys and verifies staging after each milestone, then promotes/deploys/verifies production when explicitly authorized.
 max_turns: 800
 ---
 
-# Epic Auto
+# Epic Flow
 
 End-to-end epic execution coordinator. Use this when the user asks to run an epic, execute an
 entire epic, continue across milestones, or do it without further human intervention.
 
 ## Operating modes
 
-`/epic-auto` has two modes:
+`/epic-flow` has two modes:
 
 - **Full-auto** — enabled by `--full-auto` or by an explicit user request like "execute the whole
   epic" / "without me". This mode is authorized to invoke deploy, verify, promotion, and fix-loop
@@ -26,11 +26,11 @@ Never advance to a later milestone until the current milestone's staging gate ha
 ## Usage
 
 ```text
-/epic-auto E0007 --full-auto       # run the whole epic, including gates
-/epic-auto E0007                   # infer full-auto only if the user's request authorized it
-/epic-auto E0007 --staging-only    # stop after every milestone is staged and verified
-/epic-auto E0007 --milestone M2    # run one milestone and its gate
-/epic-auto E0007 --stop-at-gates   # build-only/gate handoff mode
+/epic-flow E0007 --full-auto       # run the whole epic, including gates
+/epic-flow E0007                   # infer full-auto only if the user's request authorized it
+/epic-flow E0007 --staging-only    # stop after every milestone is staged and verified
+/epic-flow E0007 --milestone M2    # run one milestone and its gate
+/epic-flow E0007 --stop-at-gates   # build-only/gate handoff mode
 ```
 
 ## References
@@ -61,7 +61,7 @@ For each milestone in dependency order:
 
 1. If the milestone already has a recorded staging `PASS` and every included step still matches
    the verified commits, skip to the next milestone.
-2. Run `/epic-milestone-flow <EPIC_ID> <MILESTONE>` to execute the step-ticket DAG. That skill
+2. Run `/milestone-flow <EPIC_ID> <MILESTONE>` to execute the step-ticket DAG. That skill
    owns ticket parallelism and must return only after all milestone steps are landed/`merged`.
 3. Confirm the milestone gate report artifact exists and lists the exact step tickets, commits,
    repos, contracts, local checks, and evidence rows to verify.
@@ -113,13 +113,13 @@ gate; mark the epic complete only after it passes.
 
 ## Gate-stop process
 
-When running with `--stop-at-gates`, do steps 1-2 through `/epic-milestone-flow`, then stop at the
+When running with `--stop-at-gates`, do steps 1-2 through `/milestone-flow`, then stop at the
 next deploy/verify boundary and print the exact gate commands that full-auto would have run. Do
 not claim the milestone is complete until the gate actually passes.
 
 ## Parallelism
 
-Parallelism is delegated to `/epic-milestone-flow`, which uses dependency waves and repo write
+Parallelism is delegated to `/milestone-flow`, which uses dependency waves and repo write
 scope analysis. Never parallelize same-repo overlapping work just to save time.
 
 ## Output
