@@ -306,6 +306,13 @@ Run the **Cross-Review Iteration Loop** from the `review` skill. Each round:
    reviewers, each run inside an `external-reviewer` subagent (which calls the `external-agent`
    adapter) in the same parallel batch, all merged through one synthesis with a cross-provider
    confidence boost. Store findings in `.context/review_todos/`.
+
+   **Cross-coverage gate — a round where only Claude-native reviewers ran is a failed round.**
+   Before treating the round as done, confirm both `.context/review/codex.json` and
+   `.context/review/grok.json` exist (a failed provider still writes a valid empty envelope with a
+   `residual_risks` note — that counts; a *missing* file means the `external-reviewer` subagent was
+   never spawned). If either is absent, spawn the missing `external-reviewer` subagent(s) and fold
+   its envelope into synthesis before continuing — do not skip codex/grok and proceed.
 2. Resolve the actionable findings (Claude fixes — `safe_auto` inline, `gated_auto`/`manual`
    via `/resolve-review` logic), re-run affected tests, run the type checker.
 

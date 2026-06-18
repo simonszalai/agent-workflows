@@ -168,6 +168,13 @@ review-then-resolve pass. Each round:
    adapter) in the same parallel batch. All findings merge
    through one synthesis with a cross-provider confidence boost, and store as review_todo
    artifacts.
+
+   **Cross-coverage gate — a round where only Claude-native reviewers ran is a failed round.**
+   Before treating the round as done, confirm both `.context/review/codex.json` and
+   `.context/review/grok.json` exist (a failed provider still writes a valid empty envelope with a
+   `residual_risks` note — that counts; a *missing* file means the `external-reviewer` subagent was
+   never spawned). If either is absent, spawn the missing `external-reviewer` subagent(s) and fold
+   its envelope into synthesis before continuing.
 2. Resolve the actionable findings (Claude fixes — `safe_auto` inline, `gated_auto`/`manual`
    via `/resolve-review` logic), re-run affected tests, run the type checker.
 
