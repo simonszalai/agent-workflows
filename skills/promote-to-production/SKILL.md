@@ -14,6 +14,8 @@ Infer the mode from the request; if ambiguous, stop and ask for the mode.
 | Request | Mode | Source |
 |---|---|---|
 | `/promote-to-production F012` | Ticket-only | Commits/PR(s) for that ticket already on `origin/staging` |
+| `/promote-to-production --epic E0007` | Epic | Verified epic step commits, in milestone order |
+| `/promote-to-production --epic E0007 --milestone M2` | Epic milestone | Verified step commits for one milestone |
 | `/promote-to-production --all-staging` | All staging | Entire `origin/main..origin/staging` range |
 | “deploy everything from staging to prod” | All staging | Entire `origin/main..origin/staging` range |
 | “deploy F012 from staging” | Ticket-only | Only verified F012 commits |
@@ -28,6 +30,8 @@ Infer the mode from the request; if ambiguous, stop and ask for the mode.
 - Fetch before every branch comparison: `git fetch origin main staging --prune`.
 - Use `bun` for repo checks. Never start the dev server.
 - If a ticket-only promotion cannot be isolated to a proven commit set, stop and report why. Do not silently include unrelated staging changes.
+- If an epic promotion cannot be isolated to the epic's verified step commits, stop and report why.
+  Do not silently include unrelated staging work.
 - Read `.claude/commands/deploy.md` if it exists; it overrides generic deployment steps.
 - Read `.claude/environments/prod.md` if it exists for production URLs, service IDs, and verification instructions.
 
@@ -78,6 +82,24 @@ For ticket-only mode:
 
 Stop if the commit list is empty, includes unrelated tickets, or the ticket requires earlier staging commits that are not part of the ticket and were not explicitly approved.
 
+For epic mode:
+
+1. Load `get_epic(project, epic_id)` with milestones, step tickets, gate artifacts, and events.
+2. If `--milestone` is present, scope to that milestone; otherwise include every milestone whose
+   staging gate has a recorded `PASS`, in milestone order.
+3. Require each included step ticket to be `merged` or `staging_verified` with a passing
+   epic/milestone staging gate. Source tickets in `absorbed_into_epic` are never promoted.
+4. Build the ordered commit list from the step tickets' staging PRs/commits. The order is:
+   milestone order, then dependency/topological order within each milestone, preserving migration
+   ordering.
+5. Prove every commit is reachable from `origin/staging` and not from `origin/main`.
+6. Reject the promotion if the commit list contains unrelated tickets, misses a required
+   milestone dependency, or would promote an unverified milestone.
+
+The epic mode is the production half of `/epic-auto --full-auto`: it promotes verified epic work
+only, deploys production, and leaves final behavior verification to
+`/ticket-verify production --epic <EPIC_ID>`.
+
 ### 2. Create an Isolated Promotion Worktree
 
 Use a timestamped branch and worktree under `.context/`:
@@ -116,6 +138,16 @@ Ticket-only mode:
 ```bash
 git cherry-pick -x <sha1> <sha2> ...
 ```
+
+Epic mode:
+
+```bash
+git cherry-pick -x <ordered-epic-step-sha1> <ordered-epic-step-sha2> ...
+```
+
+If a milestone is intentionally promoted as a single integration merge commit, document that in
+the manifest and prove the merge contains only the verified epic step commits. Otherwise prefer
+the explicit ordered cherry-pick list so unrelated staging changes cannot sneak into production.
 
 If conflicts occur:
 
@@ -238,16 +270,16 @@ histories linked so the merge-base stays current. (This is exactly what broke af
 PR #310's squash; recovery required a manual `git merge --no-ff origin/staging` to
 re-link the histories.)
 
-**Ticket-only mode — linear history is fine:**
+**Ticket-only and epic modes — linear history is fine for the throwaway promotion branch:**
 
 ```bash
 gh pr merge <pr_number> --rebase --delete-branch
 ```
 
-Cherry-picked ticket promotions already create new commits and do not aim to keep
-`main` and `staging` at parity, so `--rebase` (or the repo's preferred linear method)
-is acceptable here. `--delete-branch` is safe in this mode because the head is the
-throwaway `promote-to-production/<scope>-<stamp>` branch, **not** `staging`.
+Cherry-picked ticket/epic promotions already create new commits and do not aim to keep `main`
+and `staging` at parity, so `--rebase` (or the repo's preferred linear method) is acceptable
+here. `--delete-branch` is safe in these modes because the head is the throwaway
+`promote-to-production/<scope>-<stamp>` branch, **not** `staging`.
 
 After merge, fetch and verify `origin/main` contains the promoted commits:
 
@@ -275,7 +307,8 @@ Collect evidence, not vibes:
 - Check Render/service deploy status and logs if tools are available.
 - Check production URL health from `.claude/environments/prod.md` if present.
 - For data changes, run read-only post-deploy verification queries from the manifest/deployment guide.
-- Recommend or run `/auto-verify prod <ticket>` for ticket-only promotions when the ticket workflow is in use.
+- Recommend or run `/ticket-verify production <ticket>` for ticket-only promotions when the
+  ticket workflow is in use.
 
 ### 9. Update Ticket Status
 
@@ -286,6 +319,14 @@ For ticket-only mode, if autodev-memory ticket tools are available:
 - If deploy failed: leave/revert the ticket to its pre-promotion status and record the failure.
 
 For all-staging mode, only update tickets whose IDs were confidently identified from promoted commits/PRs; otherwise report the list for manual triage.
+
+For epic mode:
+
+- Mark promoted step tickets `to_verify_prod` (or the closest parent-owned production-verification
+  state supported by the current lifecycle).
+- Mark/update the parent epic as `to_verify_prod` after production deploy completes.
+- Do **not** mark the epic or steps `completed`; `/ticket-verify production --epic <EPIC_ID>`
+  does that after evidence collection passes.
 
 ## Failure Output
 

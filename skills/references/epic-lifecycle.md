@@ -51,8 +51,17 @@ Same-repo edges order the waterfall but do not need cross-repo contracts.
 Epic execution works one milestone at a time:
 
 ```text
-epic-plan -> epic-split -> epic-milestone-flow M1 -> verify/promote gate -> M2 -> ...
+epic-plan -> epic-split
+  -> epic-milestone-flow M1 -> deploy staging -> verify M1 staging gate
+  -> epic-milestone-flow M2 -> deploy staging -> verify M2 staging gate
+  -> ...
+  -> ordered epic production promotion/deploy -> final production verify
 ```
 
 The lower-level ticket-flow may execute individual step tickets, but it must load epic context
 and respect the contracts. The epic/milestone orchestrator owns parallelism and gate progression.
+
+In full-auto mode, `/epic-auto` owns the gate loop: it runs the milestone flow, deploys the parent
+epic to staging, invokes explicit epic/milestone verification, fixes failures inside the same
+milestone, and proceeds only after a staging `PASS`. Milestone flow itself never deploys or
+verifies environments.

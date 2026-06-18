@@ -136,6 +136,10 @@ After successful `/auto-deploy` handoff, trust auto-deploy's status update:
 | Standalone | `staging` | `to_verify_staging` |
 | Epic step | milestone/staging target | `merged` |
 
+For epic steps, `merged` is a handoff to the parent milestone. Do not call `/ticket-verify` for
+the step directly; `/epic-auto` will invoke `/ticket-verify staging --epic <EPIC_ID> --milestone
+<MILESTONE> --no-promote` after the full milestone has landed and deployed.
+
 If auto-deploy reports an external/manual deploy dependency (for example a Thomas-only
 `ts-decrypt-proxy` production deploy), the ticket status should still reflect the next verification
 state (`to_verify_prod` for production) and the blocker should be captured in the ticket's

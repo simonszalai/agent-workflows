@@ -12,10 +12,11 @@ segment** (per-ticket staging statuses were added in migration 025): a unit at
 `ready_to_deploy_staging` deploys to staging and advances to `to_verify_staging`; a unit at
 `ready_to_deploy_production` deploys to prod and advances to `to_verify_prod`. A standalone
 ticket may be landed straight to prod or routed through staging first, depending on its target.
-Epic **members** are still carried by the epic — they reach `merged` and are not deployed individually by a
-scheduled pickup. The per-member merge to main happens during the epic's **ordered prod
-promote**, which is part of the deferred epic-walk orchestrator — no per-member skill performs
-it today (it is hand-orchestrated).
+Epic **members** are still carried by the epic — they reach `merged` and are not deployed
+individually by a scheduled pickup. The ordered epic walk is owned by `/epic-auto --full-auto`:
+after each milestone it invokes this skill for the parent epic's staging deploy, then invokes the
+explicit epic/milestone verifier. After all milestone staging gates pass, `/epic-auto` uses
+`/promote-to-production --epic` for the ordered production promotion/deploy path.
 
 Auto-deploy is also the canonical place to record deployment blockers. "Blocked" is not a
 ticket lifecycle status: a ticket can be blocked in any column. If an automatable deployment
@@ -36,8 +37,10 @@ verification status and set the independent blocker metadata (`blocked_at`, `blo
 ## When to Use
 
 - After `/auto-build` completes for a standalone ticket (deploys to production)
-- For an epic: after members are `merged` (deploys the epic to staging), and again after
-  staging verification passes (deploys to production)
+- For an epic staging gate: after milestone members are `merged`, when called by `/epic-auto`
+  (deploys the parent epic to staging)
+- For epic production promotion/deploy: prefer `/promote-to-production --epic`, which owns the
+  ordered verified-step promotion path
 - Scheduled agent picks up standalone `ready_to_deploy_production` tickets and
   `ready_to_deploy_staging` epics automatically
 - Manual trigger when you want to deploy a specific ticket or epic
@@ -422,7 +425,7 @@ Verification: all steps confirmed
 
 Status: {to_verify_staging|to_verify_prod} (ready for verification)
 
-Next: /auto-verify {ID} (verify changes are working)
+Next: /ticket-verify {staging|production} {ID} (verify behavior/evidence)
 ```
 
 ### On Failure
@@ -440,6 +443,7 @@ Status reverted to: {original_status}
 | Command        | When to Use                                          |
 | -------------- | ---------------------------------------------------- |
 | `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / ready_to_deploy_production (standalone) |
-| `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies |
-| `/auto-verify` | Next step — verifies changes are working             |
+| `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies deployment mechanics |
+| `/ticket-verify` | Next step — verifies feature behavior/evidence in staging or production |
+| `/epic-auto` | Parent orchestrator for milestone-by-milestone epic deploy/verify gates |
 | `/deploy`      | Project-specific deployment (consumed by auto-deploy)|

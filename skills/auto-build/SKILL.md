@@ -398,7 +398,7 @@ themselves logged as ticket events. No `plan.md` work-log file is written.
 | `/auto-plan`           | Previous step — creates plan, sets status to planned |
 | `/auto-build`          | This command — picks up `planned`, builds + pushes branch (no PR) |
 | `/auto-polish-web`     | Next step (sibling) — UI polish on the pushed branch before deploy |
-| `/auto-deploy`         | Next step — creates PR, deploys, sets to_verify_prod  |
-| `/auto-verify`         | After deploy — observes staging/prod, collects evidence |
+| `/auto-deploy`         | Next step — creates PR, deploys, sets verification status |
+| `/ticket-verify`       | After deploy — observes staging/prod, collects evidence |
 | `/build`               | For manual step-by-step building                     |
 | `/review`              | For manual review (auto-build includes this)         |

@@ -25,7 +25,7 @@ to_verify_prod -> completed | verify_prod_failed
 
 # staging landing
 to_verify_staging -> verify_staging_failed
-                 \-> ticket-promote -> to_verify_prod -> completed | verify_prod_failed
+                 \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | verify_prod_failed
 ```
 
 Use `abandoned` and `on_ice` only for explicit cancellation/deprioritization.
@@ -58,12 +58,24 @@ staging/prod verification.
 backlog -> up_next -> in_progress -> planned -> in_progress -> merged
 ```
 
+When `/ticket-verify` is invoked with an explicit parent epic/milestone scope, it may also use
+the shared verification states as parent-owned flags:
+
+```text
+merged -> staging_verified -> to_verify_prod -> completed
+```
+
+These status changes mean "the parent epic gate verified/promoted this step", not that the step
+was verified or promoted as a standalone ticket. Default ticket verification/promotion queues
+should still skip epic step tickets unless the parent epic/milestone scope is explicit.
+
 ## Staging verification statuses
 
 The ticket lifecycle enum includes the staging segment as of **migration 025**:
 
 - `ready_to_deploy_staging`
 - `to_verify_staging`
+- `staging_verified`
 - `verify_staging_failed`
 
 A standalone ticket landed to staging advances to `to_verify_staging` directly (no epic
