@@ -29,7 +29,7 @@ skill, not a deploy/verify skill.
 
 ## Preconditions
 
-A ticket should be in `to_verify_staging` with a PASS verification report, or the caller must be
+A ticket should be in `staging_verified` with a PASS verification report, or the caller must be
 `/ticket-verify staging` passing a fresh PASS verdict. If no PASS evidence exists, stop.
 
 ## Process

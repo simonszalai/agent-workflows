@@ -279,17 +279,20 @@ backlog → up_next → in_progress → planned → in_progress → to_verify_pr
 
 # standalone ticket, staging first
 backlog → up_next → in_progress → planned → in_progress → to_verify_staging
-                                                → ticket-promote → to_verify_prod → completed
+                                                → staging_verified → ticket-promote
+                                                → to_verify_prod → completed
 
 # epic step ticket
 backlog → up_next → in_progress → planned → in_progress → merged
+                                            → staging_verified → to_verify_prod → completed
 ```
 
 There is no `approved` ticket status; approval is the decision to leave `planned` and begin
 work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
 are retired; use the single actual active-work status `in_progress`.
 Ticket execution skills may land code, but deployment and environment verification are owned by
-`/ticket-verify` and `/ticket-promote` (or future epic gate orchestrators).
+`/ticket-verify`, `/ticket-promote`, and `/epic-auto` when the parent epic/milestone explicitly
+owns the gate.
 
 ### Cross-Repository Tickets
 
@@ -321,9 +324,9 @@ create_ticket(
 
 - `/ticket-flow`: Autonomous single-ticket execution — context -> plan/critique -> build -> review -> land; no deploy/verify
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
-- `/ticket-verify`: Timer-friendly staging/production verification; staging PASS calls `/ticket-promote`
+- `/ticket-verify`: Timer-friendly staging/production verification; standalone staging PASS calls `/ticket-promote`; explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets to main; no production verification
-- `/epic-plan`, `/epic-split`, `/epic-milestone-flow`, `/epic-auto`: Epic/milestone orchestration over ticket-flow
+- `/epic-plan`, `/epic-split`, `/epic-milestone-flow`, `/epic-auto`: Epic/milestone orchestration over ticket-flow; full-auto deploys/verifies staging between milestones and final prod after all gates pass
 - `/auto-flow` and `/auto-verify`: Legacy aliases for `/ticket-flow` and `/ticket-verify`
 
 ## Knowledge System
