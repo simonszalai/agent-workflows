@@ -11,7 +11,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
 4. **Critic loop** — adversarially review the plan; run heavy mode for complex/cross-cutting work
    and stop if open questions require user decisions.
 5. **Build todos** — create detailed implementation steps with discovered patterns/gotchas.
-6. **Build** — implement in dependency order; keep unrelated fixes in a separate commit.
+6. **Build** — invoke the `build` skill: one builder per todo in dependency order, checkpoint
+   each to MCP on success, bounded self-repair (≤2 retries) on a failed todo, and finish only
+   when every todo is `complete` **and** the project health command (test + typecheck + lint)
+   passes. A builder that finds the plan wrong returns `needs_replan` → stop and revise the plan.
+   Keep unrelated fixes in a separate commit.
 7. **Write tests** — add focused tests for the changed behavior.
 8. **Review + resolve (cross-review loop)** — run the Cross-Review Iteration Loop by **invoking
    the `review` skill in `mode:cross`** each round. Do not hand-roll the review here and do not

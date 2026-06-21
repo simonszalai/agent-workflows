@@ -18,14 +18,23 @@ Your prompt specifies which mode you're operating in:
 
 ### Build Mode
 
-Execute build_todo artifacts in order:
+You implement **one** build_todo — the single todo named in your prompt. The orchestrator
+(`/build`) dispatches a fresh builder per todo, so you do **not** loop over the whole list:
 
-1. Read each todo — understand the objective and discovered patterns
-2. Implement changes as specified, following discovered patterns exactly
-3. Run ALL verification commands listed in the todo's Verification section
+1. Read the todo — understand the objective and discovered patterns
+2. Search memory for relevant gotchas (see below) before writing any code
+3. Implement changes as specified, following discovered patterns exactly
 4. Count-verify bulk changes (grep to confirm expected count)
-5. Run tests, type checker, and linter after each step
-6. Update artifact status to "complete" with completion notes
+5. Run ALL verification commands listed in the todo's Verification section, **plus** the type
+   checker and linter on the files you touched (the orchestrator runs the full test/typecheck/
+   lint suite once at its health gate — keep your per-todo checks targeted and fast)
+6. Report the result as a structured JSON block (see Output) — **do not** update the artifact
+   status yourself. The orchestrator records completion only after it validates your result, so
+   a todo is never marked `complete` on a builder's say-so alone.
+
+If you cannot finish because the todo itself is wrong — it contradicts what you find in the
+code, or the plan's design doesn't hold — **stop** and return `status: "needs_replan"` with the
+reason in `error`. Do not improvise a different design to force the todo closed.
 
 ### Resolve Mode
 
@@ -63,28 +72,43 @@ Also review auto-injected context from the knowledge menu.
 
 ## Migration Parity Check (Build Mode)
 
-After all build steps, check if any model files were modified:
+If your todo modifies model/schema files, a migration MUST exist:
 
 ```bash
 git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20
 ```
 
-If models changed but no migration exists: STOP and create one.
+If models changed but no migration exists, create one as part of the todo. If you cannot,
+return `status: "failed"` with the missing-migration reason in `error` — omitting a migration
+means the column won't exist at runtime. (The orchestrator also runs a final repo-wide parity
+sweep after all todos, but catch it here for the files you touched.)
 
-## Output
+## Output (Build Mode)
 
-Return a summary of what was implemented:
+Return **exactly one JSON object** as your final message — no prose around it. The orchestrator
+parses this to decide whether to checkpoint, retry, or stop the loop:
 
-```markdown
-## Build Complete
-
-### Steps Completed
-- Step 1: [title] — [result]
-- Step 2: [title] — [result]
-
-### Tests
-- [pass/fail count]
-
-### Issues Encountered
-- [any deviations or problems, or "None"]
+```json
+{
+  "todo_id": "<sequence number or artifact id of the todo you implemented>",
+  "status": "complete",
+  "files_changed": ["path/one.ts", "path/two.ts"],
+  "verification_output": "<per-command pass/fail summary, including typecheck + lint on touched files>",
+  "deviations": ["<pattern deviations, or empty array>"],
+  "error": null
+}
 ```
+
+`status` is one of:
+
+- `"complete"` — every verification command, the type checker, and the linter pass for this
+  todo. `error` is `null`.
+- `"failed"` — something this todo owns is broken and you could not fix it (including a missing
+  migration). Put the concrete failure (command + message) in `error`.
+- `"needs_replan"` — the todo itself is wrong; the plan must change before building can
+  continue. Put the reason in `error`.
+
+## Output (Resolve Mode)
+
+Return a short markdown summary of which review_todo artifacts you resolved, skipped, or
+deferred, with the artifact status you set for each.
