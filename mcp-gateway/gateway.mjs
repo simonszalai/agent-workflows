@@ -89,8 +89,55 @@ function log(...args) {
 // `project-mcp ts postgres_*` stdio spawns — secrets are resolved ONCE (start-gateway.sh
 // exports DATABASE_URIs), children are daemon-owned (so they die with the daemon instead
 // of orphaning), and the DB connection pool is shared across every workspace's sessions.
-const children = new Map() // prefix -> { proc, port, restarts, aliveTimer }
+const ACCESS_MODES = new Set(["restricted", "unrestricted"])
+const ALT_ACCESS_MODE_PORT_OFFSET = Number(process.env.MCP_GATEWAY_ALT_ACCESS_MODE_PORT_OFFSET || 1000)
+
+// key -> { proc, port, restarts, aliveTimer, prefix, accessMode }
+// Default children keep the historical key (`prefix`) for log/readability; dynamic
+// client-selected access-mode children use `${prefix}::${accessMode}`.
+const children = new Map()
 let shuttingDown = false
+
+function defaultAccessMode(route) {
+	return route.spawn?.accessMode || "restricted"
+}
+
+function childKey(route, accessMode = defaultAccessMode(route)) {
+	return accessMode === defaultAccessMode(route) ? route.prefix : `${route.prefix}::${accessMode}`
+}
+
+function portForAccessMode(route, accessMode = defaultAccessMode(route)) {
+	const s = route.spawn
+	if (accessMode === defaultAccessMode(route)) return s.port
+	if (s.ports?.[accessMode]) return s.ports[accessMode]
+	return s.port + ALT_ACCESS_MODE_PORT_OFFSET
+}
+
+function parseAccessMode(url) {
+	return (
+		url.searchParams.get("access_mode") ||
+		url.searchParams.get("accessMode") ||
+		url.searchParams.get("postgres_access_mode") ||
+		url.searchParams.get("postgresAccessMode") ||
+		""
+	).trim().toLowerCase()
+}
+
+function removeAccessModeParams(url) {
+	for (const key of ["access_mode", "accessMode", "postgres_access_mode", "postgresAccessMode"]) {
+		url.searchParams.delete(key)
+	}
+}
+
+function accessModeForRequest(route, url) {
+	if (!route.spawn) return null
+	const requested = parseAccessMode(url)
+	if (!requested) return defaultAccessMode(route)
+	if (!ACCESS_MODES.has(requested)) {
+		throw new Error(`invalid access_mode=${requested}; expected restricted or unrestricted`)
+	}
+	return requested
+}
 
 // Reap stray children from a previously-crashed daemon so their ports are free. We match
 // the exact `--sse-port <port>` we are about to bind, so we never touch another project's
@@ -116,24 +163,32 @@ function reapStrayChildren(ports) {
 	}
 }
 
-function startSpawnRoute(route) {
+function startSpawnRoute(route, requestedAccessMode = defaultAccessMode(route)) {
 	const s = route.spawn
+	const accessMode = requestedAccessMode || defaultAccessMode(route)
+	const key = childKey(route, accessMode)
+	const port = portForAccessMode(route, accessMode)
 	const url = process.env[s.urlEnv]
 	if (!url) {
-		log(`spawn ${route.prefix}: env ${s.urlEnv} is unset — route will 502 until the daemon is restarted with it set`)
-		return
+		log(`spawn ${route.prefix} (${accessMode}): env ${s.urlEnv} is unset — route will 502 until the daemon is restarted with it set`)
+		return null
 	}
+	const existing = children.get(key)
+	if (existing?.proc && existing.proc.exitCode === null) return existing
+	reapStrayChildren([port])
 	const bin = s.bin || process.env.POSTGRES_MCP_BIN || "postgres-mcp"
-	const args = ["--transport", "sse", "--sse-host", "127.0.0.1", "--sse-port", String(s.port), "--access-mode", s.accessMode || "restricted"]
+	const args = ["--transport", "sse", "--sse-host", "127.0.0.1", "--sse-port", String(port), "--access-mode", accessMode]
 	// DATABASE_URI goes in the env, never argv, so the connection string stays out of `ps`.
 	const proc = spawn(bin, args, { env: { ...process.env, DATABASE_URI: url }, stdio: ["ignore", "pipe", "pipe"] })
 
-	const entry = children.get(route.prefix) || { restarts: 0 }
+	const entry = children.get(key) || { restarts: 0 }
 	entry.proc = proc
-	entry.port = s.port
-	children.set(route.prefix, entry)
+	entry.port = port
+	entry.prefix = route.prefix
+	entry.accessMode = accessMode
+	children.set(key, entry)
 
-	const tag = `[${route.prefix}]`
+	const tag = `[${key}]`
 	proc.stdout.on("data", (d) => log(tag, String(d).trimEnd()))
 	proc.stderr.on("data", (d) => log(tag, String(d).trimEnd()))
 	// Reset the restart counter once a child has been stable for a minute, so an
@@ -145,18 +200,26 @@ function startSpawnRoute(route) {
 		if (shuttingDown) return
 		const backoff = Math.min(30_000, 500 * 2 ** entry.restarts)
 		entry.restarts += 1
-		log(`spawn ${route.prefix} exited (code=${code} sig=${sig}); respawning in ${backoff}ms`)
-		setTimeout(() => { if (!shuttingDown) startSpawnRoute(route) }, backoff)
+		log(`spawn ${key} exited (code=${code} sig=${sig}); respawning in ${backoff}ms`)
+		setTimeout(() => { if (!shuttingDown) startSpawnRoute(route, accessMode) }, backoff)
 	})
 	proc.on("error", (err) => {
 		// spawn failure (e.g. ENOENT: bad POSTGRES_MCP_BIN) emits "error" but NOT "exit",
 		// so the exit handler never runs. Clear the alive-timer and drop the stale Map entry
 		// so the route isn't wedged forever — a later SIGHUP (or restart) can retry it.
 		clearTimeout(entry.aliveTimer)
-		if (children.get(route.prefix) === entry) children.delete(route.prefix)
-		log(`spawn ${route.prefix} failed: ${String(err.message || err)}`)
+		if (children.get(key) === entry) children.delete(key)
+		log(`spawn ${key} failed: ${String(err.message || err)}`)
 	})
-	log(`spawned ${route.prefix} -> postgres-mcp sse 127.0.0.1:${s.port} (${s.accessMode})`)
+	log(`spawned ${key} -> postgres-mcp sse 127.0.0.1:${port} (${accessMode})`)
+	return entry
+}
+
+function ensureSpawnRoute(route, accessMode) {
+	const key = childKey(route, accessMode)
+	const existing = children.get(key)
+	if (existing?.proc && existing.proc.exitCode === null) return existing
+	return startSpawnRoute(route, accessMode)
 }
 
 function startAllSpawnRoutes() {
@@ -190,7 +253,13 @@ function shutdown(sig) {
 // event is buffered/scanned; once rewritten, all further bytes pass through untouched so
 // SSE framing/flushing is unaffected. The trailing newline in the match guarantees we
 // only rewrite a COMPLETE data line (never a path split across chunks).
-function sseEndpointRewriter(prefix) {
+function endpointPathForClient(prefix, accessMode, upstreamPath) {
+	const u = new URL(prefix + upstreamPath, "http://mcp-gateway.local")
+	if (accessMode) u.searchParams.set("access_mode", accessMode)
+	return u.pathname + u.search
+}
+
+function sseEndpointRewriter(prefix, accessMode) {
 	let done = false
 	let buf = ""
 	const CAP = 64 * 1024
@@ -203,7 +272,7 @@ function sseEndpointRewriter(prefix) {
 			if (done) { this.push(chunk); return cb() }
 			buf += chunk.toString("utf8")
 			if (re.test(buf)) {
-				buf = buf.replace(re, (_m, ev, d, p, nl) => ev + d + prefix + p + nl)
+				buf = buf.replace(re, (_m, ev, d, p, nl) => ev + d + endpointPathForClient(prefix, accessMode, p) + nl)
 				finish(this)
 			} else if (buf.length >= CAP) {
 				finish(this) // endpoint event not found in a reasonable window — pass through as-is
@@ -246,8 +315,10 @@ const server = http.createServer((req, res) => {
 			JSON.stringify({
 				ok: true,
 				routes: ROUTES.map((r) => r.prefix),
-				children: [...children.entries()].map(([prefix, e]) => ({
-					prefix,
+				children: [...children.entries()].map(([key, e]) => ({
+					key,
+					prefix: e.prefix ?? key,
+					accessMode: e.accessMode ?? null,
 					port: e.port,
 					pid: e.proc?.pid ?? null,
 					alive: !!e.proc && e.proc.exitCode === null,
@@ -280,11 +351,29 @@ const server = http.createServer((req, res) => {
 		res.end(JSON.stringify({ error: String(e.message || e) }))
 		return
 	}
+	let accessMode = null
+	try {
+		accessMode = accessModeForRequest(route, url)
+	} catch (e) {
+		res.writeHead(400, { "content-type": "application/json" })
+		res.end(JSON.stringify({ error: String(e.message || e) }))
+		return
+	}
+
+	const activeSpawn = route.spawn ? ensureSpawnRoute(route, accessMode) : null
+	if (route.spawn && !activeSpawn) {
+		res.writeHead(502, { "content-type": "application/json" })
+		res.end(JSON.stringify({ error: `spawn route unavailable: ${route.prefix} (${accessMode})` }))
+		return
+	}
 
 	const target = new URL(route.target)
+	if (activeSpawn) target.port = String(activeSpawn.port)
 	// Append any subpath after the route prefix, then the original query string.
 	target.pathname = (target.pathname.replace(/\/$/, "") + rest).replace(/\/+/g, "/") || "/"
-	target.search = url.search
+	const upstreamSearch = new URLSearchParams(url.searchParams)
+	for (const key of ["access_mode", "accessMode", "postgres_access_mode", "postgresAccessMode"]) upstreamSearch.delete(key)
+	target.search = upstreamSearch.toString() ? `?${upstreamSearch}` : ""
 
 	// Copy client headers, then override host + auth. Drop hop-by-hop and the
 	// local-gateway token so they never leak upstream.
@@ -350,7 +439,7 @@ const server = http.createServer((req, res) => {
 				// POST comes back through this prefixed route (see sseEndpointRewriter).
 				const ct = ures.headers["content-type"] || ""
 				if (route.spawn && /text\/event-stream/i.test(ct)) {
-					ures.pipe(sseEndpointRewriter("/" + route.prefix)).pipe(res)
+					ures.pipe(sseEndpointRewriter("/" + route.prefix, accessMode)).pipe(res)
 				} else {
 					ures.pipe(res)
 				}
@@ -374,12 +463,15 @@ const server = http.createServer((req, res) => {
 			clearTimeout(timer)
 			const code = err.code || ""
 			const retryable = RETRYABLE.has(code) || /timeout|socket hang up/i.test(String(err.message))
-			if (first && retryable && !res.headersSent && !clientAborted) {
-				log("upstream retry", route.prefix, "->", target.host, code || String(err.message))
-				send(2)
+			const spawnStarting = route.spawn && code === "ECONNREFUSED" && attempt < 10
+			if ((first && retryable || spawnStarting) && !res.headersSent && !clientAborted) {
+				const nextAttempt = attempt + 1
+				const delay = spawnStarting ? Math.min(1000, 100 * 2 ** Math.max(0, attempt - 1)) : 0
+				log("upstream retry", route.prefix, accessMode || "", "->", target.host, code || String(err.message), `attempt=${nextAttempt}`, `delay=${delay}ms`)
+				setTimeout(() => send(nextAttempt), delay)
 				return
 			}
-			log("upstream error", route.prefix, "->", target.host, String(err.message || err))
+			log("upstream error", route.prefix, accessMode || "", "->", target.host, String(err.message || err))
 			if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" })
 			res.end(JSON.stringify({ error: `upstream error: ${String(err.message || err)}` }))
 		})
