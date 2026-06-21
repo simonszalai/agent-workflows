@@ -171,15 +171,24 @@ every Conductor workspace of that repo). Example for a ts repo:
 
 **Postgres (Phase 2)** — `type: sse`, one entry per DB. Note the trailing `/sse`
 (the SSE stream endpoint); the daemon rewrites the server's `endpoint` event so the
-client's message POSTs come back through the same prefix. The `restricted`/`unrestricted`
-access mode lives on the daemon (routes.json), not the client.
+client's message POSTs come back through the same prefix. The default
+`restricted`/`unrestricted` access mode still lives on the daemon (`routes.json`), but a
+client config can override it per server by adding an access-mode string to the URL:
+`?access_mode=restricted` or `?access_mode=unrestricted`.
+
 ```json
-"postgres_dev":          { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_dev/sse" },
-"postgres_staging":      { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_staging/sse" },
-"postgres_prod":         { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod/sse" },
-"postgres_prod_prefect": { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod_prefect/sse" },
-"postgres_autodev_ts":   { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_autodev_ts/sse" }
+"postgres_dev":          { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_dev/sse?access_mode=unrestricted" },
+"postgres_staging":      { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_staging/sse?access_mode=unrestricted" },
+"postgres_prod":         { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod/sse?access_mode=restricted" },
+"postgres_prod_prefect": { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod_prefect/sse?access_mode=unrestricted" },
+"postgres_autodev_ts":   { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_autodev_ts/sse?access_mode=unrestricted" }
 ```
+
+Accepted parameter names are `access_mode`, `accessMode`, `postgres_access_mode`, and
+`postgresAccessMode`; values are only `restricted` or `unrestricted`. The gateway strips
+this selector before proxying to `postgres-mcp` and lazily starts a sibling child when a
+client asks for the non-default mode (alternate port = configured route port +
+`MCP_GATEWAY_ALT_ACCESS_MODE_PORT_OFFSET`, default `1000`).
 (Add `"headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" }` to each only if you
 turn on `MCP_GATEWAY_REQUIRE_TOKEN=1`; default is off / localhost-only, matching `render`.)
 
@@ -201,7 +210,7 @@ url = "http://127.0.0.1:8765/ts/render"
 
 [mcp_servers.postgres_dev]
 command = "/Users/simon/.nvm/versions/node/v24.14.1/bin/npx"
-args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/ts/postgres_dev/sse", "--transport", "sse-only", "--silent"]
+args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/ts/postgres_dev/sse?access_mode=unrestricted", "--transport", "sse-only", "--silent"]
 ```
 
 Userland Codex entries follow the same rule:
@@ -214,7 +223,7 @@ url = "http://127.0.0.1:8765/shared/autodev-memory"
 
 [mcp_servers.postgres_autodev_global]
 command = "/Users/simon/.nvm/versions/node/v24.14.1/bin/npx"
-args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/shared/postgres_autodev_global/sse", "--transport", "sse-only", "--silent"]
+args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/shared/postgres_autodev_global/sse?access_mode=unrestricted", "--transport", "sse-only", "--silent"]
 ```
 
 Old before (for reference / rollback):
