@@ -394,6 +394,11 @@ If schema changes are needed:
    Never rely on `prisma db push` or equivalent tools alone -- they only sync the local
    dev database. Deployed environments run migrations, so a missing migration = column not
    found at runtime. Search memory service for 'prisma migration process' for details.
+5. **CRITICAL for derived clients / multi-DB apps:** A migration file is not enough. Add a
+   verification/deploy step proving the new column/table/enum is present in every runtime DB
+   that the generated client will query (for example every configured `DATABASE_URL_*`). If any
+   DB lags, default ORM selects such as Prisma `findMany()` can crash globally with column-not-
+   found even though the migration exists in source.
 
 ### Environment Variables
 
