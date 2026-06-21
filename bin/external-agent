@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """external-agent — run a peer provider (Claude, Codex, or Grok) as a
-cross-provider participant in another agent's workflow: code review, bug
-investigation, or codebase research.
+cross-provider participant in another agent's workflow: planning, code review,
+bug investigation, or codebase research.
 
 The main workflow can be orchestrated by any one of Claude, Codex, or Grok. This adapter
 lets that orchestrator delegate ONE pass of a task to either of the other providers and get
@@ -12,6 +12,13 @@ When the peer provider is Claude, the adapter shells out to `claude -p` (the use
 subscription), never direct Anthropic API calls.
 
 Tasks (--task):
+
+  plan         Draft a high-level implementation plan. Output matches the
+               external planner shape consumed by skills/plan/SKILL.md and
+               workflows/plan-fanout.js:
+                   { "planner_key", "plan": {...}, "assumptions":[...],
+                     "disagreements":[...], "evidence":[...],
+                     "open_questions":[...], "notes" }
 
   review       Review the working diff. Output matches workflows/review-fanout.js
                reviewerOutputSchema:
@@ -38,6 +45,7 @@ Codex via `-s read-only`, and Grok via a read/search-only tool allowlist
 (`--tools Read,Grep,Glob`, no Bash/Write/Edit). None can modify the repo.
 
 Usage:
+    external-agent --task plan        --provider claude|codex|grok --question STR
     external-agent --task review      --provider claude|codex|grok [--base origin/main]
     external-agent --task investigate --provider claude|codex|grok --bug STR [--evidence-file F] [--environment ENV]
     external-agent --task research    --provider claude|codex|grok --question STR
@@ -505,6 +513,245 @@ def empty_investigate(provider: str, reason: str) -> dict:
             "hypotheses": [], "notes": reason}
 
 
+# ================================================================ PLAN task
+PLAN_CONTRACT = """\
+## Your output contract (MANDATORY)
+
+Return EXACTLY ONE JSON object and nothing else — no prose, no markdown fences, no
+commentary before or after. It must match this shape:
+
+{
+  "planner_key": "<PROVIDER>",
+  "plan": {
+    "title": "short specific title",
+    "what": "high-level description of what will be built",
+    "why": "why this approach solves the problem",
+    "how": "architectural approach; no line-by-line implementation",
+    "tradeoffs": "what this optimizes for and what it sacrifices",
+    "alternatives_considered": [
+      {"name": "alternative", "why_rejected": "evidence-based reason"}
+    ],
+    "risks": [
+      {"risk": "specific risk", "mitigation": "specific mitigation"}
+    ],
+    "verification_strategy": "how staging and production prove the change works",
+    "side_effects": "affected systems, or 'none'",
+    "elimination": "old code/systems to delete or replace, or 'none'",
+    "open_questions": ["only questions that remain after repository research"]
+  },
+  "assumptions": ["factual assumptions your plan depends on"],
+  "disagreements": [
+    {
+      "area": "what" | "why" | "how" | "tradeoffs" | "alternatives_considered" | "risks" | "verification_strategy" | "side_effects" | "elimination" | "scope",
+      "claim": "decision or assumption another provider may dispute",
+      "why_it_might_be_wrong": "specific falsifiable concern",
+      "evidence_needed": "what would settle it"
+    }
+  ],
+  "evidence": ["file paths, code patterns, ticket facts, or memories that ground the plan"],
+  "open_questions": ["same as plan.open_questions or additional provider-level questions"],
+  "notes": "one line on the approach you took"
+}
+
+Rules:
+- Set "planner_key" to exactly "<PROVIDER>".
+- You are one of three independent provider planners. Be opinionated and evidence-grounded;
+  do NOT imitate an expected consensus.
+- Read/search the repository as needed. Ground factual claims in real code, ticket context,
+  or supplied prior knowledge.
+- Surface likely disagreements honestly. The orchestrator will iterate on them until the
+  providers converge on evidence-backed truth or record an explicit unresolved question.
+- Keep the plan architecture-focused. Do not list implementation files unless essential.
+- Empty "disagreements": [] is valid only if you found no material uncertainty.
+- You have READ-ONLY access to the repository. DO NOT modify any files.
+"""
+
+
+def build_plan_prompt(provider: str, skill_dir: Path, question: str, source_artifact: str,
+                      codebase_research: str, prior_knowledge: str, repo: Path) -> str:
+    parts: list[str] = []
+    parts.append(
+        "You are an expert planner invoked as an external cross-provider planner. "
+        "Draft a high-level implementation plan following the methodology that follows, "
+        "and return it as strict JSON. You are one of three independent providers; "
+        "another model will synthesize your plan with the others and force convergence "
+        "on disagreements, so be precise, evidence-grounded, and explicit about "
+        "uncertainty.\n")
+    append_methodology(parts, skill_dir, [], "PLAN METHODOLOGY")
+    parts.append("\n" + "=" * 78)
+    parts.append(PLAN_CONTRACT.replace("<PROVIDER>", provider))
+    parts.append("\n" + "=" * 78)
+    parts.append("# PLANNING INPUT\n")
+    parts.append(f"Repository root: {repo}\n")
+    parts.append("Planning question / requested change:\n" + question + "\n")
+    if source_artifact.strip():
+        parts.append("Source artifact / ticket context:\n" + source_artifact + "\n")
+    if codebase_research.strip():
+        parts.append("Existing codebase research (use it, don't ignore it):\n"
+                     + codebase_research + "\n")
+    if prior_knowledge.strip():
+        parts.append("Prior knowledge from autodev (memories + related tickets):\n"
+                     + prior_knowledge + "\n")
+    parts.append(
+        f"\nNow read the relevant code, draft your independent plan, and output the "
+        f'single JSON object for planner_key "{provider}". Output JSON only.')
+    return "\n".join(parts)
+
+
+def plan_strict_schema() -> dict:
+    alt = {
+        "type": "object", "additionalProperties": False,
+        "required": ["name", "why_rejected"],
+        "properties": {
+            "name": {"type": "string"},
+            "why_rejected": {"type": "string"},
+        },
+    }
+    risk = {
+        "type": "object", "additionalProperties": False,
+        "required": ["risk", "mitigation"],
+        "properties": {
+            "risk": {"type": "string"},
+            "mitigation": {"type": "string"},
+        },
+    }
+    plan = {
+        "type": "object", "additionalProperties": False,
+        "required": ["title", "what", "why", "how", "tradeoffs",
+                     "alternatives_considered", "risks", "verification_strategy",
+                     "side_effects", "elimination", "open_questions"],
+        "properties": {
+            "title": {"type": "string"},
+            "what": {"type": "string"},
+            "why": {"type": "string"},
+            "how": {"type": "string"},
+            "tradeoffs": {"type": "string"},
+            "alternatives_considered": {"type": "array", "items": alt},
+            "risks": {"type": "array", "items": risk},
+            "verification_strategy": {"type": "string"},
+            "side_effects": {"type": "string"},
+            "elimination": {"type": "string"},
+            "open_questions": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+    disagreement = {
+        "type": "object", "additionalProperties": False,
+        "required": ["area", "claim", "why_it_might_be_wrong", "evidence_needed"],
+        "properties": {
+            "area": {"type": "string"},
+            "claim": {"type": "string"},
+            "why_it_might_be_wrong": {"type": "string"},
+            "evidence_needed": {"type": "string"},
+        },
+    }
+    return {
+        "type": "object", "additionalProperties": False,
+        "required": ["planner_key", "plan", "assumptions", "disagreements",
+                     "evidence", "open_questions", "notes"],
+        "properties": {
+            "planner_key": {"type": "string"},
+            "plan": plan,
+            "assumptions": {"type": "array", "items": {"type": "string"}},
+            "disagreements": {"type": "array", "items": disagreement},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "open_questions": {"type": "array", "items": {"type": "string"}},
+            "notes": {"type": "string"},
+        },
+    }
+
+
+PLAN_AREAS = {"what", "why", "how", "tradeoffs", "alternatives_considered",
+              "risks", "verification_strategy", "side_effects", "elimination",
+              "scope"}
+
+
+def coerce_plan(obj: object) -> dict | None:
+    if not isinstance(obj, dict):
+        return None
+    required = ["title", "what", "why", "how", "tradeoffs",
+                "verification_strategy", "side_effects", "elimination"]
+    if any(not str(obj.get(k, "")).strip() for k in required):
+        return None
+    alts = obj.get("alternatives_considered")
+    if not isinstance(alts, list):
+        alts = []
+    risks = obj.get("risks")
+    if not isinstance(risks, list):
+        risks = []
+    oq = obj.get("open_questions")
+    if not isinstance(oq, list):
+        oq = []
+    return {
+        "title": str(obj.get("title", "")).strip(),
+        "what": str(obj.get("what", "")).strip(),
+        "why": str(obj.get("why", "")).strip(),
+        "how": str(obj.get("how", "")).strip(),
+        "tradeoffs": str(obj.get("tradeoffs", "")).strip(),
+        "alternatives_considered": [
+            {"name": str(a.get("name", "")).strip(),
+             "why_rejected": str(a.get("why_rejected", "")).strip()}
+            for a in alts if isinstance(a, dict)
+            and str(a.get("name", "")).strip()
+            and str(a.get("why_rejected", "")).strip()
+        ],
+        "risks": [
+            {"risk": str(r.get("risk", "")).strip(),
+             "mitigation": str(r.get("mitigation", "")).strip()}
+            for r in risks if isinstance(r, dict)
+            and str(r.get("risk", "")).strip()
+            and str(r.get("mitigation", "")).strip()
+        ],
+        "verification_strategy": str(obj.get("verification_strategy", "")).strip(),
+        "side_effects": str(obj.get("side_effects", "")).strip(),
+        "elimination": str(obj.get("elimination", "")).strip(),
+        "open_questions": [str(x) for x in oq if str(x).strip()],
+    }
+
+
+def coerce_disagreement(d: object) -> dict | None:
+    if not isinstance(d, dict):
+        return None
+    claim = str(d.get("claim", "")).strip()
+    why = str(d.get("why_it_might_be_wrong", "")).strip()
+    need = str(d.get("evidence_needed", "")).strip()
+    if not claim or not why or not need:
+        return None
+    area = d.get("area") if d.get("area") in PLAN_AREAS else "scope"
+    return {"area": area, "claim": claim,
+            "why_it_might_be_wrong": why, "evidence_needed": need}
+
+
+def validate_plan(obj: dict | None, provider: str) -> tuple[dict | None, str]:
+    if obj is None:
+        return None, "no JSON object found in output"
+    plan = coerce_plan(obj.get("plan"))
+    if plan is None:
+        return None, "missing or malformed 'plan'"
+    disagreements_in = obj.get("disagreements")
+    if not isinstance(disagreements_in, list):
+        disagreements_in = []
+    disagreements = [d for d in (coerce_disagreement(x) for x in disagreements_in) if d]
+    assumptions = obj.get("assumptions")
+    evidence = obj.get("evidence")
+    open_q = obj.get("open_questions")
+    return {
+        "planner_key": provider,
+        "plan": plan,
+        "assumptions": [str(x) for x in assumptions] if isinstance(assumptions, list) else [],
+        "disagreements": disagreements,
+        "evidence": [str(x) for x in evidence] if isinstance(evidence, list) else [],
+        "open_questions": [str(x) for x in open_q] if isinstance(open_q, list)
+        else plan["open_questions"],
+        "notes": str(obj.get("notes", "")).strip() or f"external {provider} planner",
+    }, ""
+
+
+def empty_plan(provider: str, reason: str) -> dict:
+    return {"planner_key": provider, "plan": None, "assumptions": [],
+            "disagreements": [], "evidence": [], "open_questions": [],
+            "notes": reason}
+
+
 # ================================================================ RESEARCH task
 RESEARCH_CONTRACT = """\
 ## Your output contract (MANDATORY)
@@ -636,6 +883,12 @@ def empty_research(provider: str, reason: str) -> dict:
 
 # ---------------------------------------------------------------- task registry
 TASKS = {
+    "plan": {
+        "skill": "plan",
+        "strict_schema": plan_strict_schema,
+        "validate": validate_plan,
+        "empty": empty_plan,
+    },
     "review": {
         "skill": "review",
         "strict_schema": review_strict_schema,
@@ -705,7 +958,7 @@ def run_claude(prompt: str, schema: dict, model: str | None,
         if isinstance(result, dict):
             return json.dumps(result)
         # If --json-schema returned the object directly in this version, accept it.
-        if any(k in env for k in ("reviewer_key", "generator_key", "key")):
+        if any(k in env for k in ("planner_key", "reviewer_key", "generator_key", "key")):
             return json.dumps(env)
     return out
 
@@ -821,8 +1074,14 @@ def main() -> None:
     ap.add_argument("--evidence-file", default=None,
                     help="file with stack trace / logs / evidence (investigate)")
     ap.add_argument("--environment", default=None, help="prod|staging|local (investigate)")
-    # research-only
-    ap.add_argument("--question", default=None, help="research question (research)")
+    # plan/research
+    ap.add_argument("--question", default=None, help="planning/research question")
+    ap.add_argument("--source-artifact-file", default=None,
+                    help="file with ticket source artifact (plan)")
+    ap.add_argument("--codebase-research-file", default=None,
+                    help="file with codebase research findings (plan)")
+    ap.add_argument("--prior-knowledge-file", default=None,
+                    help="file with rendered memories / related tickets (plan)")
     args = ap.parse_args()
 
     task = TASKS[args.task]
@@ -851,7 +1110,21 @@ def main() -> None:
         sys.exit(code)
 
     # ---- build the task-specific prompt
-    if args.task == "review":
+    if args.task == "plan":
+        if not args.question:
+            die("--question is required for --task plan")
+        source_artifact = read_text(Path(args.source_artifact_file)) \
+            if args.source_artifact_file else ""
+        codebase_research = read_text(Path(args.codebase_research_file)) \
+            if args.codebase_research_file else ""
+        prior_knowledge = read_text(Path(args.prior_knowledge_file)) \
+            if args.prior_knowledge_file else ""
+        prompt = build_plan_prompt(args.provider, skill_dir, args.question,
+                                   source_artifact, codebase_research,
+                                   prior_knowledge, repo)
+        meta = (f"q={len(args.question)}c source={len(source_artifact)}c "
+                f"research={len(codebase_research)}c prior={len(prior_knowledge)}c")
+    elif args.task == "review":
         base = resolve_base(args.base, repo)
         changed, stat, diff = collect_diff(base, repo)
         if not changed:

@@ -8,7 +8,10 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 - **Agents** - Tool-specific specialized agent roles (reviewer, planner, researcher, etc.)
 - **Hooks** - Shared shell hooks for autodev-memory context injection
 - **Commands** - Legacy Claude command wrappers kept only where still needed
-- **bin/** - Shared executables: `project-mcp` (the MCP launcher every repo's `.mcp.json` points at) and `external-agent` (cross-provider adapter — runs Claude, Codex, or Grok as a peer reviewer, investigation hypothesis generator, or research searcher, each emitting the same schema for that task; `external-review` is a back-compat shim for `external-agent --task review`)
+- **Workflows** - Claude Code dynamic workflow scripts (`plan-fanout`, `review-fanout`, etc.) for
+  heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
+  equivalent logic inline on Codex/Grok
+- **bin/** - Shared executables: `project-mcp` (legacy/fallback MCP launcher; new configs should prefer `mcp-gateway`) and `external-agent` (cross-provider adapter — runs Claude, Codex, or Grok as a peer reviewer, investigation hypothesis generator, or research searcher, each emitting the same schema for that task; `external-review` is a back-compat shim for `external-agent --task review`)
 
 ## Distribution
 
@@ -28,6 +31,7 @@ ln -s ~/dev/agent-workflows/skills ~/.claude/skills
 ln -s ~/dev/agent-workflows/skills ~/.agents/skills
 ln -s ~/dev/agent-workflows/hooks ~/.claude/hooks
 ln -s ~/dev/agent-workflows/hooks ~/.codex/hooks
+ln -s ~/dev/agent-workflows/workflows ~/.claude/workflows
 ln -s ~/dev/agent-workflows/bin/agent-workflow-provider ~/.local/bin/agent-workflow-provider
 ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
 ln -s ~/dev/agent-workflows/bin/external-agent ~/.local/bin/external-agent
@@ -172,10 +176,19 @@ hooks fail silently on resume/compact triggers with "AUTODEV_MEMORY_API_TOKEN no
 > not yet cut over to the gateway, and the rollback target. It is still the canonical record of
 > *which* 1Password items back each server.
 
-Every repo's `.mcp.json` / `.codex/config.toml` sets its MCP server `command` to
-`~/.local/bin/project-mcp <project> <server>` (e.g. `shared autodev-memory`,
-`ts postgres_prod`). That path is a **symlink to `bin/project-mcp` in this repo** — so the
-launcher is versioned here alongside the hooks and skills it sits next to.
+Legacy MCP configs used to set every `.mcp.json` / `.codex/config.toml` server `command`
+to `~/.local/bin/project-mcp <project> <server>` (e.g. `shared autodev-memory`,
+`ts postgres_prod`). New configs should prefer **`mcp-gateway`** instead:
+
+- Claude / `.mcp.json`: HTTP servers use direct gateway URLs; postgres uses gateway SSE URLs.
+- Codex / `.codex/config.toml`: HTTP servers use direct `url = "http://127.0.0.1:8765/…"`
+  entries; postgres still needs a stdio bridge because Codex's `url` transport is streamable
+  HTTP and does not speak the gateway's legacy SSE endpoint directly, so use pinned
+  `mcp-remote@0.1.38 …/sse --transport sse-only --silent`.
+
+`project-mcp` remains the rollback/fallback target. The `~/.local/bin/project-mcp` path is a
+**symlink to `bin/project-mcp` in this repo** — so the launcher is versioned here alongside
+the hooks and skills it sits next to.
 
 What it does, per invocation:
 

@@ -31,25 +31,27 @@ verification status and set the independent blocker metadata (`blocked_at`, `blo
 /auto-deploy F007 staging           # Deploy to staging (overrides ticket status detection)
 /auto-deploy F007 production        # Deploy to production (overrides ticket status detection)
 /auto-deploy B003                   # Deploy bug fix B003
-/auto-deploy                        # (scheduled) Pick up next standalone ticket at ready_to_deploy_production, or epic at ready_to_deploy_staging
+/auto-deploy                        # (scheduled) Pick up next ready_to_deploy_staging/production unit
 ```
 
 ## When to Use
 
-- After `/auto-build` completes for a standalone ticket (deploys to production)
+- From `/ticket-flow`, after the ticket has been planned, built, reviewed, and locally verified;
+  ticket-flow chooses `staging` vs `production` up front and invokes this skill for the deploy.
+- After `/auto-build` completes for a standalone ticket, with an explicit `staging` or
+  `production` target supplied by the caller's risk route
 - For an epic staging gate: after milestone members are `merged`, when called by `/epic-flow`
   (deploys the parent epic to staging)
 - For epic production promotion/deploy: prefer `/promote-to-production --epic`, which owns the
   ordered verified-step promotion path
-- Scheduled agent picks up standalone `ready_to_deploy_production` tickets and
-  `ready_to_deploy_staging` epics automatically
+- Scheduled agent picks up standalone or epic units at `ready_to_deploy_staging` /
+  `ready_to_deploy_production` automatically
 - Manual trigger when you want to deploy a specific ticket or epic
 
 ## Prerequisites
 
-- A standalone ticket at `ready_to_deploy_production`, or an epic at
-  `ready_to_deploy_staging` / `ready_to_deploy_production` (unless target is overridden via
-  argument)
+- A standalone ticket or epic at `ready_to_deploy_staging` / `ready_to_deploy_production`
+  (unless target is overridden via argument)
 - Feature branch must exist on remote (created + pushed by `/auto-build`)
 - A PR is NOT required upfront — this skill creates the PR as its first action if one
   does not already exist for the branch
@@ -442,7 +444,8 @@ Status reverted to: {original_status}
 
 | Command        | When to Use                                          |
 | -------------- | ---------------------------------------------------- |
-| `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / ready_to_deploy_production (standalone) |
+| `/ticket-flow` | Orchestrates the full standalone ticket path and invokes `/auto-deploy` for staging-first or direct-production deployment |
+| `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / route-matching ready_to_deploy_* (standalone) |
 | `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies deployment mechanics |
 | `/ticket-verify` | Next step — verifies feature behavior/evidence in staging or production |
 | `/epic-flow` | Parent orchestrator for milestone-by-milestone epic deploy/verify gates |

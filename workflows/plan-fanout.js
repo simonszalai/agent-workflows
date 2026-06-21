@@ -1,24 +1,26 @@
 // plan-fanout — heavyweight orchestrator for /plan when the feature is substantial.
 //
-// Plans are subjective artifacts (no right/wrong like a bug, no completeness metric like
-// research). So the orchestration shape is panel-with-counterweight, NOT a convergence loop:
+// Plans contain both subjective tradeoffs and factual/architectural claims. The tradeoffs
+// need panel-with-counterweight; the factual claims need cross-provider disagreement
+// convergence. The core invariant: all three providers contribute to planning, and material
+// disagreements are iterated until evidence resolves them, they become explicit blockers, or
+// they are deliberately rejected as preference/YAGNI.
 //
 // Phase shape:
 //   1. Draft (parallel): N diverse plan drafts from different framings (MVP-first,
 //      risk-first, integration-first). Diversity beats sequential refinement here.
-//   2. Synthesize: one opus agent picks the best base and grafts strong elements from
+//   2. Add peer-provider drafts gathered by the skill via external-agent --task plan.
+//   3. Synthesize: one opus agent picks the best base and grafts strong elements from
 //      the others.
-//   3. Critique (parallel): 3 critics with DIFFERENT (and partially-opposing) lenses:
+//   4. Critique (parallel): 3 critics with DIFFERENT (and partially-opposing) lenses:
 //        - completeness — what's missing?
 //        - correctness — what assumptions won't hold?
 //        - YAGNI — what's over-engineered? (essential counterweight to completeness)
-//   4. Revise: one opus agent incorporates must-address findings AND explicitly resolves
+//   5. Revise: one opus agent incorporates must-address findings AND explicitly resolves
 //      completeness-vs-YAGNI conflicts. Records what was rejected and why.
-//
-// NO open convergence loop. One bounded revision. Convergence loops on subjective output
-// risk spiraling toward gold-plated plans because critics naturally find "missing things"
-// faster than they validate "this is enough". The YAGNI critic is the only counterweight,
-// and a single revision is enough to integrate it.
+//   6. Disagreement convergence: up to 3 bounded rounds. Audit provider assumptions,
+//      disagreements, risks, and open questions against the current plan; revise only toward
+//      evidence-backed truth, explicit blockers, or recorded YAGNI/preference rejections.
 //
 // Returns the synthesized plan object only. MCP persistence stays in the skill — the
 // workflow never touches MCP. Related autodev memories + past tickets are gathered by the
@@ -28,12 +30,14 @@
 
 export const meta = {
   name: 'plan-fanout',
-  description: 'Diverse plan drafts in parallel, synthesize, critique through completeness/correctness/YAGNI lenses, revise once. No convergence loop — bounded by design to prevent over-engineering spiral.',
+  description: 'Cross-provider plan synthesis with diverse drafts, critics, and bounded disagreement convergence.',
   phases: [
     { title: 'Draft', detail: 'N diverse plans in parallel (different framings)' },
+    { title: 'Provider merge', detail: 'include external peer provider drafts' },
     { title: 'Synthesize', detail: 'pick best base, graft strongest elements' },
     { title: 'Critique', detail: 'parallel critics: completeness, correctness, YAGNI' },
     { title: 'Revise', detail: 'incorporate must-address; resolve completeness vs YAGNI explicitly' },
+    { title: 'Converge', detail: 'iterate material disagreements until resolved or explicit blockers' },
   ],
 }
 
@@ -162,6 +166,35 @@ const revisedOutputSchema = {
   },
 }
 
+const disagreementAuditSchema = {
+  type: 'object',
+  required: ['round', 'disagreements', 'overall_assessment'],
+  properties: {
+    round: { type: 'integer' },
+    disagreements: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: [
+          'title', 'area', 'providers', 'status', 'severity',
+          'issue', 'evidence_needed', 'suggested_resolution',
+        ],
+        properties: {
+          title: { type: 'string', minLength: 4 },
+          area: { type: 'string', enum: ['what', 'why', 'how', 'tradeoffs', 'alternatives_considered', 'risks', 'verification_strategy', 'side_effects', 'elimination', 'scope'] },
+          providers: { type: 'array', items: { type: 'string' } },
+          status: { type: 'string', enum: ['resolved_by_evidence', 'material_unresolved', 'open_question', 'preference_rejected'] },
+          severity: { type: 'string', enum: ['must-resolve', 'should-resolve', 'preference'] },
+          issue: { type: 'string', minLength: 16 },
+          evidence_needed: { type: 'string', minLength: 4 },
+          suggested_resolution: { type: 'string', minLength: 8 },
+        },
+      },
+    },
+    overall_assessment: { type: 'string', minLength: 16 },
+  },
+}
+
 // ---------- Defaults ----------
 
 const DEFAULT_FRAMINGS = [
@@ -182,6 +215,33 @@ function validFinding(f) {
   return typeof f.title === 'string' && f.title.length > 0 &&
          typeof f.severity === 'string' && typeof f.area === 'string' &&
          typeof f.issue === 'string' && typeof f.suggestion === 'string'
+}
+
+function normalizeProviderDraft(env) {
+  if (!env || typeof env !== 'object' || !env.plan) return null
+  const key = env.planner_key || env.provider || env.key || 'provider'
+  return {
+    framing: `provider:${key}`,
+    plan: env.plan,
+    framing_notes: env.notes || `External provider contribution from ${key}`,
+    provider_key: key,
+    assumptions: Array.isArray(env.assumptions) ? env.assumptions : [],
+    disagreements: Array.isArray(env.disagreements) ? env.disagreements : [],
+    evidence: Array.isArray(env.evidence) ? env.evidence : [],
+    open_questions: Array.isArray(env.open_questions) ? env.open_questions : [],
+    notes: env.notes || '',
+  }
+}
+
+function validDisagreement(d) {
+  if (!d || typeof d !== 'object') return false
+  return typeof d.title === 'string' && d.title.length > 0 &&
+         typeof d.area === 'string' &&
+         Array.isArray(d.providers) &&
+         typeof d.status === 'string' &&
+         typeof d.severity === 'string' &&
+         typeof d.issue === 'string' &&
+         typeof d.suggested_resolution === 'string'
 }
 
 // ---------- Prompts ----------
@@ -365,6 +425,88 @@ function revisePrompt(plan, critiques, question, codebaseResearch, repoRoot, pri
   ].filter(Boolean).join('\n')
 }
 
+function disagreementAuditPrompt(round, plan, allDrafts, critiques, question, codebaseResearch, repoRoot, priorKnowledge) {
+  const providerDrafts = allDrafts.filter(d => d.provider_key)
+  return [
+    `You are auditing a synthesized plan for cross-provider disagreements. Round ${round}/3.`,
+    ``,
+    `Goal: converge on evidence-backed truth, not on bland compromise. Planning contains`,
+    `subjective tradeoffs, but factual/architectural claims about code, data, infra,`,
+    `migrations, sequencing, verification, and elimination must be settled or promoted to`,
+    `explicit open questions.`,
+    ``,
+    `Repository root: ${repoRoot}`,
+    ``,
+    `Planning question:`,
+    question,
+    ``,
+    `Current plan:`,
+    JSON.stringify(plan, null, 2),
+    ``,
+    `All plan drafts considered:`,
+    allDrafts.map((d, i) => `\n--- DRAFT ${i + 1} (${d.framing}) ---\n${JSON.stringify(d.plan, null, 2)}\nNotes: ${d.framing_notes || ''}\n`).join(''),
+    ``,
+    `Provider assumptions / surfaced disagreements:`,
+    providerDrafts.length
+      ? providerDrafts.map(d => [
+          `\n--- PROVIDER ${d.provider_key} ---`,
+          `Assumptions: ${JSON.stringify(d.assumptions || [])}`,
+          `Disagreements: ${JSON.stringify(d.disagreements || [])}`,
+          `Evidence: ${JSON.stringify(d.evidence || [])}`,
+          `Open questions: ${JSON.stringify(d.open_questions || [])}`,
+        ].join('\n')).join('\n')
+      : `No external provider drafts were supplied. Flag this if cross-provider mode was expected.`,
+    ``,
+    `Critic findings:`,
+    JSON.stringify(critiques.flatMap(c => (c?.findings || []).map(f => ({ ...f, critic_lens: c.lens }))), null, 2),
+    ``,
+    codebaseResearch ? `Existing codebase research:\n${codebaseResearch}\n` : '',
+    priorKnowledge ? `Prior knowledge from autodev:\n${priorKnowledge}\n` : '',
+    ``,
+    `Return disagreementAuditSchema. Classify each disagreement:`,
+    `- resolved_by_evidence: current plan already chose the evidence-backed answer`,
+    `- material_unresolved: build planning would be unsafe until this is settled`,
+    `- open_question: cannot be settled from available context; must appear in plan.open_questions`,
+    `- preference_rejected: subjective preference or YAGNI concern deliberately rejected/accepted`,
+    ``,
+    `Only "material_unresolved" and "open_question" with severity must-resolve should force`,
+    `another revision round. Do not create fake disagreement just to be thorough.`,
+  ].filter(Boolean).join('\n')
+}
+
+function convergenceRevisePrompt(plan, audit, question, repoRoot, priorKnowledge) {
+  const actionable = (audit.disagreements || []).filter(d =>
+    d.severity === 'must-resolve' &&
+    (d.status === 'material_unresolved' || d.status === 'open_question')
+  )
+  return [
+    `You are revising the plan to converge cross-provider disagreements. Revise only toward`,
+    `evidence-backed truth, explicit build-blocking open questions, or recorded YAGNI/preference`,
+    `rejections. Do not add scope merely to appease a critic.`,
+    ``,
+    `Repository root: ${repoRoot}`,
+    ``,
+    `Planning question:`,
+    question,
+    ``,
+    `Current plan:`,
+    JSON.stringify(plan, null, 2),
+    ``,
+    `Actionable disagreements from audit:`,
+    JSON.stringify(actionable, null, 2),
+    ``,
+    priorKnowledge ? `Prior knowledge to respect:\n${priorKnowledge}\n` : '',
+    `Revision rules:`,
+    `1. If evidence settles a disagreement, update the plan to the settled answer.`,
+    `2. If the evidence is unavailable but required, add a concrete blocker to open_questions.`,
+    `3. If the disagreement is only preference/YAGNI, keep the simpler plan and record why.`,
+    `4. Preserve the plan schema exactly. Keep architecture-level, not file-by-file.`,
+    ``,
+    `Return revisedOutputSchema. Use revision_log.tension_resolutions for provider`,
+    `disagreement resolutions as well as completeness-vs-YAGNI tensions.`,
+  ].filter(Boolean).join('\n')
+}
+
 // ---------- Script body ----------
 
 const {
@@ -372,6 +514,7 @@ const {
   sourceArtifact = null,
   codebaseResearch = null,
   priorKnowledge = null,
+  providerDrafts = [],
   framings = DEFAULT_FRAMINGS,
   repoRoot,
   mode = 'interactive',
@@ -396,28 +539,32 @@ const draftResults = await parallel(
   ))
 )
 const validDrafts = draftResults.filter(d => d && d.plan)
-log(`Drafts: ${validDrafts.length}/${framings.length} succeeded`)
+const validProviderDrafts = (Array.isArray(providerDrafts) ? providerDrafts : [])
+  .map(normalizeProviderDraft)
+  .filter(Boolean)
+log(`Drafts: ${validDrafts.length}/${framings.length} native succeeded; ${validProviderDrafts.length} provider drafts supplied`)
 
-if (validDrafts.length === 0) {
+if (validDrafts.length === 0 && validProviderDrafts.length === 0) {
   throw new Error('plan-fanout: all drafts failed')
 }
+const allDrafts = [...validDrafts, ...validProviderDrafts]
 
 // Phase 2: synthesize
 phase('Synthesize')
 let synthesized = null
-if (validDrafts.length === 1) {
+if (allDrafts.length === 1) {
   // Only one draft survived — skip synthesis, use it as-is.
   log('Only one draft survived; skipping synthesis')
-  synthesized = validDrafts[0]
+  synthesized = allDrafts[0]
 } else {
   synthesized = await agent(
-    synthesizePrompt(question, validDrafts, repoRoot, priorKnowledge),
+    synthesizePrompt(question, allDrafts, repoRoot, priorKnowledge),
     // TODO: revert to model: 'fable' once available (effort xhigh not settable via agent())
     { label: 'synthesize', phase: 'Synthesize', model: 'opus', schema: draftOutputSchema }
   )
   if (!synthesized || !synthesized.plan) {
     log('Synthesis failed; falling back to first draft')
-    synthesized = validDrafts[0]
+    synthesized = allDrafts[0]
   }
 }
 
@@ -463,26 +610,102 @@ if (validCritiques.length === 0 || totalFindings === 0) {
   }
 }
 
+// Phase 5: bounded cross-provider disagreement convergence
+phase('Converge')
+const disagreementLog = []
+let disagreementRounds = 0
+for (let round = 1; round <= 3; round += 1) {
+  const audit = await agent(
+    disagreementAuditPrompt(round, final.plan, allDrafts, validCritiques, question, codebaseResearch, repoRoot, priorKnowledge),
+    { label: `disagreement-audit:${round}`, phase: 'Converge', model: 'opus', schema: disagreementAuditSchema }
+  )
+  const disagreements = (audit?.disagreements || []).filter(validDisagreement)
+  const actionable = disagreements.filter(d =>
+    d.severity === 'must-resolve' &&
+    (d.status === 'material_unresolved' || d.status === 'open_question')
+  )
+  disagreementLog.push(...disagreements.map(d => ({
+    round,
+    title: d.title,
+    area: d.area,
+    providers: d.providers,
+    status: d.status,
+    severity: d.severity,
+    resolution: d.suggested_resolution,
+    evidence: d.evidence_needed,
+  })))
+  disagreementRounds = round
+  log(`Converge round ${round}: ${disagreements.length} disagreement(s), ${actionable.length} actionable`)
+  if (actionable.length === 0) {
+    break
+  }
+  const revised = await agent(
+    convergenceRevisePrompt(final.plan, { ...audit, disagreements: actionable }, question, repoRoot, priorKnowledge),
+    { label: `convergence-revise:${round}`, phase: 'Converge', model: 'opus', schema: revisedOutputSchema }
+  )
+  if (!revised || !revised.plan) {
+    log(`Convergence revision ${round} failed; keeping current plan and surfacing disagreements`)
+    break
+  }
+  final = {
+    plan: revised.plan,
+    revision_log: {
+      incorporated: [
+        ...(final.revision_log?.incorporated || []),
+        ...(revised.revision_log?.incorporated || []),
+      ],
+      rejected: [
+        ...(final.revision_log?.rejected || []),
+        ...(revised.revision_log?.rejected || []),
+      ],
+      tension_resolutions: [
+        ...(final.revision_log?.tension_resolutions || []),
+        ...(revised.revision_log?.tension_resolutions || []),
+      ],
+    },
+  }
+}
+
 const incorporatedCount = final.revision_log?.incorporated?.length || 0
 const rejectedCount = final.revision_log?.rejected?.length || 0
 const tensionCount = final.revision_log?.tension_resolutions?.length || 0
+const disagreementsFound = disagreementLog.length
+const unresolvedDisagreements = disagreementLog.filter(d =>
+  d.severity === 'must-resolve' &&
+  (d.status === 'material_unresolved' || d.status === 'open_question')
+).length
+const disagreementsResolved = disagreementsFound - unresolvedDisagreements
 
 return {
   question,
   plan: final.plan,
   revision_log: final.revision_log || { incorporated: [], rejected: [], tension_resolutions: [] },
-  drafts_considered: validDrafts.map(d => ({ framing: d.framing, framing_notes: d.framing_notes })),
+  provider_contributions: validProviderDrafts.map(d => ({
+    planner_key: d.provider_key,
+    assumptions: d.assumptions,
+    disagreements: d.disagreements,
+    evidence: d.evidence,
+    open_questions: d.open_questions,
+    notes: d.notes,
+  })),
+  drafts_considered: allDrafts.map(d => ({ framing: d.framing, framing_notes: d.framing_notes })),
   critic_findings: validCritiques.flatMap(c =>
     (c.findings || []).filter(validFinding).map(f => ({ ...f, critic_lens: c.lens }))
   ),
+  disagreement_log: disagreementLog,
   stats: {
     framings_attempted: framings.length,
-    drafts_succeeded: validDrafts.length,
+    drafts_succeeded: allDrafts.length,
     critics_succeeded: validCritiques.length,
     total_findings: totalFindings,
     must_address_findings: mustAddressCount,
     incorporated: incorporatedCount,
     rejected: rejectedCount,
     tensions_resolved: tensionCount,
+    provider_contributors: validProviderDrafts.length + (validDrafts.length > 0 ? 1 : 0),
+    disagreement_rounds: disagreementRounds,
+    disagreements_found: disagreementsFound,
+    disagreements_resolved: disagreementsResolved,
+    unresolved_disagreements: unresolvedDisagreements,
   },
 }

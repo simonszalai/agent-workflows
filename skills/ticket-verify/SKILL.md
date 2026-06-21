@@ -36,8 +36,11 @@ First argument must be `staging`, `prod`, or `production`.
   parent epic/milestone gate and included step tickets according to the epic lifecycle.
 - On failure, set `verify_staging_failed` or `verify_prod_failed` on the standalone ticket, or
   record the failed epic/milestone gate and failed evidence rows for `/epic-flow`'s fix loop.
+- Blocker metadata is **not** a skip signal. If a selected ticket/gate has an active blocker,
+  first re-check the recorded blocking condition against source-of-truth systems. If the blocker
+  has cleared, continue verification in the same run.
 - Verification stays read-only with ONE exception: on **production PASS**, a ticket may carry a
-  deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §8).
+  deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §9).
 
 ## Process
 
@@ -60,6 +63,10 @@ If explicit ticket IDs are provided, load those. Otherwise:
 For the default queue mode, skip `abandoned`, `completed`, source tickets, and epic step tickets
 whose parent milestone owns verification.
 
+Do **not** skip tickets merely because they have `blocked_at`, `blocked_by`, `blocked_reason`, or
+`blocked_context` metadata. Blocked candidates stay in scope and go through the blocker re-check
+in §3.
+
 ### 2. Load context
 
 For each standalone ticket, or for the epic/milestone gate as a unit:
@@ -75,7 +82,36 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
 - find PR/commit/landing branch from events, tags, PR title, or git history;
 - read `.claude/environments/{env}.md` when present.
 
-### 3. Determine activation boundary
+### 3. Re-check active blockers from ground truth
+
+Before skipping, delaying, or reporting a selected ticket/gate as blocked, prove whether each
+recorded blocker is still true.
+
+1. Read the ticket/epic blocker metadata (`blocked_at`, `blocked_by`, `blocked_reason`,
+   `blocked_context`) plus the event that created the blocker.
+2. Translate the blocker into concrete source-of-truth checks. Examples:
+   - manual Render worker redeploy -> Render service/deploy status and deployed image/commit;
+   - external repo deploy -> target branch commit containment, deployment logs, health endpoint;
+   - Prefect deploy/schedule availability -> Prefect API deployment/work-pool state;
+   - data/backfill availability -> read-only database query or flow-run evidence;
+   - third-party outage/rate limit -> provider status/log/API evidence.
+3. Run those checks directly against the authoritative system. A stale blocker flag, a human note,
+   or the absence of a recent failure is not enough; include reproducible command/query output.
+4. If **all** blocking conditions are resolved:
+   - record the resolution evidence in the verification report;
+   - clear or supersede stale blocker metadata using the ticket tool's supported blocker fields;
+   - continue with normal activation-boundary and evidence collection in this same run.
+5. If any blocking condition is still active:
+   - verdict is `BLOCKED` for that scope, not `FAIL` and not a silent skip;
+   - leave the lifecycle status unchanged (`to_verify_staging`, `to_verify_prod`, etc.);
+   - update/preserve blocker metadata with the ground-truth evidence and the exact next condition
+     to re-check;
+   - do not promote, complete, or run deferred cleanup.
+
+Ground-truth blocker checks must remain read-only. Do not perform the missing deploy, backfill,
+flow trigger, or external manual action yourself unless another skill explicitly owns that step.
+
+### 4. Determine activation boundary
 
 Do not use naive wall-clock lookback when a commit boundary is available.
 
@@ -85,8 +121,11 @@ Do not use naive wall-clock lookback when a commit boundary is available.
   the deploy completion time from `/auto-deploy <EPIC_ID> staging`.
 - Projects that pull code from git at runtime: activation may be the first run after git land;
   measure feature fill rates from the first post-land evidence row, not just merge time.
+- If §3 cleared a blocker that delayed activation (for example a manual worker redeploy or an
+  external service release), use the later of the code-deploy boundary and blocker-resolution
+  evidence as the activation boundary for post-activation checks.
 
-### 4. Collect evidence
+### 5. Collect evidence
 
 Run **every** Verification Evidence item listed for the environment being verified (staging items
 for staging, prod items for prod) — execute each item's query/command and compare against its
@@ -102,7 +141,7 @@ Every claim must include a reproducible command/query, expected good output, and
 interpretation. Record, per evidence item, whether it passed, failed, or had no post-activation
 data yet.
 
-### 5. Epic/milestone aggregation
+### 6. Epic/milestone aggregation
 
 In `--epic` mode, produce one gate verdict for the requested scope:
 
@@ -115,7 +154,7 @@ In `--epic` mode, produce one gate verdict for the requested scope:
 - do not pass the gate just because individual step tickets look healthy; the milestone's
   acceptance criteria and cross-step contracts must pass as a unit.
 
-### 6. Verdict
+### 7. Verdict
 
 The deployment_guide evidence contract is the gate — verdict is determined by the env's evidence
 items:
@@ -123,12 +162,14 @@ items:
 - `PASS` — **every** evidence item for this environment passed, and no related failures surfaced;
 - `FAIL` — any evidence item shows broken behavior or expected-but-missing activity;
 - `NEEDS_MORE_TIME` — one or more evidence items have no post-activation data yet (and none have
-  failed).
+  failed);
+- `BLOCKED` — a selected ticket/gate had blocker metadata and §3 proved at least one blocking
+  condition is still active. This is an explicit outcome, never an omitted row.
 
 When the evidence contract was missing/`TBD` and you fell back to acceptance criteria, say so in
 the report so the gap is visible rather than silently passing.
 
-### 7. Status and promotion
+### 8. Status and promotion
 
 Standalone ticket mode:
 
@@ -137,9 +178,11 @@ Standalone ticket mode:
 | staging | PASS | set status `staging_verified` (green "Ready for prod" flag), then call `/ticket-promote <ID>` unless `--no-promote` or the ticket is held for a batched promotion |
 | staging | FAIL | create verification report artifact; status `verify_staging_failed` |
 | staging | NEEDS_MORE_TIME | leave status unchanged |
-| production | PASS | create verification report artifact; status `completed`; then run any deferred post-verification cleanup (see §8) |
+| staging | BLOCKED | create/update verification report artifact with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
+| production | PASS | create verification report artifact; status `completed`; then run any deferred post-verification cleanup (see §9) |
 | production | FAIL | create verification report artifact; status `verify_prod_failed` |
 | production | NEEDS_MORE_TIME | leave status unchanged |
+| production | BLOCKED | create/update verification report artifact with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
 
 `staging_verified` is the resting "passed staging, ready for prod" state — the green-flag
 counterpart of `verify_staging_failed`. Set it on every staging PASS, **including** tickets that
@@ -153,14 +196,16 @@ Epic/milestone mode:
 | staging | PASS | create gate report artifact; mark the milestone staging gate passed; set included step tickets to `staging_verified`/ready-for-parent-promotion when the lifecycle supports it; do **not** call `/ticket-promote` |
 | staging | FAIL | create gate report artifact with failed evidence-to-step mapping; leave the milestone unpassed for `/epic-flow` fix loop |
 | staging | NEEDS_MORE_TIME | create/update gate report artifact; leave milestone and step statuses unchanged |
+| staging | BLOCKED | create/update gate report artifact with blocker ground-truth evidence; leave milestone and step statuses unchanged |
 | production | PASS | create final production gate report; mark included step tickets `completed` when their parent epic owns completion; mark epic complete only if all milestones are done |
 | production | FAIL | create gate report artifact; mark epic/affected step production verification failed if supported, otherwise record blocker/failure metadata |
 | production | NEEDS_MORE_TIME | leave statuses unchanged |
+| production | BLOCKED | create/update gate report artifact with blocker ground-truth evidence; leave statuses unchanged; update/preserve blocker metadata |
 
 When staging PASS then calls `/ticket-promote` in standalone mode, the status advances from
 `staging_verified` to `to_verify_prod` once the promotion lands on `main`.
 
-### 8. Deferred post-verification cleanup (production PASS only)
+### 9. Deferred post-verification cleanup (production PASS only)
 
 Some tickets carry a cleanup action that must run only once the fix is confirmed live in
 production — never before. This is the single mutation ticket-verify may perform, and only after
@@ -170,7 +215,7 @@ If a production-PASS ticket has a `flow-run-cleanup` artifact:
 
 1. Fetch the artifact and write its JSON body to a temp file.
 2. Run its `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation
-   boundary from §3>`, `--execute`, and any flag the command documents for non-interactive use
+   boundary from §4>`, `--execute`, and any flag the command documents for non-interactive use
    (e.g. `--yes`).
 3. Fold the command's reported counts into the verdict output.
 
@@ -186,6 +231,7 @@ Report one table for all selected tickets or gate scopes:
 Scope            Env      Verdict          Action
 F0123            staging  PASS             promoted -> to_verify_prod
 B0042            staging  NEEDS_MORE_TIME  left to_verify_staging
+F0130            prod     BLOCKED          blocker still true; left to_verify_prod
 E0007/M2         staging  PASS             milestone gate passed; held for epic promotion
 E0007/final      prod     PASS             epic completed
 ```

@@ -183,6 +183,40 @@ access mode lives on the daemon (routes.json), not the client.
 (Add `"headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" }` to each only if you
 turn on `MCP_GATEWAY_REQUIRE_TOKEN=1`; default is off / localhost-only, matching `render`.)
 
+**Codex — `.codex/config.toml`** uses a mixed gateway shape:
+
+- Gateway streamable HTTP routes (`render`, `shared/autodev-memory`, `shared/context7`) can be
+  configured directly with `url = "http://127.0.0.1:8765/…"`.
+- Gateway postgres routes are legacy SSE (`…/sse`). Codex's direct `url` transport is
+  streamable HTTP and fails against those SSE endpoints with HTTP 405 / Method Not Allowed.
+  For postgres, keep Codex's local side as stdio, but point the stdio bridge at the gateway
+  SSE endpoint with pinned `mcp-remote@0.1.38`. This still avoids all per-workspace
+  1Password reads and per-workspace `postgres-mcp` children; Codex only spawns a lightweight
+  local bridge to the daemon-owned postgres child.
+
+Example ts repo:
+```toml
+[mcp_servers.render]
+url = "http://127.0.0.1:8765/ts/render"
+
+[mcp_servers.postgres_dev]
+command = "/Users/simon/.nvm/versions/node/v24.14.1/bin/npx"
+args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/ts/postgres_dev/sse", "--transport", "sse-only", "--silent"]
+```
+
+Userland Codex entries follow the same rule:
+```toml
+[mcp_servers.context7]
+url = "http://127.0.0.1:8765/shared/context7"
+
+[mcp_servers.autodev-memory]
+url = "http://127.0.0.1:8765/shared/autodev-memory"
+
+[mcp_servers.postgres_autodev_global]
+command = "/Users/simon/.nvm/versions/node/v24.14.1/bin/npx"
+args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/shared/postgres_autodev_global/sse", "--transport", "sse-only", "--silent"]
+```
+
 Old before (for reference / rollback):
 ```json
 "render":       { "command": "/Users/simon/.local/bin/project-mcp", "args": ["ts", "render"] },
@@ -195,16 +229,19 @@ Old before (for reference / rollback):
 2. Migrate ONE repo's `.mcp.json` (e.g. this repo) — render to `type: http` and the 5
    postgres entries to `type: sse` (above) — restart the client, confirm tools work
    (`list_schemas` etc. resolve). Keep all other repos on `project-mcp` meanwhile.
-3. Once proven, propagate: userland servers to `~/.claude.json`; per-repo render + postgres
-   to each repo's `.mcp.json` (commit so Conductor copies pick it up). For ts-prefect this
-   is one `.mcp.json` shared by all ~25 workspaces.
+3. Once proven, propagate: userland servers to `~/.claude.json` and `~/.codex/config.toml`;
+   per-repo render + postgres to each repo's `.mcp.json` and `.codex/config.toml` (commit so
+   Conductor copies pick it up). For ts-prefect this is one `.mcp.json`/`.codex/config.toml`
+   shared by all workspaces; already-created workspaces may also need their copied
+   `.codex/config.toml` updated or the session restarted.
 4. Once postgres is fully cut over, the `project-mcp` postgres paths + their per-session
    `postgres-mcp` orphan reaping are no longer exercised; the `mcp-remote-reaper` launchd
    job can be dropped (no more orphan stdio proxies to reap).
 
 ## Rollback
-Revert the `.mcp.json` / `~/.claude.json` entries to the `project-mcp` command form
-(above) and `launchctl unload` the gateway. `project-mcp` still works unchanged.
+Revert the `.mcp.json` / `.codex/config.toml` / `~/.claude.json` / `~/.codex/config.toml`
+entries to the `project-mcp` command form (above) and `launchctl unload` the gateway.
+`project-mcp` still works unchanged.
 
 ## Phase 2 — postgres (done)
 `postgres_*` are stdio (`postgres-mcp`) against per-project DBs and hold DB connections.

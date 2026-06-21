@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Explainer"
+  short_description: "Generate plan HTML artifacts"
+  default_prompt: "Use $plan-explainer to refresh an epic plan as dashboard HTML."

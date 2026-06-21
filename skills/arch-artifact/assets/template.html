@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture Artifact — Template</title>
+<!--
+  arch-artifact TEMPLATE · dark high-tech · fully self-contained (no JS-gated content, no CDN, no web fonts).
+  Copy this file, replace content, delete unused primitives. Preset = Indigo (swap --ac for Mono mode).
+  Primitives below: .term (glossary tooltip) · .lanes · .flow + .group · .chiprow · .er · .rail · .box variants.
+  CONNECTORS use .conn { text-align:center } — never align-self (it no-ops outside flex → left-hugging arrows).
+-->
+<style>
+  :root{
+    --bg-canvas:#0a0a0a; --bg-base:#111114; --bg-raised:#18181c; --bg-overlay:#222227;
+    --bd-subtle:rgba(255,255,255,.06); --bd:rgba(255,255,255,.10); --bd-strong:rgba(255,255,255,.18);
+    --tx:#ededef; --tx-2:#a1a1a8; --tx-3:#62626b; --tx-inv:#0a0a0a;
+    --ac:#5e6ad2; --ac-hi:#7880e0; --ac-mut:rgba(94,106,210,.14);
+    /* Mono preset: --ac:#ffffff; --ac-mut:rgba(255,255,255,.10); and set --r:4px */
+    --font-sans:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --font-mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --r-sm:4px; --r:6px; --r-lg:10px; --r-xl:14px; --r-full:9999px;
+    --glow:0 0 24px rgba(94,106,210,.22);
+    --elev:0 1px 0 rgba(255,255,255,.04) inset, 0 8px 30px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg-canvas);color:var(--tx);font-family:var(--font-sans);
+    font-size:15.5px;line-height:1.62;-webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(70% 50% at 50% -10%, rgba(94,106,210,.10), transparent 70%);background-repeat:no-repeat}
+  .wrap{max-width:920px;margin:0 auto;padding:18px 24px 100px}
+  ::selection{background:var(--ac-mut)}
+
+  .eyebrow{font:600 11px/1 var(--font-sans);letter-spacing:.14em;text-transform:uppercase;color:var(--tx-3);margin:30px 0 10px}
+  h1{font-size:34px;line-height:1.1;letter-spacing:-.03em;margin:0 0 12px;font-weight:600}
+  h2{font-size:21px;letter-spacing:-.02em;margin:46px 0 14px;font-weight:600;padding-bottom:9px;border-bottom:1px solid var(--bd-subtle)}
+  h3{font-size:15.5px;letter-spacing:-.01em;margin:24px 0 8px;font-weight:600}
+  p{margin:0 0 13px;color:var(--tx)}
+  .thesis{font-size:17.5px;line-height:1.5;color:var(--tx);max-width:64ch}
+  .muted{color:var(--tx-2)}
+  ul,ol{margin:0 0 13px;padding-left:20px}li{margin-bottom:6px}
+  strong{color:#fafafa;font-weight:600}
+  code,.mono{font-family:var(--font-mono);font-size:.86em;background:var(--bg-raised);border:1px solid var(--bd-subtle);padding:1px 6px;border-radius:var(--r-sm);color:#cdd0e6}
+  a{color:var(--ac-hi);text-decoration:none}a:hover{text-decoration:underline}
+
+  /* takeaway cards */
+  .takeaways{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:20px 0 8px}
+  .tk{background:var(--bg-raised);border:1px solid var(--bd-subtle);border-radius:var(--r-lg);padding:14px 15px}
+  .tk b{display:block;font-size:13px;margin-bottom:4px}
+  .tk span{font-size:12.5px;color:var(--tx-2)}
+  .tk .n{float:right;font:700 11px/1 var(--font-mono);color:var(--ac);background:var(--ac-mut);border-radius:var(--r-sm);padding:3px 6px;margin-left:6px}
+
+  /* glossary tooltip — CSS only, keyboard accessible */
+  .term{border-bottom:1px dashed var(--bd-strong);cursor:help}
+  .term::after{content:"?";font:700 .58em/1 var(--font-sans);vertical-align:super;color:var(--ac);margin-left:2px}
+  /* popover pinned to the viewport (bottom-center), width-capped — never clips off-screen at any width.
+     Pure CSS can't read the term's position, so a term-anchored popover clips for right-side terms / narrow panes. */
+  .term>.def{position:fixed;left:50%;bottom:20px;transform:translateX(-50%) translateY(6px);
+    width:min(440px,calc(100vw - 28px));max-height:42vh;overflow:auto;
+    background:var(--bg-overlay);border:1px solid var(--bd);border-radius:10px;padding:13px 15px;
+    font:400 13px/1.55 var(--font-sans);letter-spacing:normal;text-transform:none;color:var(--tx-2);
+    box-shadow:var(--elev);opacity:0;visibility:hidden;transition:opacity .14s ease, transform .14s ease;z-index:60;pointer-events:none}
+  .term>.def b{color:var(--tx)}
+  .term:hover>.def,.term:focus-visible>.def{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
+
+  /* figure shell */
+  figure{margin:18px 0;background:var(--bg-base);border:1px solid var(--bd-subtle);border-radius:var(--r-xl);padding:18px;box-shadow:var(--elev)}
+  figcaption{font:600 10.5px/1 var(--font-sans);letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);margin-bottom:14px}
+
+  /* boxes + CONNECTORS (the alignment-safe pattern) */
+  .flow{display:flex;flex-direction:column}
+  .group{display:flex;flex-direction:column;border:1.5px dashed var(--bd);border-radius:var(--r-lg);background:rgba(255,255,255,.015);padding:11px}
+  .group-h{font:600 9.5px/1 var(--font-sans);letter-spacing:.1em;text-transform:uppercase;color:var(--ac);margin:0 0 9px 2px}
+  .box{border:1px solid var(--bd);background:var(--bg-raised);border-radius:var(--r);padding:11px 13px;font-size:13px;text-align:center;color:var(--tx)}
+  .box .t{font-weight:600}.box .s{font-size:11.5px;color:var(--tx-2);margin-top:3px}
+  .box.em{border-color:var(--bd-strong);background:#1d1d22}                 /* emphasis node */
+  .box.out{background:var(--ac);border-color:var(--ac);color:#fff;font-weight:600;box-shadow:var(--glow)} /* the single accent output */
+  .box.dyn{border-style:dashed;border-color:var(--bd-strong);background:rgba(255,255,255,.02)}
+  .box.alt{background:var(--ac-mut);border-color:rgba(94,106,210,.3);text-align:left}
+  .conn{text-align:center;color:var(--tx-3);font-size:18px;line-height:1;margin:8px 0;user-select:none}  /* centered, colinear — DO NOT use align-self */
+
+  /* parallel lanes */
+  .lanes{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .lane{border:1px solid var(--bd-subtle);border-radius:var(--r-lg);padding:14px;display:flex;flex-direction:column}
+  .lane-h{font:700 10.5px/1 var(--font-sans);letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px;color:var(--tx-2)}
+  .cross{text-align:center;font-size:12px;color:var(--tx-3);font-style:italic;margin-top:11px}
+
+  /* horizontal pipeline */
+  .chiprow{display:flex;flex-wrap:wrap;align-items:center;gap:9px}
+  .chip{background:var(--bg-raised);border:1px solid var(--bd);border-radius:var(--r-full);padding:7px 13px;font-size:12px;font-weight:500;color:var(--tx)}
+  .chip.ac{background:var(--ac);border-color:var(--ac);color:#fff}
+  .chip.warn{background:rgba(180,83,9,.16);border-color:rgba(180,83,9,.4);color:#f0b27a}
+  .sep{color:var(--tx-3);font-weight:700}
+
+  /* entity cards (ER) */
+  .er{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+  .ent{border:1px solid var(--bd);border-radius:var(--r-lg);overflow:hidden;background:var(--bg-raised)}
+  .ent h4{margin:0;padding:8px 12px;font-family:var(--font-mono);font-size:12px;background:#1e1e24;color:#cdd0e6;border-bottom:1px solid var(--bd-subtle)}
+  .ent ul{list-style:none;margin:0;padding:9px 12px;font-family:var(--font-mono);font-size:11.5px;color:var(--tx-2)}
+  .ent li{margin-bottom:3px}.ent .pk{color:var(--ac)}
+  .rel{text-align:center;font-size:12.5px;color:var(--tx-2);margin-top:11px}
+
+  /* milestone rail */
+  .rail{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .col-h{font:700 10px/1 var(--font-mono);color:var(--tx-3);text-align:center;margin-bottom:8px}
+  .node{border:1px solid var(--bd);border-radius:var(--r);padding:8px 9px;margin-bottom:8px;font-size:11px;background:var(--bg-raised)}
+  .node b{font-family:var(--font-mono)}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:14px 0;background:var(--bg-base);border:1px solid var(--bd-subtle);border-radius:var(--r-lg);overflow:hidden}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--bd-subtle);vertical-align:top}
+  th{font:600 10.5px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--tx-3);background:rgba(255,255,255,.02)}
+  tr:last-child td{border-bottom:none}
+
+  blockquote,.callout{margin:14px 0;padding:13px 16px;border-left:3px solid var(--ac);background:var(--ac-mut);border-radius:0 var(--r) var(--r) 0;color:var(--tx)}
+  blockquote p:last-child{margin-bottom:0}
+
+  footer{max-width:920px;margin:24px auto 0;padding:18px 24px;color:var(--tx-3);font-size:12px;border-top:1px solid var(--bd-subtle)}
+
+  @media (max-width:760px){.lanes,.rail{grid-template-columns:1fr}h1{font-size:27px}}
+  @media print{body{background:#fff;color:#111;background-image:none}.box,.tk,figure,table,.lane,.ent{box-shadow:none}}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">System · architecture reference</div>
+  <h1>&lt;System Name&gt; — Architecture</h1>
+  <p class="thesis">One-sentence thesis: what this system is and the single most important idea behind it. Mark a non-obvious term like
+    <span class="term below" tabindex="0">idempotent<span class="def"><b>Idempotent.</b> Running the operation twice has the same effect as running it once — safe to retry without duplicating work.</span></span>
+    inline so any reader follows along.</p>
+
+  <div class="takeaways">
+    <div class="tk"><span class="n">1</span><b>Key takeaway</b><span>The one fact a reader must leave with.</span></div>
+    <div class="tk"><span class="n">2</span><b>Second</b><span>Another load-bearing idea.</span></div>
+    <div class="tk"><span class="n">3</span><b>Third</b><span>And a third.</span></div>
+  </div>
+
+  <h2>1 · Parallel tracks (lanes primitive)</h2>
+  <figure>
+    <figcaption>Two tracks — note connectors are centered &amp; colinear</figcaption>
+    <div class="lanes">
+      <div class="lane">
+        <div class="lane-h">Track A</div>
+        <div class="box"><div class="t">Input</div><div class="s">source / request</div></div>
+        <div class="conn">↓</div>
+        <div class="box em"><div class="t">Processor</div></div>
+        <div class="conn">↓</div>
+        <div class="box out">primary output</div>
+      </div>
+      <div class="lane">
+        <div class="lane-h">Track B</div>
+        <div class="box"><div class="t">① step</div><div class="s">detail</div></div>
+        <div class="conn">↓</div>
+        <div class="box"><div class="t">② step</div></div>
+        <div class="conn">↓</div>
+        <div class="box"><div class="t">③ step</div></div>
+      </div>
+    </div>
+    <p class="cross">how the tracks hand off to each other</p>
+  </figure>
+
+  <h2>2 · Layered assembly (flow + cached group)</h2>
+  <figure>
+    <figcaption>Stack with a grouped/cached prefix</figcaption>
+    <div class="flow">
+      <div class="group">
+        <div class="group-h">Stable / cached prefix</div>
+        <div class="box"><div class="t">Layer 1</div><div class="s">static</div></div>
+        <div class="conn">↓</div>
+        <div class="box"><div class="t">Layer 2</div><div class="s">semi-dynamic</div></div>
+      </div>
+      <div class="conn">↓</div>
+      <div class="box dyn"><div class="t">Layer 3</div><div class="s">dynamic, per-request</div></div>
+      <div class="conn">↓</div>
+      <div class="box em"><div class="t">Engine</div></div>
+      <div class="conn">↓</div>
+      <div class="box out">result</div>
+    </div>
+  </figure>
+
+  <h2>3 · Pipeline (chiprow primitive)</h2>
+  <figure>
+    <figcaption>Retrieve → process → emit</figcaption>
+    <div class="chiprow">
+      <span class="chip">input</span><span class="sep">→</span>
+      <span class="chip">filter</span><span class="sep">→</span>
+      <span class="chip ac">rank</span><span class="sep">→</span>
+      <span class="chip warn">cutoff (may be 0)</span><span class="sep">→</span>
+      <span class="chip">render</span><span class="sep">→</span>
+      <span class="chip">out</span>
+    </div>
+  </figure>
+
+  <h2>4 · Data model (entity cards)</h2>
+  <figure>
+    <figcaption>Entities &amp; relationships</figcaption>
+    <div class="er">
+      <div class="ent"><h4>entity_a</h4><ul><li><span class="pk">id</span> PK</li><li>field</li><li>field</li></ul></div>
+      <div class="ent"><h4>entity_b</h4><ul><li><span class="pk">id</span> PK</li><li>a_id FK</li><li>field</li></ul></div>
+      <div class="ent"><h4>entity_c</h4><ul><li><span class="pk">id</span> PK</li><li>field</li></ul></div>
+    </div>
+    <p class="rel">entity_a <strong>1 — ∗</strong> entity_b &nbsp;·&nbsp; entity_c <strong>∗ — ∗</strong> entity_a</p>
+  </figure>
+
+  <h2>5 · Milestones (rail primitive)</h2>
+  <figure>
+    <figcaption>Phases / dependency columns</figcaption>
+    <div class="rail">
+      <div><div class="col-h">M1</div><div class="node"><b>T1</b><br><span class="muted">scope</span></div></div>
+      <div><div class="col-h">M2</div><div class="node"><b>T2</b><br><span class="muted">← T1</span></div></div>
+      <div><div class="col-h">M3</div><div class="node"><b>T3</b><br><span class="muted">← T2</span></div></div>
+      <div><div class="col-h">M4</div><div class="node"><b>T4</b><br><span class="muted">← T3</span></div></div>
+      <div><div class="col-h">M5</div><div class="node"><b>T5</b><br><span class="muted">← T4</span></div></div>
+    </div>
+  </figure>
+
+  <h2>6 · Table + callout</h2>
+  <table>
+    <thead><tr><th>Part</th><th>Role</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Component A</td><td>does X</td><td>uses <code>some_module</code></td></tr>
+      <tr><td>Component B</td><td>does Y</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <blockquote><p><strong>Invariant:</strong> the one rule that must never be violated.</p></blockquote>
+
+  <details>
+    <summary class="muted" style="cursor:pointer;font-size:13px">How we got here (optional history)</summary>
+    <p class="muted" style="margin-top:10px">Keep process/chronology here, collapsed — never as the spine.</p>
+  </details>
+
+  <footer>&lt;System&gt; — architecture reference · self-contained static HTML (no scripts, no external dependencies).</footer>
+</div>
+</body>
+</html>

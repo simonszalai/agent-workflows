@@ -34,7 +34,7 @@ one is created automatically.
 2.  OUTPUT         -> Print ticket ID immediately (FIRST output line)
 3.  Set Status     -> Update to "in_progress"
 4.  Research       -> /research for features, /investigate for bugs
-5.  Plan           -> Spawn planner agent, create plan artifact
+5.  Plan           -> Run cross-provider /plan core, converge disagreements, create artifact
 6.  Set Status     -> Update to "planned"
 ```
 
@@ -115,8 +115,14 @@ mcp__autodev-memory__update_ticket(
 
 ### Phase 4: Create Plan
 
-Spawn `planner` agent with all gathered context. The plan artifact must be concise and
-answer three questions clearly:
+Run the `/plan` methodology with all gathered context. **Do not** bypass `/plan` by spawning
+a single planner directly: cross-provider planning is core to this phase. Unless the user
+explicitly passed `--solo`, the phase must run the current provider plus the two peer providers
+via `external-agent --task plan`, synthesize their contributions, and iterate on material
+disagreements until they converge to evidence-backed truth or become explicit blocking
+`open_questions`.
+
+The final plan artifact must be concise and answer three questions clearly:
 
 1. **What** will be done (high-level, 2-3 sentences)
 2. **How** it will be done (approach, key decisions)

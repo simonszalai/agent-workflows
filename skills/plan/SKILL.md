@@ -39,7 +39,8 @@ designing the solution. No separate investigation needed.
 /plan F0009 additional context            # Ticket with extra context
 /plan "Add new integration"               # Create new ticket and plan
 /plan F0009 --deep                        # Force heavyweight workflow (panel + critics + revise)
-/plan F0009 --light                       # Force single-planner path
+/plan F0009 --light                       # Force inline path (still cross-provider)
+/plan F0009 --solo                        # Emergency opt-out: current provider only
 ```
 
 ## What the Plan Contains
@@ -130,13 +131,115 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    - It searches for similar past tickets automatically via `get_similar_tickets`
    - Extracts architectural decisions, tradeoffs, and learnings
 
-3. **Decide the execution path — complexity gate:**
+3. **Cross-provider planning and convergence (core, default for both paths):**
+
+   A plan artifact is not valid until **all three providers** have contributed independent
+   planning judgment and material disagreements have been driven to evidence-backed
+   convergence. The main workflow runner is one provider (`claude`, `codex`, or `grok`);
+   the other two providers are peers. Unless the caller explicitly passed `--solo`, run the
+   two peer providers with `external-agent --task plan`, read their envelopes, and merge them
+   into the same synthesis path as the native/current-runner plan. Do not summarize what a
+   provider "would" say; actually run the providers and consume their JSON.
+
+   Provider roles are symmetric:
+
+   | Main workflow runner | Peer planners to run |
+   | -------------------- | -------------------- |
+   | `claude`             | `codex`, `grok`      |
+   | `codex`              | `claude`, `grok`     |
+   | `grok`               | `claude`, `codex`    |
+
+   Determine the current runner with `agent-workflow-provider`. Claude peers use
+   subscription-backed `claude -p`, never a direct Anthropic API call.
+
+   **Dispatch shape must match `/review`:**
+
+   - **Claude Code dispatch:** when Claude Code is the main runner, spawn two
+     `external-planner` subagents in the same parallel `Agent` batch as the native/current
+     planner. Each subagent calls `external-agent --task plan` for one peer provider
+     (`codex` or `grok`) and returns the planner envelope JSON. This avoids foreground shell
+     timeout caps and keeps provider dispatch as thin data collection, not hidden reasoning.
+   - **Codex/Grok dispatch:** when Codex or Grok is the main runner, call `external-agent`
+     directly for the two peer providers (including `--provider claude` when Claude is a peer).
+   - **Synthesis/convergence:** always happens in the main `/plan` orchestrator, not inside the
+     provider dispatcher. External providers contribute envelopes; the deterministic skill
+     logic validates, synthesizes, audits disagreements, and revises.
+
+   `external-planner` is the planning analogue of `/review`'s `external-reviewer` subagent.
+   It must not draft or critique the plan itself; it only runs the adapter and returns JSON.
+
+   ```bash
+   mkdir -p .context/plan
+   printf '%s' "$QUESTION" > .context/plan/question.txt
+   printf '%s' "$SOURCE_ARTIFACT" > .context/plan/source.md
+   printf '%s' "$CODEBASE_RESEARCH" > .context/plan/codebase-research.md
+   printf '%s' "$PRIOR_KNOWLEDGE" > .context/plan/prior-knowledge.md
+   for provider in $(agent-workflow-provider --peers); do
+     external-agent --task plan --provider "$provider" \
+       --question "$(cat .context/plan/question.txt)" \
+       --source-artifact-file .context/plan/source.md \
+       --codebase-research-file .context/plan/codebase-research.md \
+       --prior-knowledge-file .context/plan/prior-knowledge.md \
+       --out ".context/plan/${provider}.json" 2>".context/plan/${provider}.log" &
+   done
+   wait
+   ```
+
+   Each peer returns:
+
+   ```
+   {
+     "planner_key": "claude|codex|grok",
+     "plan": { title, what, why, how, tradeoffs, alternatives_considered,
+               risks, verification_strategy, side_effects, elimination,
+               open_questions },
+     "assumptions": [...],
+     "disagreements": [
+       { area, claim, why_it_might_be_wrong, evidence_needed }
+     ],
+     "evidence": [...],
+     "open_questions": [...],
+     "notes": "..."
+   }
+   ```
+
+   A provider failure contributes an empty envelope with a note; surface it but do not block
+   if the other two providers plus the current runner can still converge. If fewer than two
+   providers return usable plans, stop and report the provider failure instead of accepting a
+   one-provider plan. `.context/plan/*.json` is scratch only; the converged artifact is the
+   persisted plan.
+
+   **Convergence rule:** Planning has subjective tradeoffs, but it also contains factual
+   claims about code, data, infra, sequencing, migrations, verification, and elimination.
+   Iterate on provider disagreements until every material factual/architectural disagreement
+   is either:
+
+   1. resolved by evidence from code, existing artifacts, memory, or production/staging facts;
+   2. converted into an explicit `open_questions` item that blocks build planning; or
+   3. deliberately rejected as preference/YAGNI with a recorded reason.
+
+   Run at most **3 disagreement rounds**. In each round:
+
+   ```
+   synthesize current provider plans
+   identify disagreements across provider assumptions, risks, alternatives, and open questions
+   gather missing evidence with researcher/investigator only if evidence would settle the issue
+   revise the plan toward the evidence-backed answer
+   send the revised answer back through provider disagreement audit
+   ```
+
+   Stop early only when there are no material unresolved disagreements. Do not let
+   "convergence" mean gold-plating: completeness claims must beat YAGNI only with concrete
+   evidence. Do not bury unresolved factual uncertainty in prose; if it matters, it must be
+   an `open_questions` blocker.
+
+4. **Decide the execution path — complexity gate:**
 
    The heavy path runs 2 parallel plan drafts with different framings (MVP-first,
-   risk-first), synthesizes them, sends the result through 3 parallel critics
-   (completeness, correctness, YAGNI), and applies ONE bounded revision. No open
-   convergence loop — the YAGNI critic exists specifically to counter the natural
-   pressure of completeness critics, and a single revision is enough to integrate it.
+   risk-first), incorporates peer-provider drafts, synthesizes them, sends the result through
+   3 parallel critics (completeness, correctness, YAGNI), and then performs the disagreement
+   convergence loop above. The YAGNI critic exists specifically to counter the natural
+   pressure of completeness critics.
    Heavy is appropriate when the plan needs diverse framings or independent critique;
    light is appropriate when the change is small or well-understood.
 
@@ -163,12 +266,14 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    Plan path: light (bug fix with investigation in place) — inline planner
    ```
 
-3b. **Gather prior knowledge (heavy path only):**
+4b. **Gather prior knowledge (heavy path only, and for all peer provider prompts):**
 
    The heavy-path workflow spawns generic subagents — they receive NO knowledge-menu
    injection and do NOT load the `autodev-search` skill, unlike the inline `planner` agent
    used on the light path, which searches the memory system and past tickets itself. So
-   when going heavy, gather prior knowledge in the skill and pass it into the workflow:
+   when going heavy, gather prior knowledge in the skill and pass it into the workflow. For
+   both paths, pass the same prior-knowledge blob to every peer provider planner so all three
+   providers reason from the same known gotchas and past decisions:
 
    ```
    # Related memories (gotchas, patterns, architecture)
@@ -188,10 +293,11 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    )
    ```
 
-   Render the hits into a compact markdown blob (omit a section if it is empty) and pass
-   it as `args.priorKnowledge` in step 4a, where it is injected into the drafter,
-   synthesizer, critic, and reviser prompts so the plan reuses proven approaches and avoids
-   documented gotchas. Pass `null` if nothing relevant turns up — never fabricate entries.
+   Render the hits into a compact markdown blob (omit a section if it is empty), pass it to
+   every peer planner prompt, and pass it as `args.priorKnowledge` in step 5a, where it is
+   injected into the drafter, synthesizer, critic, reviser, and disagreement-convergence
+   prompts so the plan reuses proven approaches and avoids documented gotchas. Pass `null`
+   if nothing relevant turns up — never fabricate entries.
 
    ```markdown
    ## Related memories
@@ -201,24 +307,27 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    - <TICKET_ID> "<title>" (<status>): <approach / key learning>
    ```
 
-4. **Fan out — light path (inline):**
+5. **Fan out — light path (inline):**
 
-   When the gate selects "Light", spawn ONE planner agent with all inputs (source,
-   codebase research findings if features, investigation findings if bugs). The agent
-   returns a plan object matching `planSchema` in `workflows/plan-fanout.js` — validate
-   the returned object against the required fields (`title`, `what`, `why`, `how`,
-   `tradeoffs`, `alternatives_considered`, `risks`, `verification_strategy`,
-   `side_effects`, `elimination`, `open_questions`). If validation fails, re-prompt
-   the planner with the schema rather than accepting a partial plan.
+   When the gate selects "Light", spawn ONE native/current-runner planner agent with all
+   inputs (source, codebase research findings if features, investigation findings if bugs)
+   **and** run the two peer provider planners from step 3 unless `--solo` was passed. The
+   native planner returns a plan object matching `planSchema` in `workflows/plan-fanout.js`;
+   peer planners return the envelope shown in step 3. Validate all returned plans against
+   the required fields (`title`, `what`, `why`, `how`, `tradeoffs`,
+   `alternatives_considered`, `risks`, `verification_strategy`, `side_effects`,
+   `elimination`, `open_questions`). If the native planner validation fails, re-prompt it
+   with the schema rather than accepting a partial plan.
 
-   No critics, no synthesis, no revision. Assemble the same return shape as the heavy
-   path with empty `drafts_considered`, `critic_findings`, `revision_log` arrays and
-   zero-filled stats for the heavy-only fields (`framings_attempted: 1`,
-   `critics_succeeded: 0`, `total_findings: 0`, etc.).
+   Then synthesize the native plan + peer plans and run the disagreement-convergence loop
+   from step 3 inline. Light path skips the completeness/correctness/YAGNI critic panel, but
+   it does **not** skip cross-provider planning or convergence. Assemble the same return
+   shape as the heavy path with empty `critic_findings` and zero-filled critic-only stats
+   (`critics_succeeded: 0`, `total_findings: 0`, etc.). Populate provider/convergence stats.
 
-   Skip steps 4a-4b below — those are for the heavy path only.
+   Skip steps 5a-5b below — those are for the heavy path only.
 
-4a. **Fan out — heavy path (workflow):**
+5a. **Fan out — heavy path (workflow):**
 
    When the gate selects "Heavy", invoke the workflow by name. The runtime resolves
    `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
@@ -227,8 +336,8 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    If the current host tool does not expose Claude's `Workflow` tool (for example a
    Codex/Grok-orchestrated run), execute the equivalent heavy-path planning loop inline: generate
    multiple framings, run critics, revise until critical findings are resolved or a user decision
-   is needed, then assemble the same result shape. Do **not** silently skip the critic loop just
-   because the Claude `Workflow` primitive is absent.
+   is needed, then assemble the same result shape. Do **not** silently skip the critic loop or
+   cross-provider convergence loop just because the Claude `Workflow` primitive is absent.
 
    ```
    result = Workflow({
@@ -237,7 +346,10 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
        question: "<the planning question/spec from source artifact + user input>",
        sourceArtifact: "<source artifact content>",
        codebaseResearch: "<research artifact content if /research ran first; null otherwise>",
-       priorKnowledge: "<rendered blob from step 3b, or null>",
+       priorKnowledge: "<rendered blob from step 4b, or null>",
+       providerDrafts: [
+         // peer envelopes from .context/plan/*.json
+       ],
        framings: [
          { key: "mvp-first", description: "..." },
          { key: "risk-first", description: "..." },
@@ -250,7 +362,7 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    })
    ```
 
-4b. **Result shape (both paths produce this object):**
+5b. **Result shape (both paths produce this object):**
 
    ```
    {
@@ -262,6 +374,9 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
        verification_strategy, side_effects, elimination,
        open_questions: [...]
      },
+     provider_contributions: [
+       { planner_key, assumptions, disagreements, evidence, open_questions, notes }
+     ],
      revision_log: {
        incorporated: [{finding_title, critic_lens, how_addressed}],
        rejected:     [{finding_title, critic_lens, why_rejected}],
@@ -269,18 +384,23 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
      },
      drafts_considered: [{framing, framing_notes}],
      critic_findings: [{title, severity, area, issue, suggestion, critic_lens}],
+     disagreement_log: [
+       { round, title, area, providers, status, resolution, evidence }
+     ],
      stats: {
        framings_attempted, drafts_succeeded, critics_succeeded,
        total_findings, must_address_findings,
-       incorporated, rejected, tensions_resolved
+       incorporated, rejected, tensions_resolved,
+       provider_contributors, disagreement_rounds,
+       disagreements_found, disagreements_resolved, unresolved_disagreements
      }
    }
    ```
 
-   The light path must zero-fill the heavy-only fields. Downstream step 5 must not
+   The light path must zero-fill the heavy-only fields. Downstream write/persist steps must not
    branch on path.
 
-4c. **Handle additional research needs (both paths):**
+5c. **Handle additional research needs (both paths):**
 
    - If the returned plan has `open_questions` that need codebase patterns: spawn
      `researcher` agent (or invoke `/research`) and re-run the path with the new
@@ -290,7 +410,7 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    - For the heavy path, prefer to satisfy open questions BEFORE re-running rather
      than running the workflow twice (it's not idempotent and not cheap).
 
-5. **Write output** as a plan artifact:
+6. **Write output** as a plan artifact:
    ```
    mcp__autodev-memory__create_artifact(
      project=PROJECT, ticket_id=ID, repo=REPO,
@@ -300,7 +420,7 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
    )
    ```
 
-6. **Write a DRAFT deployment guide** as a separate `deployment_guide` artifact. The plan knows
+7. **Write a DRAFT deployment guide** as a separate `deployment_guide` artifact. The plan knows
    the architecture, so it can already commit the *shape* of deploy and verification even though
    exact commands/revisions come later at build time. This draft is the seed that
    `/create-build-todos` finalizes and `/ticket-verify` grades against — do not skip it.

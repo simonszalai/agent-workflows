@@ -1,6 +1,6 @@
 ---
 name: ticket-flow
-description: Autonomous single-ticket execution with MCP ticket tracking. Gathers context, plans, critiques, builds, reviews, resolves, locally verifies, and hands off to auto-deploy when policy allows. No environment verification.
+description: Autonomous single-ticket execution with MCP ticket tracking. Gathers context, chooses staging-first vs direct-production delivery, plans, critiques, builds, reviews, resolves, locally verifies, and deploys via auto-deploy. No environment behavior verification.
 max_turns: 300
 ---
 
@@ -15,11 +15,14 @@ step it must load the parent epic context and honor the milestone contracts.
 ## Hard boundaries
 
 - May create/resume exactly one ticket.
-- May prepare/land a completed branch when landing policy allows, but prefer the integrated
-  `/auto-deploy` handoff for PR creation/merge/deploy/status transitions.
-- Must not perform ad-hoc deployment commands itself; if deployment is in scope, invoke/follow
-  `/auto-deploy` so deployment, manual blockers, and status updates happen in one place.
-- Must not perform staging/production verification.
+- Owns the standalone ticket delivery decision: **staging-first** for complex/risky/uncertain
+  work, **direct-production** only for tiny safe work.
+- Must deploy standalone tickets by invoking/following `/auto-deploy`; treat auto-deploy as the
+  deployment subroutine for PR creation, merge, deploy steps, deployment-mechanics checks,
+  manual blockers, and status updates.
+- Must not perform ad-hoc deployment commands itself outside `/auto-deploy`.
+- Must not perform staging/production **behavior verification**; `/ticket-verify` owns the
+  post-deploy evidence/testing gate.
 - Must not advance an epic/milestone gate; epic skills own that.
 - Must not use `.context/` for ticket artifacts; use MCP artifacts.
 - `/lfg` remains the ticketless/current-branch workflow and is not changed by this skill.
@@ -38,25 +41,35 @@ Read before acting:
 ```text
 /ticket-flow F0123
 /ticket-flow B0042 --target staging
+/ticket-flow F0123 --target production
 /ticket-flow #123
 /ticket-flow                       # create ticket from conversation
-/ticket-flow F0123 --no-land       # build/review only; do not merge
+/ticket-flow F0123 --no-land       # build/review only; do not merge or deploy
 /ticket-flow F0123 --skip-local-verify
 ```
 
 Legacy alias: `/auto-flow` should delegate to this skill.
 
-## Target selection
+## Delivery target selection
 
-Target is chosen in this order:
+Choose the intended delivery target **before planning/building** so the verification strategy,
+deployment guide, and risk controls match the path:
 
-1. explicit `--target main|staging|none` or `--no-land`;
-2. Conductor workspace target branch, if trustworthy;
-3. branch ancestry / PR base if a PR already exists;
+1. explicit `--target staging|production|prod|main|none` or `--no-land`;
+2. existing PR base / branch ancestry, if a PR already exists;
+3. epic milestone/integration target, for epic-step tickets only;
 4. landing policy risk classification.
 
-If the apparent target is `main` but the ticket is not tiny/safe, stop before building and ask
-the user to retarget to `staging` or explicitly approve direct-main landing.
+Target meanings:
+
+- `staging` = merge/deploy to staging first, then `/ticket-verify staging` tests it before any
+  production promotion.
+- `production`, `prod`, or `main` = merge/deploy straight to production/main.
+- `none` / `--no-land` = build/review/local-verify only.
+
+The Conductor workspace target branch is a hint, not permission to bypass risk classification.
+If the workspace appears to target `main` but the ticket is not tiny/safe, **route the standalone
+ticket to staging automatically** unless the user explicitly requested direct production.
 
 ## Process
 
@@ -68,7 +81,8 @@ the user to retarget to `staging` or explicitly approve direct-main landing.
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
   source text. If found, load `get_epic` and the step's milestone/contracts.
-- Decide target using `landing-policy.md`.
+- Decide and record the delivery target using `landing-policy.md`: staging-first for
+  complex/risky/uncertain standalone work, direct-production only for tiny safe standalone work.
 
 ### 1. Gather context
 
@@ -109,33 +123,45 @@ Run project-local checks only. Do not query staging/prod as verification and do 
 flows/processes. Local verification failure blocks landing unless the user explicitly chooses a
 no-land partial result.
 
-### 5. Deploy handoff / Land
+### 5. Deploy / Land
 
 If `--no-land` or target `none`, stop after local verification and report remaining commands.
 
-Otherwise hand off to `/auto-deploy {ticket_id} {target}` as the canonical path for PR creation,
-merge, deploy steps, manual deployment blockers, and status updates. Do not duplicate
-auto-deploy's status logic in ticket-flow.
+For standalone tickets, invoke `/auto-deploy {ticket_id} {target}` as the canonical path for PR
+creation, merge, deployment steps, deployment-mechanics checks, manual deployment blockers, and
+status updates. This is not an optional handoff: a normal `/ticket-flow` run includes deployment
+unless `--no-land`/`target none` was selected.
+
+Use `/auto-deploy` target arguments:
+
+- ticket-flow target `staging` -> `/auto-deploy {ticket_id} staging`;
+- ticket-flow target `production`/`prod`/`main` -> `/auto-deploy {ticket_id} production`.
+
+Do not duplicate auto-deploy's status logic in ticket-flow.
 
 Use these target mappings:
 
-- target `main` for tiny safe direct-production tickets;
-- target `staging` for risky/uncertain standalone tickets;
+- `production`/`main` only for tiny safe direct-production standalone tickets;
+- `staging` for risky/uncertain/complex standalone tickets;
 - target selected by the epic milestone orchestrator for epic-step tickets.
 
-If auto-deploy is unavailable or explicitly disabled, ticket-flow may create/find a PR, wait for
-required checks, and merge to the selected branch, but it must then report that deployment/status
-handoff is incomplete rather than guessing deployment state.
+If auto-deploy is unavailable, explicitly disabled, or blocked by a manual deploy dependency,
+stop and report the blocker. Do not silently downgrade a deploy-required ticket-flow run to a
+land-only result unless the user explicitly approves that fallback.
+
+Epic-step exception: an epic step is not a standalone deploy unit. `/ticket-flow` may land an
+epic step to the milestone/integration target and set it `merged`, but parent `/epic-flow` owns
+milestone deployment, staging verification, and promotion.
 
 ### 6. Status update
 
-After successful `/auto-deploy` handoff, trust auto-deploy's status update:
+After successful `/auto-deploy`, trust auto-deploy's status update:
 
 | Ticket kind | Target | Status |
 |---|---|---|
-| Standalone | `main` | `to_verify_prod` |
+| Standalone | `production`/`main` | `to_verify_prod` |
 | Standalone | `staging` | `to_verify_staging` |
-| Epic step | milestone/staging target | `merged` |
+| Epic step | milestone/integration target | `merged` |
 
 For epic steps, `merged` is a handoff to the parent milestone. Do not call `/ticket-verify` for
 the step directly; `/epic-flow` will invoke `/ticket-verify staging --epic <EPIC_ID> --milestone
@@ -161,8 +187,8 @@ Status: to_verify_staging
 Summary:
 - planned, critiqued, built, tested, reviewed, and resolved findings
 - local verification: PASS
-- deploy: not run
-- environment verify: not run
+- deploy: PASS via /auto-deploy staging
+- behavior verification: not run
 
 Next:
 - /ticket-verify staging F0123

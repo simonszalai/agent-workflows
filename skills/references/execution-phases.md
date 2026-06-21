@@ -35,8 +35,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
    findings remain. Stop on unresolved design decisions and surface any remaining
    `gated_auto`/`manual` findings for a human.
 9. **Local verification** — run targeted checks and project health commands.
-10. **Land if policy allows** — merge to `main` or `staging`; no deploy; no environment verify.
-11. **Status update** — set the ticket/epic-step state according to ticket-lifecycle.md.
+10. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
+    the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny
+    safe work). Epic-step landing remains parent-owned by the milestone/epic orchestrator.
+11. **Status update** — trust `/auto-deploy` for standalone deploy status, or set the
+    epic-step state according to ticket-lifecycle.md.
 
 ## Plan critic loop
 

@@ -23,3 +23,6 @@ For canonical behavior, load and follow:
 ```text
 ../ticket-verify/SKILL.md
 ```
+
+That includes blocked-ticket handling: blocker metadata is not a skip signal; re-check the
+blocking condition against ground truth and, if resolved, continue verification in the same run.

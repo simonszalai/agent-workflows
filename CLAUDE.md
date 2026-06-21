@@ -292,9 +292,10 @@ backlog → up_next → in_progress → planned → in_progress → merged
 There is no `approved` ticket status; approval is the decision to leave `planned` and begin
 work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
 are retired; use the single actual active-work status `in_progress`.
-Ticket execution skills may land code, but deployment and environment verification are owned by
-`/ticket-verify`, `/ticket-promote`, and `/epic-flow` when the parent epic/milestone explicitly
-owns the gate.
+`/ticket-flow` may deploy standalone tickets only through `/auto-deploy` after it chooses the
+staging-first or direct-production route. Post-deploy behavior verification remains owned by
+`/ticket-verify`; promotion is owned by `/ticket-promote`; epic/milestone gates are owned by
+`/epic-flow` when the parent epic/milestone explicitly owns the gate.
 
 ### Cross-Repository Tickets
 
@@ -324,7 +325,7 @@ create_ticket(
 
 ### Autonomous Workflows
 
-- `/ticket-flow`: Autonomous single-ticket execution — context -> plan/critique -> build -> review -> land; no deploy/verify
+- `/ticket-flow`: Autonomous single-ticket execution — context -> route staging vs production -> plan/critique -> build -> review -> local verify -> deploy via `/auto-deploy`; no behavior verification
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
 - `/ticket-verify`: Timer-friendly staging/production verification; standalone staging PASS calls `/ticket-promote`; explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets to main; no production verification

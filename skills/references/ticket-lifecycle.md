@@ -6,10 +6,12 @@ This is the canonical lifecycle for ticket-level workflow skills.
 
 - **Land**: merge a completed branch/PR into the target branch (`main` or `staging`).
 - **Deploy**: run deployment steps, wait for deploy infrastructure, or push deploy config.
-- **Verify**: observe staging/production and update ticket status from evidence.
+- **Verify**: observe staging/production behavior and update ticket status from evidence.
 
-Ticket execution skills may **land** code when their policy allows it. They must not deploy or
-verify. Verification and promotion are separate timer-friendly skills.
+`/ticket-flow` may deploy standalone tickets only by invoking `/auto-deploy`, which owns the
+merge/deploy mechanics and next verification status. Ticket execution must not perform
+ad-hoc deployment commands or post-deploy behavior verification. Verification and promotion are
+separate timer-friendly skills.
 
 ## Standalone ticket statuses
 
@@ -17,13 +19,13 @@ verify. Verification and promotion are separate timer-friendly skills.
 backlog -> up_next -> in_progress -> planned -> in_progress
 ```
 
-After a successful landing:
+After a successful standalone landing/deployment:
 
 ```text
-# direct-to-main landing
+# direct-to-production landing/deployment
 to_verify_prod -> completed | verify_prod_failed
 
-# staging landing
+# staging landing/deployment
 to_verify_staging -> verify_staging_failed
                  \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | verify_prod_failed
 ```

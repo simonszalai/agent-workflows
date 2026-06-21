@@ -16,6 +16,7 @@ branch. PR creation is deferred to `/auto-deploy`.
 ```
 /auto-build F007                    # Auto-build feature F007
 /auto-build 009                     # Auto-build bug fix 009
+/auto-build F007 --target staging   # Build for caller-selected staging-first route
 /auto-build F007 --skip-verify      # Skip local verification step
 /auto-build F007 --review-pause     # Pause after review for user decision
 ```
@@ -47,7 +48,7 @@ branch. PR creation is deferred to `/auto-deploy`.
 8.  Compound     -> /compound (learn from review, apply improvements)
 9.  Deploy Guide -> /create-deployment-guide (deployment instructions)
 10. Push Branch  -> Push the current branch to remote (NO PR created here)
-11. Set Status   -> epic member -> "merged"; standalone ticket -> "ready_to_deploy_production"
+11. Set Status   -> epic member -> "merged"; standalone ticket -> route-matching ready_to_deploy_* status
 ```
 
 **This skill does NOT create a PR.** PR creation is the first action of `/auto-deploy`.
@@ -280,10 +281,12 @@ mcp__autodev-memory__update_ticket(
   command="/auto-build"
 )
 
-# Standalone ticket: goes straight to the prod deploy queue (no staging segment).
+# Standalone ticket: respect the caller-selected delivery target.
+# If no target was provided by the caller, preserve the legacy production default.
+# Use "ready_to_deploy_staging" for staging-first, otherwise "ready_to_deploy_production".
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="ready_to_deploy_production",
+  status="{ready_to_deploy_staging|ready_to_deploy_production}",
   command="/auto-build"
 )
 ```
@@ -349,7 +352,7 @@ Summary:
 - Review: 4 findings resolved
 - Unrelated fixes: 1 pre-existing lint error in untouched code (separate commit)
 
-Ticket: F0007 (status: merged [epic member] | ready_to_deploy_production [standalone])
+Ticket: F0007 (status: merged [epic member] | ready_to_deploy_staging/ready_to_deploy_production [standalone])
 
 Next: /auto-polish-web {ID} (UI polish, optional) then /auto-deploy {ID} (creates PR + deploys)
 ```
