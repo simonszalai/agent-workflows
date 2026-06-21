@@ -122,18 +122,19 @@ Run `/create-build-todos` internally:
 
 ### Phase 4: Build
 
-Run `/build` internally for each build todo:
+Run `/build` internally. `/build` owns the loop now — it dispatches one builder per build_todo
+in dependency order, checkpoints each to MCP on success, runs **bounded self-repair (≤2
+retries)** on a failed todo, and finishes only when every todo is `complete` **and** the project
+health command (test + typecheck + lint) passes. Do not re-implement that loop here.
 
-- Execute steps in dependency order
-- Run tests after each step
-- Run type checker
-- Run linter
+React to how `/build` terminates:
 
-**On test failure:**
-
-1. Attempt automatic fix (up to 2 retries)
-2. If still failing: Log details, continue to write tests phase
-3. Review will flag remaining issues
+- **Converged** (all todos complete, health gate PASS) → continue to write tests.
+- **Blocked** (a todo returned `failed` and exhausted its 2 retries) → **STOP** auto-build,
+  revert ticket status (see [On Failure — Revert Status](#on-failure--revert-status)), and
+  report which todo blocked. Do not run review on a half-built tree.
+- **needs_replan** (a builder found the plan itself is wrong) → **STOP** auto-build and surface
+  the reason for replanning; the plan must change before building can continue.
 
 **On unrelated type/lint errors** (pre-existing failures in files this ticket
 didn't touch): fix the clear, low-risk ones and track them for the separate
@@ -307,8 +308,9 @@ mcp__autodev-memory__update_ticket(
 | ------------ | ------------------------ | --------------------------------------- |
 | Setup        | On main/staging branch   | STOP, instruct user to use a workspace  |
 | Build Todos  | Agent failure            | STOP, report                            |
-| Build        | Test failure             | Retry 2x, then continue                 |
-| Build        | Type error               | Attempt fix, continue                   |
+| Build        | Todo failed              | `/build` self-repairs ≤2x; if blocked → STOP, revert status |
+| Build        | Health gate fails        | `/build` repairs the cross-file break; if still failing → STOP |
+| Build        | needs_replan             | STOP, surface for replanning            |
 | Build/Resolve| Unrelated error, clear   | Fix it; commit separately in Phase 9    |
 | Build/Resolve| Unrelated error, risky   | Don't fix; note on ticket as follow-up  |
 | Write Tests  | Test creation fails      | Log, continue to review (non-blocking)  |

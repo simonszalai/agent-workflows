@@ -268,17 +268,18 @@ Run `/create-build-todos` internally:
 
 ### Phase 5: Build
 
-Run `/build` internally for each build todo:
+Run `/build` internally. `/build` owns the loop: one builder per todo in dependency order,
+checkpoint each on success, bounded self-repair (≤2 retries) on a failed todo, and finish only
+when every todo is complete **and** the project health command (test + typecheck + lint) passes.
+Because `lfg` is ticketless, the per-todo checkpoint lands in `.context/build_todos/` status
+(not MCP) — that is `lfg`'s source of truth for resume.
 
-- Execute steps in dependency order
-- Run tests after each step
-- Run type checker
-- Run linter
+React to how the loop terminates:
 
-**On test failure:**
-1. Attempt automatic fix (up to 2 retries)
-2. If still failing: Log details, continue to write tests phase
-3. Review will flag remaining issues
+1. **Converged** (all todos complete, health gate PASS) → continue to write tests.
+2. **Blocked** (a todo failed and exhausted its 2 retries) → STOP, report which todo blocked;
+   do not build downstream on a broken tree.
+3. **needs_replan** (a builder found the plan wrong) → STOP and revise before continuing.
 
 **On unrelated type/lint errors** (pre-existing failures in files this work
 didn't touch): fix the clear, low-risk ones and record them in

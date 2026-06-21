@@ -1,6 +1,6 @@
 ---
 name: build
-description: Execute an implementation plan. Spawns builder agent to work through build_todos step by step.
+description: Execute an implementation plan. Dispatches one builder agent per build_todo in dependency order, checkpoints each to MCP on success, self-repairs failures (bounded), and finishes only when every todo is complete and the project health command passes.
 max_turns: 100
 ---
 
@@ -96,7 +96,18 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    - If build_todos contradict plan, update via `update_artifact` to resolve
    - Check memory service for relevant gotchas and patterns
 
-5. **Spawn builder agent:**
+5. **Build loop — one builder per todo:**
+
+   Build the execution order from the **pending** build_todos: process in `step`/`sequence`
+   order, but if a todo's `depends_on` names a todo that would otherwise sort later, move that
+   dependency ahead so prerequisites always run first. This is **sequential** — never dispatch
+   builders in parallel. Two builders sharing one working tree race the git index and typecheck
+   a half-written tree; the cost (write conflicts) outweighs any speedup. Cross-repo concurrency
+   is `/milestone-flow`'s job (separate worktrees), not `/build`'s.
+
+   If `--step N` was passed, the execution set is just todo N.
+
+   For each pending todo, in order, dispatch a **fresh** builder for that ONE todo:
 
    ```
    Agent(
@@ -104,54 +115,84 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
      model="opus",
      prompt="
        MODE: build
-       Ticket: {ticket_id}
-       Project: {PROJECT}
-       Repo: {REPO}
+       Ticket: {ticket_id}  Project: {PROJECT}  Repo: {REPO}
 
-       Execute all pending build_todo artifacts for this ticket.
+       Implement ONLY this build_todo:
+       #{sequence} {title}
+       {build_todo artifact content}
 
        Plan summary: {plan artifact summary}
+       Project health commands — test: {…}  typecheck: {…}  lint: {…}
 
-       Build todos (pending):
-       {list of pending build_todo artifacts with sequence numbers}
-
-       {if --step: 'Execute ONLY step {N}'}
-
-       Work through each step in sequence order. For each step:
-       1. Read the build_todo artifact content
-       2. Implement changes following discovered patterns
-       3. Run verification commands from the todo
-       4. Run tests, type checker, linter
-       5. Update artifact status to complete
-
-       After all steps: run migration parity check (git diff model files vs migrations).
-
-       Return completion summary with steps completed, test results, and any issues.
+       Return the structured build-result JSON per the builder Output (Build Mode) contract:
+       { todo_id, status, files_changed, verification_output, deviations, error }
      "
    )
    ```
 
-6. **After builder returns:**
+   Read the builder's structured result and branch on `status`:
+
+   | `status`        | Orchestrator action                                                                 |
+   | --------------- | ----------------------------------------------------------------------------------- |
+   | `complete`      | Checkpoint (step 6), then dispatch the next todo                                     |
+   | `failed`        | **Bounded self-repair** — see below                                                  |
+   | `needs_replan`  | **STOP** the loop, hand back to `/plan` with the builder's `error`; do not build on  |
+
+   **Bounded self-repair (on `failed`):** dispatch a *fresh* builder for the **same** todo with
+   the previous `error` and `verification_output` prepended as context. Retry at most **2**
+   times. If it still fails, **STOP** the loop and report which todo blocked — do **not** attempt
+   downstream todos on a broken foundation.
+
+6. **Checkpoint to MCP (only on `complete`):**
+
+   The orchestrator — not the builder — owns this write, so a todo is marked complete only after
+   its result was validated here:
+
+   ```
+   mcp__autodev-memory__update_artifact(
+     project=PROJECT, repo=REPO,
+     artifact_id={todo artifact id},
+     status="complete",
+     content={todo content + Completion Notes from files_changed, deviations, verification_output}
+   )
+   ```
+
+   This is the entire resume story: re-running `/build` picks up from the first todo still
+   `pending`. No journal, no scratch file — MCP is the source of truth.
+
+7. **Stopping condition — the health gate (the predicate owns "done", not the todo list):**
+
+   The build is complete ONLY when **both** hold:
+
+   1. Every build_todo is `complete`, **and**
+   2. The project **health command passes** — run the project's full **test + typecheck + lint**
+      (commands from the project's CLAUDE.md / conventions) against the whole working tree, not
+      just per-todo touched files.
+
+   If the health command fails even though every todo self-reported complete, the build is
+   **not** done — a cross-file interaction broke. Dispatch one builder scoped to the specific
+   failure (treat it like a `failed` todo, bounded to 2 retries), then re-run the health command.
+   If it still fails, STOP and report.
+
+   Then run the **migration parity sweep** (repo-wide, orchestrator-owned):
+
+   ```bash
+   git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20
+   ```
+
+   If model/schema files changed but no migration exists: STOP and create one (omitting it means
+   the column won't exist at runtime).
+
+8. **After the loop converges:**
    - Write tests: run `/write-tests {work-item-id}`
-   - Run full test suite to check for regressions
-   - Update plan artifact with completion summary via `update_artifact`
-
-7. **Parallel execution (optional):**
-   - If the plan has truly independent pieces of work (e.g., changes in separate repos,
-     unrelated modules), spawn multiple builder agents in parallel
-   - Good candidates for parallelization:
-     - Work in different repositories
-     - Independent features with no shared code paths
-   - **After parallel work completes:** Verify everything fits together
-
-   > **When in doubt, build sequentially.** Only parallelize when you're confident the
-   > work is truly independent.
+   - Run the full test suite once more to confirm no regressions
+   - Update the plan artifact with the Completion Summary via `update_artifact`
 
 ## Status Flow
 
 ```
-pending -> in_progress -> complete
-                      -> skipped (with reason)
+pending -> in_progress -> complete   (orchestrator sets `complete` after validating the
+                      -> skipped       builder's structured result — never the builder itself)
 ```
 
 ## Completion Summary Format
@@ -197,25 +238,36 @@ After each step, add to `plan.md`:
 
 ## Output
 
-After completing all build steps, output:
+On convergence (every todo `complete` **and** the health gate passed):
 
 ```
 Build complete for {ID}: {title}
 
 Steps: {N}/{N} completed
-Tests: {passing} / {total}
+Health gate: PASS (test {p}/{t}, typecheck OK, lint OK)
 
 Next: /review {ID} (review implementation against the plan)
 ```
 
-If build fails:
+If a todo is **blocked** (returned `failed` and self-repair exhausted its 2 retries):
 
 ```
-Build failed at step {N}: {title}
+Build blocked at step {N}: {title}
 
-Error: {error description}
+Error: {error from the builder's structured result}
+Retries: 2/2 exhausted. Downstream steps not attempted.
 
-Next: Fix the error and re-run /build {ID} --step {N}
+Next: Fix the blocker, then re-run /build {ID} --step {N}
+```
+
+If a builder returned **needs_replan** (the plan itself is wrong):
+
+```
+Build halted at step {N}: {title} — plan needs revision
+
+Reason: {error from the builder's structured result}
+
+Next: /plan {ID} (revise the plan), then /create-build-todos, then /build {ID}
 ```
 
 ## Completion Notes
