@@ -1,6 +1,6 @@
 ---
 name: auto-plan
-description: Autonomous planning for backlog tickets. Researches, investigates, creates plan artifact, sets status to planned.
+description: Autonomous planning for backlog tickets. Researches, investigates, creates plan artifact, sets status to planned. Re-run on a planned ticket to incorporate and resolve the user's dashboard review comments.
 max_turns: 100
 ---
 
@@ -19,6 +19,8 @@ one is created automatically.
 /auto-plan B0003                    # Plan bug ticket (includes investigation)
 /auto-plan #123                     # Find or create ticket from GitHub issue
 /auto-plan                          # Create ticket from conversation context
+/auto-plan F0009                    # Re-run on a planned ticket: revise the plan to address
+                                    #   the user's open dashboard review comments, then resolve them
 ```
 
 ## When to Use
@@ -51,7 +53,11 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 ```
 
 - If not found: STOP - "Ticket not found"
-- If status is not `backlog`: STOP - "Ticket status is {status}, expected backlog"
+- If status is `backlog`: proceed with a fresh plan (the normal path).
+- If status is `planned` AND `ticket["open_comment_count"] > 0`: enter **revise mode** — the user
+  has left review feedback on the plan/source in the dashboard. Skip Phase 2 (leave the status as
+  `planned`) and use Phase 4's "Incorporating review feedback" path instead of writing a new plan.
+- Any other status (or `planned` with no open comments): STOP - "Ticket status is {status}, nothing to plan"
 
 **If input is a GitHub issue number or conversation context:**
 
@@ -144,15 +150,60 @@ mcp__autodev-memory__create_artifact(
 )
 ```
 
+**Incorporating review feedback (revise mode).** If you entered revise mode (an existing `planned`
+ticket with open review comments), do **not** start a fresh plan — revise the existing one:
+
+1. Fetch the open threads (they sit on the `source` and/or `plan` artifact — `artifact_type`,
+   `selected_text`, and `anchor` tell you which part each thread refers to):
+   ```
+   comments = mcp__autodev-memory__list_artifact_comments(
+     project=PROJECT, ticket_id=ID, repo=REPO, status="open"
+   )
+   ```
+2. Revise the existing plan to address every thread, then persist with `update_artifact` (this
+   snapshots the prior version) — not `create_artifact`:
+   ```
+   mcp__autodev-memory__update_artifact(
+     project=PROJECT, artifact_id=<plan artifact id>,
+     content="<revised plan>",
+     change_note="address review comments",
+     command="/auto-plan"
+   )
+   ```
+3. Close each addressed thread with a one-line note pointing at what changed:
+   ```
+   mcp__autodev-memory__resolve_artifact_comment(
+     project=PROJECT, comment_id=<id>,
+     resolution_note="<how the revised plan addresses this>",
+     command="/auto-plan"
+   )
+   ```
+   If a comment is out of scope or you disagree, use `reply_artifact_comment` and leave it open for
+   the user rather than resolving it.
+
 ### Phase 5: Set Status to Planned
+
+Also set `summary_bullets` — a compact 3–6 bullet summary (what / why / chosen approach) derived
+from the plan you just wrote. The dashboard renders these as the ticket header summary; left unset
+they default to `[]` and the header stays blank. `update_ticket` **replaces** the list, so pass the
+full set each time (including in revise mode, where you refresh them to match the revised plan).
 
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
   status="planned",
+  summary_bullets=[
+    "<what the work delivers>",
+    "<why / the trigger>",
+    "<the chosen approach>",
+    "<key risk or dependency, if any>"
+  ],
   command="/auto-plan"
 )
 ```
+
+In revise mode the status is already `planned`; this call just refreshes `summary_bullets` (and
+confirms the resting status).
 
 ## Output
 

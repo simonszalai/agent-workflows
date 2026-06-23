@@ -88,6 +88,12 @@ unit. This applies to `/auto-flow` too, since it delegates building to this skil
 1. **Validate ticket:**
    - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
    - Check plan artifact exists — if not: STOP - "Plan artifact not found"
+   - **Check for open review comments.** If `ticket["open_comment_count"] > 0`, the user has
+     left unaddressed feedback on the plan/source in the dashboard — the plan is not actually
+     approved. Do NOT build against a stale plan. STOP and route back to planning:
+     "Plan has {n} open review comment(s); run /auto-plan {ID} to revise and resolve them first."
+     (auto-plan's revise mode incorporates the comments and resolves the threads, after which
+     `open_comment_count` returns to 0 and /auto-build can proceed.)
 
 2. **Validate branch:**
    - Run `git rev-parse --abbrev-ref HEAD` to get current branch
@@ -223,7 +229,7 @@ artifact** against the real diff (it was drafted by `/plan` and finalized by
 2. **Update the `deployment_guide` artifact** (MCP, not a file):
    - Cross-repo deploy order + steps in order, with the project's real commands
    - Per-environment **Verification Evidence** (staging + prod): each item a reproducible
-     query/command + expected good output + bad-output interpretation
+     query/command + expected good output + bad-output interpretation, covering edge cases as well as the happy path
    - Rollback plan; activation boundary
 
 3. **Mark `Status: FINALIZED`** once deploy steps and both env evidence sections are concrete.
@@ -352,6 +358,7 @@ Summary:
 - Tests: 15 passing / 15 total (8 unit, 5 integration, 2 e2e)
 - Verification: PASS
 - Review: 4 findings resolved
+- Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 - Unrelated fixes: 1 pre-existing lint error in untouched code (separate commit)
 
 Ticket: F0007 (status: merged [epic member] | ready_to_deploy_staging/ready_to_deploy_production [standalone])

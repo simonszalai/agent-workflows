@@ -143,13 +143,13 @@ Run the project's lint, format, and type check commands (see CLAUDE.md for proje
 | Simple     | `none`       | Code quality checks only, skip verification section |
 | Moderate   | `production` | DB queries and checks to run after deploy           |
 | Complex    | `local`      | Test data, services to run, expected results        |
-| Complex+UI | `local+ui`   | Above + frontend pages/components to check          |
+| Complex+UI | `local+ui`   | Above + frontend pages/components to check, with actual-browser screenshots saved and reported as absolute paths |
 
 **Choosing verification type:**
 
 - **Production:** Feature can be verified by observing real data after deployment
 - **Local:** Need controlled test data or can't risk production side effects
-- **Local+UI:** Feature affects frontend display
+- **Local+UI:** Feature affects frontend display; the plan must require actual-browser screenshot evidence with absolute paths in the build/verify output
 
 See plan skill for complexity assessment criteria.
 

@@ -178,13 +178,18 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
    - the **real deploy commands/objects** for this project (discover from the project
      `CLAUDE.md`/`AGENTS.md` + memory — e.g. how code reaches runtime, any scheduler/worker
      deploy, any secret/credential block to provision, DAG/pipeline sync, env vars);
+   - if any verification row requires runtime evidence (canary run, observer, flow, deployment,
+     stored rows, polling, scheduler, worker, Prefect, supervisor, webhook, or live readback), the
+     concrete producing object in the same build scope: flow entrypoint, environment YAML entry,
+     supervisor registration when applicable, deploy-owned canary CLI, or an explicit
+     disposable integration-DB proof instead of staging runtime evidence;
    - the **Verification Evidence** rows refined to concrete queries/commands now that you know the
      real table/column/log names — each with expected good output and a bad-output interpretation,
      for both staging and production.
 
    Use the template in the `create-deployment-guide` skill. Mark `Status: FINALIZED` only when the
-   deploy steps and both env evidence sections are concrete; otherwise leave the unknown rows as
-   `TBD` and note them.
+   deploy steps and both env evidence sections are concrete **and every runtime evidence row has a
+   producing deployment/command**; otherwise leave the unknown rows as `TBD` and note them.
 
    Find the draft's `artifact_id` in the `get_ticket` response (the `deployment_guide` artifact)
    and update by id; if the ticket skipped `/plan` and none exists, create one instead.

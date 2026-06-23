@@ -369,9 +369,12 @@ Output format:
    impossible to miss.
 2. **Phase table** — one row per phase with pass/partial/fail + issue count.
 3. **Findings detail** — for every non-pass: phase, route, field name (if relevant),
-   expected, observed, sentinel/payload used.
-4. **Discovered** section — new routes/entities found in Phase 2 not in project map.
-5. **Regression** section — if `.context/smoke-{env}-baseline.json` exists, delta vs.
+   expected, observed, sentinel/payload used, and absolute path to an actual-browser screenshot
+   of the observed state.
+4. **Screenshot evidence** — absolute paths for representative pass states and every failure/P0;
+   screenshots must come from the real browser session used for QA, not mocked renders.
+5. **Discovered** section — new routes/entities found in Phase 2 not in project map.
+6. **Regression** section — if `.context/smoke-{env}-baseline.json` exists, delta vs.
    previous run (new failures, newly-passing, score delta).
 
 Save new baseline to `.context/smoke-{env}-baseline.json` at the end.
@@ -394,6 +397,7 @@ Auto-QA-Web complete (staging).
 - Score: 94 / 100 (green)
 - Phases: 14 pass, 1 partial, 0 fail
 - Findings: 2 low-severity (see report)
+- Screenshots: /absolute/path/to/.context/screenshots/staging-route-pass.png, /absolute/path/to/.context/screenshots/staging-finding.png
 - Baseline saved: .context/smoke-staging-baseline.json
 ```
 
@@ -405,6 +409,7 @@ Auto-QA-Web FAIL (staging).
 - P0: FORM_INTERACTIVITY_BROKEN on /clients/new (field: name)
 - Phase: 6.2
 - Evidence: sentinel "QA_TYPE_1234" typed; DOM value read: ""
+- Screenshot: /absolute/path/to/.context/screenshots/staging-clients-new-form-interactivity-broken.png
 
 This blocks deploy. Investigate controlled-input state before merging.
 ```

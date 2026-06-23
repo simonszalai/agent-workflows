@@ -125,7 +125,7 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
        Project health commands — test: {…}  typecheck: {…}  lint: {…}
 
        Return the structured build-result JSON per the builder Output (Build Mode) contract:
-       { todo_id, status, files_changed, verification_output, deviations, error }
+       { todo_id, status, files_changed, verification_output, visual_evidence, deviations, error }
      "
    )
    ```
@@ -153,7 +153,7 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
      project=PROJECT, repo=REPO,
      artifact_id={todo artifact id},
      status="complete",
-     content={todo content + Completion Notes from files_changed, deviations, verification_output}
+     content={todo content + Completion Notes from files_changed, deviations, verification_output, visual_evidence}
    )
    ```
 
@@ -245,6 +245,7 @@ Build complete for {ID}: {title}
 
 Steps: {N}/{N} completed
 Health gate: PASS (test {p}/{t}, typecheck OK, lint OK)
+Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 
 Next: /review {ID} (review implementation against the plan)
 ```
@@ -286,4 +287,8 @@ Fill in each completed build_todo:
 **Issues encountered:**
 
 - Had to adjust threshold to 0.72 instead of 0.75 based on testing
+
+**Visual evidence (required for UI/visible work):**
+
+- `/absolute/path/to/.context/screenshots/YYYYMMDD-HHMMSS-feature-state.png` — actual browser screenshot of the changed surface
 ```

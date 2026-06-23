@@ -381,6 +381,7 @@ Report back with:
 - Each repo's branch name and the SHAs of the checkpoint + unrelated-fixes +
   final commits (whichever were made)
 - A short summary of what was done
+- Screenshot evidence: absolute paths to actual-browser screenshots for any UI/visible work, or `not applicable`
 - Any unrelated errors that were fixed (and which were deferred as too risky)
 - Any follow-ups the user may want to handle (uncommitted state, separate cleanup)
 
@@ -436,6 +437,7 @@ Summary:
 - Implemented user dashboard feature
 - Tests: 12 passing / 12 total (4 unit, 6 integration, 2 e2e)
 - Review: 3 iterations, all P1/P2 resolved
+- Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 - Unrelated fixes: 2 pre-existing type errors in untouched files (separate commit)
 
 Next: review the diff, then push and open a PR when you're ready.

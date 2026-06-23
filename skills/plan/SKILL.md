@@ -434,7 +434,7 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
      and a memory search (`{"keywords": ["deploy", "migration"], "text": "deployment steps order"}`),
      never generic placeholders. Mark anything not yet known as `TBD — finalize at build`.
    - **Verification Evidence contract (per environment):** for **both staging and production**,
-     what evidence proves this works — each item a reproducible read-only query/command, an
+     what evidence proves this works — including the edge cases, not just a happy path — with each item a reproducible read-only query/command, an
      expected good output, and a bad-output interpretation. This is the precise form of the plan's
      `verification_strategy`: "what exactly proves the fix works", split by env. Plus the
      **activation boundary** (how to know the new code is live).

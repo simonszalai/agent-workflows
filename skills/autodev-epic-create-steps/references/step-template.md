@@ -73,6 +73,7 @@ Epic **E000N** (step k). Depends on **<ids>**. See E000N artifacts #<n>.
 | `related` | Include `E000N`. Add cross-project refs (`other-repo/F0004`) when relevant. |
 | `tags` | `{"area": "<domain>", "related_epic": "E000N"}`. |
 | `size` | `xs`/`s`/`m`/`l`/`xl`. If a step is `xl`, consider splitting it. |
+| `summary_bullets` | 3–6 terse bullets (what / why / approach) — the dashboard ticket-header summary. Left unset it defaults to `[]` and the header is blank. |
 | `status` | `backlog`. |
 | `command` / `agent` | `"/autodev-epic-create-steps"` / `"planner"` for actor tracking. |
 

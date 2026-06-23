@@ -93,7 +93,8 @@ parses this to decide whether to checkpoint, retry, or stop the loop:
   "todo_id": "<sequence number or artifact id of the todo you implemented>",
   "status": "complete",
   "files_changed": ["path/one.ts", "path/two.ts"],
-  "verification_output": "<per-command pass/fail summary, including typecheck + lint on touched files>",
+  "verification_output": "<per-command pass/fail summary, including typecheck + lint on touched files; include absolute screenshot paths here if this todo changed UI/visible output>",
+  "visual_evidence": ["<absolute paths to actual-browser screenshots for UI/visible work; empty array if not applicable>"],
   "deviations": ["<pattern deviations, or empty array>"],
   "error": null
 }

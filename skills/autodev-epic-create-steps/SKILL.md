@@ -26,9 +26,14 @@ redundant, overlapping, and sometimes contradictory (a later "extends X" / "supe
 "added scope" note silently amends an earlier spec).
 
 **This skill's job:** consolidate that iterative design material into one clean plan, sequence
-it, and emit the steps — one per repo, ordered, with cross-repo contracts spelled out. It does
-**not** invent product scope; it crystallises what the artifacts already decided and surfaces
-genuine gaps to the user rather than guessing.
+it, and idempotently reconcile the steps — one per repo, ordered, with cross-repo contracts
+spelled out — **including a ticket-level `plan` artifact for every non-completed step ticket**.
+It does **not** invent product scope; it crystallises what the artifacts already decided and
+surfaces genuine gaps to the user rather than guessing.
+
+Default reruns are **idempotent**: reuse and update matching existing step tickets rather than
+creating duplicates. Treat the current plan/steps as the baseline unless the user explicitly asks
+for a from-scratch rederive.
 
 ## Step identity: `E000N-k`
 
@@ -43,7 +48,7 @@ visible. Re-deriving steps can renumber them; the ticket IDs are the stable hand
 
 - An epic has design artifacts and/or absorbed sources but **no steps**, or only a rough draft.
 - Steps exist but the design has moved on (new "added scope" / "supersedes" artifacts) and they
-  need re-deriving.
+  need reconciling.
 
 If the epic doesn't exist yet, create it first (`create_epic`) and absorb its motivating tickets
 (`absorb_ticket_into_epic`) — that is upstream of this skill.
@@ -77,8 +82,11 @@ offsets, don't try to swallow it whole. Pull, at minimum:
 Read **all** of it. The whole point is that no single artifact is the truth.
 
 If the user asked to break source/design material into a specific milestone (for example
-"M3 steps"), resolve that milestone from `.milestones[]` before creating tickets. If the
-milestone does not exist or is ambiguous, stop and ask instead of leaving steps unassigned.
+"M3 steps"), resolve that milestone from `.milestones[]` before creating tickets. If the named
+milestone **does not exist yet** but the consolidated plan makes its scope and gate-status clear,
+create it with `create_epic_milestone` (see Phase 4) rather than blocking — milestone creation is
+part of this workflow, not a human prerequisite. Only stop and ask if the milestone the user named
+is genuinely ambiguous (e.g. two plausible checkpoints and the plan doesn't disambiguate).
 
 ## Phase 1 — Consolidate the design (the hard part)
 
@@ -107,7 +115,7 @@ create_epic_artifact(project, epic_id, artifact_type="plan",
 If consolidation surfaces real contradictions or missing decisions, **stop and ask the user**
 before creating tickets — steps built on a guessed decision are worse than no steps.
 
-## Phase 2 — Sequence into steps
+## Phase 2 — Sequence into desired steps
 
 Decompose the consolidated plan into the **minimal** set of ordered execution units:
 
@@ -123,6 +131,17 @@ Decompose the consolidated plan into the **minimal** set of ordered execution un
 - Build the **blocker→blocked DAG**. Cycles are rejected by the tool; keep it acyclic. The
   execution-order index (`E000N-k`) is a topological position in this DAG.
 
+Before creating anything, compare the desired step set against existing `.steps[]` from
+`get_epic`:
+
+- Match existing steps by repo, milestone, title/intent, source artifact content, and cross-repo
+  contract.
+- Reuse the ticket ID for a still-valid step even if its position or milestone assignment changed.
+- Update backlog/planned matching tickets whose scope, milestone, summary, contract, or
+  ticket-level plan changed.
+- Do not duplicate a step intent that already exists in the epic.
+- Never rewrite merged/completed steps; create a follow-up step if the new plan requires more work.
+
 ## Phase 3 — Define cross-repo contracts
 
 For **every dependency edge whose endpoints are in different repos**, the blocker (shipped
@@ -137,7 +156,7 @@ Same-repo edges only order the waterfall — they don't need a contract. The das
 the cross-repo contract list automatically from the cross-repo edges, so getting the **repo
 assignment** and the **edges** right is what makes contracts appear.
 
-## Phase 4 — Create the steps
+## Phase 4 — Reconcile/create the steps
 
 Before creating tickets, decide the milestone for each step:
 
@@ -145,9 +164,28 @@ Before creating tickets, decide the milestone for each step:
   newly-created step in this breakout to that milestone unless the consolidated plan clearly
   says otherwise.
 - If the epic already has milestones and a step naturally belongs under one, assign it.
-- If there is no applicable milestone, leave it unassigned deliberately and say so in the report.
+- If the milestone the steps belong to **does not exist yet** (a fresh epic, or the plan defines
+  a checkpoint the epic has no row for), create it — don't leave the steps unassigned by default:
+  ```
+  create_epic_milestone(
+    project, epic_id="E000N",
+    title="M3 — <gated deliverable>",   # the visible M-label comes from position
+    position=k,                          # 1-based order among milestones
+    acceptance_criteria="<what proves this checkpoint is done / deployable>",
+    is_gate=True,                        # True for a deployable gate; False for a soft grouping
+    command="/autodev-epic-create-steps"
+  )
+  ```
+  Then re-`get_epic` to pick up the new milestone's UUID before assigning steps to it.
+- Only leave a step unassigned when the plan genuinely defines no checkpoint for it — and say so
+  in the report.
 
-For each step, in DAG order:
+For each desired step, in DAG order:
+
+- If it matches an existing step, update/reassign it as needed and preserve its ticket ID.
+- If it does not match any existing step, create it.
+
+Create only missing tickets:
 
 ```
 create_ticket(
@@ -161,7 +199,8 @@ create_ticket(
   related=["E000N"],
   tags={"area": "...", "related_epic": "E000N"},
   size="xs|s|m|l|xl",
-  status="backlog",
+  summary_bullets=["<what this step delivers>", "<why / dependency>", "<approach>"],
+  status="backlog",                   # temporary until the ticket-level plan is written below
   command="/autodev-epic-create-steps", agent="planner"
 )
 ```
@@ -183,33 +222,77 @@ set_epic_member_deps(project, epic_id, edges=[{"blocker": <uuid>, "blocked": <uu
 Keep the two dependency representations in sync: ticket-level `depends_on` (display ids) and
 epic-level `epic_member_deps` (uuids) must describe the **same** edges.
 
-Milestone assignment is part of step creation, not a later nice-to-have. If the active MCP
-schema for `create_ticket` does not expose `milestone_id`, still call `add_epic_step` with
-`milestone_id` after the ticket is created. If `add_epic_step` cannot assign it, use
-`assign_epic_step_milestone(project, epic_id, ticket_id, repo, milestone_id="M3")`. Do not
-finish a named-milestone breakout with `milestone_id: null`; discover/load the milestone
-assignment tool or stop and report the blocker.
+For every desired non-completed step ticket (new or reused), also create or update its own
+ticket-level `plan` artifact. This is required; a step with only a `source` artifact is not fully
+planned.
 
-> Re-deriving an epic? Detach stale steps with `remove_epic_step` (this leaves the ticket
-> itself intact — `update_ticket(epic_id="")` fully detaches), clear their edges, then recreate.
-> Don't orphan edges pointing at removed steps.
+```
+create_artifact(
+  project, repo, ticket_id,
+  artifact_type="plan",
+  title="Plan: <step title>",
+  content="<repo-local implementation plan>",
+  command="/autodev-epic-create-steps", agent="planner"
+)
+
+update_ticket(
+  project, ticket_id, repo,
+  status="planned",
+  summary_bullets=["<what this step delivers>", "<why / dependency>", "<approach>"],
+  reason="Ticket-level plan created for epic step",
+  command="/autodev-epic-create-steps", agent="planner"
+)
+```
+
+If a live/current `plan` artifact already exists, update it with `update_artifact(...)` and a
+change note instead of creating a duplicate, then still call `update_ticket(..., status="planned",
+summary_bullets=[...])` so the status matches the now-current plan. The per-ticket plan must be
+scoped to the one step and include:
+
+- step goal and non-goals;
+- implementation approach and ordered build phases;
+- likely files/modules/config/migrations touched;
+- cross-repo contracts consumed/exposed;
+- test and verification plan;
+- acceptance evidence expected at completion;
+- rollback/kill-switch/deploy notes.
+
+Do not copy the epic plan verbatim. Do not rewrite plans on merged/completed steps; create a
+follow-up step if new work is needed after completion.
+
+Milestone assignment is part of step creation, not a later nice-to-have. If the milestone does
+not exist yet, **create it first** with `create_epic_milestone` (above). If the active MCP schema
+for `create_ticket` does not expose `milestone_id`, still call `add_epic_step` with `milestone_id`
+after the ticket is created. If `add_epic_step` cannot assign it, use
+`assign_epic_step_milestone(project, epic_id, ticket_id, repo, milestone_id="M3")`. Do not
+finish a named-milestone breakout with `milestone_id: null`; create the milestone or, only if it is
+truly ambiguous, stop and report the blocker.
+
+> Re-deriving an epic? Default to **reconcile**, not delete/recreate. Leave stale steps attached
+> and report them as proposed removals unless the user explicitly asked for from-scratch cleanup.
+> Only then detach stale steps with `remove_epic_step` (this leaves the ticket itself intact —
+> `update_ticket(epic_id="")` fully detaches), clear/replace their edges, then recreate missing
+> desired steps. Don't orphan edges pointing at removed steps.
 
 ## Phase 5 — Verify & report
 
 Re-run `get_epic` and confirm:
 
 - Steps appear in the intended order; `involved_repos` matches your repo assignment.
+- Every desired non-completed step ticket has a current `plan` artifact, not only a `source`
+  artifact, and its ticket status is `planned`.
 - Every step created for a named milestone has `.steps[].milestone_id` matching that
   milestone's UUID from `.milestones[]`.
 - `step_deps` form an acyclic graph; every cross-repo edge has a contract written in both tickets.
+- No duplicate step tickets exist for the same step intent.
 - `warnings` is empty.
 
 Then report to the user as a table — execution order, milestone, the real ticket, its repo,
-blockers — plus the cross-repo contracts:
+per-ticket plan artifact id and ticket status, blockers — plus the cross-repo contracts:
 
 ```
-E0007-1  M1  F0112  ts-prefect   (no blockers)   exposes: companies.{market,sector}_etf_symbol
-E0007-2  M1  F0111  ts-prefect   ← F0112          reads:   companies.{market,sector}_etf_symbol
+E0007-1  M1  F0112  ts-prefect   plan:abc123 planned  (no blockers)   exposes: companies.{market,sector}_etf_symbol
+E0007-2  M1  F0111  ts-prefect   plan:def456 planned  ← F0112          reads:   companies.{market,sector}_etf_symbol
 ```
 
 ## Worked reference — E0007

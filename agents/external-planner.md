@@ -1,6 +1,6 @@
 ---
 name: external-planner
-description: "Runs one peer cross-provider planner (Claude, Codex, or Grok) via the external-agent adapter and returns its planner-output envelope. Spawned in parallel with the native planner by /plan."
+description: "Runs one peer cross-provider planner (Claude, Codex, or Grok) via the external-agent adapter and returns its planner-output envelope. Spawned in parallel with the native planner by /plan or /epic-plan."
 model: inherit
 max_turns: 30
 ---
@@ -11,9 +11,9 @@ and you do not reason about what the provider "would" say. Your only job is to r
 envelope it produced — verbatim.
 
 This dispatcher is for Claude Code orchestration only: because you are already a Claude
-subagent, `/plan` should normally spawn you for the non-Claude peer providers. If the
-orchestrator is Codex or Grok, it should call `external-agent` directly for both remaining
-providers instead of using this Claude-specific subagent wrapper.
+subagent, `/plan` or `/epic-plan` should normally spawn you for the non-Claude peer providers.
+If the orchestrator is Codex or Grok, it should call `external-agent` directly for both
+remaining providers instead of using this Claude-specific subagent wrapper.
 
 ## Inputs (from your prompt)
 

@@ -16,6 +16,18 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace
   that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`). The
   `~/dev/*` paths are the main checkouts and must not be touched unless explicitly requested.
+- **Visible work requires browser screenshots.** If the work changes or verifies anything visible
+  to a user — UI, UX, styling, rendered HTML/email/PDF/markdown/docs, charts, screenshots,
+  browser-visible errors, or other visual output — capture screenshots from the actual rendered
+  surface in a real browser session (Browser Use/in-app browser, gstack, Playwright, or the
+  project-approved browser tool). Do **not** substitute DOM-only checks, generated/mock images,
+  code snippets, or descriptions for screenshot evidence.
+- **Screenshot paths must be absolute.** Save visible-work screenshots under the workspace
+  (prefer `.context/screenshots/<timestamp>-<slug>.png` when no project-specific location exists)
+  and include each screenshot as an absolute filesystem path in the final response and any
+  durable ticket/PR/review/verification artifact. For multi-state UI work, capture the relevant
+  before/after or state-specific screenshots. If a browser screenshot cannot be captured, state the
+  exact blocker and the attempted browser command/tool.
 
 ## File Storage Rules (Critical)
 
@@ -36,6 +48,9 @@ Use `mcp__autodev-memory__create_artifact` to store plans, build todos, review f
 - Temporary data passed between parallel subagents in a single session
 - Scratch computations that are consumed immediately and then discarded
 - Scratch state for ticketless autonomous workflows (e.g. `/lfg`) that have no ticket to write to
+- Browser screenshot evidence for visible work, saved under `.context/screenshots/` and linked
+  by absolute path from the final response and durable artifacts. Treat these files as disposable
+  local evidence; the durable artifact stores the paths and context.
 
 ## Code Style (All Projects)
 
@@ -294,8 +309,9 @@ work again by setting `in_progress`. Ticket statuses `planning`, `building`, and
 are retired; use the single actual active-work status `in_progress`.
 `/ticket-flow` may deploy standalone tickets only through `/auto-deploy` after it chooses the
 staging-first or direct-production route. Post-deploy behavior verification remains owned by
-`/ticket-verify`; promotion is owned by `/ticket-promote`; epic/milestone gates are owned by
-`/epic-flow` when the parent epic/milestone explicitly owns the gate.
+`/ticket-verify`; promotion is owned by `/ticket-promote`; epic milestone staging gates are owned
+by `/milestone-flow`, which must deploy and run the explicit epic/milestone verifier before it can
+return success.
 
 ### Cross-Repository Tickets
 
@@ -329,7 +345,7 @@ create_ticket(
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
 - `/ticket-verify`: Timer-friendly staging/production verification; standalone staging PASS calls `/ticket-promote`; explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets to main; no production verification
-- `/epic-plan`, `/epic-split`, `/milestone-flow`, `/epic-flow`: Epic/milestone orchestration over ticket-flow; full-auto deploys/verifies staging between milestones and final prod after all gates pass
+- `/epic-plan`, `/epic-split`, `/milestone-flow`, `/epic-flow`: Epic/milestone orchestration over ticket-flow; `/milestone-flow` deploys/verifies each staging milestone gate, and `/epic-flow` sequences milestones plus final prod after all gates pass
 - `/auto-flow` and `/auto-verify`: Legacy aliases for `/ticket-flow` and `/ticket-verify`
 
 ## Knowledge System

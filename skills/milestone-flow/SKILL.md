@@ -1,22 +1,34 @@
 ---
 name: milestone-flow
-description: Execute one epic milestone's step-ticket DAG. Parallelizes independent cross-repo steps, serializes conflicting same-repo work, calls ticket-flow with epic context, and returns a gate package for epic-flow. No deploy or environment verification.
+description: Execute one epic milestone's step-ticket DAG, deploy the milestone to staging, and run the explicit epic/milestone verification gate.
 max_turns: 400
 ---
 
 # Milestone Flow
 
 Execute one milestone of an epic. This is the milestone-level orchestrator over multiple
-`/ticket-flow` runs. It is normally called by `/epic-flow`.
+`/ticket-flow` runs. It is normally called by `/epic-flow`, but may also be entered directly by a
+`/ticket-flow` run that lands a milestone's **final** step (the direct-run hand-off — see
+`ticket-flow` §5), or invoked manually. It owns the full milestone gate: build step tickets,
+deploy the parent epic/milestone integration target, and verify the epic/milestone evidence
+contract before returning success.
+
+If entered when every step ticket is **already `merged`** (e.g. via the ticket-flow hand-off, or
+a re-run), do not rebuild merged steps — skip straight to the gate package, the staging deploy,
+and the verifier. The deploy is idempotent, so re-entering after a partial run is safe.
 
 ## Boundaries
 
 - Works on one epic milestone at a time.
 - May run independent step tickets in parallel when safe.
 - Must pass epic context and contracts into each ticket-flow.
-- Does not deploy, promote, or verify environments.
-- Stops when the milestone's steps are landed/`merged` and a complete gate package exists.
-- Full-auto deploy/verify/promotion is owned by `/epic-flow` immediately after this skill returns.
+- Must create/update a complete gate package after the step tickets land.
+- Must deploy the parent epic/milestone target to staging after the gate package exists.
+- Must run the explicit epic/milestone staging verifier after deployment.
+- Stops successfully only after the milestone staging gate is `PASS` and required evidence
+  artifacts exist.
+- Does not promote to production or run production verification unless a separate production
+  command explicitly owns that final epic gate.
 
 ## Usage
 
@@ -44,6 +56,10 @@ Stop if:
 - two same-repo steps are marked parallel but touch overlapping/conflicting areas;
 - the milestone has no staging evidence contract. Ask `/epic-flow`/planning to repair the
   milestone before build work continues.
+- the milestone evidence contract requires runtime/staging behavior (canary run, observer,
+  flow, deployment, stored rows, polling, scheduler, worker, Prefect, supervisor, webhook, or
+  live readback) but no included step owns the producing runtime surface. Repair the split before
+  building; a schema/parser/model-only milestone cannot pass a stored-row or flow-run gate.
 
 ### 3. Build execution waves
 
@@ -55,8 +71,11 @@ Create waves from the blocker -> blocked DAG:
 
 ### 4. Execute each wave
 
-For each step ticket, run `/ticket-flow <ID> --epic-context --target staging` (or the
-milestone's configured integration target). The ticket-flow must:
+For each step ticket that is **not already `merged`**, run `/ticket-flow <ID> --epic-context
+--target staging` (or the milestone's configured integration target). Skip steps already
+`merged` (e.g. when entered via the ticket-flow hand-off). The `--epic-context` flag is required:
+it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand back into
+`/milestone-flow`. Each non-skipped ticket-flow must:
 
 - load the parent epic plan and milestone contract;
 - build/review/local-verify the step;
@@ -73,12 +92,70 @@ After all step tickets in the milestone are `merged`, write an epic artifact (us
 - steps landed, ticket ids, commits/PRs, and repos touched;
 - contracts satisfied and any contract tests run;
 - local checks and review results;
-- staging and production evidence rows that `/ticket-verify --epic --milestone` must grade;
+- staging and production evidence rows that `/ticket-verify --epic --milestone` must grade,
+  with each row mapped to the step ticket(s) and contract edge(s) it verifies so per-ticket
+  verification artifacts can be written without guesswork;
+- a **runtime evidence closure** section for any runtime evidence row:
+  `evidence row -> producing step ticket -> deployed object/command`. If the row expects a
+  Prefect flow or canary, name the actual entrypoint, deployment YAML entry, supervisor
+  registration if applicable, and the command that will create durable evidence. If the deployed
+  object/command does not exist, do not mark the gate package complete; create/fix a step in the
+  same milestone first.
+- required evidence destinations for the later verifier: canonical milestone-gate artifact on the
+  epic, full step-ticket `verification_evidence` artifacts, and compact epic summary artifact;
 - risks for staging verification and likely failure-to-step mappings;
 - the exact next command, normally
-  `/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote` after deploy.
+  the deploy/verify commands this same `/milestone-flow` is about to run.
 
-Do not run deploy commands or environment verification.
+### 6. Deploy the milestone staging gate
+
+After the gate package exists and names real runtime producers, run the staging deploy for the
+parent epic/milestone:
+
+```text
+/auto-deploy <EPIC_ID> staging
+```
+
+If project artifacts specify a milestone-scoped deploy selector, pass that selector through the
+project's deployment command, but keep status/evidence ownership on the parent epic milestone. Do
+not skip this because a PR is merged: merged code is not deployed runtime evidence.
+
+Treat deployment as incomplete until the deployment mechanics are verified by `/auto-deploy`
+(migrations/blocks/scheduler/worker/Prefect registrations/service deploys as applicable). If
+deployment fails, record the blocker/failure on the epic or affected step ticket and stop; do not
+run behavior verification against stale code.
+
+### 7. Verify the milestone staging gate
+
+Immediately after a successful deploy, run the explicit epic/milestone verifier:
+
+```text
+/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote
+```
+
+The verifier must write all required evidence destinations before the gate can advance:
+
+- canonical milestone-gate `verification_evidence` artifact on the epic;
+- full `verification_evidence` artifact on every included step ticket;
+- compact epic-level verification summary artifact.
+
+If any evidence destination is missing, treat the verifier result as not ready to advance and
+re-run/fix the evidence write rather than marking the milestone complete.
+
+### 8. Handle verifier verdicts
+
+- `PASS`: confirm all evidence artifacts exist, update included step ticket statuses according to
+  the lifecycle, and return milestone success.
+- `NEEDS_MORE_TIME`: keep polling/re-running the timer-friendly verifier with backoff until it
+  becomes `PASS` or `FAIL`. If the session must stop for budget/runtime reasons, persist the gate
+  state and exact resume command; do not claim milestone success.
+- `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
+  fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
+  Stop only for a genuine external/manual blocker or the same unresolved failure repeating after
+  the documented retry/fix loop.
+
+Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
+milestone it was asked to execute.
 
 ## Output
 
@@ -86,8 +163,9 @@ Do not run deploy commands or environment verification.
 Milestone flow complete: E0007 M2
 Steps: 3/3 merged
 Gate package: deployment_guide artifact updated
-Deploy: not run
-Environment verify: not run
+Deploy: PASS (/auto-deploy E0007 staging)
+Environment verify: PASS (/ticket-verify staging --epic E0007 --milestone M2 --no-promote)
+Gate evidence: verification_evidence artifact ids recorded
 
-Next: /epic-flow continues with staging deploy + milestone verification, or run the printed gate manually.
+Next: /epic-flow continues with the next milestone, or production promotion after all milestones pass.
 ```
