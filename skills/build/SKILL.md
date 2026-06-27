@@ -124,8 +124,15 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
        Plan summary: {plan artifact summary}
        Project health commands — test: {…}  typecheck: {…}  lint: {…}
 
+       Hard-stop / needs_replan rule:
+       If this todo implements a repeated writer (poller, observer, scheduler, queue,
+       webhook, scraper, supervisor flow) and the design would persist duplicate unchanged
+       source data proportional to polling frequency, do NOT blindly implement it. Return
+       status=needs_replan unless the todo names the downstream consumer, volume budget,
+       dedupe/change-gating behavior, and retention/TTL for that append-only history.
+
        Return the structured build-result JSON per the builder Output (Build Mode) contract:
-       { todo_id, status, files_changed, verification_output, deviations, error }
+       { todo_id, status, files_changed, verification_output, visual_evidence, deviations, error }
      "
    )
    ```
@@ -153,7 +160,7 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
      project=PROJECT, repo=REPO,
      artifact_id={todo artifact id},
      status="complete",
-     content={todo content + Completion Notes from files_changed, deviations, verification_output}
+     content={todo content + Completion Notes from files_changed, deviations, verification_output, visual_evidence}
    )
    ```
 
@@ -177,11 +184,18 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    Then run the **migration parity sweep** (repo-wide, orchestrator-owned):
 
    ```bash
-   git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20
+   git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/ | head -20
    ```
 
-   If model/schema files changed but no migration exists: STOP and create one (omitting it means
-   the column won't exist at runtime).
+   If model/schema files changed, use the repo's current schema system:
+   - ts-prefect after E0017: do **not** create Alembic migrations. Ensure Atlas plan/safety
+     checks and `verify_schema_truth.py` cover the change; if production DDL is needed, the
+     reviewed committed plan must be updated deliberately.
+   - legacy migration repos: if no migration exists, STOP and create one (omitting it means the
+     column won't exist at runtime). If a migration exists, confirm the deployment guide names a
+     migration lane (schema-first with immediate `main→staging` sync, or full parity merge).
+     Do not leave the build artifact implying that normal selective ticket promotion is safe for
+     migration-bearing work.
 
 8. **After the loop converges:**
    - Write tests: run `/write-tests {work-item-id}`
@@ -245,6 +259,7 @@ Build complete for {ID}: {title}
 
 Steps: {N}/{N} completed
 Health gate: PASS (test {p}/{t}, typecheck OK, lint OK)
+Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 
 Next: /review {ID} (review implementation against the plan)
 ```
@@ -286,4 +301,8 @@ Fill in each completed build_todo:
 **Issues encountered:**
 
 - Had to adjust threshold to 0.72 instead of 0.75 based on testing
+
+**Visual evidence (required for UI/visible work):**
+
+- `/absolute/path/to/.context/screenshots/YYYYMMDD-HHMMSS-feature-state.png` — actual browser screenshot of the changed surface
 ```

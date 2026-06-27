@@ -13,9 +13,10 @@ segment** (per-ticket staging statuses were added in migration 025): a unit at
 `ready_to_deploy_production` deploys to prod and advances to `to_verify_prod`. A standalone
 ticket may be landed straight to prod or routed through staging first, depending on its target.
 Epic **members** are still carried by the epic — they reach `merged` and are not deployed
-individually by a scheduled pickup. The ordered epic walk is owned by `/epic-flow --full-auto`:
-after each milestone it invokes this skill for the parent epic's staging deploy, then invokes the
-explicit epic/milestone verifier. After all milestone staging gates pass, `/epic-flow` uses
+individually by a scheduled pickup. The milestone gate is owned by `/milestone-flow`: after each
+milestone's member steps are merged, it invokes this skill for the parent epic's staging deploy,
+then invokes the explicit epic/milestone verifier. After all milestone staging gates pass,
+`/epic-flow` uses
 `/promote-to-production --epic` for the ordered production promotion/deploy path.
 
 Auto-deploy is also the canonical place to record deployment blockers. "Blocked" is not a
@@ -40,8 +41,8 @@ verification status and set the independent blocker metadata (`blocked_at`, `blo
   ticket-flow chooses `staging` vs `production` up front and invokes this skill for the deploy.
 - After `/auto-build` completes for a standalone ticket, with an explicit `staging` or
   `production` target supplied by the caller's risk route
-- For an epic staging gate: after milestone members are `merged`, when called by `/epic-flow`
-  (deploys the parent epic to staging)
+- For an epic staging gate: after milestone members are `merged`, when called by
+  `/milestone-flow` (deploys the parent epic to staging)
 - For epic production promotion/deploy: prefer `/promote-to-production --epic`, which owns the
   ordered verified-step promotion path
 - Scheduled agent picks up standalone or epic units at `ready_to_deploy_staging` /
@@ -166,9 +167,11 @@ Determine the target branch based on environment:
 - **Staging**: rebase onto `staging`
 - **Production**: rebase onto `main`
 
-Rebase the PR branch onto the target to ensure linear history and avoid migration
-conflicts. Database migrations depend on sequential ordering — merging a PR
-whose base is behind the target can cause migration graph conflicts.
+Rebase the PR branch onto the target to ensure linear history and avoid schema/deploy
+conflicts. Database schema changes depend on the repo's active migration system. For
+ts-prefect after E0017, that system is Atlas reviewed-plan/additive-only gates, not Alembic;
+for legacy migration repos, merging a PR whose base is behind the target can still cause
+migration graph conflicts.
 
 ```bash
 # Fetch latest target branch
@@ -206,7 +209,7 @@ git diff origin/{target_branch}..{branch} --name-only
 
 | Category     | Detect                                              |
 | ------------ | --------------------------------------------------- |
-| Migrations   | Files in `alembic/versions/`, `migrations/`         |
+| Schema       | ts-prefect Atlas paths (`ts_schemas/models/`, `atlas.hcl`, `atlas/plans/`, `cli_tools/atlas/`, `migrations/db_object_manifest.py`) or legacy migration dirs (`alembic/`, `migrations/versions/`, Prisma migrations) |
 | Config       | Deployment config files (YAML, env, etc.)           |
 | Dependencies | `pyproject.toml`, `Dockerfile`, `requirements.txt`  |
 
@@ -216,6 +219,24 @@ The project-specific deploy command may define additional categories like
 blocks, Prefect config, DAG nodes, etc. Detect all categories it specifies.
 
 Store detection results for use in Phase 8.
+
+Also compare the deployment guide / milestone gate evidence contract against the detected diff.
+If any verification row expects runtime behavior from a Prefect flow, scheduler, worker,
+supervisor-managed deployment, webhook, canary, stored-row observer, or live deployment, prove
+that one of these is true before merging:
+
+- the diff adds/changes the producing flow entrypoint plus the relevant deployment config
+  (`prefect.*.yaml`, supervisor registration, worker/schedule config, etc.);
+- the deployment guide names an existing deployed object that will produce the evidence, and
+  `prefect deployment ls` / the authoritative deploy system confirms it exists in the target
+  environment; or
+- the deployment guide names an explicit deploy-owned canary/CLI command that will be run in
+  Phase 8 and leave durable evidence for `/ticket-verify`.
+
+If the evidence contract expects runtime rows/logs but the diff is only schema/parser/model code
+and no existing deploy object/command can produce the rows, STOP as a scope mismatch. Do not
+silently skip Prefect deploy merely because `prefect.staging.yaml` / `prefect.prod.yaml` is
+unchanged; report that planning/splitting missed the runtime surface required by the gate.
 
 Also detect **external/manual deploy blockers**. These do not prevent advancing the ticket to the
 next verification status after all automatable deploy work is complete, but they must be recorded
@@ -448,5 +469,6 @@ Status reverted to: {original_status}
 | `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / route-matching ready_to_deploy_* (standalone) |
 | `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies deployment mechanics |
 | `/ticket-verify` | Next step — verifies feature behavior/evidence in staging or production |
-| `/epic-flow` | Parent orchestrator for milestone-by-milestone epic deploy/verify gates |
+| `/milestone-flow` | Parent orchestrator for milestone-by-milestone epic staging deploy/verify gates |
+| `/epic-flow` | Sequences milestone-flow runs and owns final production promotion/verification |
 | `/deploy`      | Project-specific deployment (consumed by auto-deploy)|

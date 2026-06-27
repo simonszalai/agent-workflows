@@ -179,8 +179,19 @@ def select_review_references(changed: list[str], skill_dir: Path) -> list[str]:
     has_ts = any(f.endswith((".ts", ".tsx")) for f in changed)
     has_react = any(f.endswith(".tsx") for f in changed) or \
         any("/components/" in f or "/routes/" in f for f in changed)
-    has_data = any(("/models/" in f and f.endswith(".py")) or "migrations/versions/" in f
-                   or "ts_schemas/models/" in f for f in changed)
+    schema_markers = (
+        "ts_schemas/models/",
+        "atlas.hcl",
+        "atlas/plans/",
+        "cli_tools/atlas/",
+        "migrations/db_object_manifest.py",
+        "migrations/versions/",
+        "prisma/migrations/",
+        "prisma/schema.prisma",
+    )
+    has_data = any(("/models/" in f and f.endswith(".py")) or
+                   any(marker in f for marker in schema_markers)
+                   for f in changed)
     if has_py:
         refs.append("python-standards.md")
     if has_ts:

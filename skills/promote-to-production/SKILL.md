@@ -32,6 +32,13 @@ Infer the mode from the request; if ambiguous, stop and ask for the mode.
 - If a ticket-only promotion cannot be isolated to a proven commit set, stop and report why. Do not silently include unrelated staging changes.
 - If an epic promotion cannot be isolated to the epic's verified step commits, stop and report why.
   Do not silently include unrelated staging work.
+- **Schema-bearing selective promotions are not the fast path.** Keep parallel code velocity by
+  serializing schema. For ts-prefect after E0017, schema changes use Atlas additive-only and
+  reviewed-plan gates; do not create/re-point Alembic migrations. For legacy migration repos,
+  prefer a schema-first migration lane off current `main` (then immediate `main→staging` sync)
+  or an all-staging parity merge. Re-pointing `down_revision` during a cherry-pick is an
+  explicit emergency exception that must be approved and immediately reconciled; never
+  accumulate migration debt across promotions.
 - Read `.claude/commands/deploy.md` if it exists; it overrides generic deployment steps.
 - Read `.claude/environments/prod.md` if it exists for production URLs, service IDs, and verification instructions.
 
@@ -171,22 +178,51 @@ Flag and handle:
 | Change | Detection |
 |---|---|
 | Prisma schema/migrations | `prisma/schema.prisma`, `prisma/migrations/**` |
-| Alembic migrations (ts-prefect) | `migrations/versions/**`, `migrations/env.py` |
+| ts-prefect Atlas schema changes | `ts_schemas/models/**`, `atlas.hcl`, `atlas/plans/**`, `cli_tools/atlas/**`, `migrations/db_object_manifest.py` |
+| Legacy Alembic migrations | `migrations/versions/**`, `migrations/env.py`, `alembic/**` |
 | Seed data | `prisma/data/**`, `prisma/seed.ts` |
 | Dependencies | `package.json`, `bun.lock*` |
 | Runtime/config/deploy | `Dockerfile`, Render/env/config files, `.github/workflows/**` |
 | Auth/API/contracts | route modules, webhook handlers, API utilities |
 
-If migrations are present, check for deployment gotchas in memory and ensure the deployment plan states whether migrations run automatically on push to main or need an explicit command.
+If schema changes/migrations are present, check for repo-specific deployment gotchas in memory and ensure the deployment plan states whether the schema apply runs automatically on push to main or needs an explicit command/workflow verification.
 
-**Migration-bearing tickets need a parity check first.** When the change touches
-`migrations/`, run `/migration-parity-check` before merging. A migration-bearing ticket is
-**not** eligible for selective cherry-pick off a diverged branch: the migration chain is ordered
-global state, so cherry-picking forces a `down_revision` re-point that forks the graph and can
-strand migrations on a live env (`alembic upgrade head` becomes a silent no-op while objects are
-missing — the 2026-06-16 incident). For an all-staging rollup do the full parity merge;
-otherwise re-point onto the target head **and record the reconciliation debt**. Never judge
-divergence by commit count — use content/patch equivalence and per-env schema truth.
+**Schema-bearing promotions need the repo-specific schema lane.** When the change touches
+schema files, do not assume the old migration workflow still applies.
+
+**ts-prefect after E0017 (Atlas path):**
+- Alembic is decommissioned. Do **not** create/re-point Alembic revisions or run
+  `alembic upgrade head`.
+- Promotion must keep `Validate Atlas Schema Plan` green and preserve the additive-only safety
+  gate.
+- Production verification is the main-branch `Run Migrations` workflow's
+  `Run Atlas Reviewed Plan (Prod)` job: reviewed committed plan match (or no-op already applied),
+  DB-only hook, `verify_schema_truth.py`, and post-apply no-op proof.
+- If prod needs DDL, the committed reviewed plan file (`atlas/plans/e0017_m3_prod_reviewed_plan.sql`)
+  must be intentionally updated/reviewed in the PR.
+
+**Legacy Alembic repos/history only:** when the change touches `migrations/`, run
+`/migration-parity-check` before merging. A migration-bearing ticket is **not** eligible for
+ordinary selective cherry-pick off a diverged branch: the migration chain is ordered global
+state, so cherry-picking forces a `down_revision` re-point that forks the graph and can strand
+migrations on a live env (`alembic upgrade head` becomes a silent no-op while objects are
+missing — the 2026-06-16 incident).
+
+Choose one for legacy Alembic:
+
+1. **All-staging rollup:** use a full `staging→main` parity merge (`--merge`, not squash/rebase)
+   and reconcile the branches in that PR.
+2. **Schema-first migration lane:** land the backward-compatible migration from current `main`,
+   deploy it, then immediately sync/back-merge `main` to `staging` before dependent code
+   continues.
+3. **Emergency selective exception:** only with explicit user approval after the parity report.
+   Re-point the migration onto the target head, document old parent/new parent and why the safe
+   lanes were not used, merge/deploy, then immediately run `/migration-parity-check` and
+   reconcile `main`/`staging` before any other migration-bearing promotion. Do not leave
+   "reconciliation debt" for a future batch.
+
+Never judge divergence by commit count — use content/patch equivalence, duplicate-revision drift
+checks, and per-env schema truth.
 
 ### 5. Verify Before Merge
 

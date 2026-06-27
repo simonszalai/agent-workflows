@@ -55,6 +55,7 @@ designing the solution. No separate investigation needed.
 - Side effects (what else this affects)
 - Risks and mitigations
 - Verification strategy (how to know it works)
+- For polling/observer/storage work: data-minimization, retention, and volume budget
 
 **For features, also includes:**
 
@@ -433,11 +434,18 @@ When a plan DOES include code snippets (e.g., for complex features), you MUST:
      project's *real* deploy primitives — discover them from the project `CLAUDE.md`/`AGENTS.md`
      and a memory search (`{"keywords": ["deploy", "migration"], "text": "deployment steps order"}`),
      never generic placeholders. Mark anything not yet known as `TBD — finalize at build`.
+     If the work needs a database migration, also name the **migration lane**: schema-first
+     backward-compatible PR off current `main` with immediate `main→staging` sync, full
+     `staging→main` parity merge, or "no migration". Do not plan ordinary selective
+     cherry-pick promotion for migration-bearing work; that is an emergency exception only.
    - **Verification Evidence contract (per environment):** for **both staging and production**,
-     what evidence proves this works — each item a reproducible read-only query/command, an
+     what evidence proves this works — including the edge cases, not just a happy path — with each item a reproducible read-only query/command, an
      expected good output, and a bad-output interpretation. This is the precise form of the plan's
      `verification_strategy`: "what exactly proves the fix works", split by env. Plus the
      **activation boundary** (how to know the new code is live).
+     For polling/observer/storage features, include explicit write-rate evidence:
+     expected rows/day and bytes/day, dedupe/change-gating behavior on identical polls,
+     and retention/TTL for raw snapshots or append-only observations.
 
    ```
    mcp__autodev-memory__create_artifact(
@@ -701,6 +709,34 @@ Before designing, verify data flow is complete:
 - [ ] **Is that data available?** - Verify sources are configured and populated
 - [ ] **Is the data sufficient?** - Check content quality matches use case needs
 
+### Polling / Storage Amplification Audit (CRITICAL)
+
+When a plan adds or changes a poller, observer, scheduler, queue consumer, webhook,
+scraper, or other path that writes durable rows repeatedly:
+
+- [ ] **Name the durable facts actually needed:** canonical entities, first/last seen
+      timestamps, changed events, health/fetch metadata, or full per-poll history.
+- [ ] **Reject redundant "lossless" writes:** "lossless" means preserving the facts or
+      source events needed by consumers; it does NOT mean saving the same payload/item on
+      every poll interval when nothing changed.
+- [ ] **Classify every write:** canonical upsert, delta/change event, raw snapshot,
+      append-only observation, aggregate, or log. State who reads it.
+- [ ] **Do write-rate math:** `active sources × polls/day × items/response × rows/item`
+      plus expected row width/bytes/day and WAL/index impact. Include worst-case and
+      steady-state estimates.
+- [ ] **Prove dedupe crosses polls:** the uniqueness key must not include only a fresh
+      poll/fetch id if the intent is to dedupe unchanged source data across polls.
+- [ ] **Gate append-only history:** per-poll observations require a named downstream
+      consumer, a retention/partitioning plan, and a volume budget. Otherwise use
+      canonical rows with `first_seen_at`, `last_seen_at`, and `seen_count`, or store only
+      first-seen/changed events.
+- [ ] **Make verification catch amplification:** evidence must show repeated identical
+      polls do not create unbounded duplicate rows, and must extrapolate observed write
+      rate to daily/weekly storage.
+
+**Rule:** If increasing poll frequency linearly increases stored rows for unchanged data,
+the plan is incomplete unless that history is explicitly required, bounded, and budgeted.
+
 ### Elimination Audit (CRITICAL)
 
 When a feature replaces, supersedes, or eliminates an existing system:
@@ -721,9 +757,10 @@ back for revision.
 
 ### Database Changes
 
-- [ ] New tables or columns needed? - Include migration step
-- [ ] New enum values? - Add to migration
-- [ ] Seed data needed? - Include in migration or seed script
+- [ ] New tables or columns needed? - Include migration step and migration-lane decision
+- [ ] New enum values? - Add to migration and migration-lane decision
+- [ ] Seed data needed? - Include in migration or seed script and state whether it is schema-lane critical
+- [ ] If migration-bearing, is it backward-compatible enough to land schema-first before code?
 
 ### API Keys / Environment
 

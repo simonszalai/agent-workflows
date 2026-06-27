@@ -114,6 +114,10 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
         consumes this step's output? What breaks if the contract changes?
      f. Identify edge cases: what happens with empty input, null fields,
         concurrent execution, partial failure?
+     g. For any repeated writer (poller/observer/scheduler/queue/webhook), trace write
+        amplification: what rows are written per run, which writes are canonical upserts
+        vs append-only history, what dedupes across runs, and what happens when the same
+        source payload is observed twice.
 
    **The deepened step must contain enough detail that the builder can
    implement it without needing to do additional research.** If the builder
@@ -171,20 +175,34 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
    the ticket skipped `/plan`) so the deploy steps name the **concrete** objects this build
    produced:
 
-   - the actual **migration** revision id / filename (or "no migration"), and whether it must run
-     before the code deploy;
+   - the actual **schema artifact**: for ts-prefect, Atlas/model/DB-only manifest changes and
+     reviewed plan needs (or "no schema change"); for legacy repos, migration revision id /
+     filename (or "no migration"), and whether it must run before the code deploy;
+   - if there is a schema change, the **schema lane**: ts-prefect Atlas additive-only/reviewed-plan
+     path, schema-first PR off current `main` followed by immediate `main→staging` sync, full
+     `staging→main` parity merge, or no schema lane. Do not mark a schema-bearing ticket as
+     suitable for routine per-ticket cherry-pick promotion unless the repo-specific gate supports it;
+     legacy selective migration cherry-pick is an explicitly approved emergency exception only.
    - the **cross-repo order** confirmed against what was actually built — which repo's change must
      land first and why (the contract that forces it);
    - the **real deploy commands/objects** for this project (discover from the project
      `CLAUDE.md`/`AGENTS.md` + memory — e.g. how code reaches runtime, any scheduler/worker
      deploy, any secret/credential block to provision, DAG/pipeline sync, env vars);
+   - if any verification row requires runtime evidence (canary run, observer, flow, deployment,
+     stored rows, polling, scheduler, worker, Prefect, supervisor, webhook, or live readback), the
+     concrete producing object in the same build scope: flow entrypoint, environment YAML entry,
+     supervisor registration when applicable, deploy-owned canary CLI, or an explicit
+     disposable integration-DB proof instead of staging runtime evidence;
    - the **Verification Evidence** rows refined to concrete queries/commands now that you know the
      real table/column/log names — each with expected good output and a bad-output interpretation,
      for both staging and production.
+   - for polling/observer/storage changes, the **volume and redundancy evidence**: queries that
+     compute rows/run, rows/day, bytes/day, duplicate/unchanged-payload write rate, retention/TTL,
+     and whether repeated identical polls create new durable rows.
 
    Use the template in the `create-deployment-guide` skill. Mark `Status: FINALIZED` only when the
-   deploy steps and both env evidence sections are concrete; otherwise leave the unknown rows as
-   `TBD` and note them.
+   deploy steps and both env evidence sections are concrete **and every runtime evidence row has a
+   producing deployment/command**; otherwise leave the unknown rows as `TBD` and note them.
 
    Find the draft's `artifact_id` in the `get_ticket` response (the `deployment_guide` artifact)
    and update by id; if the ticket skipped `/plan` and none exists, create one instead.
@@ -346,6 +364,28 @@ for the elimination step. This is NOT optional — it is as mandatory as a migra
 **Rule:** If a plan replaces system X with system Y, and the build todos don't include an
 elimination step for X, the build todos are incomplete.
 
+## Polling / Storage Build Todos (CRITICAL)
+
+When the plan includes a poller, observer, scheduler, queue consumer, webhook, scraper, or
+other repeated writer, at least one build todo must own the storage-shape proof:
+
+1. **List durable write paths** — tables/queues/logs written per run and whether each is a
+   canonical upsert, changed-event insert, raw snapshot, append-only observation, or aggregate.
+2. **Prove identical-input behavior** — include a unit/integration test or query showing that
+   two identical polls do not create duplicate durable business data unless explicitly intended.
+3. **Budget the multiplier** — include the formula for rows/day and bytes/day using poll
+   interval, active source count, average/worst-case items per source, row width, and index/WAL
+   impact.
+4. **Bound append-only history** — if per-poll history is truly required, specify the consumer,
+   retention/partitioning policy, and failure mode when the budget is exceeded.
+5. **Prefer canonical/delta storage** — if the only consumer needs actual entries and timestamps,
+   use canonical rows with `first_seen_at`, `last_seen_at`, and `seen_count`, plus optional
+   first-seen/changed events. Do not save the same unchanged payload every poll because the
+   plan says "lossless".
+
+**Rule:** Build todos are incomplete if polling frequency can linearly multiply redundant
+stored data and no step proves that this is required, bounded, and verified.
+
 ## Step Dependencies
 
 Order steps by dependencies:
@@ -364,8 +404,10 @@ Before finalizing each build todo:
 - [ ] Searched memory service for relevant gotchas, patterns, and solutions
 - [ ] Checked memory service results (auto-injected + explicit search if needed)
 - [ ] EVERY build todo has "From memory service" subsection (even if "none applicable")
-- [ ] For database changes: migration gotchas were read and referenced
+- [ ] For database changes: repo-specific schema gotchas were read and referenced (ts-prefect Atlas after E0017; legacy migration rules only where applicable)
 - [ ] For field modifications: all consumers of modified fields were audited
+- [ ] For repeated writers: storage volume math, dedupe/change-gating, retention, and
+      identical-input behavior are specified with tests/queries
 - [ ] Found and documented relevant codebase patterns
 - [ ] Checked git history for context on affected files
 - [ ] Verified CLAUDE.md compliance
@@ -389,12 +431,18 @@ If schema changes are needed:
    creation into a code change step
 2. Include both upgrade AND downgrade functions
 3. Document rollback procedure in the todo
-4. **CRITICAL:** After ANY schema file modification (schema.prisma, models.py, etc.),
-   always create a migration (`bun run migrate`, `alembic revision --autogenerate`, etc.).
-   Never rely on `prisma db push` or equivalent tools alone -- they only sync the local
-   dev database. Deployed environments run migrations, so a missing migration = column not
-   found at runtime. Search memory service for 'prisma migration process' for details.
-5. **CRITICAL for derived clients / multi-DB apps:** A migration file is not enough. Add a
+4. Document the promotion path as **schema-lane**, not ordinary ticket cherry-pick:
+   - ts-prefect after E0017: Atlas additive-only/reviewed-plan path; no Alembic revisions.
+   - legacy migration repos: schema-first/backward-compatible off current `main` with immediate
+     `main→staging` sync, or a full parity merge. If the plan proposes selective migration
+     cherry-pick, send it back unless it explicitly records an approved emergency exception.
+5. **CRITICAL:** After ANY schema file modification (schema.prisma, models.py, SQLModel, etc.),
+   use the repo's active schema system. For Prisma/Alembic repos, create a migration (`bun run
+   migrate`, `alembic revision --autogenerate`, etc.). For ts-prefect, do **not** create Alembic
+   migrations; ensure Atlas plan/safety checks, the reviewed prod plan gate when needed, and
+   `verify_schema_truth.py` cover the change. Never rely on `prisma db push` or equivalent local
+   sync tools alone.
+6. **CRITICAL for derived clients / multi-DB apps:** A migration file is not enough. Add a
    verification/deploy step proving the new column/table/enum is present in every runtime DB
    that the generated client will query (for example every configured `DATABASE_URL_*`). If any
    DB lags, default ORM selects such as Prisma `findMany()` can crash globally with column-not-

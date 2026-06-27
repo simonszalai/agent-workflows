@@ -14,8 +14,8 @@ deploys, credential blocks, env vars — and (b) **what evidence proves it works
 production.
 
 This artifact is **stored in the MCP ticket system** (`artifact_type="deployment_guide"`), never as
-a file on disk. Its downstream consumers (`/auto-deploy`, `/create-pr`, `/ticket-verify`,
-`/promote-to-production`) all read it via `get_ticket`.
+a file on disk. Its downstream consumers (`/milestone-flow`, `/auto-deploy`, `/create-pr`,
+`/ticket-verify`, `/promote-to-production`) all read it via `get_ticket`.
 
 ## The artifact is authored progressively
 
@@ -40,7 +40,8 @@ exists (e.g. ticket skipped `/plan`), create one.
 
 - After `/resolve-review` completes (code is final)
 - Automatically as part of `/auto-build` (Phase 8)
-- Before `/auto-deploy` / `/ticket-verify`
+- Before `/milestone-flow` deploys/verifies a milestone, or before standalone `/auto-deploy` /
+  `/ticket-verify`
 
 ## Prerequisites
 
@@ -66,10 +67,11 @@ plan's predictions, grade them against what was actually built:
 
 | Change Type            | Deployment Requirement                          |
 | ---------------------- | ----------------------------------------------- |
-| Database migrations    | Migration must run before code that reads it    |
-| New/changed models     | Schema change → migration                       |
+| Database schema changes | Schema apply/migration must run before code that reads it |
+| New/changed models     | Use repo active schema system (ts-prefect Atlas after E0017; Prisma/Alembic migrations elsewhere) |
 | New services/jobs      | Service deploy + schedule registration          |
 | Scheduler/worker/cron  | Deploy + (re)register the schedule               |
+| Runtime canary/observer evidence | Flow/CLI/deployment that produces the evidence rows |
 | Secrets/credential cfg | Provision the block/secret before first run     |
 | Config / env vars      | Set in each environment before deploy            |
 | Cross-repo contracts   | Producer deploys before consumer (or vice versa)|
@@ -103,12 +105,34 @@ evidence that proves the change works. Every evidence item MUST be:
 - a **bad-output interpretation** (what a failure looks like and what it means).
 
 Generic acceptance ("it works") is not evidence. "Row count in table X for records landed after
-the activation commit is > 0, and `status='ok'` for all of them" is evidence.
+the activation commit is > 0, and `status='ok'` for all of them" is evidence. The contract must
+cover every edge case named in the source, plan, acceptance criteria, build todos, review notes,
+and bug hypotheses; one happy-path row is not enough.
+
+For pollers, observers, schedulers, queue consumers, webhooks, scrapers, supervisor flows, or
+any repeated writer that persists data, the evidence contract must also prove storage shape:
+
+- expected rows/run, rows/day, bytes/day, index/WAL impact, and retention/TTL;
+- a read-only duplicate/unchanged-source check showing repeated identical polls do not create
+  redundant business rows unless explicitly required;
+- a query that distinguishes canonical rows from append-only observations/snapshots/logs;
+- the named downstream consumer for any per-poll append-only history.
+
+Do not let "rows exist" be the only success criterion for a repeated writer. A feature can be
+functionally alive and still fail verification because polling frequency is multiplying
+redundant storage.
 
 Also record the **activation boundary**: how a verifier knows the new code is actually live
 (commit landed on `origin/main` / `origin/staging`; or, for runtime-git-pull projects, the first
 flow/job run that started after the land — measure fill rates from the first post-land row, not
 from merge time).
+
+If any evidence row expects runtime behavior (canary run, observer, flow, deployment, stored rows,
+polling, scheduler, worker, Prefect, supervisor, webhook, or live readback), the guide must name
+the producing deploy object/command in the Deployment Steps. Do not leave a guide FINALIZED when
+verification expects rows/logs from a flow that the diff did not add or an existing deployment
+cannot produce. Either add the producing flow/YAML/supervisor/CLI step, or revise the evidence
+contract to a different proof mechanism before deploy.
 
 ### 5. Write/update the artifact
 
@@ -174,6 +198,7 @@ Process step 3), not placeholders.
 | 4 | {e.g. deploy scheduler/worker, register schedule} | {…}              | {…} |
 | 5 | {e.g. set env var}   | {VAR + value/where}                            | {…} |
 | 6 | {e.g. DAG/pipeline sync} | {…}                                        | {…} |
+| 7 | {e.g. run bounded canary that writes verification rows} | {real deployment/CLI command} | {durable evidence exists for `/ticket-verify`} |
 
 ### Pre-Deployment Checklist
 
@@ -189,8 +214,9 @@ Process step 3), not placeholders.
 
 ## Verification Evidence
 
-What proves this works. `/ticket-verify` grades **every** item in the relevant environment; the
-verdict is PASS only if all pass.
+What proves this works. `/ticket-verify` grades **every** item in the relevant environment and
+writes the actual observations to the fixed `verification_evidence` artifact slot; the verdict is
+PASS only if all rows and all listed edge cases pass.
 
 ### Activation boundary
 

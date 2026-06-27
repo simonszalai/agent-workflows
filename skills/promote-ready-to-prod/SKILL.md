@@ -37,11 +37,21 @@ does.
 
 - **Production-impacting. Prefer stopping over guessing.** Every stop must say exactly which
   tickets already landed, which is stuck, and which were never touched.
-- **One ticket fully landed AND deployed before the next begins.** Migrations are sequential;
-  a later ticket's migration parent is the previous ticket's migration once it is on `main`.
-  Never land all the code first and batch the deploys at the end.
+- **One ticket fully landed AND deployed before the next begins.** Schema/deploy state is
+  sequential even when code can move independently. Never land all the code first and batch
+  the deploys at the end.
+- **This batch path is code-first, not a schema debt machine.** If a ready ticket carries
+  schema changes, use the repo's current schema lane before normal cherry-pick promotion:
+  - **ts-prefect (post E0017, 2026-06-26):** Atlas owns staging/prod. There is no Alembic
+    graph, no `migrations/versions/`, and no production `alembic_version` table. Schema
+    changes must be backward-compatible model/Atlas changes, pass `Validate Atlas Schema Plan`,
+    and promote through the reviewed committed prod plan gate.
+  - **Legacy Alembic repos/history:** use schema-first PR off current `main` with immediate
+    `main→staging` sync, or a full `staging→main` parity merge. A per-ticket `down_revision`
+    re-point is an explicit emergency exception only, requires user approval, and must be
+    reconciled before the next ticket in the batch.
 - **Stop the whole batch on the first hard failure.** Do not skip a failed ticket and continue —
-  later tickets may depend on it and the Alembic chain must stay linear. Report and halt.
+  later tickets may depend on it and schema/deploy state must stay coherent. Report and halt.
 - All cherry-pick / conflict / migration-repair work happens in a **fresh `git worktree` under
   `.context/`**. Never mutate the current Conductor workspace. Never use `git reset --hard`,
   `git checkout -- <file>`, `git restore`, `git clean`, or unscoped `git stash` in the shared
@@ -59,14 +69,13 @@ does.
 Search autodev-memory and load these before touching anything (they encode failures this skill
 exists to prevent):
 
-- `mcp__autodev-memory__search` for **"production promotion gotchas cherry-pick alembic fork
-  prefect prod env"** (repo `ts-prefect`). The key entry documents:
-  1. **Single-ticket cherry-pick forks the Alembic graph.** The promoted migration's
-     `down_revision` points at a staging-only revision that is not on `main`, so
-     `alembic upgrade` raises a missing-revision error and CI's migration-graph validation
-     fails. **Fix during promotion:** re-point the migration's `down_revision` (and the
-     `Revises:` docstring line) to `main`'s *actual* current head, then confirm exactly one
-     head (`alembic heads`).
+- `mcp__autodev-memory__search` for **"ts-prefect Atlas cutover reviewed plan gate Alembic
+  decommissioned prod env"** (repo `ts-prefect`). The key current entry documents:
+  1. **ts-prefect uses Atlas now.** Do not create/re-point Alembic revisions; `migrate.yml`
+     production uses `Run Atlas Reviewed Plan (Prod)`,
+     `atlas/plans/e0017_m3_prod_reviewed_plan.sql`, `check_schema_plan_safety.py`, and
+     `check_schema_plan_matches.py`. Historical Alembic fork memories explain why Atlas was
+     adopted; they are not instructions to repair/create Alembic migrations for new work.
   2. **Prod Prefect deploy needs the mounted prod env pipe sourced.** Deploying flows to prod
      with only the prod profile active fails with a client connection error even when a plain
      health check passes. Source the Conductor-mounted prod env pipe
@@ -120,7 +129,14 @@ git merge-base --is-ancestor <sha> origin/main && echo "already on main (skip)"
   landed — mark it "already on main" and advance its status to `to_verify_prod` if it is still
   `staging_verified`, then exclude it from the deploy loop.
 - **Order the batch by staging merge order** — the sequence in `git log origin/main..origin/staging`
-  (oldest first). This keeps cherry-picks applying cleanly and the Alembic chain linear.
+  (oldest first). This keeps cherry-picks applying cleanly for code-only tickets.
+- Mark tickets whose unpromoted diff touches schema sources as **schema-lane**:
+  - ts-prefect: `ts_schemas/models/**`, `atlas.hcl`, `atlas/plans/**`, `cli_tools/atlas/**`,
+    `migrations/db_object_manifest.py`.
+  - legacy migration repos: `migrations/versions/**`, `alembic/**`, Prisma migration dirs.
+  Do not silently mix schema-lane tickets into a code batch. For ts-prefect, require the Atlas
+  additive-only/reviewed-plan path; for legacy Alembic repos, report schema-first/full-parity
+  options unless the user explicitly approved an emergency selective migration exception.
 - Reject (STOP) any ticket whose commit set pulls in unrelated tickets, or that requires
   unrelated staging dependencies, without explicit approval. Do not silently widen scope.
 
@@ -159,18 +175,39 @@ Conflict handling:
 - If a conflict reveals an **undeclared dependency** on unrelated staging work, STOP the batch
   and report — do not widen scope.
 
-#### C3. Repair the Alembic graph (if the ticket adds a migration)
+#### C3. Schema gate (if the ticket changes schema)
 
-If C2 brought in files under `migrations/versions/`:
+If C2 brought in schema files:
 
-1. Find `main`'s current head: `uv run alembic heads` (or read the head migration's revision).
-2. In the promoted migration file, set `down_revision` to **main's actual head**, and update
+**ts-prefect after E0017 (Atlas path):**
+
+1. Do **not** create or repair Alembic migrations. If the diff contains `alembic.ini`,
+   `migrations/env.py`, `migrations/versions/**`, or `cli_tools/run_migrations.py`, STOP: it is
+   reintroducing decommissioned tooling.
+2. Confirm the PR/checks include `Validate Atlas Schema Plan` and the plan is additive-only.
+3. For production, confirm the ticket/PR updates or intentionally leaves
+   `atlas/plans/e0017_m3_prod_reviewed_plan.sql`, and that prod `Run Migrations` will pass the
+   reviewed-plan exact-match/no-op gate.
+4. Confirm DB-only object changes live in `migrations/db_object_manifest.py` and are covered by
+   `verify_schema_truth.py`.
+
+**Legacy Alembic repos/history only:** if C2 brought in files under `migrations/versions/`:
+
+1. **STOP by default.** This ticket belongs in the serialized migration lane, not the normal
+   ready batch.
+2. If the user has explicitly approved an emergency exception for this exact ticket, run
+   `/migration-parity-check` and continue only if no stranded env and no outstanding
+   duplicate-revision drift exists.
+3. Find `main`'s current head: `uv run alembic heads` (or read the head migration's revision).
+4. In the promoted migration file, set `down_revision` to **main's actual head**, and update
    the `Revises:` docstring line to match.
-3. Confirm a single head: `uv run alembic heads` → exactly one.
+5. Confirm a single head: `uv run alembic heads` → exactly one.
+6. Record old parent/new parent and the approval in the manifest.
+7. After C7 deploy, run `/migration-parity-check` and reconcile `main`/`staging` **before the
+   next ticket in this batch**. If reconciliation cannot happen now, STOP the batch.
 
-This prevents the missing-revision error and the CI migration-graph failure. (Note this leaves
-the same revision id on both branches with different parents; the next staging→main sync must
-reconcile it — flag it in the manifest, do not try to fix staging here.)
+This prevents a missing-revision error but creates temporary branch debt. Temporary means same
+run, not "some future sync."
 
 #### C4. Detect deploy categories — BEFORE merge
 
@@ -178,7 +215,8 @@ Detection must run before the merge advances `main`. Use the categories from
 `.claude/commands/deploy.md` Phase 1:
 
 ```bash
-git diff origin/main..HEAD --name-only -- migrations/versions/          # migrations
+git diff origin/main..HEAD --name-only -- ts_schemas/models/ atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py  # ts-prefect Atlas schema
+git diff origin/main..HEAD --name-only -- migrations/versions/ alembic/ prisma/migrations/  # legacy migrations
 git diff origin/main..HEAD --name-only -- src/blocks/ cli_tools/save_blocks.py   # blocks
 git diff origin/main..HEAD --name-only -- prefect.prod.yaml             # prefect config
 git diff origin/main..HEAD --name-only -- pyproject.toml Dockerfile requirements.txt  # deps
@@ -189,9 +227,9 @@ Record which categories fired for this ticket in the manifest.
 
 #### C5. Local checks in the worktree
 
-Run the repo's standard checks (`uv run` lint/typecheck/tests as practical, and the
-migration-graph validation if available). Do not start flows or the dev server. Fix only
-promotion/conflict/migration-repair issues — no unrelated refactors.
+Run the repo's standard checks (`uv run` lint/typecheck/tests as practical, plus the
+repo-specific schema validation if schema files changed). Do not start flows or the dev
+server. Fix only promotion/conflict/schema-gate issues — no unrelated refactors.
 
 #### C6. Land on main (squash merge)
 
@@ -213,8 +251,12 @@ Execute **only the detected categories** from C4, in this exact order, **executi
 yourself** (do not just print commands). Use the production env file, Prefect API URL, and YAML
 from `deploy.md` — read it for the current values; do not hardcode env IDs.
 
-1. **Migrations** (if detected): `op run --environment <prod> -- uv run alembic upgrade head`.
-   Verify it completes without error.
+1. **Schema migrations/apply** (if detected):
+   - ts-prefect: do **not** run Alembic. Verify the main-branch `Run Migrations` workflow's
+     `Run Atlas Reviewed Plan (Prod)` job is green, including reviewed-plan match/no-op,
+     DB-only hook, and `verify_schema_truth.py`.
+   - legacy Alembic repos: `op run --environment <prod> -- uv run alembic upgrade head`.
+     Verify it completes without error.
 2. **Save blocks** (if detected): prod `save_blocks --yes` per deploy.md. Verify.
 3. **Prefect deploy** (if `prefect.prod.yaml` changed): **source the prod env pipe first in the
    same shell**, then deploy:
@@ -282,14 +324,16 @@ Next: /ticket-verify production   (verifies the promoted tickets in prod)
 Per-ticket cherry-pick promotion only ADDS divergence — it never drains it. Every
 migration-bearing ticket re-pointed its `down_revision` on `main` in C3, so `main` and `staging`
 now hold the same revision ids under different parents (recorded as reconciliation debt). Letting
-that accumulate across batches is exactly what produced the 2026-06-16 fork (R0031/R0032). After
-the batch:
+that accumulate across batches is exactly what produced the 2026-06-16 fork (R0031/R0032).
+Therefore Phase E is mandatory after any emergency migration exception and advisory otherwise.
+After the batch:
 
 1. Run `/migration-parity-check` — it reports content/patch-equivalence (not commit counts) and
    per-environment schema truth, and surfaces any stranded migration.
-2. If it shows residual migration divergence or any C3 reconciliation debt, schedule a full
-   `staging→main` parity merge (`/promote-to-production --all-staging`, a real `--merge` commit)
-   to re-linearize both branches onto one graph. Do **not** carry the debt into the next batch.
+2. If it shows residual migration divergence or any C3 reconciliation debt, perform the
+   reconciliation now (usually a full `staging→main` parity merge with a real `--merge` commit,
+   or an explicit `main→staging` sync if `main` is the schema source of truth). Do **not** carry
+   the debt into the next batch.
 3. Record the outcome in the batch manifest — either `parity: clean` or the exact outstanding
    debt — so the next run starts from a known state.
 

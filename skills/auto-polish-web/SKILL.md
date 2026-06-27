@@ -93,7 +93,7 @@ Track per iteration:
 - changes applied (file:line list)
 - verify result
 - commit sha
-- screenshot refs
+- screenshot refs, stored as absolute paths to actual-browser screenshots
 
 For iteration N (1..max_iterations):
 
@@ -217,6 +217,7 @@ Polish complete — converged at iteration N.
 - Scope: R routes
 - Findings resolved: X
 - Commits added: N
+- Screenshots: {absolute paths to final actual-browser screenshots}
 - Artifact: polish_report on {ticketId}
 ```
 
@@ -226,12 +227,14 @@ Polish complete — iteration cap (10) reached.
 - Findings resolved: X
 - Findings remaining (deferred): Y — see artifact
 - Commits added: N
+- Screenshots: {absolute paths to latest actual-browser screenshots}
 ```
 
 ### On verify failure
 ```
 Polish stopped — verify failed on two adjacent iterations.
 - Polish commits created: N (kept, last iteration reverted)
+- Screenshots: {absolute paths to failure-state actual-browser screenshots}
 - Artifact: polish_report on {ticketId} (status=verify_failure)
 
 Build continues. PR reflects polish commits that did pass verify.

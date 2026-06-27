@@ -62,5 +62,12 @@ This policy chooses the route; it does not define project-specific deploy comman
   transition to `to_verify_staging` or `to_verify_prod`.
 - `/ticket-verify` owns post-deploy behavior/evidence testing. A staging-first ticket is not
   production-ready until `/ticket-verify staging` passes and promotion/deployment completes.
-- Epic steps remain parent-owned: `/ticket-flow` does not individually deploy/verify a step when
-  the milestone/epic orchestrator owns the integration gate.
+- Epic steps remain parent-owned: `/ticket-flow` never deploys or verifies a step's runtime
+  surface in isolation — the milestone deploy + cross-step gate are milestone-level and owned by
+  `/milestone-flow`. But a `/ticket-flow` run on an epic step must not dead-end at a
+  silently-undeployed `merged`: a **direct** run (no `--epic-context`) that lands the milestone's
+  final step hands off to `/milestone-flow <EPIC> <MILESTONE>`, which deploys the milestone target
+  and runs the explicit epic/milestone verifier. A **delegated** run (`--epic-context`, invoked by
+  `/milestone-flow`) or one that leaves sibling steps open lands only; `/milestone-flow` deploys +
+  verifies once the milestone is complete. Either way `/milestone-flow` deploys the gate before
+  reporting milestone success.

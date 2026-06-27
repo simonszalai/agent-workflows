@@ -109,6 +109,12 @@ Create the PR summary with this structure:
 
 **Status:** {PASS | FAIL | SKIPPED}
 
+## Visual Evidence
+
+Required when the PR changes UI or any visible/rendered output. List actual-browser screenshots by absolute filesystem path, or write `Not applicable (no UI/visible output changed)`.
+
+- `/absolute/path/to/.context/screenshots/YYYYMMDD-HHMMSS-feature-state.png`
+
 {If verified:}
 - {How it was verified: local tests, browser verification, etc.}
 - {Key scenarios checked}
@@ -201,6 +207,7 @@ Summary:
 - Tests: {N passing} / {N total}
 - Verification: {PASS/FAIL/SKIPPED}
 - Review: {N findings resolved, N remaining P3}
+- Screenshots: {absolute paths to actual-browser screenshots for UI/visible work, or not applicable}
 
 Work item: {work-item-id}
 

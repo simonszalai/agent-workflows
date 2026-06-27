@@ -73,10 +73,14 @@ directory is used.
      title="<title>",
      type="feature" | "bug",
      description="<description content>",
+     summary_bullets=["<what>", "<why>", "<scope/approach>"],  # dashboard header summary; omit only if truly unknown
      status="backlog" | "in_progress",
      command="/curator", agent="ticket-curator"
    )
    ```
+
+   `summary_bullets` is a compact 3–6 bullet summary the dashboard renders as the ticket header.
+   Derive it from the title/description you just wrote; left unset it defaults to `[]` (blank header).
 
 3. **Report:** "Created ticket {ticket_id}: {title}"
 

@@ -134,6 +134,14 @@ WHERE p.id IS NULL AND c.created_at >= '$DEPLOY_TIME';
 | Feature behavior A       | Query table X          | 23 rows found  | PASS   |
 | Feature behavior B       | Prefect flow logs      | Messages found | PASS   |
 
+If verifying an epic or milestone, also map every evidence row to the step ticket(s) and
+contract edge(s) it validates. The parent `/ticket-verify` runner must persist evidence in three
+places, so your report must be easy to split into:
+
+1. canonical milestone/final gate evidence on the epic;
+2. full step-ticket evidence artifacts for every included step ticket;
+3. compact epic summary.
+
 ### Phase 6: Anomaly Detection
 
 Compare volume before vs after deployment. Flag sudden drops, spikes, or flatlines.
@@ -164,11 +172,16 @@ Compare volume before vs after deployment. Flag sudden drops, spikes, or flatlin
 uv run prefect flow-run ls --flow-name <flow> --state COMPLETED --limit 10
 ```
 
-### 2. Service Logs / 3. Database State / 4. Data Quality
+### 2. Service Logs / 3. Database State / 4. Data Quality / 5. Visual Evidence
 
-[Tables with evidence and reproducible commands]
+[Tables with evidence and reproducible commands. For UI/visible behavior, include actual-browser screenshots with absolute filesystem paths.]
 
 ### Overall Result: PASS / FAIL / NEEDS_MORE_TIME
+
+**Artifact placement notes:**
+- Canonical gate scope, if any: [e.g. E0007/M2]
+- Step-ticket evidence slices: [ticket -> evidence rows]
+- Epic summary bullets: [gate verdict + next action]
 
 **Recommendation:** [next steps]
 ```

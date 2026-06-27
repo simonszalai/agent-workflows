@@ -85,9 +85,10 @@ git diff --name-only main
 # Categorize changes
 git diff --name-only main -- '*.py'                              # Python files
 git diff --name-only main -- '*.ts' '*.tsx'                      # TypeScript files
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' migrations/versions/  # Data
+git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/  # Data/schema
 git diff --name-only main -- '*/flows/*.py' '*/tasks/*.py'       # Pipeline/flow code
 git diff --name-only main -- '*/scrapers/*' '*/scraper*'         # Scraper code
+git diff --name-only main -- '*poll*' '*observer*' '*scheduler*' 'prefect.*.yaml'  # Repeated writers
 git diff --name-only main -- 'prefect.*.yaml'                    # Prefect deployment config
 git diff --name-only main -- '*/prompts/*' '*/contracts/*'       # LLM prompts/contracts
 git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs only
@@ -110,13 +111,29 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 | Database/model/migration changes | reviewer | `opus` | references/data-integrity.md, references/migrations.md, references/deployment.md | Model files, migrations, schema changes    |
 | React/frontend changes           | reviewer | `sonnet` | references/react-router.md, references/react-performance.md       | React components, routes, hooks, UI state  |
 | Data pipeline changes            | reviewer | `sonnet` | references/data-adequacy.md                                       | Pipeline contracts, DAG nodes, data flow   |
+| Polling/storage repeated writes  | reviewer | `opus` | references/data-integrity.md, references/performance.md, references/deployment.md | Pollers, observers, schedulers, queues, webhooks, scrapers that persist rows |
 
 **CRITICAL: data reviewer spawn rule.** Always check for model file changes explicitly:
 ```bash
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' migrations/versions/
+git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/
 ```
 If ANY model or migration files appear, spawn the data reviewer. Do NOT rely on build_todos
 or plan.md to determine this — check the actual diff. Missing migrations are a p1 finding.
+
+**CRITICAL: polling/storage amplification rule.** If the diff adds or changes a repeated
+writer (poller, observer, scheduler, queue consumer, webhook, scraper, supervisor flow, or
+Prefect deployment) that persists data, spawn the data/performance reviewer even if no model
+file changed. The reviewer must check:
+
+- whether unchanged source data creates new durable rows on every run;
+- whether "lossless" is being used to justify duplicate per-poll payload/item storage;
+- row/day, bytes/day, index/WAL impact, and retention/partitioning;
+- dedupe/change-gating keys across runs, not only within a fresh fetch/run id;
+- whether the plan's consumers need full per-poll history or only canonical entries,
+  first/last-seen timestamps, health metadata, or changed events.
+
+Unbounded redundant persistence that scales linearly with polling frequency is a p1 finding
+unless a named consumer, retention policy, and volume budget make it intentional.
 
 **Project-specific persona reviewers** (discovered dynamically):
 
@@ -142,7 +159,7 @@ Before spawning, announce which reviewers were selected and why:
 Review team:
 - code-quality (always) [sonnet]
 - architecture-security-performance (always) [opus]
-- data-integrity — migration file in migrations/versions/ [opus]
+- data-integrity — model/schema/Atlas/migration files changed [opus]
 - react — components changed in app/components/ [sonnet]
 - pipeline-reviewer — DAG node declarations modified [project persona]
 ```
@@ -544,7 +561,7 @@ isn't dead code.
 
 | Priority | Meaning                                          | Examples                               |
 | -------- | ------------------------------------------------ | -------------------------------------- |
-| **p1**   | Must fix - correctness, security, data integrity | Bugs, vulnerabilities, data loss risk, old system not deleted after replacement added |
+| **p1**   | Must fix - correctness, security, data integrity | Bugs, vulnerabilities, data loss risk, unbounded redundant per-poll persistence, old system not deleted after replacement added |
 | **p2**   | Should fix - maintainability, performance        | YAGNI violations, complexity, patterns |
 | **p3**   | Nice to have - style, minor improvements         | Naming, documentation, clarity         |
 

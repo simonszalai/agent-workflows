@@ -15,6 +15,21 @@ Standards for reviewing data migrations, backfills, and data transformations. Ap
 - [ ] If mappings/IDs/enums involved, paste assumed vs live mapping side-by-side.
 - [ ] Never trust fixtures - they often have different IDs than production.
 
+
+## ts-prefect exception — Atlas after E0017
+
+ts-prefect no longer uses Alembic for application schema migrations. If reviewing ts-prefect:
+
+- Do **not** ask for `alembic revision`, `alembic heads`, `alembic merge`, or
+  `migrations/versions/**`. Those files were decommissioned in E0017/M3.
+- Review SQLModel/Atlas changes instead: `ts_schemas/models/**`, `atlas.hcl`, `atlas/plans/**`,
+  `cli_tools/atlas/**`, and `migrations/db_object_manifest.py`.
+- Required evidence is Atlas additive-only safety, reviewed committed prod plan match/no-op for
+  production, DB-only hook success, and `verify_schema_truth.py`.
+- A diff that reintroduces Alembic config/versions in ts-prefect is a blocker.
+
+The Alembic checklist below remains valid for repos that still actively use Alembic.
+
 ### 2. Validate Migration Code
 
 - [ ] **Correct module prefix**: `sa.Column()` not `op.Column()` — `alembic.op` has no
@@ -117,7 +132,7 @@ For each issue:
 
 ### Post-Merge Head Check (Branch Merges)
 
-When merging main into a feature branch (or vice versa), both branches may have added
+For repos that still use Alembic, when merging main into a feature branch (or vice versa), both branches may have added
 migrations, creating multiple Alembic heads. CI will fail with "Multiple heads are present".
 
 - [ ] After `git merge origin/main`, run `alembic heads` — must show exactly 1 head
