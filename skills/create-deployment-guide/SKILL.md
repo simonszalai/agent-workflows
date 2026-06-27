@@ -109,6 +109,19 @@ the activation commit is > 0, and `status='ok'` for all of them" is evidence. Th
 cover every edge case named in the source, plan, acceptance criteria, build todos, review notes,
 and bug hypotheses; one happy-path row is not enough.
 
+For pollers, observers, schedulers, queue consumers, webhooks, scrapers, supervisor flows, or
+any repeated writer that persists data, the evidence contract must also prove storage shape:
+
+- expected rows/run, rows/day, bytes/day, index/WAL impact, and retention/TTL;
+- a read-only duplicate/unchanged-source check showing repeated identical polls do not create
+  redundant business rows unless explicitly required;
+- a query that distinguishes canonical rows from append-only observations/snapshots/logs;
+- the named downstream consumer for any per-poll append-only history.
+
+Do not let "rows exist" be the only success criterion for a repeated writer. A feature can be
+functionally alive and still fail verification because polling frequency is multiplying
+redundant storage.
+
 Also record the **activation boundary**: how a verifier knows the new code is actually live
 (commit landed on `origin/main` / `origin/staging`; or, for runtime-git-pull projects, the first
 flow/job run that started after the land — measure fill rates from the first post-land row, not

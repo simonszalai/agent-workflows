@@ -24,6 +24,10 @@ skill, not a deploy/verify skill.
 - Do not run deployment commands.
 - Do not verify production behavior.
 - Do not promote unrelated staging commits in ticket mode.
+- **Migration-bearing tickets are not normal ticket-promote work.** Code can move independently;
+  schema order is global state. Prefer the serialized migration lane (schema-first PR off current
+  `main`, then immediately sync/back-merge to `staging`) or a full `staging→main` parity merge.
+  Selective migration cherry-picks are an explicit emergency exception only.
 - Use an isolated worktree under `.context/`; never mutate the user's current workspace for
   promotion conflict resolution.
 
@@ -68,7 +72,7 @@ git cherry-pick -x <sha1> <sha2> ...
 If conflicts reveal an undeclared dependency on unrelated staging work, stop and report. Do not
 silently widen scope.
 
-### 3b. Migration pre-flight (if the ticket carries a migration)
+### 3b. Migration gate (if the ticket carries a migration)
 
 If the cherry-picked diff touches `migrations/versions/`:
 
@@ -77,18 +81,31 @@ git diff --name-only origin/main...HEAD -- migrations/versions/
 ```
 
 A migration cherry-picked onto a diverged `main` will point its `down_revision` at a
-staging-only revision that is not on `main`, forking the Alembic graph. Before continuing:
+staging-only revision that is not on `main`, forking the Alembic graph. This is how parallel
+code velocity turns into migration debt. Before continuing:
 
-1. **Run `/migration-parity-check`.** If it reports a stranded env or true divergence on the
-   migration chain, STOP — a migration-bearing ticket is not eligible for selective cherry-pick
-   off a diverged branch. Escalate to a full `staging→main` parity merge
-   (`/promote-to-production --all-staging`) instead.
-2. If parity is clean, **repair the graph**: set the promoted migration's `down_revision` (and
-   its `Revises:` docstring) to `main`'s actual head — `uv run alembic heads` — then confirm a
-   single head (`uv run alembic heads` → exactly one).
-3. **Record the reconciliation debt** in the manifest: the same revision id now exists on both
-   branches with a different `down_revision`; the next full `staging→main` sync must reconcile
-   it. Do not try to "fix" staging here.
+1. **Run `/migration-parity-check`.**
+2. **Default action: STOP.** A migration-bearing ticket should move through one of these safe
+   lanes instead:
+   - **Schema-first lane:** create/land the backward-compatible migration on current `main`,
+     deploy it, then immediately merge/sync `main` back to `staging` before dependent code lands.
+   - **Full parity lane:** if the migration is already on `staging`, use
+     `/promote-to-production --all-staging` as a real merge commit and reconcile the branches in
+     the same operation.
+3. **Emergency exception only:** continue with selective cherry-pick only if the user explicitly
+   approves the exact exception after seeing the parity report, and all are true:
+   - no stranded env/schema-truth failure exists;
+   - there is no outstanding duplicate-revision drift between `main` and `staging`;
+   - the PR body/manifest names the migration file(s), old parent, new parent, and why the safe
+     lanes were not used;
+   - the operator commits to an immediate post-merge `main↔staging` reconciliation before any
+     other migration-bearing promotion.
+4. If the emergency exception is approved, re-point the promoted migration's `down_revision`
+   (and its `Revises:` docstring) to `main`'s actual head — `uv run alembic heads` — then confirm
+   a single head (`uv run alembic heads` → exactly one). This is **temporary debt**, not a normal
+   success state.
+5. After merge, immediately run `/migration-parity-check` and reconcile `main`/`staging`. Do not
+   leave "the next full sync" as the owner of the debt.
 
 New migrations must already be order-independent (idempotent, additive, absolute-not-relative);
 CI (`cli_tools/lint_migrations.py`) enforces this and rejects re-pointing an already-released

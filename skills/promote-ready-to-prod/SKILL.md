@@ -40,6 +40,12 @@ does.
 - **One ticket fully landed AND deployed before the next begins.** Migrations are sequential;
   a later ticket's migration parent is the previous ticket's migration once it is on `main`.
   Never land all the code first and batch the deploys at the end.
+- **This batch path is code-first, not a migration debt machine.** If a ready ticket carries
+  migrations, the default action is to STOP before landing it and move that work through the
+  serialized migration lane: schema-first PR off current `main` with immediate `main→staging`
+  sync, or a full `staging→main` parity merge. A per-ticket `down_revision` re-point is an
+  explicit emergency exception only, requires user approval, and must be reconciled before the
+  next ticket in the batch.
 - **Stop the whole batch on the first hard failure.** Do not skip a failed ticket and continue —
   later tickets may depend on it and the Alembic chain must stay linear. Report and halt.
 - All cherry-pick / conflict / migration-repair work happens in a **fresh `git worktree` under
@@ -64,9 +70,9 @@ exists to prevent):
   1. **Single-ticket cherry-pick forks the Alembic graph.** The promoted migration's
      `down_revision` points at a staging-only revision that is not on `main`, so
      `alembic upgrade` raises a missing-revision error and CI's migration-graph validation
-     fails. **Fix during promotion:** re-point the migration's `down_revision` (and the
-     `Revises:` docstring line) to `main`'s *actual* current head, then confirm exactly one
-     head (`alembic heads`).
+     fails. **Do not treat re-pointing as routine.** Prefer schema-first or full parity merge.
+     Re-point only as an explicitly approved emergency exception, then immediately reconcile
+     `main`/`staging` before the next migration-bearing promotion.
   2. **Prod Prefect deploy needs the mounted prod env pipe sourced.** Deploying flows to prod
      with only the prod profile active fails with a client connection error even when a plain
      health check passes. Source the Conductor-mounted prod env pipe
@@ -120,7 +126,11 @@ git merge-base --is-ancestor <sha> origin/main && echo "already on main (skip)"
   landed — mark it "already on main" and advance its status to `to_verify_prod` if it is still
   `staging_verified`, then exclude it from the deploy loop.
 - **Order the batch by staging merge order** — the sequence in `git log origin/main..origin/staging`
-  (oldest first). This keeps cherry-picks applying cleanly and the Alembic chain linear.
+  (oldest first). This keeps cherry-picks applying cleanly for code-only tickets.
+- Mark tickets whose unpromoted diff touches `migrations/versions/` as **migration-lane**. Unless
+  the user explicitly asked for an emergency selective migration exception, STOP before Phase C
+  and report the safe options: schema-first PR off current `main` or full staging parity merge.
+  Do not silently mix migration-lane tickets into a code batch.
 - Reject (STOP) any ticket whose commit set pulls in unrelated tickets, or that requires
   unrelated staging dependencies, without explicit approval. Do not silently widen scope.
 
@@ -159,18 +169,25 @@ Conflict handling:
 - If a conflict reveals an **undeclared dependency** on unrelated staging work, STOP the batch
   and report — do not widen scope.
 
-#### C3. Repair the Alembic graph (if the ticket adds a migration)
+#### C3. Migration gate (if the ticket adds a migration)
 
 If C2 brought in files under `migrations/versions/`:
 
-1. Find `main`'s current head: `uv run alembic heads` (or read the head migration's revision).
-2. In the promoted migration file, set `down_revision` to **main's actual head**, and update
+1. **STOP by default.** This ticket belongs in the serialized migration lane, not the normal
+   ready batch.
+2. If the user has explicitly approved an emergency exception for this exact ticket, run
+   `/migration-parity-check` and continue only if no stranded env and no outstanding
+   duplicate-revision drift exists.
+3. Find `main`'s current head: `uv run alembic heads` (or read the head migration's revision).
+4. In the promoted migration file, set `down_revision` to **main's actual head**, and update
    the `Revises:` docstring line to match.
-3. Confirm a single head: `uv run alembic heads` → exactly one.
+5. Confirm a single head: `uv run alembic heads` → exactly one.
+6. Record old parent/new parent and the approval in the manifest.
+7. After C7 deploy, run `/migration-parity-check` and reconcile `main`/`staging` **before the
+   next ticket in this batch**. If reconciliation cannot happen now, STOP the batch.
 
-This prevents the missing-revision error and the CI migration-graph failure. (Note this leaves
-the same revision id on both branches with different parents; the next staging→main sync must
-reconcile it — flag it in the manifest, do not try to fix staging here.)
+This prevents a missing-revision error but creates temporary branch debt. Temporary means same
+run, not "some future sync."
 
 #### C4. Detect deploy categories — BEFORE merge
 
@@ -282,14 +299,16 @@ Next: /ticket-verify production   (verifies the promoted tickets in prod)
 Per-ticket cherry-pick promotion only ADDS divergence — it never drains it. Every
 migration-bearing ticket re-pointed its `down_revision` on `main` in C3, so `main` and `staging`
 now hold the same revision ids under different parents (recorded as reconciliation debt). Letting
-that accumulate across batches is exactly what produced the 2026-06-16 fork (R0031/R0032). After
-the batch:
+that accumulate across batches is exactly what produced the 2026-06-16 fork (R0031/R0032).
+Therefore Phase E is mandatory after any emergency migration exception and advisory otherwise.
+After the batch:
 
 1. Run `/migration-parity-check` — it reports content/patch-equivalence (not commit counts) and
    per-environment schema truth, and surfaces any stranded migration.
-2. If it shows residual migration divergence or any C3 reconciliation debt, schedule a full
-   `staging→main` parity merge (`/promote-to-production --all-staging`, a real `--merge` commit)
-   to re-linearize both branches onto one graph. Do **not** carry the debt into the next batch.
+2. If it shows residual migration divergence or any C3 reconciliation debt, perform the
+   reconciliation now (usually a full `staging→main` parity merge with a real `--merge` commit,
+   or an explicit `main→staging` sync if `main` is the schema source of truth). Do **not** carry
+   the debt into the next batch.
 3. Record the outcome in the batch manifest — either `parity: clean` or the exact outstanding
    debt — so the next run starts from a known state.
 

@@ -16,6 +16,9 @@ caused the 2026-06-16 ts-prefect fork (see R0031/R0032):
    A re-linearized migration graph leaves `alembic upgrade head` a silent no-op on an env that
    already passed the moved node — the version pointer lies while tables/columns/triggers are
    missing.
+3. **Do the long-lived branches contain the same Alembic revision id with different parents or
+   content?** That duplicate-revision drift is the warning sign that selective migration
+   cherry-picks have created reconciliation debt.
 
 This skill only reports. It never merges, migrates, or mutates anything.
 
@@ -32,6 +35,8 @@ This skill only reports. It never merges, migrates, or mutates anything.
   ticket touches `migrations/`.
 - Whenever someone says "staging is N commits ahead of main" — verify it before acting.
 - After any migration `down_revision` re-point, to confirm no env was stranded.
+- After any migration-bearing selective promotion, before allowing the next migration-bearing
+  promotion. Duplicate-revision drift must be reconciled immediately, not carried as backlog.
 
 ## Process
 
@@ -78,7 +83,7 @@ For each environment (staging, prod), confirm the DB's claimed head matches real
 Compare staging vs prod object inventories (tables/columns/functions/triggers) so a promotion
 doesn't carry an assumption that only holds on one env. Surface any delta.
 
-### 4. Migration-graph sanity
+### 4. Migration-graph sanity and duplicate-revision drift
 
 ```bash
 uv run alembic heads          # must be exactly one
@@ -86,6 +91,72 @@ uv run alembic heads          # must be exactly one
 
 Confirm no migration file's `down_revision` was re-pointed relative to the target branch (the
 re-linearization hazard) — `cli_tools/lint_migrations.py` enforces this in CI; flag it here too.
+
+Also compare the Alembic revision maps on `origin/main` and `origin/staging`:
+
+- Parse every `migrations/versions/*.py` on both branches for `revision`, `down_revision`, and
+  file content hash.
+- For any revision id present on both branches, report it as **DRIFT** if either:
+  - `down_revision` differs, or
+  - the file content differs after normalizing only comments/docstring `Revises:` lines.
+- For revision ids present on only one branch, report them as `main-only` or `staging-only` and
+  classify whether they are expected based on the content-divergence result.
+
+Use a concrete checker, not visual inspection. If the repo does not provide one, this portable
+snippet is acceptable:
+
+```bash
+python - <<'PY'
+import ast, hashlib, pathlib, subprocess, tarfile, tempfile
+
+def revmap(treeish: str):
+    td = tempfile.TemporaryDirectory()
+    archive = pathlib.Path(td.name) / "m.tar"
+    with archive.open("wb") as f:
+        subprocess.run(["git", "archive", treeish, "migrations/versions"], check=True, stdout=f)
+    tarfile.open(archive).extractall(td.name)
+    out = {}
+    for p in pathlib.Path(td.name, "migrations/versions").glob("*.py"):
+        source = p.read_text()
+        vals = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = [node.target.id]; value = node.value
+            elif isinstance(node, ast.Assign):
+                names = [t.id for t in node.targets if isinstance(t, ast.Name)]; value = node.value
+            else:
+                continue
+            for name in names:
+                if name in {"revision", "down_revision"}:
+                    vals[name] = ast.literal_eval(value)
+        normalized = "\n".join(
+            line for line in source.splitlines()
+            if "Revises:" not in line and not line.strip().startswith("#")
+        )
+        if "revision" in vals:
+            out[vals["revision"]] = {
+                "file": p.name,
+                "down": vals.get("down_revision"),
+                "hash": hashlib.sha256(normalized.encode()).hexdigest(),
+            }
+    return out
+
+main, staging = revmap("origin/main"), revmap("origin/staging")
+failed = False
+for rev in sorted(set(main) & set(staging)):
+    if main[rev]["down"] != staging[rev]["down"] or main[rev]["hash"] != staging[rev]["hash"]:
+        failed = True
+        print(f"DRIFT {rev}: main down={main[rev]['down']} file={main[rev]['file']} "
+              f"vs staging down={staging[rev]['down']} file={staging[rev]['file']}")
+print("main-only:", sorted(set(main) - set(staging)))
+print("staging-only:", sorted(set(staging) - set(main)))
+raise SystemExit(1 if failed else 0)
+PY
+```
+
+Any duplicate-revision drift means migration debt exists. A migration-bearing selective
+promotion should STOP unless the user explicitly approves an emergency exception and the same
+run includes an immediate reconciliation plan.
 
 ## Output
 
@@ -97,11 +168,13 @@ Env truth: staging  alembic=f104  objects=OK
            prod     alembic=f104  objects=OK
 Cross-env: staging vs prod schema delta: none
 Heads:     1 (f104_relevance_band_type)
+Revision drift: none
+           — OR — DRIFT f109_x: main parent=f108_b, staging parent=f107_a
 Verdict:   SAFE to promote  |  STRANDED env — reconcile first  |  DIVERGED — full parity merge
 
 Recommended action:
 - <one of: proceed with ticket promotion / reconcile staging then retry /
-  full staging→main parity merge (real --merge commit) — see promote-to-production --all-staging>
+  full staging→main parity merge (real --merge commit) / schema-first migration lane>
 ```
 
 ## Notes
@@ -109,4 +182,7 @@ Recommended action:
 - This is the tool to reach for instead of trusting `git log` counts. A migration-bearing
   ticket is **not** eligible for selective cherry-pick off a diverged branch — see the
   ts-prefect CLAUDE.md "Migrations Must Be Order-Independent + Cross-Branch Discipline" rule.
+- The safe high-velocity model is parallel code work plus serialized schema work: land
+  backward-compatible schema changes first on current `main`, deploy them, then immediately sync
+  `main` to `staging` before branches depend on the new objects.
 - Background: R0031 (research), R0032 (the schema-truth gate + lint this skill pairs with).

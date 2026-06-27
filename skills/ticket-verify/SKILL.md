@@ -27,7 +27,8 @@ First argument must be `staging`, `prod`, or `production`.
 
 ## Boundaries
 
-- Verification evidence collection is read-only: no data mutation, no flow triggers, no deploys.
+- Verification evidence collection is read-only by default: no data mutation, no flow triggers, no deploys.
+  Exception: if the selected scope's evidence contract/deployment guide explicitly requires a bounded on-demand canary/shadow run in the target environment, and the deployment is already registered with safe parameters (for example `enqueue_mode=off`, capped `max_items`, no schedule change), `/ticket-verify` may trigger exactly that on-demand run and then grade its durable outputs. Record the command, run id, parameters, and terminal state in the evidence artifact. Do not use this exception for backfills, unbounded/full enqueue, schedule creation, deploys, migrations, manual Render deploys, or external-service mutations.
 - Treat local `.context` files as **temporary scratch only**, not as verification artifacts or
   durable evidence. The canonical verification report must be persisted to autodev as a ticket
   or epic artifact. After the artifact is created or updated, delete any local scratch files this
@@ -44,8 +45,7 @@ First argument must be `staging`, `prod`, or `production`.
 - Blocker metadata is **not** a skip signal. If a selected ticket/gate has an active blocker,
   first re-check the recorded blocking condition against source-of-truth systems. If the blocker
   has cleared, continue verification in the same run.
-- Verification stays read-only with ONE exception: on **production PASS**, a ticket may carry a
-  deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §10).
+- Verification stays read-only except for two narrow cases: (1) the bounded on-demand canary/shadow run exception above, and (2) on **production PASS**, a ticket may carry a deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §10).
 
 ## Process
 
@@ -113,8 +113,7 @@ recorded blocker is still true.
      to re-check;
    - do not promote, complete, or run deferred cleanup.
 
-Ground-truth blocker checks must remain read-only. Do not perform the missing deploy, backfill,
-flow trigger, or external manual action yourself unless another skill explicitly owns that step.
+Ground-truth blocker checks must remain read-only except for the bounded on-demand canary/shadow run exception in §Boundaries. Do not perform a missing deploy, backfill, unbounded flow trigger, schedule change, or external manual action yourself unless another skill explicitly owns that step.
 
 ### 4. Determine activation boundary
 
@@ -139,17 +138,18 @@ environment:
 
 1. the producing deployment/object is **registered** in the target env (e.g.
    `prefect deployment ls` against the env's API, the cron is installed, the worker is up); and
-2. for **on-demand / non-scheduled** deployments, at least **one run exists after the activation
-   boundary** (a registered-but-never-triggered on-demand flow produces no rows on its own).
+2. for **on-demand / non-scheduled** deployments, either at least **one run exists after the activation
+   boundary** or the verifier triggers the exact bounded canary/shadow run allowed by §Boundaries.
+   A registered-but-never-triggered on-demand flow produces no rows on its own.
 
-If the producing object is absent, or an on-demand object has never run post-activation, the
-feature is **not deployed yet**. Do not grade its runtime rows as "no data yet / wait" — that is a
-deploy-prerequisite gap. Stop collecting runtime evidence for that scope and return `BLOCKED`
-(§8) with the exact unblock action. Common cause: an **epic step** lands at `merged`, but its
-milestone staging deploy is owned by `/milestone-flow` and has not run — so `prefect deploy` +
-trigger never happened. Standalone `/ticket-verify` of such a step is premature; route to
-`/milestone-flow <EPIC_ID> <MILESTONE>` (or, if the user authorizes the deploy, that deploy +
-trigger must happen in a deploy-owning step, never inside read-only verification).
+If the producing object is absent, the feature is **not deployed yet**. If an on-demand object has
+never run post-activation and the bounded-run exception does not apply, do not grade its runtime
+rows as "no data yet / wait" — that is a deploy-prerequisite gap. Stop collecting runtime evidence
+for that scope and return `BLOCKED` (§8) with the exact unblock action. Common cause: an **epic
+step** lands at `merged`, but its milestone staging deploy is owned by `/milestone-flow` and has not
+run — so `prefect deploy` + trigger never happened. Standalone `/ticket-verify` of such a step is
+premature; route to `/milestone-flow <EPIC_ID> <MILESTONE>` unless the already-registered bounded
+on-demand canary/shadow exception applies.
 
 Be precise about provenance: rows written by a **different** deployment (e.g. an M1 fixture
 canary) are not evidence that **this** ticket's flow ran. Confirm the rows were produced by the
@@ -171,6 +171,21 @@ and its edge cases work, not just one happy path:
   criteria;
 - negative/regression checks that would have failed before the fix when applicable;
 - bug hypothesis re-evaluation when investigation artifacts contain confirmed hypotheses.
+
+For pollers, observers, schedulers, queue consumers, webhooks, scrapers, supervisor flows, or
+any repeated writer that persists data, supplement the contract with storage-amplification
+checks even if the deployment guide omitted them:
+
+- compute observed rows/run and extrapolated rows/day, bytes/day, and index/WAL impact from
+  the activation window;
+- compare actual growth against the plan/deployment-guide volume budget;
+- prove repeated unchanged source data is deduped or change-gated across runs, not merely
+  unique within a fresh fetch/run id;
+- distinguish canonical entities from append-only observations, snapshots, and logs;
+- verify retention/TTL/partitioning exists for any intentional per-run history.
+
+Never treat "rows exist" as PASS for a repeated writer if polling frequency is creating
+redundant durable data. "Lossless" is not a waiver to save the same payload every interval.
 
 Every claim must include a reproducible command/query, expected good output, actual observed
 output, and bad-output interpretation. Record, per evidence item, whether it passed, failed, or
@@ -287,7 +302,8 @@ items:
 - `BLOCKED` — at least one of: (a) a selected ticket/gate had blocker metadata and §3 proved a
   blocking condition is still active; or (b) the **deployment precondition (§5a) is unmet** — a
   required producing deployment is not registered in the target environment, or an
-  on-demand/non-scheduled deployment has never run since the activation boundary. Case (b) is a
+  on-demand/non-scheduled deployment has never run since the activation boundary and the bounded
+  on-demand canary/shadow run exception does not apply or failed to start. Case (b) is a
   deploy-prerequisite gap, **not** `NEEDS_MORE_TIME`: waiting alone will never produce evidence
   because nothing is scheduled to run. The reason must name the exact unblock action (run the
   milestone deploy via `/milestone-flow`, or `prefect deploy` + trigger the deployment). This is an

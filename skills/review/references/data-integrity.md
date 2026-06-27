@@ -64,6 +64,29 @@ This check applies to ALL models in the feature's data path, not just newly crea
 - Verify rollback handling for failed operations
 - Assess transaction scope for performance impact
 
+### 4a. Repeated Writer / Polling Storage Amplification
+
+For any poller, observer, scheduler, queue consumer, webhook, scraper, supervisor flow, or
+other repeated writer that persists data:
+
+- **Lossless is not duplicate-retentive by default.** Preserve the source facts/events that
+  consumers need; do not save the same unchanged payload or item every interval just because
+  the design says "lossless".
+- **Check the multiplier:** calculate `sources × polls/day × items/response × rows/item`
+  and estimate row bytes, index bytes, WAL, and retention horizon. If the reviewer cannot
+  derive a bounded daily/weekly write rate from the plan/diff, flag it.
+- **Inspect dedupe keys:** if uniqueness includes only a fresh `fetch_id`, `run_id`, or
+  timestamp, it dedupes within a run but not across repeated polls. That is a red flag for
+  unchanged-source duplication.
+- **Prefer canonical/delta storage:** canonical entity upsert + `first_seen_at`,
+  `last_seen_at`, and `seen_count` is usually enough for "actual entries and timestamps".
+  Store append-only per-poll history only when a named downstream consumer requires it.
+- **Require a bound for history:** intentional per-run observations need retention/TTL or
+  partitioning, a deletion/backfill story, and verification queries for growth rate.
+
+Flag unbounded redundant per-poll persistence as **p1** unless the diff proves it is
+required, bounded, and covered by verification.
+
 ### 5. Impossible State Detection
 
 For pipeline features with multi-step flows, identify **impossible database states** that
