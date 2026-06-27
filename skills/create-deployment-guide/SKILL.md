@@ -67,8 +67,8 @@ plan's predictions, grade them against what was actually built:
 
 | Change Type            | Deployment Requirement                          |
 | ---------------------- | ----------------------------------------------- |
-| Database migrations    | Migration must run before code that reads it    |
-| New/changed models     | Schema change → migration                       |
+| Database schema changes | Schema apply/migration must run before code that reads it |
+| New/changed models     | Use repo active schema system (ts-prefect Atlas after E0017; Prisma/Alembic migrations elsewhere) |
 | New services/jobs      | Service deploy + schedule registration          |
 | Scheduler/worker/cron  | Deploy + (re)register the schedule               |
 | Runtime canary/observer evidence | Flow/CLI/deployment that produces the evidence rows |

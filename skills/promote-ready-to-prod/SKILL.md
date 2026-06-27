@@ -37,17 +37,21 @@ does.
 
 - **Production-impacting. Prefer stopping over guessing.** Every stop must say exactly which
   tickets already landed, which is stuck, and which were never touched.
-- **One ticket fully landed AND deployed before the next begins.** Migrations are sequential;
-  a later ticket's migration parent is the previous ticket's migration once it is on `main`.
-  Never land all the code first and batch the deploys at the end.
-- **This batch path is code-first, not a migration debt machine.** If a ready ticket carries
-  migrations, the default action is to STOP before landing it and move that work through the
-  serialized migration lane: schema-first PR off current `main` with immediate `main→staging`
-  sync, or a full `staging→main` parity merge. A per-ticket `down_revision` re-point is an
-  explicit emergency exception only, requires user approval, and must be reconciled before the
-  next ticket in the batch.
+- **One ticket fully landed AND deployed before the next begins.** Schema/deploy state is
+  sequential even when code can move independently. Never land all the code first and batch
+  the deploys at the end.
+- **This batch path is code-first, not a schema debt machine.** If a ready ticket carries
+  schema changes, use the repo's current schema lane before normal cherry-pick promotion:
+  - **ts-prefect (post E0017, 2026-06-26):** Atlas owns staging/prod. There is no Alembic
+    graph, no `migrations/versions/`, and no production `alembic_version` table. Schema
+    changes must be backward-compatible model/Atlas changes, pass `Validate Atlas Schema Plan`,
+    and promote through the reviewed committed prod plan gate.
+  - **Legacy Alembic repos/history:** use schema-first PR off current `main` with immediate
+    `main→staging` sync, or a full `staging→main` parity merge. A per-ticket `down_revision`
+    re-point is an explicit emergency exception only, requires user approval, and must be
+    reconciled before the next ticket in the batch.
 - **Stop the whole batch on the first hard failure.** Do not skip a failed ticket and continue —
-  later tickets may depend on it and the Alembic chain must stay linear. Report and halt.
+  later tickets may depend on it and schema/deploy state must stay coherent. Report and halt.
 - All cherry-pick / conflict / migration-repair work happens in a **fresh `git worktree` under
   `.context/`**. Never mutate the current Conductor workspace. Never use `git reset --hard`,
   `git checkout -- <file>`, `git restore`, `git clean`, or unscoped `git stash` in the shared
@@ -65,14 +69,13 @@ does.
 Search autodev-memory and load these before touching anything (they encode failures this skill
 exists to prevent):
 
-- `mcp__autodev-memory__search` for **"production promotion gotchas cherry-pick alembic fork
-  prefect prod env"** (repo `ts-prefect`). The key entry documents:
-  1. **Single-ticket cherry-pick forks the Alembic graph.** The promoted migration's
-     `down_revision` points at a staging-only revision that is not on `main`, so
-     `alembic upgrade` raises a missing-revision error and CI's migration-graph validation
-     fails. **Do not treat re-pointing as routine.** Prefer schema-first or full parity merge.
-     Re-point only as an explicitly approved emergency exception, then immediately reconcile
-     `main`/`staging` before the next migration-bearing promotion.
+- `mcp__autodev-memory__search` for **"ts-prefect Atlas cutover reviewed plan gate Alembic
+  decommissioned prod env"** (repo `ts-prefect`). The key current entry documents:
+  1. **ts-prefect uses Atlas now.** Do not create/re-point Alembic revisions; `migrate.yml`
+     production uses `Run Atlas Reviewed Plan (Prod)`,
+     `atlas/plans/e0017_m3_prod_reviewed_plan.sql`, `check_schema_plan_safety.py`, and
+     `check_schema_plan_matches.py`. Historical Alembic fork memories explain why Atlas was
+     adopted; they are not instructions to repair/create Alembic migrations for new work.
   2. **Prod Prefect deploy needs the mounted prod env pipe sourced.** Deploying flows to prod
      with only the prod profile active fails with a client connection error even when a plain
      health check passes. Source the Conductor-mounted prod env pipe
@@ -127,10 +130,13 @@ git merge-base --is-ancestor <sha> origin/main && echo "already on main (skip)"
   `staging_verified`, then exclude it from the deploy loop.
 - **Order the batch by staging merge order** — the sequence in `git log origin/main..origin/staging`
   (oldest first). This keeps cherry-picks applying cleanly for code-only tickets.
-- Mark tickets whose unpromoted diff touches `migrations/versions/` as **migration-lane**. Unless
-  the user explicitly asked for an emergency selective migration exception, STOP before Phase C
-  and report the safe options: schema-first PR off current `main` or full staging parity merge.
-  Do not silently mix migration-lane tickets into a code batch.
+- Mark tickets whose unpromoted diff touches schema sources as **schema-lane**:
+  - ts-prefect: `ts_schemas/models/**`, `atlas.hcl`, `atlas/plans/**`, `cli_tools/atlas/**`,
+    `migrations/db_object_manifest.py`.
+  - legacy migration repos: `migrations/versions/**`, `alembic/**`, Prisma migration dirs.
+  Do not silently mix schema-lane tickets into a code batch. For ts-prefect, require the Atlas
+  additive-only/reviewed-plan path; for legacy Alembic repos, report schema-first/full-parity
+  options unless the user explicitly approved an emergency selective migration exception.
 - Reject (STOP) any ticket whose commit set pulls in unrelated tickets, or that requires
   unrelated staging dependencies, without explicit approval. Do not silently widen scope.
 
@@ -169,9 +175,23 @@ Conflict handling:
 - If a conflict reveals an **undeclared dependency** on unrelated staging work, STOP the batch
   and report — do not widen scope.
 
-#### C3. Migration gate (if the ticket adds a migration)
+#### C3. Schema gate (if the ticket changes schema)
 
-If C2 brought in files under `migrations/versions/`:
+If C2 brought in schema files:
+
+**ts-prefect after E0017 (Atlas path):**
+
+1. Do **not** create or repair Alembic migrations. If the diff contains `alembic.ini`,
+   `migrations/env.py`, `migrations/versions/**`, or `cli_tools/run_migrations.py`, STOP: it is
+   reintroducing decommissioned tooling.
+2. Confirm the PR/checks include `Validate Atlas Schema Plan` and the plan is additive-only.
+3. For production, confirm the ticket/PR updates or intentionally leaves
+   `atlas/plans/e0017_m3_prod_reviewed_plan.sql`, and that prod `Run Migrations` will pass the
+   reviewed-plan exact-match/no-op gate.
+4. Confirm DB-only object changes live in `migrations/db_object_manifest.py` and are covered by
+   `verify_schema_truth.py`.
+
+**Legacy Alembic repos/history only:** if C2 brought in files under `migrations/versions/`:
 
 1. **STOP by default.** This ticket belongs in the serialized migration lane, not the normal
    ready batch.
@@ -195,7 +215,8 @@ Detection must run before the merge advances `main`. Use the categories from
 `.claude/commands/deploy.md` Phase 1:
 
 ```bash
-git diff origin/main..HEAD --name-only -- migrations/versions/          # migrations
+git diff origin/main..HEAD --name-only -- ts_schemas/models/ atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py  # ts-prefect Atlas schema
+git diff origin/main..HEAD --name-only -- migrations/versions/ alembic/ prisma/migrations/  # legacy migrations
 git diff origin/main..HEAD --name-only -- src/blocks/ cli_tools/save_blocks.py   # blocks
 git diff origin/main..HEAD --name-only -- prefect.prod.yaml             # prefect config
 git diff origin/main..HEAD --name-only -- pyproject.toml Dockerfile requirements.txt  # deps
@@ -206,9 +227,9 @@ Record which categories fired for this ticket in the manifest.
 
 #### C5. Local checks in the worktree
 
-Run the repo's standard checks (`uv run` lint/typecheck/tests as practical, and the
-migration-graph validation if available). Do not start flows or the dev server. Fix only
-promotion/conflict/migration-repair issues — no unrelated refactors.
+Run the repo's standard checks (`uv run` lint/typecheck/tests as practical, plus the
+repo-specific schema validation if schema files changed). Do not start flows or the dev
+server. Fix only promotion/conflict/schema-gate issues — no unrelated refactors.
 
 #### C6. Land on main (squash merge)
 
@@ -230,8 +251,12 @@ Execute **only the detected categories** from C4, in this exact order, **executi
 yourself** (do not just print commands). Use the production env file, Prefect API URL, and YAML
 from `deploy.md` — read it for the current values; do not hardcode env IDs.
 
-1. **Migrations** (if detected): `op run --environment <prod> -- uv run alembic upgrade head`.
-   Verify it completes without error.
+1. **Schema migrations/apply** (if detected):
+   - ts-prefect: do **not** run Alembic. Verify the main-branch `Run Migrations` workflow's
+     `Run Atlas Reviewed Plan (Prod)` job is green, including reviewed-plan match/no-op,
+     DB-only hook, and `verify_schema_truth.py`.
+   - legacy Alembic repos: `op run --environment <prod> -- uv run alembic upgrade head`.
+     Verify it completes without error.
 2. **Save blocks** (if detected): prod `save_blocks --yes` per deploy.md. Verify.
 3. **Prefect deploy** (if `prefect.prod.yaml` changed): **source the prod env pipe first in the
    same shell**, then deploy:

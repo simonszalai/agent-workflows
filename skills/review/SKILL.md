@@ -85,7 +85,7 @@ git diff --name-only main
 # Categorize changes
 git diff --name-only main -- '*.py'                              # Python files
 git diff --name-only main -- '*.ts' '*.tsx'                      # TypeScript files
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' migrations/versions/  # Data
+git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/  # Data/schema
 git diff --name-only main -- '*/flows/*.py' '*/tasks/*.py'       # Pipeline/flow code
 git diff --name-only main -- '*/scrapers/*' '*/scraper*'         # Scraper code
 git diff --name-only main -- '*poll*' '*observer*' '*scheduler*' 'prefect.*.yaml'  # Repeated writers
@@ -115,7 +115,7 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 
 **CRITICAL: data reviewer spawn rule.** Always check for model file changes explicitly:
 ```bash
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' migrations/versions/
+git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/
 ```
 If ANY model or migration files appear, spawn the data reviewer. Do NOT rely on build_todos
 or plan.md to determine this — check the actual diff. Missing migrations are a p1 finding.
@@ -159,7 +159,7 @@ Before spawning, announce which reviewers were selected and why:
 Review team:
 - code-quality (always) [sonnet]
 - architecture-security-performance (always) [opus]
-- data-integrity — migration file in migrations/versions/ [opus]
+- data-integrity — model/schema/Atlas/migration files changed [opus]
 - react — components changed in app/components/ [sonnet]
 - pipeline-reviewer — DAG node declarations modified [project persona]
 ```

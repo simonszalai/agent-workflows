@@ -175,12 +175,14 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
    the ticket skipped `/plan`) so the deploy steps name the **concrete** objects this build
    produced:
 
-   - the actual **migration** revision id / filename (or "no migration"), and whether it must run
-     before the code deploy;
-   - if there is a migration, the **migration lane**: schema-first PR off current `main` followed
-     by immediate `main→staging` sync, full `staging→main` parity merge, or no migration. Do not
-     mark a migration-bearing ticket as suitable for routine per-ticket cherry-pick promotion;
-     that path is an explicitly approved emergency exception only.
+   - the actual **schema artifact**: for ts-prefect, Atlas/model/DB-only manifest changes and
+     reviewed plan needs (or "no schema change"); for legacy repos, migration revision id /
+     filename (or "no migration"), and whether it must run before the code deploy;
+   - if there is a schema change, the **schema lane**: ts-prefect Atlas additive-only/reviewed-plan
+     path, schema-first PR off current `main` followed by immediate `main→staging` sync, full
+     `staging→main` parity merge, or no schema lane. Do not mark a schema-bearing ticket as
+     suitable for routine per-ticket cherry-pick promotion unless the repo-specific gate supports it;
+     legacy selective migration cherry-pick is an explicitly approved emergency exception only.
    - the **cross-repo order** confirmed against what was actually built — which repo's change must
      land first and why (the contract that forces it);
    - the **real deploy commands/objects** for this project (discover from the project
@@ -402,7 +404,7 @@ Before finalizing each build todo:
 - [ ] Searched memory service for relevant gotchas, patterns, and solutions
 - [ ] Checked memory service results (auto-injected + explicit search if needed)
 - [ ] EVERY build todo has "From memory service" subsection (even if "none applicable")
-- [ ] For database changes: migration gotchas were read and referenced
+- [ ] For database changes: repo-specific schema gotchas were read and referenced (ts-prefect Atlas after E0017; legacy migration rules only where applicable)
 - [ ] For field modifications: all consumers of modified fields were audited
 - [ ] For repeated writers: storage volume math, dedupe/change-gating, retention, and
       identical-input behavior are specified with tests/queries
@@ -429,15 +431,17 @@ If schema changes are needed:
    creation into a code change step
 2. Include both upgrade AND downgrade functions
 3. Document rollback procedure in the todo
-4. Document the promotion path as **migration-lane**, not ordinary ticket cherry-pick:
-   schema-first/backward-compatible off current `main` with immediate `main→staging` sync, or a
-   full parity merge. If the plan proposes selective migration cherry-pick, send it back unless
-   it explicitly records an approved emergency exception.
-5. **CRITICAL:** After ANY schema file modification (schema.prisma, models.py, etc.),
-   always create a migration (`bun run migrate`, `alembic revision --autogenerate`, etc.).
-   Never rely on `prisma db push` or equivalent tools alone -- they only sync the local
-   dev database. Deployed environments run migrations, so a missing migration = column not
-   found at runtime. Search memory service for 'prisma migration process' for details.
+4. Document the promotion path as **schema-lane**, not ordinary ticket cherry-pick:
+   - ts-prefect after E0017: Atlas additive-only/reviewed-plan path; no Alembic revisions.
+   - legacy migration repos: schema-first/backward-compatible off current `main` with immediate
+     `main→staging` sync, or a full parity merge. If the plan proposes selective migration
+     cherry-pick, send it back unless it explicitly records an approved emergency exception.
+5. **CRITICAL:** After ANY schema file modification (schema.prisma, models.py, SQLModel, etc.),
+   use the repo's active schema system. For Prisma/Alembic repos, create a migration (`bun run
+   migrate`, `alembic revision --autogenerate`, etc.). For ts-prefect, do **not** create Alembic
+   migrations; ensure Atlas plan/safety checks, the reviewed prod plan gate when needed, and
+   `verify_schema_truth.py` cover the change. Never rely on `prisma db push` or equivalent local
+   sync tools alone.
 6. **CRITICAL for derived clients / multi-DB apps:** A migration file is not enough. Add a
    verification/deploy step proving the new column/table/enum is present in every runtime DB
    that the generated client will query (for example every configured `DATABASE_URL_*`). If any

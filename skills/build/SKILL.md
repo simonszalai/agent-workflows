@@ -184,14 +184,18 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    Then run the **migration parity sweep** (repo-wide, orchestrator-owned):
 
    ```bash
-   git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' migrations/versions/ | head -20
+   git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/ | head -20
    ```
 
-   If model/schema files changed but no migration exists: STOP and create one (omitting it means
-   the column won't exist at runtime).
-   If a migration exists: confirm the deployment guide names a migration lane (schema-first with
-   immediate `main→staging` sync, or full parity merge). Do not leave the build artifact implying
-   that normal selective ticket promotion is safe for migration-bearing work.
+   If model/schema files changed, use the repo's current schema system:
+   - ts-prefect after E0017: do **not** create Alembic migrations. Ensure Atlas plan/safety
+     checks and `verify_schema_truth.py` cover the change; if production DDL is needed, the
+     reviewed committed plan must be updated deliberately.
+   - legacy migration repos: if no migration exists, STOP and create one (omitting it means the
+     column won't exist at runtime). If a migration exists, confirm the deployment guide names a
+     migration lane (schema-first with immediate `main→staging` sync, or full parity merge).
+     Do not leave the build artifact implying that normal selective ticket promotion is safe for
+     migration-bearing work.
 
 8. **After the loop converges:**
    - Write tests: run `/write-tests {work-item-id}`

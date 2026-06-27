@@ -70,18 +70,23 @@ Also review auto-injected context from the knowledge menu.
 - Run linter — fix lint errors before proceeding
 - Never skip verification commands
 
-## Migration Parity Check (Build Mode)
+## Schema Parity Check (Build Mode)
 
-If your todo modifies model/schema files, a migration MUST exist:
+If your todo modifies model/schema files, the repo's active schema-deploy artifact MUST
+exist:
 
 ```bash
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' | head -20
+git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/ prisma/migrations/ | head -20
 ```
 
-If models changed but no migration exists, create one as part of the todo. If you cannot,
-return `status: "failed"` with the missing-migration reason in `error` — omitting a migration
-means the column won't exist at runtime. (The orchestrator also runs a final repo-wide parity
-sweep after all todos, but catch it here for the files you touched.)
+Use the repo's current schema system. For ts-prefect after E0017, do **not** create
+Alembic revisions; ensure Atlas model/config/DB-only manifest changes, additive-only
+safety evidence, and a reviewed prod plan when prod DDL is needed. For repos that still
+use Prisma/Alembic, create the appropriate migration as part of the todo. If you cannot,
+return `status: "failed"` with the missing-schema-artifact reason in `error` — omitting
+the schema artifact means the column/object may not exist at runtime. (The orchestrator
+also runs a final repo-wide parity sweep after all todos, but catch it here for the files
+you touched.)
 
 ## Output (Build Mode)
 

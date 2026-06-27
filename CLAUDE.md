@@ -9,8 +9,9 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 - Never commit/push without explicit user approval (except during the resolve-review workflow final step)
 - Never create markdown files unless explicitly instructed
 - Never deploy or run production operations without explicit instruction
-- Always create database migrations when schema changes require them (they are auto-deployed
-  by CI on merge). Omitting a migration means the column won't exist at runtime.
+- Always include the repo's active schema-deploy artifact when schema changes require it
+  (Atlas reviewed plans, Prisma/Alembic migrations, or the repo-specific equivalent).
+  Omitting the schema artifact means the column/object may not exist at runtime.
 - **Never put MCP-tracked ticket artifacts in `.context/`** - see File Storage Rules below.
   Workflows that run without a ticket (e.g. `/lfg`) may use `.context/` for their own scratch.
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace

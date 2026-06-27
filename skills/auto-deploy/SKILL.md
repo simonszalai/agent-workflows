@@ -167,9 +167,11 @@ Determine the target branch based on environment:
 - **Staging**: rebase onto `staging`
 - **Production**: rebase onto `main`
 
-Rebase the PR branch onto the target to ensure linear history and avoid migration
-conflicts. Database migrations depend on sequential ordering — merging a PR
-whose base is behind the target can cause migration graph conflicts.
+Rebase the PR branch onto the target to ensure linear history and avoid schema/deploy
+conflicts. Database schema changes depend on the repo's active migration system. For
+ts-prefect after E0017, that system is Atlas reviewed-plan/additive-only gates, not Alembic;
+for legacy migration repos, merging a PR whose base is behind the target can still cause
+migration graph conflicts.
 
 ```bash
 # Fetch latest target branch
@@ -207,7 +209,7 @@ git diff origin/{target_branch}..{branch} --name-only
 
 | Category     | Detect                                              |
 | ------------ | --------------------------------------------------- |
-| Migrations   | Files in `alembic/versions/`, `migrations/`         |
+| Schema       | ts-prefect Atlas paths (`ts_schemas/models/`, `atlas.hcl`, `atlas/plans/`, `cli_tools/atlas/`, `migrations/db_object_manifest.py`) or legacy migration dirs (`alembic/`, `migrations/versions/`, Prisma migrations) |
 | Config       | Deployment config files (YAML, env, etc.)           |
 | Dependencies | `pyproject.toml`, `Dockerfile`, `requirements.txt`  |
 

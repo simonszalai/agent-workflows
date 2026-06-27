@@ -6,19 +6,21 @@ Standards for data integrity review. Apply these when reviewing database migrati
 
 ### 1. Database Migration Analysis
 
-- **Schema-migration sync (CRITICAL):** If the schema file was modified (schema.prisma,
-  models.py, etc.), verify a NEW migration exists that covers ALL schema changes. Tools like
-  `prisma db push` or `prisma generate` sync the local dev DB and client directly from the
-  schema -- but deployed databases run migrations only. A missing migration means the column
-  exists in the ORM/client but not in the production database, causing runtime crashes.
-  Flag as **p1** if schema changes lack a corresponding migration.
+- **Schema-deploy sync (CRITICAL):** If the schema file was modified (schema.prisma,
+  models.py/SQLModel, Atlas HCL/plans, etc.), verify the repo's active schema deploy path covers
+  ALL schema changes. For Prisma/Alembic repos this usually means a new migration exists. For
+  ts-prefect after E0017, this means Atlas additive-only safety, reviewed committed prod plan
+  match/no-op when production is affected, DB-only hook success, and `verify_schema_truth.py`;
+  do **not** request Alembic revisions there. Tools like `prisma db push` or `prisma generate`
+  sync the local dev DB/client only. Flag as **p1** if schema changes lack their repo-specific
+  deploy/apply evidence.
 - **Multi-DB/client rollout sync (CRITICAL):** If an app uses a derived ORM/client schema
   against multiple runtime databases (for example `autodev-dashboard` Prisma generated from
-  `autodev-memory` Alembic-owned DBs), verifying that the migration file exists is not enough.
-  Verify the migration is applied to every configured runtime DB before the generated client or
+  `autodev-memory` Alembic-owned DBs), verifying that the migration/schema apply file exists is not enough.
+  Verify the schema change is applied to every configured runtime DB before the generated client or
   app code expects the new scalar column. A lagging DB still crashes `findMany`/default selects
   with `P2022 column does not exist`. Flag as **p1** if a generated client/schema selects a
-  new column before all target DBs are at the required migration head or the deployment plan
+  new column before all target DBs are at the required schema version/head or the deployment plan
   explicitly gates code rollout after DB rollout.
 - **Raw SQL column validation (CRITICAL):** For every `$queryRaw` / raw SQL query, verify that
   ALL referenced columns exist in the current schema. Raw SQL bypasses ORM type safety entirely

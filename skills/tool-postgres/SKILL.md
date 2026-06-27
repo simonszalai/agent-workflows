@@ -8,8 +8,7 @@ description: Postgres MCP tool reference for database investigation. Portable to
 How to use Postgres MCP tools for database investigation.
 
 **Important:** Production Postgres MCP is read-only. Use it for investigation and querying
-only. Data modifications must go through application code (flows, scripts) and migrations
-via Alembic.
+only. Data modifications must go through application code (flows, scripts) and the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos may still use Alembic/Prisma migrations).
 
 ## Environment-Specific Tool Names (CRITICAL)
 

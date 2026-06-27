@@ -111,8 +111,9 @@ Apply the dimensions specified in your prompt. Read the corresponding reference 
   boundaries, referential integrity, privacy compliance (PII, GDPR), ACID properties
 - **Data Adequacy** (references/data-adequacy.md) - Content richness, source-to-destination
   field mapping, downstream consumer requirements, pipeline data flow completeness
-- **Migration Safety** (references/migrations.md) - ID mapping validation (against production,
-  not fixtures), rollback safety, dual-write strategies, staged deployment compatibility
+- **Schema/Migration Safety** (references/migrations.md) - ID mapping validation (against
+  production, not fixtures), rollback safety, dual-write strategies, staged deployment
+  compatibility, and repo-specific schema system checks (Atlas/Prisma/Alembic/etc.)
 - **Deployment** (references/deployment.md) - Pre-deploy verification queries, post-deploy
   monitoring plan, rollback procedures, feature flag strategy
 
@@ -135,7 +136,7 @@ Apply the dimensions specified in your prompt. Read the corresponding reference 
 
 ## Critical Checks (Data Reviews)
 
-When reviewing data/migration changes, always verify:
+When reviewing data/schema or migration changes, always verify:
 
 - [ ] Mappings match production data (query if needed)
 - [ ] Rollback plan exists and tested
