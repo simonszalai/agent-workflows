@@ -37,6 +37,12 @@ and the verifier. The deploy is idempotent, so re-entering after a partial run i
 /milestone-flow E0007 --next
 ```
 
+## References
+
+Read before acting on any cross-repo milestone or linked Conductor workspace:
+
+- `../references/conductor-multi-repo.md`
+
 ## Process
 
 ### 1. Load milestone graph
@@ -53,6 +59,8 @@ Stop if:
 - epic has unresolved planning open questions;
 - any required blocker from an earlier milestone is not complete/merged;
 - cross-repo contracts are missing;
+- any step repo in the milestone cannot be resolved to the primary workspace, a linked Conductor
+  directory, or an explicit user-provided repo root;
 - two same-repo steps are marked parallel but touch overlapping/conflicting areas;
 - the milestone has no staging evidence contract. Ask `/epic-flow`/planning to repair the
   milestone before build work continues.
@@ -64,6 +72,10 @@ Stop if:
 ### 3. Build execution waves
 
 Create waves from the blocker -> blocked DAG:
+
+Before executing a wave, record each step's `repo -> path -> branch -> target/base` mapping.
+Do not start a repo's ticket-flow unless that repo root is available and its current branch is the
+branch intended for that repo's step.
 
 - independent different-repo steps may run in parallel;
 - same-repo steps default to serial unless their write scopes are demonstrably disjoint;
@@ -89,7 +101,8 @@ After all step tickets in the milestone are `merged`, write an epic artifact (us
 `deployment_guide` when the artifact type must be chosen) summarizing:
 
 - milestone id and acceptance criteria;
-- steps landed, ticket ids, commits/PRs, and repos touched;
+- steps landed, ticket ids, commits/PRs, and repos touched, including each repo's path, branch,
+  and target/base branch;
 - contracts satisfied and any contract tests run;
 - local checks and review results;
 - staging and production evidence rows that `/ticket-verify --epic --milestone` must grade,

@@ -40,6 +40,7 @@ Never advance to a later milestone until the current milestone's staging gate ha
 Read before acting:
 
 - `../references/epic-lifecycle.md`
+- `../references/conductor-multi-repo.md`
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
 
@@ -49,6 +50,9 @@ Read before acting:
 
 - Load `get_epic(project, epic_id)` with source tickets, step tickets, artifacts, events, and
   blockers.
+- If the epic spans multiple repos, resolve every involved repo to an actual Conductor workspace
+  path or linked directory using `conductor-multi-repo.md`. If any required repo is missing, stop
+  before invoking milestone-flow and report the missing repo/path requirement.
 - If no canonical epic plan exists, or milestone pass conditions are missing/vague/stale, run
   `/epic-plan`; that skill owns synchronizing milestone gate criteria from source tickets and
   artifacts.

@@ -6,6 +6,8 @@ max_turns: 300
 
 # LFG Command
 
+For any accidental multi-repo or linked-workspace context, read `../references/conductor-multi-repo.md` before deciding whether LFG is the right workflow.
+
 Let's Fucking Go. Autonomous workflow that takes a GitHub issue, error report,
 **or conversation context** and delivers the work as commits on the **current
 branch** of whichever repo(s) are touched. Handles features and bugs (including
@@ -27,11 +29,13 @@ These are hard rules. Never violate them:
   <new>`.
 - **Never push.** Pushing is the user's call. Do not run `git push` (with or
   without `-u`, `-f`, etc.).
-- **Never fan out across repos with separate branches/PRs.** If the task spans
-  multiple repos (rare), commit on each repo's current branch in place. No
-  branches, no PRs, no cross-repo coordination beyond the commits themselves.
+- **Never use LFG as a coordinated multi-repo epic runner.** If the task spans
+  multiple repos and needs ordering, contracts, separate PRs, or deploy gates, stop and route it to
+  `/epic-plan`/`/epic-split`/`/milestone-flow` instead. Only for tiny ad-hoc multi-repo edits with
+  no contracts or deployment coupling may LFG commit in each repo's current branch in place.
 
-If you find yourself reaching for any of those, stop and report back instead.
+If you find yourself reaching for any forbidden branch/push/PR action, or for cross-repo DAG
+coordination, stop and report back instead.
 
 ## Unrelated errors → fix them, in a separate commit
 

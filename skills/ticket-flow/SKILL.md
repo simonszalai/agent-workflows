@@ -35,6 +35,8 @@ Read before acting:
 - `../references/landing-policy.md`
 - `../references/execution-phases.md`
 - `../references/epic-lifecycle.md` when the ticket is an epic step
+- `../references/conductor-multi-repo.md` when the ticket is an epic step, cross-repo
+  contract provider/consumer, or the repo is a linked Conductor directory
 
 ## Usage
 
@@ -76,6 +78,9 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 ### 0. Resolve ticket and target
 
 - Resolve project from `<!-- mem:project=X -->` and repo from git remote.
+- If the ticket's `repo` does not match the current repo, switch only to an available linked
+  Conductor directory for that repo after checking its git remote; otherwise stop and report the
+  missing repo workspace. Do not implement a ticket for one repo inside another repo.
 - If input is a ticket ID, load it via `get_ticket`.
 - If input is an issue/conversation, search existing tickets first; create a new ticket only
   when no matching non-terminal ticket exists.
@@ -88,8 +93,9 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 
 - Feature/refactor: run codebase research and similar-ticket search.
 - Bug: investigate root cause first; for production incidents use hypothesis evaluation.
-- Epic step: include the parent epic plan, milestone acceptance criteria, blockers, and
-  contracts in the context passed to planning/build agents.
+- Epic step: include the parent epic plan, milestone acceptance criteria, blockers, contracts,
+  and the repo/path/branch mapping from `conductor-multi-repo.md` in the context passed to
+  planning/build agents.
 
 ### 2. Plan and criticize
 

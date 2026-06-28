@@ -32,6 +32,12 @@ duplicate existing step tickets or plan artifacts.
 /epic-split E0007 --from-scratch
 ```
 
+## References
+
+Read before acting on any cross-repo epic or linked Conductor workspace:
+
+- `../references/conductor-multi-repo.md`
+
 ## Process
 
 1. Load `get_epic` including artifacts, sources, milestones, steps, and deps.
@@ -40,6 +46,8 @@ duplicate existing step tickets or plan artifacts.
 3. Decompose the plan into the desired step set:
    - one step = one repo;
    - split cross-repo work into provider/consumer tickets;
+   - create/update a distinct step for every required repo; do not bury missing repo work inside
+     another repo's ticket;
    - assign each step to a milestone;
    - build an acyclic blocker -> blocked DAG;
    - run the **runtime evidence closure** check before creating tickets: if a milestone's
@@ -73,7 +81,7 @@ duplicate existing step tickets or plan artifacts.
    - the source artifact is the **scope**; the plan artifact is the **implementation plan** for
      that one repo/step: goal, non-goals, approach, ordered build phases, expected files/modules,
      migrations/config/deploy notes, test plan, acceptance evidence, rollback/kill-switch notes,
-     and cross-repo contracts consumed/exposed;
+     repo workspace/path expectations, and cross-repo contracts consumed/exposed;
    - do not copy the epic plan verbatim and do not create duplicate plan artifacts;
    - do not rewrite merged/completed steps; create a follow-up step if post-completion work is
      needed.
@@ -88,6 +96,8 @@ duplicate existing step tickets or plan artifacts.
    - all steps are assigned as intended;
    - every desired non-completed step ticket has a current `plan` artifact and `status="planned"`;
    - DAG is acyclic;
+   - every repo named by a desired step is either available as a workspace/linked directory or
+     explicitly reported as a missing workspace blocker;
    - cross-repo edges have contracts;
    - every gate milestone has concrete `acceptance_criteria`;
    - every gate milestone with runtime evidence criteria has at least one same-milestone step

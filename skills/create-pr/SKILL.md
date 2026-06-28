@@ -8,6 +8,10 @@ description: Generate summary report and create PR from a work item. Collects wh
 Generate a summary of all work done, create a commit, push, and open a pull request. This is
 the final step of autonomous workflows (`/lfg`, `/auto-build`) and can also be called manually.
 
+For multi-repo epics, read `../references/conductor-multi-repo.md`: `/create-pr` is repo-local.
+Create one PR for the current repo/step only; sibling repo PRs are separate and ordered by the
+epic DAG.
+
 ## Usage
 
 ```
@@ -70,6 +74,42 @@ Check for verification evidence:
 git diff --stat main...HEAD
 git diff --name-only main...HEAD
 ```
+
+### 4a. Classify generated database schema changes before staging
+
+Before committing, inspect any generated/introspected schema files (especially
+`prisma/schema.prisma` in `ts-dashboard`) instead of blindly committing them or excluding them as
+"schema drift".
+
+Required checks when `prisma/schema.prisma` is dirty:
+
+```bash
+git fetch origin main
+git diff -- prisma/schema.prisma
+git diff origin/main -- prisma/schema.prisma
+git diff origin/main...HEAD -- prisma/schema.prisma
+```
+
+Interpretation:
+
+1. **Dirty file matches `origin/main` (`git diff origin/main -- prisma/schema.prisma` is empty):**
+   the workspace branch is behind current main and a setup/db-pull regenerated the schema to the
+   current prod/main shape. Do **not** call this drift, do **not** create a standalone schema
+   commit, and do **not** exclude it while opening a stale PR. Rebase the branch onto
+   `origin/main` (or otherwise update the branch from the target) so the worktree becomes clean,
+   then continue with PR creation.
+2. **Dirty file differs from `origin/main`:** decide whether this PR intentionally owns a schema
+   sync. For `ts-dashboard`, `schema.prisma` is generated from the database owned by `ts-prefect`;
+   only include it if the matching production schema already exists and the PR should surface those
+   generated types. Verify against prod (`./scripts/db-pull.sh prod` and/or
+   `scripts/check-schema-prod.sh` with the production URL) before staging it.
+3. **Dirty file matches staging but not production/current main:** do **not** commit it to a main PR.
+   Pull from prod or revert the file, and explain that the local setup likely introspected a DB ahead
+   of the deploy target.
+
+Only after this classification should you stage files for the commit. If a generated schema file is
+intentionally left out, say exactly why in the final output; if it is resolved by rebasing, mention
+that instead of warning about uncommitted drift.
 
 ### 5. Generate Summary
 

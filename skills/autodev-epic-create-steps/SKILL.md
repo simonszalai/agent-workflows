@@ -60,11 +60,17 @@ If the epic doesn't exist yet, create it first (`create_epic`) and absorb its mo
 
 ---
 
+## References
+
+Read before planning or reconciling cross-repo steps:
+
+- `../references/conductor-multi-repo.md`
+
 ## Phase 0 — Load everything
 
 ```
 get_epic(project, epic_id)        # sources, existing steps, artifacts, involved_repos, warnings
-list_repos(project)               # canonical repo set; repos live at ~/dev/{repo}
+list_repos(project)               # canonical repo set; resolve paths via Conductor linked dirs/workspaces
 get_ticket(project, id, repo)      # full body of each absorbed SOURCE ticket
 ```
 
@@ -80,6 +86,11 @@ offsets, don't try to swallow it whole. Pull, at minimum:
 - `.involved_repos`, `.warnings`
 
 Read **all** of it. The whole point is that no single artifact is the truth.
+
+Resolve every involved repo to a real workspace path using `conductor-multi-repo.md`. Do not
+assume `~/dev/{repo}`. If a planned step needs a repo that is not present, still create/reconcile
+the repo-specific step ticket and record the missing workspace as an execution blocker; do not fold
+that work into another repo's step.
 
 If the user asked to break source/design material into a specific milestone (for example
 "M3 steps"), resolve that milestone from `.milestones[]` before creating tickets. If the named
@@ -121,7 +132,8 @@ Decompose the consolidated plan into the **minimal** set of ordered execution un
 
 - **One step = one coherent, independently-deployable unit in exactly one repo.** If a unit
   needs work in two repos, **split it per repo** and connect the halves with a cross-repo
-  contract edge (Phase 3). A step never spans repos.
+  contract edge (Phase 3). A step never spans repos. If the user later identifies another required
+  repo, add/reconcile another step for that repo rather than expanding an existing repo's ticket.
 - **Honour the gate.** If the plan names a first deliverable everything depends on, make it the
   root of the DAG (`E000N-1`).
 - **DB/schema-owning changes go in the repo that owns those migrations.** Whoever creates the

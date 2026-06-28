@@ -50,6 +50,7 @@ explicitly asks for a full replan/from-scratch run.
 ## References
 
 - `../references/epic-lifecycle.md`
+- `../references/conductor-multi-repo.md`
 - `../references/execution-phases.md`
 
 ## Usage
@@ -132,7 +133,9 @@ explicitly asks for a full replan/from-scratch run.
      - acceptance criteria / evidence;
      - migration/config/deploy notes where relevant;
      - cross-repo contracts consumed or exposed;
+     - expected repo workspace requirement if the step is not in the current repo;
    - cross-repo contracts to create;
+   - repo/workspace availability assumptions for every involved repo;
    - risks, rollback/promotion strategy, verification gates.
    Do not write vague placeholders such as "future work", "TBD", or "define later" for a
    milestone's steps unless the plan also explains the concrete blocker and the exact decision
@@ -198,6 +201,8 @@ explicitly asks for a full replan/from-scratch run.
       milestone. If creating far-future tickets would be harmful, still include them in the
       plan and explicitly mark the reconciliation exception in the final report;
     - one step = one repo; split cross-repo work into provider/consumer tickets;
+    - never hide a required third repo inside an existing step; create/update a step for that repo
+      and report it as needing a linked Conductor workspace if no path is available;
     - assign every step to the intended milestone;
     - build an acyclic blocker -> blocked DAG;
     - write cross-repo contracts into both sides of each cross-repo dependency;

@@ -8,6 +8,8 @@ max_turns: 100
 
 Execute a plan by spawning a `builder` agent to work through build_todos.
 
+For any multi-repo or linked-workspace context, read `../references/conductor-multi-repo.md`.
+
 ## Usage
 
 ```
@@ -103,7 +105,9 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    dependency ahead so prerequisites always run first. This is **sequential** — never dispatch
    builders in parallel. Two builders sharing one working tree race the git index and typecheck
    a half-written tree; the cost (write conflicts) outweighs any speedup. Cross-repo concurrency
-   is `/milestone-flow`'s job (separate worktrees), not `/build`'s.
+   is `/milestone-flow`'s job (separate repo workspaces/worktrees), not `/build`'s. If a build
+   todo requires editing a different repo, stop and send the work back to epic splitting; do not
+   edit linked repos from a single-repo `/build` run.
 
    If `--step N` was passed, the execution set is just todo N.
 
