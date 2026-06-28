@@ -106,7 +106,7 @@ autonomously.
 
 ## Agent Selection
 
-Choose agents based on problem symptoms. Refer to AGENTS.md for available investigator agents.
+Choose agents based on problem symptoms (the dispatch table lists the available investigator agents).
 
 | Symptoms                                  | Agent                    | Why                   |
 | ----------------------------------------- | ------------------------ | --------------------- |
@@ -295,7 +295,7 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
 **Reference: Agent Dispatch Table** (for the light path)
 
-Choose agents based on problem symptoms. Refer to AGENTS.md for available investigator agents.
+Choose agents based on problem symptoms (the dispatch table lists the available investigator agents).
 
 Before any evidence-gathering MCP call in steps 1-3, apply **Tool-Skill
 Bootstrap** above. If the first MCP call returns a known bootstrap/setup error
@@ -513,7 +513,7 @@ investigation artifact to the ticket via `mcp__autodev-memory__create_artifact`.
 
 Use the template at `templates/investigation.md` for output format.
 
-**Formatting:** Limit lines to 100 chars (tables exempt). See AGENTS.md.
+**Formatting:** Limit lines to 100 chars (tables exempt).
 
 ## Synthesis Methodology
 

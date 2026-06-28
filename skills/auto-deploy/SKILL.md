@@ -242,21 +242,18 @@ Also detect **external/manual deploy blockers**. These do not prevent advancing 
 next verification status after all automatable deploy work is complete, but they must be recorded
 as blocker metadata before returning.
 
-Known blocker rules:
+Detect project-specific manual-deploy blockers from the project's own context — search project
+memory and read the project `CLAUDE.md` / `AGENTS.md` / deployment guide for any repo or service
+that a specific person must deploy by hand. Detect via: the ticket's primary repo; the ticket
+artifacts/deployment guide; coordinated changes in the dependency repo's diff/PR; or an explicit
+project-memory note. When one applies, record blocker metadata (`blocked_by`, `blocked_reason`,
+`blocked_context`) before returning, and never deploy that service yourself.
 
-| Condition | Blocker metadata |
-| --------- | ---------------- |
-| Ticket changes or depends on `ts-decrypt-proxy` production deployment | `blocked_by="Thomas"`, `blocked_reason="Waiting for Thomas to deploy ts-decrypt-proxy to production"`, `blocked_context={"repo":"ts-decrypt-proxy","target":"production","manual_deploy_owner":"Thomas"}` |
-
-How to detect the `ts-decrypt-proxy` blocker:
-
-- the ticket's primary repo is `ts-decrypt-proxy`; or
-- the ticket artifacts/deployment guide mention `ts-decrypt-proxy` production deployment; or
-- the diff/PR includes coordinated changes in `ts-decrypt-proxy`; or
-- the user/project memory says this ticket is waiting on a decrypt-proxy deploy.
-
-Operational memory to load when in doubt: "ts-decrypt-proxy production deployment is
-Thomas-only". Do not attempt to deploy `ts-decrypt-proxy` production yourself.
+*Example (ts-prefect):* `ts-decrypt-proxy` production deployment is **Thomas-only** (project memory
+entry `216431b0`). Set `blocked_by="Thomas"`,
+`blocked_reason="Waiting for Thomas to deploy ts-decrypt-proxy to production"`,
+`blocked_context={"repo":"ts-decrypt-proxy","target":"production","manual_deploy_owner":"Thomas"}`,
+and do not deploy `ts-decrypt-proxy` production yourself.
 
 ### Phase 7: Merge PR
 
