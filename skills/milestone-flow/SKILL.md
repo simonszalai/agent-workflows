@@ -77,6 +77,14 @@ Before executing a wave, record each step's `repo -> path -> branch -> target/ba
 Do not start a repo's ticket-flow unless that repo root is available and its current branch is the
 branch intended for that repo's step.
 
+**Knowledge retrieval gate for the wave.** Before dispatching any step, run an
+`mcp__autodev-memory__search` query per repo/risk-boundary represented in the wave (schema/raw SQL,
+deploy/runtime, decrypt-proxy/tailnet/auth, encryption, external APIs, etc.) and brief the delegated
+`/ticket-flow` with the relevant entries. This is separate from `get_ticket`/`get_epic` and
+`search_tickets`: ticket artifacts explain planned work, while knowledge entries carry recurring
+gotchas that must constrain the build. If no relevant entries are found, record that in the wave
+handoff so later audits can distinguish "searched and none found" from "Codex/Grok skipped KB".
+
 - independent different-repo steps may run in parallel;
 - same-repo steps default to serial unless their write scopes are demonstrably disjoint;
 - if unsure, serialize.
@@ -91,9 +99,22 @@ it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand 
 
 - load the parent epic plan and milestone contract;
 - build/review/local-verify the step;
+- persist the step's durable audit trail **on the step ticket**: the `build_todo` and `review_todo`
+  artifacts (plus a `plan` if the step needed its own). A step that lands with only a `source`
+  artifact is not auditable — later `/retrospect` / `/autodev-wtf` cannot tell what was built or
+  reviewed and wrongly reads it as "no workflow ran";
 - land according to the milestone target;
 - set the step ticket to `merged` after a successful epic-step landing;
 - never run staging/production verification and never advance the milestone gate itself.
+
+**Per-step audit gate (before §5).** After each wave, confirm via `get_ticket` that every landed
+step ticket actually carries its `build_todo` and `review_todo` artifacts. A delegated
+`/ticket-flow` — especially a cross-provider (Codex/Grok) run whose MCP `create_artifact` calls
+silently no-op'd — can build, review, and land entirely in-session yet leave none of them on the
+ticket (this is exactly how E0014 M3 / F0179 landed with only `source` + `verification_evidence`).
+If any step is missing them, re-attach them from that step's build/review record before writing the
+gate package; do not mark the milestone auditably complete with steps that have no build/review
+trail.
 
 ### 5. Milestone gate package
 

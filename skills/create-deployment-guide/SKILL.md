@@ -122,6 +122,15 @@ Do not let "rows exist" be the only success criterion for a repeated writer. A f
 functionally alive and still fail verification because polling frequency is multiplying
 redundant storage.
 
+For any **producer/consumer** feature (a producer schedules work a separate consumer performs),
+the **staging** contract MUST include one row that observes the **terminal artifact end-to-end** —
+seed a real input, then confirm the consumer actually ran and produced its output row (e.g. a
+`pacer_poll_events` row for a followed case), not merely that a schedule/queue row exists. "A
+schedule row is present" or "the deployment is live" is NOT proof the work happens. If the terminal
+table stays empty in staging because the feature was never exercised with real seed data, the
+staging gate is **BLOCKED**, not PASS-with-caveat — an unexercised producer/consumer path is exactly
+where scheduler/cadence starvation hides (see review reference `data-integrity.md` §4b).
+
 Also record the **activation boundary**: how a verifier knows the new code is actually live
 (commit landed on `origin/main` / `origin/staging`; or, for runtime-git-pull projects, the first
 flow/job run that started after the land — measure fill rates from the first post-land row, not

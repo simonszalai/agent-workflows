@@ -1,0 +1,4 @@
+interface:
+  display_name: "TS Graph Dream"
+  short_description: "Audit and consolidate knowledge graph data"
+  default_prompt: "Use $ts-graph-dream to audit TS graph duplicates and propose safe cleanup."

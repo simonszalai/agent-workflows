@@ -89,6 +89,63 @@ other repeated writer that persists data:
 Flag unbounded redundant per-poll persistence as **p1** unless the diff proves it is
 required, bounded, and covered by verification.
 
+### 4b. External Data Cache Temporal Finality
+
+For provider-backed data, shared caches, market/reference data, prompt-context enrichment,
+evaluation labels, or ground-truth outcome tables, review the **semantic lifecycle** of the
+stored value, not only the endpoint name or table name:
+
+- **Classify rows:** every cached value must be `live`, `provisional`, or `final`. If the
+  schema cannot represent that distinction, readers must not mix lifecycles.
+- **Inventory writers/readers:** identify every writer and reader of the cache/table. Prompt
+  context, alert-time fetches, backfills, CLIs, scheduled outcome jobs, and dashboards often
+  have different freshness needs.
+- **Provider names are not guarantees:** names like "EOD", "historical", or "latest" do not
+  prove the value is final. Check provider semantics, source timestamp, exchange/calendar,
+  timezone, and validity window.
+- **First-write-wins is dangerous:** `ON CONFLICT DO NOTHING` is a p1 risk for mutable or
+  provisional provider data unless the diff proves the fact is immutable. Require a safe
+  upsert/refresh/repair path.
+- **Cache-hit tests are mandatory:** tests must cover an already-present stale/provisional row
+  before the finalizing job runs. Provider-miss tests alone do not prove correctness.
+- **Separate semantic lifecycles:** live/tweet-time/current-session prices or snapshots must
+  not be stored in the same final EOD / ground-truth-label table unless lifecycle state is
+  encoded and enforced by readers.
+
+Flag any path where provisional/live provider data can poison final labels or ground-truth
+outcomes as **p1**.
+
+### 4c. Producer/Consumer Schedule Starvation
+
+For any pair of independently-scheduled flows that share a `scheduled_for` / `next_run_at` /
+`due_at` row — a **producer** that periodically (re)writes the due time, and a separate
+**consumer**/poller that claims rows `WHERE scheduled_for <= now()`:
+
+- **Anchor check (CRITICAL):** the producer MUST compute the next due time from a fact that does
+  not move every producer run — the last consumption/event/attempt, or the existing
+  `scheduled_for` — **never from the producer's own run-time `now()`**. `scheduled_for = now() +
+  interval` re-anchors on every producer tick, so an item that hasn't been consumed keeps getting
+  pushed into the future and the consumer never sees it due. Flag `now() + interval` (or
+  equivalent) as **p1**.
+- **Upsert must not push a pending due time out:** on the producer's UPSERT, use
+  `LEAST(existing, new)` / `WHERE new < existing`, so a row that is already due-but-unconsumed is
+  not shoved forward. A blind `DO UPDATE SET scheduled_for = excluded.scheduled_for` is a red flag.
+- **Cadence invariant:** confirm the consumer's poll window (its interval + any grace) comfortably
+  exceeds the window the producer leaves open. When the interval is clamped at or below the
+  producer's own cadence, the due window can collapse to ~1 tick and a producer/consumer dead-heat
+  hides the row — the consumer reads the freshly-pushed future value and finds nothing due. Add a
+  grace (`scheduled_for <= now() + grace`, grace ≥ producer interval) or anchor correctly.
+- **Never-consumed starvation:** ask "if this item is never successfully consumed, does it stay
+  claimable, or does the producer keep deferring it forever?" A freshly-created item that is
+  perpetually re-scheduled is effectively never processed.
+
+This is the timing/cadence sibling of §4a (the storage axis for the same family). `now() + interval`
+in an isolated schedule-generation function looks correct — the defect only emerges from the
+producer↔consumer interaction, so review the interaction, not just the hunk. Incident: E0014 M3
+followed-pacer-poller — `court-pacer-policy` (15-min) rewrote `scheduled_for = now + ~14min` every
+run while the 5-min poller kept losing the ~1-min due-window race, so a followed case was
+structurally never polled.
+
 ### 5. Impossible State Detection
 
 For pipeline features with multi-step flows, identify **impossible database states** that

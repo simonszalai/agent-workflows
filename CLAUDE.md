@@ -211,6 +211,7 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 | --------------------------------------------------------------- | ---------------------- |
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
 | "consolidate memories", "audit memories", "clean up memories", "dream" | Run `/dream`     |
+| "deep dream", "consolidate everything", "whole-system dream", "improve skills from logs/tickets" | Run `/deep-dream` |
 
 ### Ticket Management
 

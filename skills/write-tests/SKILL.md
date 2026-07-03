@@ -85,6 +85,17 @@ For each function worth testing:
 - Boundary values where behavior changes
 - Error cases users can actually trigger
 
+**Provider/cache temporal-finality cases (when applicable):**
+- External provider data changes over time: before finalization vs after finalization.
+- Cache hit differs from provider miss: an existing stale/provisional row must not be trusted
+  as final ground truth.
+- Multiple writers share a table/cache: live/prompt-context writers cannot poison
+  outcome/label readers.
+- First-write-wins behavior is explicit: `ON CONFLICT DO NOTHING` is tested or rejected for
+  mutable provider values.
+- Timezone/calendar boundaries are represented in fixtures when finality depends on exchange
+  close, business day, or source timestamp.
+
 **Apply the "Delete Test" litmus test:** If the test broke, would you investigate or just
 update the assertion? If you'd just update it, skip it.
 
@@ -137,6 +148,7 @@ Before finishing, check each test:
 - [ ] Independent (can run in any order, parallel with any other test)
 - [ ] Test name is a sentence describing what broke
 - [ ] Error/edge case assertions match actual implementation (read the code to check raises vs returns)
+- [ ] For provider-backed caches/outcomes, cache-hit and provisional-vs-final behavior is tested
 
 ## Output
 

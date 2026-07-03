@@ -388,6 +388,14 @@ const server = http.createServer((req, res) => {
 		if (auth.header !== "authorization") delete headers[auth.header]
 		headers[auth.header] = auth.value
 	}
+	// Ensure a session id reaches upstream even for clients that send neither the
+	// session_id tool arg nor x-session-id (e.g. Codex). Fall back to the MCP
+	// transport session so upstream (autodev-memory build_actor) can still record
+	// which session produced each ticket/artifact event. Fill-only: never
+	// overrides a client-supplied x-session-id.
+	if (!headers["x-session-id"] && headers["mcp-session-id"]) {
+		headers["x-session-id"] = headers["mcp-session-id"]
+	}
 	headers.host = target.host
 
 	const agent = target.protocol === "https:" ? httpsAgent : httpAgent

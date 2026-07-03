@@ -91,6 +91,14 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 
 ### 1. Gather context
 
+- **Knowledge retrieval gate (hard gate, especially for Codex/Grok).** Before planning or
+  editing, run `mcp__autodev-memory__search` for the ticket's actual risk boundaries, not just
+  `search_tickets` / `get_similar_tickets`. Use terms from the source artifact, error, touched
+  subsystem, integration boundary, and likely deployment path (examples: schema/defaults/raw SQL,
+  decrypt-proxy/tailnet/auth, Prefect deployment/runtime, encryption/plaintext fields, external
+  API contracts). Read the returned entries and carry applicable rules into the plan. If no entry
+  is relevant, state that in the plan/build note. A Codex run that only loads tickets or similar
+  tickets has **not** satisfied the Knowledge Menu rule.
 - Feature/refactor: run codebase research and similar-ticket search.
 - Bug: investigate root cause first; for production incidents use hypothesis evaluation.
 - Epic step: include the parent epic plan, milestone acceptance criteria, blockers, contracts,
@@ -128,6 +136,13 @@ Follow `execution-phases.md`:
   files exist per the cross-coverage gate in `execution-phases.md`; a one-provider-only round is
   a failed round;
 - stop for unresolved design decisions.
+
+**Persistence gate (before landing).** Confirm via `get_ticket` that this step now carries its
+`build_todo` artifacts and the `review_todo` artifacts the cross-review wrote — building and
+reviewing in-session is **not** enough; those artifacts are the durable, auditable record and must
+be on the ticket. If a `create_artifact` call silently no-op'd (common on cross-provider/Codex MCP
+paths), re-issue it now. A step must not land or merge with only a `source` artifact — that leaves
+it unauditable and makes later `/retrospect` / `/autodev-wtf` misread it as "no workflow ran".
 
 ### 4. Local verification
 

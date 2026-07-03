@@ -386,6 +386,27 @@ other repeated writer, at least one build todo must own the storage-shape proof:
 **Rule:** Build todos are incomplete if polling frequency can linearly multiply redundant
 stored data and no step proves that this is required, bounded, and verified.
 
+## External Data / Cache Finality Build Todos (CRITICAL)
+
+When the plan touches provider-backed data, shared caches, market/reference data,
+prompt-context enrichment, evaluation labels, or ground-truth outcomes, at least one build
+todo must own the temporal-finality proof:
+
+1. **Inventory writers/readers** — list every code path that writes or reads the table/cache.
+   Include background jobs, prompt/live context fetchers, backfills, CLIs, and dashboards.
+2. **Declare lifecycle per value** — `live`, `provisional`, or `final`, plus the timestamp,
+   exchange/calendar/timezone, and provider rule that makes the value final.
+3. **Prevent cross-writer poisoning** — if one writer fetches live/provisional data and another
+   reader needs final labels, require separate storage or an explicit lifecycle/status column
+   that readers enforce.
+4. **Specify refresh/repair behavior** — mutable provider data must be upserted or refreshed
+   safely. `ON CONFLICT DO NOTHING` is only acceptable for facts proven immutable.
+5. **Add regression tests** — include a cache-hit test where a stale/provisional row already
+   exists before the finalizing job runs, and prove the job ignores, refreshes, or repairs it.
+
+**Rule:** Build todos are incomplete if time-varying provider data can be cached once and later
+trusted as final ground truth without an explicit lifecycle contract and cache-hit test.
+
 ## Step Dependencies
 
 Order steps by dependencies:
@@ -408,6 +429,8 @@ Before finalizing each build todo:
 - [ ] For field modifications: all consumers of modified fields were audited
 - [ ] For repeated writers: storage volume math, dedupe/change-gating, retention, and
       identical-input behavior are specified with tests/queries
+- [ ] For provider-backed caches/outcomes: lifecycle (`live`/`provisional`/`final`),
+      writer/reader inventory, refresh/repair policy, and cache-hit tests are specified
 - [ ] Found and documented relevant codebase patterns
 - [ ] Checked git history for context on affected files
 - [ ] Verified CLAUDE.md compliance

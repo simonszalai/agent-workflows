@@ -56,6 +56,7 @@ designing the solution. No separate investigation needed.
 - Risks and mitigations
 - Verification strategy (how to know it works)
 - For polling/observer/storage work: data-minimization, retention, and volume budget
+- For external/provider-backed caches or ground-truth labels: a cache semantics contract
 
 **For features, also includes:**
 
@@ -69,6 +70,29 @@ designing the solution. No separate investigation needed.
 - Line-by-line implementation details
 
 Those details come later via `/create-build-todos`.
+
+## External Data Cache Semantics (CRITICAL)
+
+When the plan touches provider-backed data, shared caches, market/reference data,
+ground-truth labels, or evaluation outcomes, the plan must include a **cache semantics
+contract** before implementation can proceed:
+
+1. **Classify every stored value** as `live`, `provisional`, or `final`.
+2. **Name every writer and reader** of the table/cache, including prompt-context and
+   background/outcome jobs.
+3. **State finality rules**: provider revision behavior, source timestamp, validity window,
+   exchange/timezone/calendar if market data is involved, and when a row may be treated as
+   immutable.
+4. **Define refresh/repair policy** for provisional or time-varying rows. First-write-wins
+   storage is not acceptable unless the source fact is proven immutable.
+5. **Separate semantic lifecycles**: live/tweet-time/current-session data must not share
+   final EOD / ground-truth storage unless the schema encodes lifecycle state and readers
+   enforce it.
+6. **Verification must cover cache hits**, not only provider misses: an existing stale or
+   provisional row must not be reused as final ground truth after maturity.
+
+**Rule:** Endpoint names such as "EOD", "latest", or "historical" are not semantic proof.
+The plan must prove when the provider value is actually final.
 
 **Code snippets in plans:**
 

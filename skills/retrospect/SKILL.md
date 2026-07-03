@@ -72,6 +72,42 @@ if it's ambiguous which to take).
 If the thread contains no real mess — work went smoothly — say so and stop. Not every session
 needs a retro.
 
+### Step 1.5: IDENTIFY what built it (provenance) — mandatory when the mess is in shipped code
+
+Before triaging the workflow dimension, establish **how the offending code actually got in**.
+Never infer "no workflow ran" from missing plan/build/review artifacts on the ticket — a
+cross-provider run (Codex/Grok) or any run whose artifacts weren't persisted executes the
+pipeline **without leaving artifacts on the ticket**. Confirm from primary evidence:
+
+1. **The commit(s).** `git log --all --format='%h %ad %an <%ae> | %s' --date=iso -- <path>` and
+   `git log --all --diff-filter=A -- <path>` for the introducing commit. Read the trailer: a
+   `Co-Authored-By: Claude …` line ⇒ Claude Code built it; its absence (especially with a Codex
+   session present for that date) ⇒ another provider or ad-hoc.
+2. **The ticket events** (if a ticket exists): `get_ticket`, then read each event's
+   `actor.command` / `actor.agent` / `actor.session_id` / `actor.machine`. These are the
+   authoritative record of which workflow commands actually ran (`/plan`, `/build`, `/review`,
+   `/milestone-flow`, …) and by which agent. **The command is nested under `actor`, not
+   top-level** — a jq of `.events[].command` returns nothing and will fool you into "no workflow";
+   use `.events[].actor.command`. Missing artifacts ≠ skipped workflow.
+3. **The build session.** If an event's `actor.session_id` is present, that IS the session
+   (Claude logs live at `~/.claude/projects/<slug>/<session_id>.jsonl`). Otherwise run forensics —
+   grep **both** stores for the build signature (introducing-commit subject, ticket id, a new
+   symbol/file name) and take the session whose timestamp precedes the commit:
+   ```bash
+   # Claude sessions
+   grep -rlE "<commit-subject>|<TICKET>|def <new_symbol>" ~/.claude/projects/*<repo>*/ --include='*.jsonl' 2>/dev/null
+   # Codex sessions
+   grep -rlE "<commit-subject>|<TICKET>|def <new_symbol>" ~/.codex/sessions/ 2>/dev/null
+   ```
+   Inside the winning session, grep for the workflow commands it ran (`/plan`, `/build`,
+   `/create-build-todos`, `/review`, `/resolve-review`, `/milestone-flow`, `/ticket-flow`,
+   `/auto-build`, …) to see what the pipeline actually did.
+
+Record three things — **provider/agent**, **session id + path**, and **the workflow commands that
+actually ran** — and pass all three into the retro-workflows brief in Step 3. The workflow
+analysis must reason about what the build session *did*, not about which artifacts survived on the
+ticket.
+
 ### Step 2: TRIAGE — both dimensions, always
 
 Even when the signal points clearly at one dimension, run **both**. The point of a retro is
@@ -115,11 +151,15 @@ There is no ticket — work from this incident statement:
   How it surfaced: [the signal]
   Wasted work: [what was redone]
   Area: [code area]
+  Build provenance (from Step 1.5): [provider/agent, session id + path, workflow commands that actually ran]
 
 Trace the agent workflow pipeline (plan -> build_todos -> implementation -> review -> tests ->
-verify). Which stage should have caught this before it cost the user effort? If the work was
-done ad-hoc with no plan/review, that itself is the gap. Identify the missing test or checklist
-item.
+verify). Step 1.5 already established which commands actually ran — do NOT conclude 'the pipeline
+was skipped' from missing artifacts on the ticket. Reason about the stages that DID run: which one
+should have caught this and had nothing to catch it with (e.g. a review that never challenged the
+design choice, or a unit test that asserts the buggy behavior as correct)? And treat any artifacts
+that ran but did not persist to the ticket as its own observability gap. Identify the missing test
+or checklist item.
 
 Report in the WTF Workflows Analysis format. Propose fixes only — do NOT edit any files yet.
 ")
@@ -186,6 +226,10 @@ After approval, apply each approved fix:
 - **Thread is the source.** Quote what happened; don't reconstruct from vibes. The evidence is
   already in context — use it, plus the session's hook/debug logs.
 - **Both dimensions, every time.** Memory and workflow. The unexpected gap is the valuable one.
+- **Artifacts ≠ provenance.** Missing plan/build/review artifacts on a ticket do NOT mean no
+  workflow ran — a Codex/Grok run executes the pipeline without persisting artifacts to the
+  ticket. Always establish what built the code from commits + ticket events (`actor.command`) +
+  the build session (Step 1.5) before judging the workflow dimension.
 - **One mess, one verdict.** This is a focused post-mortem, not an audit. For breadth use `/dream`
   or `/autodev-improve`.
 - **Propose, then apply.** Step 4 presents; Step 6 only runs after approval.

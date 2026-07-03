@@ -135,6 +135,25 @@ file changed. The reviewer must check:
 Unbounded redundant persistence that scales linearly with polling frequency is a p1 finding
 unless a named consumer, retention policy, and volume budget make it intentional.
 
+**CRITICAL: external cache temporal-finality rule.** If the diff reads from or writes to a
+provider-backed cache, market/reference data table, prompt-context price table, evaluation
+label, or ground-truth outcome table, spawn the data-integrity reviewer even if no model file
+changed. The reviewer must check:
+
+- every cached value is classified as `live`, `provisional`, or `final`;
+- all writers and readers of the cache/table are listed, especially prompt/live context
+  writers versus outcome/label readers;
+- provider endpoint names are not treated as proof of finality;
+- finality is enforced using the source timestamp, exchange/calendar/timezone where relevant,
+  and a validity window;
+- `ON CONFLICT DO NOTHING` / first-write-wins is not used for mutable or provisional provider
+  data unless immutability is proven;
+- tests cover cache-hit behavior with an already-stored stale/provisional row, not only the
+  provider-miss path.
+
+Using live/provisional context data as final ground truth, or letting one writer poison a
+shared cache for a different semantic lifecycle, is a p1 data-integrity finding.
+
 **Project-specific persona reviewers** (discovered dynamically):
 
 ```bash

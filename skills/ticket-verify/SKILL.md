@@ -206,7 +206,11 @@ verification record.
 
 For any evidence item that verifies a visible surface (UI, rendered document, email preview,
 chart, public page, browser-visible error/success state), open the actual target in a real browser
-and save a screenshot only as temporary scratch. If screenshots are material to the verdict,
+and save a screenshot only as temporary scratch. If the surface is behind authentication, get the
+login method and credentials from the repo-specific `.claude/environments/{env}.md` (see §2) and
+authenticate before capture; read secrets from the source it names (e.g. a 1Password-mounted env
+file) at runtime and never print, echo, or persist them. Only if that env file is missing or does
+not document a working login is a missing session a real capture blocker. If screenshots are material to the verdict,
 persist the durable evidence in the autodev artifact (for example: the target URL, exact browser
 actions, visible text/state asserted, and a concise screenshot description; or a durable uploaded
 image URL if the workflow provides one). Do **not** leave screenshot files in `.context` after the
@@ -312,6 +316,16 @@ items:
 Never report `NEEDS_MORE_TIME` for a feature whose producing deployment is absent or has never
 run — that misrepresents "nobody deployed/triggered it" as "wait for data." If §5a could not
 confirm the producing object is live, the verdict is `BLOCKED`, not `NEEDS_MORE_TIME`.
+
+**Moving-target guard (scheduled-event waits).** When `NEEDS_MORE_TIME` waits on a scheduled event
+(e.g. "the next due poll"), the re-run MUST verify the awaited condition actually *arrives*, not
+just that time passed. Record the awaited timestamp (`scheduled_for` / `next_run_at` / due time)
+and compare it across rechecks. If it keeps advancing faster than it is consumed — a producer
+re-anchoring the schedule outruns the consumer, so the item is never actually due — that is a
+**structural design flaw, not a timing wait**: two consecutive rechecks where the awaited condition
+never became true (the due time moved forward again) ⇒ verdict `BLOCKED` with a design-flaw reason,
+never another `NEEDS_MORE_TIME`. Waiting longer cannot fix a due time that recedes on every producer
+tick (see review reference `data-integrity.md` §4b).
 
 When the evidence contract was missing/`TBD` and you fell back to acceptance criteria, say so in
 the report so the gap is visible rather than silently passing.
