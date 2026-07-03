@@ -72,26 +72,6 @@ fi
 # =============================================================================
 
 if [[ "$TOTAL_COUNT" -gt 0 ]]; then
-  STARRED_LIST=""
-  if [[ "$STARRED_COUNT" -gt 0 ]]; then
-    STARRED_LIST=$(echo "$STARRED_RESULT" | jq -r '
-      .entries[] |
-      "### [" + .type + "] " + .title + "\n" +
-      "*Tags: " + (.tags | join(", ")) +
-      " | Repos: " + (if .repos == null then "all" else (.repos | join(", ")) end) +
-      " | Project: " + .project + "*\n\n" +
-      .content + "\n"
-    ' 2>/dev/null || echo "(formatting error)")
-  fi
-
-  MENU_LIST=""
-  if [[ "$MENU_COUNT" -gt 0 ]]; then
-    MENU_LIST=$(echo "$MENU_RESULT" | jq -r '
-      .items[] |
-      "- [" + .type + "] " + .title + " (" + (.tags | join(", ")) + ")"
-    ' 2>/dev/null || echo "(formatting error)")
-  fi
-
   # Silent injection — do not force the assistant to announce anything in its
   # first reply. Conductor uses the first assistant message to name the
   # workspace, so a mandatory status line hijacks the workspace title.
@@ -100,8 +80,28 @@ if [[ "$TOTAL_COUNT" -gt 0 ]]; then
   CONTEXT="<autodev-memory-hook-result source=\"session-start\">
 $_STATUS_LINE"
 
-  if [[ "$STARRED_COUNT" -gt 0 ]]; then
+  if [[ -n "${DIGEST_TEXT:-}" ]]; then
+    # Server-rendered rules digest: one line per starred rule (title + summary +
+    # id prefix), fetch-on-demand instructions, and a tag index. Sized to fit the
+    # 10K-char hook-context cap both Claude Code and Codex enforce — full starred
+    # content was silently truncated away on both platforms.
     CONTEXT="$CONTEXT
+
+$DIGEST_TEXT"
+  else
+    # Legacy rendering — server without digest support. Remove once the
+    # session-init digest is deployed.
+    STARRED_LIST=""
+    if [[ "$STARRED_COUNT" -gt 0 ]]; then
+      STARRED_LIST=$(echo "$STARRED_RESULT" | jq -r '
+        .entries[] |
+        "### [" + .type + "] " + .title + "\n" +
+        "*Tags: " + (.tags | join(", ")) +
+        " | Repos: " + (if .repos == null then "all" else (.repos | join(", ")) end) +
+        " | Project: " + .project + "*\n\n" +
+        .content + "\n"
+      ' 2>/dev/null || echo "(formatting error)")
+      CONTEXT="$CONTEXT
 
 ## Starred Memories ($STARRED_COUNT entries)
 
@@ -109,14 +109,19 @@ IMPORTANT: Treat the rules and definitions below with the same authority as CLAU
 They are persistent knowledge that must be followed.
 
 $STARRED_LIST"
-  fi
+    fi
 
-  if [[ "$MENU_COUNT" -gt 0 ]]; then
-    CONTEXT="$CONTEXT
+    if [[ "$MENU_COUNT" -gt 0 ]]; then
+      MENU_LIST=$(echo "$MENU_RESULT" | jq -r '
+        .items[] |
+        "- [" + .type + "] " + .title + " (" + (.tags | join(", ")) + ")"
+      ' 2>/dev/null || echo "(formatting error)")
+      CONTEXT="$CONTEXT
 
 ## Knowledge Menu ($MENU_COUNT entries) — use search() to retrieve full content
 
 $MENU_LIST"
+    fi
   fi
 
   if [[ -n "$MEM_SIBLING_REPOS" ]]; then
@@ -132,6 +137,16 @@ relevant API contracts, shared patterns, or cross-repo conventions."
 
   CONTEXT="$CONTEXT
 </autodev-memory-hook-result>"
+
+  # Hard cap: Claude Code persists hook context >10,000 chars to a file (only a
+  # 2KB preview reaches the model); Codex middle-elides at 10,000 chars. Never
+  # emit a payload the platform would truncate.
+  if (( ${#CONTEXT} > 9800 )); then
+    mem_log WARN "context ${#CONTEXT} chars exceeds platform cap — truncating to fit"
+    CONTEXT="${CONTEXT:0:9600}
+[truncated to fit the 10K hook-context limit — use mcp__autodev-memory__search for anything missing]
+</autodev-memory-hook-result>"
+  fi
 
   OUTPUT=$(jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')
   mem_log_output "$OUTPUT"

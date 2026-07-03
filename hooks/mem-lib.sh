@@ -383,5 +383,11 @@ mem_load_entries() {
   MENU_COUNT=$(echo "$MENU_RESULT" | jq '.count // 0' 2>/dev/null || echo "0")
   mem_log INFO "menu entries: $MENU_COUNT"
 
+  # Server-rendered rules digest (title + summary + id per starred entry, tag index).
+  # Replaces full-content injection: Claude Code and Codex both cap hook context at
+  # 10K chars, so payloads must stay under that to be delivered at all.
+  DIGEST_TEXT=$(echo "$INIT_RESULT" | jq -r '.digest.text // ""' 2>/dev/null || echo "")
+  mem_log INFO "digest chars: ${#DIGEST_TEXT}"
+
   TOTAL_COUNT=$((STARRED_COUNT + MENU_COUNT))
 }
