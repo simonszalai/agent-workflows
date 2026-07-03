@@ -31,7 +31,7 @@ Compound auto-detects the right mode from context:
 | User says "save this", "remember this" | **Save** | Extract from conversation, store |
 | After review findings resolved | **Improve** | Analyze gaps, store knowledge, update workflows |
 | After a bug fix | **Improve** | Analyze root cause, store knowledge |
-| Inside `/auto-build` or `/lfg` | **Improve** | Auto-analyze, auto-apply |
+| Inside `/ticket-flow` or `/lfg` | **Improve** | Auto-analyze, auto-apply |
 | Ambiguous | **Both** | Save explicit knowledge + analyze for improvements |
 
 ## Save Mode
@@ -48,16 +48,28 @@ Determine what to save from the user's message and conversation context:
 | `summary` | 1-sentence search-friendly summary |
 | `tags` | Use the autodev-tags skill procedure |
 
-### Step 2: Store
+### Step 2: Self-Review for Value
+
+Save mode uses the same APPLY/SKIP test as Improve mode (see "Self-Review for Value" below).
+Even an explicit "save this" is skipped when the knowledge is too vague to be actionable,
+overly specific to one instance, a one-off unlikely to recur, trivial, or already documented.
+Tell the user what was skipped and why.
+
+Every saved entry must state the **future recurrence scenario it prevents** — the concrete
+situation in which this entry, surfaced at the right time, stops a repeat mistake. If no such
+scenario can be named, skip.
+
+### Step 3: Store
 
 Use the store procedure in `references/store-procedure.md` to search, dedup, and store.
 
-### Step 3: Report
+### Step 4: Report
 
 ```
 Saved: <action> — "<title>"
 Scope: <global | project/repo>
 Entry ID: <id>
+Prevents: <the future recurrence scenario this entry stops>
 ```
 
 ## Improve Mode
@@ -102,13 +114,15 @@ definitions.
 
 ### Step 4: Self-Review for Value
 
+This is the canonical APPLY/SKIP value test — it gates both Save mode and Improve mode.
+
 **Apply when ANY are true:**
 
 - Prevents a mistake that wasted significant time or caused a bug
 - Documents a non-obvious gotcha that someone would hit again
 - Fills a gap in a review checklist for a class of issues
 - Captures a pattern that exists but isn't documented
-- Addresses a user correction (always high value)
+- Addresses a user correction (high value unless one-off/trivial)
 - Security or data integrity concern
 
 **Skip when ALL are true:**
@@ -226,7 +240,8 @@ Keep it short; star instead.
 
 | Skill             | Relationship                                                          |
 | ----------------- | --------------------------------------------------------------------- |
-| `/autodev-retrospect`     | Deep production incident analysis. `/compound` is lighter and broader |
+| `/retrospect`     | Thread-driven post-mortem (memory + workflow gap). `/compound` is lighter and broader |
+| `/autodev-wtf`    | Deep production incident analysis                                     |
 | `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
-| `/auto-build`     | Calls `/compound` after review resolution                             |
-| `/dream`    | Audits existing entries. `/compound` adds new ones                    |
+| `/ticket-flow`    | Calls `/compound` after review resolution                             |
+| `/deep-dream`     | Audits and consolidates existing entries. `/compound` adds new ones   |

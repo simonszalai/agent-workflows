@@ -40,7 +40,7 @@ recur. The distinguishing input is the **live thread**, not a ticket or a produc
 | Only the memory pipeline is suspected | `/autodev-wtf-memory` |
 | Only a workflow stage is suspected | `/autodev-wtf-workflows` |
 | Just save a piece of knowledge | `/compound "<the fact>"` |
-| Broad audit of all memories for the repo | `/dream` |
+|  `/dream` | `/deep-dream` |
 | Audit the whole memory↔workflow pipeline against logs | `/autodev-improve` |
 | Need the bug's technical root cause first | `/investigate`, then `/retrospect` |
 
@@ -85,7 +85,7 @@ pipeline **without leaving artifacts on the ticket**. Confirm from primary evide
    session present for that date) ⇒ another provider or ad-hoc.
 2. **The ticket events** (if a ticket exists): `get_ticket`, then read each event's
    `actor.command` / `actor.agent` / `actor.session_id` / `actor.machine`. These are the
-   authoritative record of which workflow commands actually ran (`/plan`, `/build`, `/review`,
+   authoritative record of which workflow commands actually ran (`/auto-plan`, `/build`, `/review`,
    `/milestone-flow`, …) and by which agent. **The command is nested under `actor`, not
    top-level** — a jq of `.events[].command` returns nothing and will fool you into "no workflow";
    use `.events[].actor.command`. Missing artifacts ≠ skipped workflow.
@@ -99,9 +99,9 @@ pipeline **without leaving artifacts on the ticket**. Confirm from primary evide
    # Codex sessions
    grep -rlE "<commit-subject>|<TICKET>|def <new_symbol>" ~/.codex/sessions/ 2>/dev/null
    ```
-   Inside the winning session, grep for the workflow commands it ran (`/plan`, `/build`,
+   Inside the winning session, grep for the workflow commands it ran (`/auto-plan`, `/build`,
    `/create-build-todos`, `/review`, `/resolve-review`, `/milestone-flow`, `/ticket-flow`,
-   `/auto-build`, …) to see what the pipeline actually did.
+   `/ticket-flow`, …) to see what the pipeline actually did.
 
 Record three things — **provider/agent**, **session id + path**, and **the workflow commands that
 actually ran** — and pass all three into the retro-workflows brief in Step 3. The workflow
@@ -230,7 +230,7 @@ After approval, apply each approved fix:
   workflow ran — a Codex/Grok run executes the pipeline without persisting artifacts to the
   ticket. Always establish what built the code from commits + ticket events (`actor.command`) +
   the build session (Step 1.5) before judging the workflow dimension.
-- **One mess, one verdict.** This is a focused post-mortem, not an audit. For breadth use `/dream`
+- **One mess, one verdict.** This is a focused post-mortem, not an audit. For breadth use `/deep-dream`
   or `/autodev-improve`.
 - **Propose, then apply.** Step 4 presents; Step 6 only runs after approval.
 - **Concrete fixes only.** Every gap yields a specific edit — a file to change, an entry to save,

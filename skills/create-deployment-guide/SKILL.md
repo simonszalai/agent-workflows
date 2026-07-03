@@ -15,18 +15,28 @@ production.
 
 This artifact is **stored in the MCP ticket system** (`artifact_type="deployment_guide"`), never as
 a file on disk. Its downstream consumers (`/milestone-flow`, `/auto-deploy`, `/create-pr`,
-`/ticket-verify`, `/promote-to-production`) all read it via `get_ticket`.
+`/ticket-verify`, `/ticket-promote`) all read it via `get_ticket`.
+
+## Ticketless mode (lfg)
+
+When invoked with **no ticket** (i.e. from `/lfg`), write the filled template to
+`.context/deployment-guide.md` instead of the MCP artifact, and skip every
+`get_ticket`/`create_artifact`/`update_artifact` call (read the plan and todos from
+`.context/auto-plan.md` and `.context/build_todos/` instead). This is the sanctioned lfg exception
+to the File Storage Rules — lfg has no ticket to write to. Everything else in this skill
+(diff analysis, project-specific deploy mechanics, the evidence contract, the template)
+applies unchanged. Ticketed behavior is unchanged.
 
 ## The artifact is authored progressively
 
 | Stage | Command | What it does to the artifact |
 | ----- | ------- | ---------------------------- |
-| Plan  | `/plan` | Creates a **DRAFT** — deploy *shape* + first-cut evidence contract, from architecture only |
+| Plan  | `/auto-plan` | Creates a **DRAFT** — deploy *shape* + first-cut evidence contract, from architecture only |
 | Build-todos | `/create-build-todos` | **Finalizes mechanics** — concrete migration revision/file, exact commands, block names, env vars, cross-repo order |
 | Post-build | `/create-deployment-guide` | **Reconciles against the real diff** — what was actually changed, fills any gaps, marks FINALIZED |
 
 So this command usually **updates** an existing draft, not creates from scratch. If no draft
-exists (e.g. ticket skipped `/plan`), create one.
+exists (e.g. ticket skipped `/auto-plan`), create one.
 
 ## Usage
 
@@ -39,7 +49,7 @@ exists (e.g. ticket skipped `/plan`), create one.
 ## When to Run
 
 - After `/resolve-review` completes (code is final)
-- Automatically as part of `/auto-build` (Phase 8)
+- Automatically as part of `/ticket-flow` and `/lfg` (ticketless mode)
 - Before `/milestone-flow` deploys/verifies a milestone, or before standalone `/auto-deploy` /
   `/ticket-verify`
 
@@ -47,7 +57,7 @@ exists (e.g. ticket skipped `/plan`), create one.
 
 - Code changes are complete and reviewed
 - A `plan` artifact exists (read via `get_ticket`)
-- A draft `deployment_guide` artifact usually exists from `/plan` (update it; create if absent)
+- A draft `deployment_guide` artifact usually exists from `/auto-plan` (update it; create if absent)
 
 ## Process
 
@@ -158,7 +168,7 @@ mcp__autodev-memory__update_artifact(
 )
 ```
 
-If none exists (ticket skipped `/plan`), create it:
+If none exists (ticket skipped `/auto-plan`), create it:
 
 ```
 mcp__autodev-memory__create_artifact(
@@ -174,7 +184,7 @@ mcp__autodev-memory__create_artifact(
 ````markdown
 # Deployment & Verification Guide: {ticket-id}
 
-**Status:** DRAFT (from /plan) | FINALIZED
+**Status:** DRAFT (from /auto-plan) | FINALIZED
 **Feature/Fix:** {title}
 **Branch:** {branch}
 **Repos touched:** {repo-a, repo-b, ...}

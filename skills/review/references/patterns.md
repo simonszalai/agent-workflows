@@ -2,17 +2,12 @@
 
 Standards for pattern analysis and code quality review.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Primary Responsibilities
 
-### 1. Design Pattern Detection
-
-Identify common design patterns:
-
-- Factory, Singleton, Observer, Strategy, etc.
-- Document where each pattern is used
-- Assess whether implementation follows best practices
-
-### 2. Anti-Pattern Identification
+### 1. Anti-Pattern Identification
 
 Scan for code smells and anti-patterns:
 
@@ -36,7 +31,7 @@ Scan for code smells and anti-patterns:
   tight loop. **Fix:** Update the scheduling timestamp AFTER the try/except, unconditionally.
   Separate "last checked" (always update) from "last cursor position" (update on success).
 
-### 3. Naming Convention Analysis
+### 2. Naming Convention Analysis
 
 Evaluate consistency in naming across:
 
@@ -47,7 +42,7 @@ Evaluate consistency in naming across:
 
 Identify deviations from established conventions.
 
-### 4. Code Duplication Detection
+### 3. Code Duplication Detection
 
 Identify duplicated code blocks that could be refactored:
 
@@ -55,7 +50,7 @@ Identify duplicated code blocks that could be refactored:
 - Prioritize significant duplications
 - Consider shared utilities or abstractions
 
-### 5. Architectural Boundary Review
+### 4. Architectural Boundary Review
 
 Check for layer violations:
 
@@ -66,34 +61,10 @@ Check for layer violations:
 
 ## Analysis Workflow
 
-1. Broad pattern search for structural matching
-2. Compile list of identified patterns and locations
-3. Search for anti-pattern indicators (TODO, FIXME, HACK, XXX)
-4. Analyze naming conventions by sampling representative files
-5. Run duplication detection
-6. Review architectural structure for boundary violations
-
-## Report Format
-
-### Pattern Usage Report
-
-- List of design patterns found
-- Locations and implementation quality
-
-### Anti-Pattern Locations
-
-- Specific files and line numbers
-- Severity assessment
-
-### Naming Consistency Analysis
-
-- Statistics on convention adherence
-- Specific examples of inconsistencies
-
-### Code Duplication Metrics
-
-- Quantified duplication data
-- Recommendations for refactoring
+1. Search for anti-pattern indicators (TODO, FIXME, HACK, XXX)
+2. Analyze naming conventions by sampling representative files
+3. Run duplication detection
+4. Review architectural structure for boundary violations
 
 ## Analysis Guidelines
 

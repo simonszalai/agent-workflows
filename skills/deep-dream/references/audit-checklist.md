@@ -1,6 +1,9 @@
 # Audit Checklist — Detailed Dimensions
 
-## Per-Entry Audit (Step 4)
+Authority for the memory channel: per-entry and cross-entry audit dimensions, plus the MCP
+tool mapping for executing surviving memory actions.
+
+## Per-Entry Audit
 
 ### A. Validity — Is the information still correct?
 
@@ -67,7 +70,7 @@ Flag earn-its-place failures as **DELETE (low-utility)** candidates even when th
 accurate — and state in the reason that the deletion is on utility grounds, not correctness,
 so it isn't mistaken for a staleness call.
 
-## Cross-Entry Analysis (Step 5)
+## Cross-Entry Analysis
 
 ### G. Duplicates & Overlaps
 
@@ -163,5 +166,31 @@ When proposing ABSTRACT:
 - Confirm the general rule loses **no** case-specific caveat that still matters. Abstraction is
   forgetting-by-omission — it is only safe when the omitted specifics are genuinely redundant.
   If an instance has a real exception, preserve it; do not flatten it into the rule.
-- Ground the rewrite in provenance (see SKILL.md principle 9): check what created each instance
+- Ground the rewrite in provenance: check what created each instance (ticket, commit, session)
   before assuming they're interchangeable.
+
+## Executing Surviving Memory Actions (MCP tool mapping)
+
+After the adversarial loop converges, apply every surviving memory action via these tools:
+
+- **DELETE** / **DELETE (low-utility)** -> `mcp__autodev-memory__delete_entry(entry_id, project)`
+- **UPDATE** -> `mcp__autodev-memory__update_entry(entry_id, project, content, summary, ...)`
+- **MERGE** -> Create new entry with merged content via `mcp__autodev-memory__create_entry()`,
+  then delete the source entries
+- **ABSTRACT** -> Create new general-rule entry via `mcp__autodev-memory__create_entry()`
+  (carry over any exception that still applies), then delete the subsumed instance entries
+- **RESCOPE** -> Create new entry in the target scope, then delete the original (scope is
+  immutable per entry, so rescoping requires recreate + delete)
+- **SPLIT** -> Create 2 new entries, delete the original
+- **SIMPLIFY** -> `mcp__autodev-memory__update_entry()` with trimmed content
+- **RETYPE/RETAG** -> `mcp__autodev-memory__update_entry()` with corrected type/tags
+- **IMPROVE SUMMARY** -> `mcp__autodev-memory__update_entry()` with better summary
+- **MERGE TAGS** / **FIX TAG CASING** -> For each affected entry,
+  `mcp__autodev-memory__update_entry()` replacing the non-canonical tag with the canonical one
+- **DROP TAG** -> `mcp__autodev-memory__update_entry()` removing the tag, optionally adding
+  a replacement
+- **RESOLVE contradiction** -> With no human to arbitrate, the codebase decides: verify both
+  entries against the current code and keep/repair the one the code supports, deleting or
+  updating the other. If the code is genuinely ambiguous and the skeptics can't break the tie,
+  take **no action** — leave both entries and report the unresolved contradiction for a human
+  to settle.

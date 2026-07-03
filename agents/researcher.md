@@ -21,13 +21,13 @@ Understand how features work, find code patterns, check git history, look up bes
 
 ### Exhaustive Pattern Search
 Find **every single occurrence** of a pattern. No sampling, no skipping. Search every file
-in the assigned partition and report every match. See `research/references/exhaustive.md` and
-`research/references/repo-patterns.md` for methodology.
+in the assigned partition and report every match. See `skills/research/references/exhaustive.md` and
+`skills/research/references/repo-patterns.md` (under the agent-workflows skills root) for methodology.
 
 ### Past Work Research
 Find and analyze similar past work items to inform implementation decisions. Search completed
 tickets for architectural decisions, learnings, and review patterns. See
-`research/references/past-work.md` for methodology.
+`skills/research/references/past-work.md` for methodology.
 
 ## Topology Context (Do First)
 
@@ -177,4 +177,4 @@ ticket = mcp__autodev-memory__get_ticket(
 | `retrospective`    | Final learnings          | What worked, what would change      |
 | `investigation`    | Root cause analysis      | How similar bugs were diagnosed     |
 
-Use the output format from the `research` skill (see references/past-work.md).
+Use the output format from the `research` skill (see skills/research/references/past-work.md).

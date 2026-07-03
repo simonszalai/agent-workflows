@@ -95,11 +95,11 @@ After the final milestone has a staging `PASS`:
 - Otherwise run the ordered epic production promotion/deploy path:
 
   ```text
-  /promote-to-production --epic <EPIC_ID>
+  /ticket-promote --epic <EPIC_ID>
   /ticket-verify production --epic <EPIC_ID>
   ```
 
-`/promote-to-production --epic` must promote only the verified epic step commits, in milestone
+`/ticket-promote --epic` must promote only the verified epic step commits, in milestone
 order, using isolated worktrees and the repo's production deployment instructions. It must not
 silently include unrelated staging work. `/ticket-verify production --epic` is the final evidence
 gate; mark the epic complete only after it passes.

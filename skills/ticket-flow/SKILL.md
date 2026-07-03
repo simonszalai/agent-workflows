@@ -107,10 +107,13 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 
 ### 2. Plan and criticize
 
-- Run the existing plan workflow with its light/heavy gate for standalone tickets.
+- Run `/auto-plan` (the single planning skill) with its complexity-based light/heavy gate
+  for standalone tickets.
 - Force deep planning when the ticket is an epic step, cross-repo contract consumer/provider,
   schema/data change, or otherwise high risk.
-- Run adversarial plan critique until no critical unresolved findings remain.
+- Heavy path only: run adversarial plan critique until no critical unresolved findings
+  remain. The light path skips the critic panel and relies on single-round cross-provider
+  convergence.
 - Store the final plan as an MCP `plan` artifact.
 - Set `summary_bullets` on the ticket (compact what/why/approach) so the dashboard header is not blank.
 - There is no `approved` status; leaving `planned` means setting `in_progress`.
@@ -200,7 +203,7 @@ Epic-specific invariants (hold on both paths):
 
 - the target is the milestone/integration branch (usually `staging`), never a solo production
   landing — production promotion of epic steps is owned by `/epic-flow` /
-  `/promote-to-production --epic` after all milestone gates pass;
+  `/ticket-promote --epic` after all milestone gates pass;
 - the runtime deploy steps that produce milestone evidence (`prefect deploy`, scheduler/worker
   registration, canary/observer runs, DAG syncs, runtime blocks) and the cross-step gate
   (`/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote`) run **inside

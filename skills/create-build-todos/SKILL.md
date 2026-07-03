@@ -22,10 +22,14 @@ existing patterns and rules are discovered and followed.
 ## Usage
 
 ```
-/create-build-todos 009                              # Bug/incident #009 (NNN format)
-/create-build-todos F001                             # Feature F001 (FNNN format)
+/create-build-todos F0009                            # Feature ticket F0009
 /create-build-todos B0009                            # Bug ticket B0009
+/create-build-todos R0003                            # Refactor ticket R0003
 ```
+
+**Ticketless mode (lfg):** when invoked from `/lfg` (no ticket exists), skip the MCP
+prerequisites and write build todos as `.context/build_todos/NN-name.md` files instead of
+build_todo artifacts. Everything else (research depth, template, quality bar) is unchanged.
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 
@@ -38,7 +42,7 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 
 # 2. Check plan artifact exists
 # Look for artifact with type="plan" in ticket response
-# If missing: STOP - run /plan first
+# If missing: STOP - run /auto-plan first
 ```
 
 **If any prerequisite fails:**
@@ -46,7 +50,7 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 | Missing             | Action                                 |
 | ------------------- | -------------------------------------- |
 | Ticket not found    | **STOP** - create ticket first         |
-| No plan artifact    | **STOP** - run `/plan [id]` first      |
+| No plan artifact    | **STOP** - run `/auto-plan [id]` first |
 | Plan not reviewed   | **WARN** - suggest user review plan    |
 
 **Additional requirements:**
@@ -85,22 +89,19 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 
 5. **For each step, perform independent deep research:**
    - This is NOT just restating the plan in more detail
+   - **Memory searches are batched:** run ONE consolidated memory search UP FRONT covering all
+     steps' areas (see "Build Todo Creation Process" step 3). Do not re-run the same broad
+     searches per step. Per-step searches are only for **step-specific unknowns** the
+     consolidated search did not cover.
    - Each step gets its OWN research pass:
-     a. **Search autodev-memory for patches and solutions** specific to THIS
-        step's area. Run targeted searches:
+     a. **Check the consolidated memory results** for patches, solutions, and gotchas that
+        apply to THIS step's area. Only if this step has a specific unknown not covered
+        (e.g., an unusual library, a one-off migration mechanism), run a targeted search:
         ```
         mcp__autodev-memory__search(queries=[
-          {"keywords": ["<step-area>", "<technology>"],
-           "text": "<step area> patch fix solution workaround"},
-          {"keywords": ["<step-area>", "<technology>"],
-           "text": "<step area> gotcha pitfall known issue"}
+          {"keywords": ["<step-specific-unknown>", "<technology>"],
+           "text": "<the specific unknown> patch fix solution gotcha"}
         ])
-        ```
-        Also search past tickets for similar work:
-        ```
-        mcp__autodev-memory__search_tickets(
-          project=PROJECT, query="<step area keywords>"
-        )
         ```
         Read the full content of every relevant result — titles alone are
         not enough. Document findings in the "Known Patches & Solutions"
@@ -137,8 +138,8 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 ## Process
 
 1. **Locate work item:**
-   - Same ID resolution as `/plan` command
-   - Error if plan.md doesn't exist
+   - Same ID resolution as `/auto-plan`
+   - Error if the plan artifact doesn't exist
 
 2. **Read context** from `get_ticket` response:
    - Plan artifact - The approved architecture plan
@@ -169,11 +170,11 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
 
 5. **Finalize the deployment_guide artifact (MANDATORY):**
 
-   `/plan` left a DRAFT `deployment_guide` with the deploy *shape* and a first-cut verification
-   evidence contract. The deep research you just did is exactly what turns that draft into
-   actionable mechanics — do not leave it as a draft. Update it (`update_artifact`; create it if
-   the ticket skipped `/plan`) so the deploy steps name the **concrete** objects this build
-   produced:
+   `/auto-plan` left a DRAFT `deployment_guide` with the deploy *shape* and a first-cut
+   verification evidence contract. The deep research you just did is exactly what turns that
+   draft into actionable mechanics — do not leave it as a draft. Update it (`update_artifact`;
+   create it if the ticket skipped `/auto-plan`) so the deploy steps name the **concrete**
+   objects this build produced:
 
    - the actual **schema artifact**: for ts-prefect, Atlas/model/DB-only manifest changes and
      reviewed plan needs (or "no schema change"); for legacy repos, migration revision id /
@@ -205,7 +206,7 @@ ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REP
    producing deployment/command**; otherwise leave the unknown rows as `TBD` and note them.
 
    Find the draft's `artifact_id` in the `get_ticket` response (the `deployment_guide` artifact)
-   and update by id; if the ticket skipped `/plan` and none exists, create one instead.
+   and update by id; if the ticket skipped `/auto-plan` and none exists, create one instead.
 
    ```
    mcp__autodev-memory__update_artifact(
@@ -238,7 +239,7 @@ The build-planner agent performs thorough research. See
 
 Use the template at `templates/build-todo.md` for each build step.
 
-**Formatting:** Limit lines to 100 chars (tables exempt). See AGENTS.md.
+**Formatting:** (keep lines ≤100 chars; tables exempt)
 
 ## Output
 

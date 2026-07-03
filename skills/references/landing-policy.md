@@ -58,10 +58,16 @@ Use `staging` when any of these are true:
 This policy chooses the route; it does not define project-specific deploy commands.
 
 - `/ticket-flow` deploys standalone tickets by invoking `/auto-deploy` for the chosen target.
+- Target `none` (`--no-land`) means build/review/local-verify only: no landing, no deploy, no
+  PR merge — the branch stays pushed and the ticket waits for an explicit delivery decision.
 - `/auto-deploy` owns PR creation, merge, deploy steps, deploy-mechanics checks, blockers, and
   transition to `to_verify_staging` or `to_verify_prod`.
+- `/ticket-promote` owns the post-staging production path: landing staging-verified work on
+  `main` AND running the project's production deploy steps, then handing off to
+  `/ticket-verify production`.
 - `/ticket-verify` owns post-deploy behavior/evidence testing. A staging-first ticket is not
-  production-ready until `/ticket-verify staging` passes and promotion/deployment completes.
+  production-ready until `/ticket-verify staging` passes and `/ticket-promote` lands + deploys
+  it to production.
 - Epic steps remain parent-owned: `/ticket-flow` never deploys or verifies a step's runtime
   surface in isolation — the milestone deploy + cross-step gate are milestone-level and owned by
   `/milestone-flow`. But a `/ticket-flow` run on an epic step must not dead-end at a

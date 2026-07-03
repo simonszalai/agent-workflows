@@ -33,7 +33,7 @@ a unified verdict.
 | Only workflow gap suspected | `/autodev-wtf-workflows` directly |
 | Need to find the bug's root cause | `/investigate` first, then `/autodev-wtf` |
 | Learning moment, not a prod bug | `/compound` |
-| Broad system audit | `/dream` |
+| Broad system audit | `/deep-dream` |
 
 ## Process
 
@@ -67,9 +67,12 @@ Ticket: [ID or 'none']
 
 Trace the memory search pipeline to determine if the autodev-memory system
 had knowledge that should have prevented this bug. Follow the full
-autodev-wtf-memory skill process.
+autodev-wtf-memory skill process, including its Step 6 auto-save/fix
+(new entry only for no_entry; per-category fix for ranking/tag/formatting
+failures; nothing for not_preventable).
 
-Report your verdict in the WTF Memory Verdict format.
+Report your verdict in the WTF Memory Verdict format, including exactly
+which entries you created or updated (with entry IDs).
 ")
 ```
 
@@ -83,9 +86,12 @@ Affected area: [code area]
 Ticket: [ID or 'none']
 
 Trace the agent workflow pipeline (plan -> build -> review -> test -> verify)
-to determine which stage should have caught this bug.
+to determine which stage should have caught this bug. You are running under
+/autodev-wtf: skip the skill's standalone approval stop and apply your
+concrete workflow fixes directly (skill edits, checklist items).
 
-Report your findings in the WTF Workflows Analysis format.
+Report your findings in the WTF Workflows Analysis format, including exactly
+which files you edited.
 ")
 ```
 
@@ -121,13 +127,13 @@ Combine both investigation results into a single report:
 3. [Third fix if applicable]
 ```
 
-### Step 4: Apply Fixes (after user approval)
+### Step 4: Apply Fixes (automatic)
 
-Present the verdict and proposed fixes. **STOP and wait for user approval.**
-
-After approval, apply fixes from both investigations:
-- Memory gaps: save/update entries via MCP
-- Workflow gaps: update skill files, add review checklist items, etc.
+Fixes are applied automatically — no approval gate. The child investigations own their own
+saves (`/autodev-wtf-memory` saves/updates memory entries per its verdict; the workflow
+analysis applies skill/checklist fixes). Do NOT re-save entries a child already saved — the
+parent only applies fixes neither child owns, then synthesizes and reports everything that
+was changed.
 
 Write the retrospective artifact:
 ```

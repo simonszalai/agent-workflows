@@ -10,7 +10,7 @@ an error the user just encountered. Traces the search pipeline for the specific 
 diagnoses the root cause, and recommends a fix.
 
 **Scope:** One failure, one pipeline trace, one verdict. This is NOT a broad system audit
-(use `/dream` for that) and NOT a workflow gap analysis (use `/autodev-wtf-workflows`
+(use `/deep-dream` for that) and NOT a workflow gap analysis (use `/autodev-wtf-workflows`
 for that). This traces a single memory retrieval execution to find where it broke.
 
 ## Usage
@@ -34,7 +34,7 @@ for that). This traces a single memory retrieval execution to find where it brok
 | Situation | Use Instead |
 |---|---|
 | Bug slipped through agent workflows | `/autodev-wtf-workflows` |
-| Broad memory system audit | `/dream` |
+| Broad memory system audit | `/deep-dream` |
 | Bug root cause investigation | `/investigate` |
 | Learning moment after a correction | `/compound` |
 
@@ -136,7 +136,15 @@ For each root cause, the standard recommendation:
 
 ### Step 6: SAVE — Store the correction
 
-After the investigation, always save the correction to the memory system:
+After the investigation, apply the fix that matches the verdict — automatically, no
+approval gate:
+
+- `no_entry` → create a NEW entry for the correction (procedure below)
+- `bad_ranking` / `bad_tags` / `formatting_loss` → the entry already exists: fix it in place
+  (`update_entry` summary rewrite / retag) — do NOT create a duplicate new entry
+- `not_preventable` → save nothing
+
+For the `no_entry` case:
 
 1. Determine scope (global vs project) using project topology
 2. Fetch existing entries to check for duplicates

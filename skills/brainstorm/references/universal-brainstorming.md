@@ -1,6 +1,6 @@
 # Universal Brainstorming Facilitator
 
-This file is loaded when ce:brainstorm detects a non-software task (Phase 0). It replaces the software-specific brainstorming phases with facilitation principles for any domain. Do not follow the software brainstorming workflow (Phases 0.2 through 4). Instead, absorb these principles and facilitate the brainstorm naturally.
+This file is loaded when brainstorm detects a non-software task (Phase 0). It replaces the software-specific brainstorming phases with facilitation principles for any domain. Do not follow the software brainstorming workflow (Phases 0.2 through 4). Instead, absorb these principles and facilitate the brainstorm naturally.
 
 ---
 
@@ -46,7 +46,6 @@ When the conversation has enough material to narrow — reflect back what you've
 **Always synthesize a summary in the chat.** Before offering any next steps, reflect back what emerged: key decisions, the direction chosen, open threads, and any assumptions made. This is the primary output of the brainstorm — the user should be able to read the summary and know what they landed on.
 
 **Then offer next steps** using the platform's question tool (`AskUserQuestion` in Claude Code, `request_user_input` in Codex, `ask_user` in Gemini):
-- **Create a plan** → hand off to `/ce:plan` with the decided goal and constraints
+- **Create a plan** → hand off to `/auto-plan` with the decided goal and constraints
 - **Save summary to disk** → write the summary as a markdown file in the current working directory
-- **Share to Proof** → load the `proof` skill to create a shareable web link for others to review
 - **Done** → the conversation was the value, no artifact needed

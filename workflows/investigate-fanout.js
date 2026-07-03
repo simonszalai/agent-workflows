@@ -407,7 +407,7 @@ if (rawHypothesisCount === 0) {
 phase('Dedup')
 const dedupResult = await agent(
   dedupPrompt(bug, hypothesesByAngle),
-  { label: 'dedup', phase: 'Dedup', model: 'sonnet', schema: dedupOutputSchema }
+  { label: 'dedup', phase: 'Dedup', model: 'sonnet', effort: 'low', schema: dedupOutputSchema }
 )
 let mergedHypotheses = []
 if (dedupResult && Array.isArray(dedupResult.merged_hypotheses)) {
@@ -436,7 +436,7 @@ phase('Test')
 const testResults = await parallel(
   hypothesesWithIds.map(m => () => agent(
     testPrompt(m.id, m.hypothesis, bug, environment, repoRoot),
-    { label: `test:${m.id}`, phase: 'Test', model: 'sonnet', schema: verdictSchema }
+    { label: `test:${m.id}`, phase: 'Test', model: 'sonnet', effort: 'medium', schema: verdictSchema }
   ))
 )
 

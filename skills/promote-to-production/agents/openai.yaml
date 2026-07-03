@@ -1,4 +1,0 @@
-interface:
-  display_name: "Promote to Production"
-  short_description: "Promote staging changes to production safely."
-  default_prompt: "Promote a ticket or all staging changes to production."

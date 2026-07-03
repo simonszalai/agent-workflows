@@ -45,7 +45,8 @@ directory is used.
 - Bugs: `B0023` (type: "bug")
 - Refactors: `R0023` (type: "refactor")
 
-**Statuses:** backlog, up_next, in_progress, planned, merged, to_verify_prod, completed, abandoned
+**Statuses:** backlog, up_next, in_progress, planned, ready_to_deploy_staging, to_verify_staging, staging_verified, verify_staging_failed, to_verify_prod, verify_prod_failed, merged, completed, abandoned, on_ice, absorbed_into_epic
+(canonical lifecycle: `skills/references/ticket-lifecycle.md`)
 
 **Context resolution:**
 ```
@@ -191,7 +192,7 @@ mcp__autodev-memory__update_ticket(
 ```
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  status="backlog" | "up_next" | "in_progress" | "planned" | "merged" | "to_verify_prod" | "completed" | "abandoned",
+  status="<one of the canonical statuses — see skills/references/ticket-lifecycle.md>",
   reason="<optional reason for status change>",
   command="/curator", agent="ticket-curator"
 )

@@ -75,7 +75,7 @@ Epic **E000N** (step k). Depends on **<ids>**. See E000N artifacts #<n>.
 | `size` | `xs`/`s`/`m`/`l`/`xl`. If a step is `xl`, consider splitting it. |
 | `summary_bullets` | 3–6 terse bullets (what / why / approach) — the dashboard ticket-header summary. Left unset it defaults to `[]` and the header is blank. |
 | `status` | `backlog`. |
-| `command` / `agent` | `"/autodev-epic-create-steps"` / `"planner"` for actor tracking. |
+| `command` / `agent` | `"/epic-split"` / `"planner"` for actor tracking. |
 
 After creation, set `position` and repeat/confirm `milestone_id` via `add_epic_step`, then set
 the UUID edges via `set_epic_member_deps` — see the main SKILL.md, Phase 4.

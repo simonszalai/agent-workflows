@@ -71,7 +71,7 @@ aspects (both should exist).
 **New:**
 
 ```
-mcp__autodev-memory__add_entry(
+mcp__autodev-memory__create_entry(
   title: <title>,
   content: <content>,
   entry_type: <type>,
@@ -83,10 +83,16 @@ mcp__autodev-memory__add_entry(
   caller_context: {
     "skill": "<calling skill>",
     "reason": "<why worth persisting>",
-    "action_rationale": "No existing entry covers this topic"
+    "action_rationale": "New — top search hits: '<hit 1 title>' (<why not a duplicate>),
+                         '<hit 2 title>' (<why not a duplicate>)"
   }
 )
 ```
+
+`action_rationale` must cite the actual top hits from the Step 2 dedup search and say why
+each is not a duplicate of the new knowledge. A rubber-stamp "no existing entry covers this"
+without named hits is not acceptable — it defeats the search-first dedup. If the search
+returned zero results, say so explicitly ("dedup search returned 0 results for <queries>").
 
 **Append:**
 

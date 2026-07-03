@@ -23,7 +23,7 @@ contradictions, broken references, outdated patterns, and missing connections.
 ### 1. Skill Validation
 
 ```
-.claude/skills/*/SKILL.md files
+skills/*/SKILL.md files (agent-workflows repo; symlinked to ~/.claude/skills)
 ```
 
 Checks:
@@ -37,7 +37,7 @@ Checks:
 ### 2. Agent Validation
 
 ```
-.claude/agents/*.md files
+agents/*.md files
 ```
 
 Checks:
@@ -51,7 +51,7 @@ Checks:
 ### 3. Command Validation
 
 ```
-.claude/commands/*.md files
+workflows/*.js files (Workflow scripts) and hooks/*.sh
 ```
 
 Checks:
@@ -78,9 +78,9 @@ Checks relationships between components:
 
 ```bash
 # Collect all workflow files
-find .claude/skills -name "SKILL.md" -type f
-find .claude/agents -name "*.md" -type f
-find .claude/commands -name "*.md" -type f
+find skills -name "SKILL.md" -type f
+find agents -name "*.md" -type f
+ls workflows/*.js hooks/*.sh scripts/ bin/ 2>/dev/null
 ```
 
 ### Phase 2: Parse and Validate
@@ -125,21 +125,21 @@ Validate all edges point to existing nodes.
 #### Critical (breaks workflow)
 
 1. **Missing skill reference**
-   - File: `.claude/commands/review.md`
+   - File: `skills/review/SKILL.md`
    - Issue: References skill `review-code` which doesn't exist
    - Fix: Create skill or update reference to `review/references/python-standards.md`
 
 #### Warning (potential problem)
 
 2. **Orphaned skill**
-   - File: `.claude/skills/old-pattern/SKILL.md`
+   - File: `skills/old-pattern/SKILL.md`
    - Issue: Not referenced by any agent or command
    - Fix: Delete or add to appropriate agent
 
 #### Info (style/consistency)
 
 3. **Missing description**
-   - File: `.claude/agents/helper.md`
+   - File: `agents/helper.md`
    - Issue: Frontmatter missing description field
    - Fix: Add description
 
@@ -148,7 +148,7 @@ Validate all edges point to existing nodes.
 
 /build -> [build.md, researcher]
 researcher -> [research]
-research -> [templates/research-findings.md]
+review -> [references/findings-schema.json]
 
 ```
 
@@ -195,7 +195,8 @@ Non-fixable issues (require human decision):
 
 ### Report File
 
-Creates: `.claude/reports/workflow-health-YYYYMMDD.md`
+The report is returned INLINE in the response — never create a report file
+(repo rule: no unsolicited markdown files).
 
 ### Console Summary
 
@@ -207,7 +208,7 @@ Warning: 2
 Info: 3
 
 Run `/heal-workflows --fix` to address fixable issues.
-Full report: .claude/reports/workflow-health-20260201.md
+Full report: inline above
 ```
 
 ## When to Run
@@ -223,4 +224,3 @@ Full report: .claude/reports/workflow-health-20260201.md
 | Command                | Purpose                      |
 | ---------------------- | ---------------------------- |
 | `/heal-workflows`      | Audit workflow components    |
-| `/heal-work-items`     | Audit work item consistency  |

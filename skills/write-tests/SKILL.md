@@ -125,6 +125,11 @@ Follow the `references/strategy.md` for structure, naming, and patterns. Key rul
 
 ### 5. Run and Verify
 
+Use the **project's test commands** — from its CLAUDE.md / AGENTS.md or package scripts — not
+a hardcoded runner. Run the specific new test files first, then the relevant suite.
+
+*Example (bun-based project):*
+
 ```bash
 # Run the specific test files
 bun run test [path/to/test.test.ts]
@@ -164,7 +169,7 @@ Intentionally not tested:
 
 Parallelism: All tests use unique identifiers and run independently.
 
-Run: bun run test [paths]
+Run: [project test command] [paths]
 ```
 
 ### 7. Capture Test Failure Patterns (if failures were fixed)
@@ -202,12 +207,12 @@ mcp__autodev-memory__create_entry(
 
 If the MCP tool is unavailable, skip this step silently.
 
-## When Called from /build
+## When Called from an Orchestrator (/ticket-flow, /lfg)
 
-If invoked as part of a build step, write tests for the specific build_todo's changes only.
-Don't test unrelated code. Match test scope to change scope.
+This skill is invoked by orchestrators **after** the `/build` loop completes, scoped to the
+**whole change set** from the build phase — not per-todo. Classify all changed code and write
+tests at the appropriate level. Don't test unrelated code; match test scope to change scope.
+Run the full test suite to verify no regressions.
 
-## When Called from /lfg or /auto-build
-
-Write tests for all code changes from the build phase. Classify all changed code and write
-tests at the appropriate level. Run the full test suite to verify no regressions.
+**Ticketless note (lfg):** when running under `/lfg` there is no ticket — make no MCP writes
+(no ticket or artifact updates). Report results back to the orchestrator only.

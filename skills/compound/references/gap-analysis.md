@@ -31,7 +31,7 @@ and determine the correct fix target.
 
 **Fix targets:**
 
-- `.claude/skills/plan/SKILL.md` - Add research requirement
+- `skills/auto-plan/SKILL.md` - Add research requirement
 - Memory service — store the missed constraint as a gotcha
 
 ## 3. Build Todos Gap
@@ -44,7 +44,7 @@ and determine the correct fix target.
 
 **Fix targets:**
 
-- `.claude/skills/create-build-todos/SKILL.md` - Add research step
+- `skills/create-build-todos/SKILL.md` - Add research step
 - Memory service — store the pattern as a reference
 
 ## 4. Review Gap
@@ -57,8 +57,8 @@ and determine the correct fix target.
 
 **Fix targets:**
 
-- `.claude/skills/review-*/SKILL.md` - Add checklist item
-- `.claude/skills/review/SKILL.md` - Add new review dimension
+- `skills/review/references/*.md` - Add checklist item
+- `skills/review/SKILL.md` - Add new review dimension
 
 ## 5. Workflow Gap
 
@@ -70,7 +70,7 @@ and determine the correct fix target.
 
 **Fix targets:**
 
-- `.claude/commands/*.md` - Add or modify workflow steps
+- `skills/*/SKILL.md` - Add or modify workflow steps in the relevant skill
 
 ## 6. Implementation Gap (Not Systemic)
 

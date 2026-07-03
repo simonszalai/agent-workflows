@@ -5,13 +5,13 @@ evidence-based scrutiny before anything is applied. The skeptics are the safety 
 the memory channel there is no human in the loop, and for the skill channel they decide what is
 even worth presenting at the gate.
 
-This loop **extends** `dream/references/adversarial-review.md` — read that first; it is the base
+This loop **extends** `references/adversarial-base.md` — read that first; it is the base
 protocol (round structure, verdict schema, adjudication table, convergence/cap, anti-patterns).
-This file adds only what deep-dream changes.
+This file adds only the skill-channel deltas.
 
-## What is different from dream
+## What is different from the base protocol
 
-1. **Five channels, not one.** Memory candidates (M, G, memory-side P) get dream's three lenses.
+1. **Five channels, not one.** Memory candidates (M, G, memory-side P) get the three base lenses.
    Skill / workflow / CLAUDE.md candidates (K, W, skill-side P) get a **fourth lens** (below) in
    addition — they are the higher-stakes channel.
 2. **Aggregate-evidence bar.** K and G candidates claim a *pattern*. A skeptic must check the
@@ -26,12 +26,12 @@ This file adds only what deep-dream changes.
 Spawn skeptics in parallel (one message, multiple `Agent` blocks). Memory candidates → lenses
 1–3. Skill / migration / CLAUDE.md candidates → lenses 1–3 **plus** lens 4.
 
-1. **Information-loss skeptic** (dream) — what would a destructive/consolidating action silently
+1. **Information-loss skeptic** (base) — what would a destructive/consolidating action silently
    erase? Caveats, exceptions, provenance, the WHY.
-2. **Evidence skeptic** (dream) — is each action's stated reason factually true *right now*? Grep
+2. **Evidence skeptic** (base) — is each action's stated reason factually true *right now*? Grep
    the symbols, confirm the "removed" function is gone, confirm two "duplicates" really match,
    confirm the cited session/ticket locator says what the candidate claims.
-3. **Churn / utility skeptic** (dream) — is the change worth its cost, or motion without value?
+3. **Churn / utility skeptic** (base) — is the change worth its cost, or motion without value?
    Defends the status quo against cosmetic edits.
 4. **Portability / altitude skeptic** (new — skill channel only). Attacks every skill, migration,
    and shared-CLAUDE.md candidate on these grounds:
@@ -56,7 +56,7 @@ session/ticket locator, provenance); a bare opinion is ignored.
 
 ## Adjudication deltas
 
-Use dream's adjudication table, with these overrides:
+Use the base protocol's adjudication table, with these overrides:
 
 | Situation | Ruling |
 |---|---|
@@ -72,7 +72,7 @@ X") must survive as a **pair**. If the skill-side edit is killed or gated-but-un
 memory-side deletion **does not run** — never retire the source before the destination is durable.
 The skeptics flag any P pair whose two halves don't both survive.
 
-## Anti-patterns (in addition to dream's)
+## Anti-patterns (in addition to the base protocol's)
 
 - **Treating a skill edit like a memory edit.** Skill edits are higher-stakes and gated; they
   never auto-apply just because they passed lenses 1–3. Lens 4 and the single-kill bar apply.

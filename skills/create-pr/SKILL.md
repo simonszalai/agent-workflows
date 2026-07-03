@@ -6,7 +6,8 @@ description: Generate summary report and create PR from a work item. Collects wh
 # Create PR Command
 
 Generate a summary of all work done, create a commit, push, and open a pull request. This is
-the final step of autonomous workflows (`/lfg`, `/auto-build`) and can also be called manually.
+invoked by `/auto-deploy` Phase 2 (which creates the PR just before merging/deploying) and can
+also be called manually.
 
 For multi-repo epics, read `../references/conductor-multi-repo.md`: `/create-pr` is repo-local.
 Create one PR for the current repo/step only; sibling repo PRs are separate and ordered by the
@@ -203,17 +204,26 @@ git commit -m "$(cat <<'EOF'
 - Tests: {N passing, N total}
 - Review: {N findings resolved}
 
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Co-Authored-By: Claude {current model name} <noreply@anthropic.com>
 EOF
 )"
 ```
 
+Use the current model's name in the trailer (e.g. the form given in the project instructions);
+never hardcode a stale model name.
+
 ### 7. Push and Create PR
+
+Determine `$TARGET_BRANCH` from the delivery route chosen for the ticket (see
+`../references/landing-policy.md`): `staging` for the staging-first route, `main` for direct
+production. When called from `/auto-deploy`, the target environment it resolved dictates the
+base. Never rely on the repo's default base branch.
 
 ```bash
 git push -u origin {branch-name}
 
 gh pr create \
+  --base "$TARGET_BRANCH" \
   --title "{work-item-id}: {title}" \
   --body "$(cat <<'EOF'
 {generated summary from step 5}
@@ -267,27 +277,14 @@ Manual steps:
 2. gh pr create --title "{title}" --body-file {report-path}
 ```
 
-## When Called from Autonomous Workflows
+## When Called from /auto-deploy (Phase 2)
 
-### From /lfg
-
-- No ticket — reads context from `.context/` directory
-- Branch name from conversation context
+- Invoked when no PR exists yet for the ticket's pushed feature branch
+- Full ticket artifacts available via MCP (plan, build_todos, review_todos, deployment_guide)
+- `$TARGET_BRANCH` comes from the target environment `/auto-deploy` resolved
+  (staging -> `staging`, production -> `main`)
 - May have GitHub issue (link and comment)
-- Summary includes research/investigation phase
-
-### From /auto-flow
-
-- Branch: `auto-flow/{work-item-id}`
-- Full ticket artifacts available via MCP
-- May have GitHub issue (link and comment)
-- Summary includes research/investigation phase
-
-### From /auto-build
-
-- Branch: `auto-build/{work-item-id}`
-- May or may not have GitHub issue
-- Summary includes deployment guide
+- Summary includes deployment guide notes when the artifact exists
 
 ## When Called Manually
 

@@ -1,6 +1,6 @@
 ---
 name: resolve-review
-description: Resolve review findings based on decisions. Spawns builder agent to implement fixes from review_todos, captures learnings.
+description: Resolve review findings based on decisions. Spawns builder agent to implement fixes from review_todo artifacts, captures learnings.
 skills:
   - autodev-search
   - compound
@@ -22,7 +22,8 @@ fixes need approval, manual findings are handed off.
 
 ## Prerequisites
 
-- `review_todos/` exists with findings (or review_todo artifacts on ticket)
+- Pending review_todo artifacts exist on the ticket (or, in ticketless lfg mode, finding
+  files exist in `.context/review_todos/`)
 - (Optional) User has filled Decision sections
 
 ## Autofix Classification Routing
@@ -50,7 +51,7 @@ resolution path:
    - **manual queue:** Present with options, user decides
    - **advisory:** Mark as skipped (already reported)
 
-3. **Spawn builder for safe_auto fixes:**
+3. **Spawn builder for safe_auto fixes** (model `sonnet` — safe_auto stays cheap):
 
    ```
    Agent(
@@ -66,7 +67,7 @@ resolution path:
 
        {for each safe_auto review_todo artifact:}
        - Finding #{sequence}: {title}
-         Priority: {p1/p2/p3}
+         Severity: {p1/p2/p3}
          Confidence: {confidence}
          Suggested Fix: {suggested fix from artifact}
          File: {file_path}:{line_number}
@@ -76,9 +77,13 @@ resolution path:
        - CRITICAL: Before removing any export/class/function, search ALL usages first
        - Implement the suggested fix exactly as written
        - Run linter and type checker after each fix
-       - Update artifact status to 'resolved' via update_artifact
+       - Re-run the tests covering each touched file — a finding is not resolved
+         until they pass
+       - For each p1 correctness fix: add a regression test (failing-then-passing)
+         or state an explicit reason why it is untestable
+       - Do NOT set review_todo artifact status — return structured JSON instead
 
-       Return summary of what was resolved and any issues encountered.
+       Return the resolve-mode JSON array defined in agents/builder.md.
      "
    )
    ```
@@ -118,12 +123,13 @@ resolution path:
    4. Skip — not worth fixing
    ```
 
-6. **Spawn builder for approved gated/manual fixes:**
+6. **Spawn builder for approved gated/manual fixes** (model `opus` — gated_auto/manual fixes
+   change behavior/contracts and warrant the stronger model):
 
    ```
    Agent(
      subagent_type="builder",
-     model="sonnet",
+     model="opus",
      prompt="
        MODE: resolve
        Ticket: {ticket_id}
@@ -143,12 +149,32 @@ resolution path:
        - CRITICAL: Before removing any export/class/function, search ALL usages first
        - Implement the fix as specified
        - Run linter and type checker after each fix
-       - Update artifact status to 'resolved' via update_artifact
+       - Re-run the tests covering each touched file — a finding is not resolved
+         until they pass
+       - For each p1 correctness fix: add a regression test (failing-then-passing)
+         or state an explicit reason why it is untestable
+       - Do NOT set review_todo artifact status — return structured JSON instead
 
-       Return summary of what was resolved and any issues encountered.
+       Return the resolve-mode JSON array defined in agents/builder.md.
      "
    )
    ```
+
+6a. **Validate builder JSON and set artifact statuses (orchestrator-owned):**
+
+   The builder does NOT set review_todo artifact status. For each builder that returns,
+   parse its resolve-mode JSON array (`{finding_id, status, files_changed,
+   verification_output, regression_test}` per entry) and validate it:
+
+   - every dispatched finding has an entry;
+   - `status` is `resolved`, `skipped`, or `deferred`;
+   - `resolved` entries have passing `verification_output` for the touched files;
+   - `resolved` p1 entries have a `regression_test` (or an explicit untestable reason).
+
+   Only then set each review_todo artifact's status via `update_artifact` (`resolved` /
+   `skipped`). Entries that fail validation stay `pending` and are re-dispatched or surfaced
+   to the user. Same trust model as build mode: an artifact is never marked resolved on the
+   builder's say-so alone.
 
 7. **After builder returns — capture learnings:**
    - Run `/compound` to analyze the fixes
@@ -159,13 +185,13 @@ resolution path:
 
    `/compound` handles all updates — including MCP calls to persist knowledge:
 
-   | Recommendation Type             | Target Location                                     |
-   | ------------------------------- | --------------------------------------------------- |
-   | Project-specific pitfall        | Memory service via `mcp__autodev-memory__add_entry` |
-   | Reusable pattern                | Memory service via `mcp__autodev-memory__add_entry` |
-   | Plan research requirement       | `.claude/skills/plan/SKILL.md`                      |
-   | Build todo research requirement | `.claude/skills/create-build-todos/SKILL.md`        |
-   | Build verification step         | `.claude/skills/build/SKILL.md`                     |
+   | Recommendation Type             | Target Location                                        |
+   | ------------------------------- | ------------------------------------------------------ |
+   | Project-specific pitfall        | Memory service via `mcp__autodev-memory__create_entry` |
+   | Reusable pattern                | Memory service via `mcp__autodev-memory__create_entry` |
+   | Plan research requirement       | `skills/auto-plan/SKILL.md`                             |
+   | Build todo research requirement | `skills/create-build-todos/SKILL.md`                    |
+   | Build verification step         | `skills/build/SKILL.md`                                 |
 
 9. **Update the plan artifact:**
 
@@ -216,13 +242,17 @@ resolution path:
 10. **Create deployment guide:**
 
    Run `/create-deployment-guide` to generate deployment instructions:
-   - Analyzes changes and creates `deployment-guide.md`
+   - Analyzes changes and creates the `deployment_guide` artifact on the ticket
    - Documents deployment steps, verification, rollback plan
    - Identifies affected services and requirements
 
    This step can be skipped for trivial changes (e.g., doc-only updates).
 
-11. **Commit changes (submodule-aware):** _(no permission needed)_
+11. **Commit changes (ticketed standalone runs only, submodule-aware):** _(no permission
+    needed)_
+
+    **Ticketless (lfg) runs skip this step entirely** — lfg forbids pushing and owns its own
+    commits. The commit/push below applies only to ticketed standalone runs.
 
     Handle submodules first, then main repo:
 
@@ -260,6 +290,17 @@ git push
 
 **Important:** Always commit and push submodule changes BEFORE committing the main repo reference to avoid "new commits" state conflicts.
 
+## Ticketless Mode (lfg)
+
+When resolve-review runs without a ticket (e.g. under `/lfg`):
+
+- Findings live as files in `.context/review_todos/` instead of MCP review_todo artifacts.
+- Routing is identical (safe_auto / gated_auto / manual / advisory), and the orchestrator
+  still validates the builder's resolve JSON — it records outcomes in the finding files
+  instead of via `update_artifact`.
+- **No commit/push.** lfg forbids pushing and owns its own commits; step 11 applies only to
+  ticketed standalone runs.
+
 ## Output
 
 ### On Success
@@ -270,18 +311,23 @@ Review resolved for {ID}: {title}
 Applied: {N} fixes ({safe_auto} auto, {gated_auto} gated, {manual} manual)
 Skipped: {N} ({advisory} advisory)
 
-Next: /create-pr {ID} (commit, push, and create PR)
+Next: deploy via /ticket-flow (/auto-deploy) — or done, if this run is ticketless (lfg)
+or no deployment is needed
 ```
+
+Step 11 already committed and pushed (ticketed runs), so the next step is the deploy path,
+not PR creation.
 
 ### Artifacts Produced
 
-- Updated `review_todos/` with resolutions
+- Updated review_todo artifacts (statuses set by the orchestrator after validating the
+  builder's resolve JSON)
 - Code fixes for accepted findings
 - Updated the `plan` artifact (via `update_artifact`) with Review Resolution Summary and work log entry
-- `deployment-guide.md` with deployment instructions
+- `deployment_guide` artifact with deployment instructions
 - Optional memory entries via `/compound`
 - Process improvements applied to:
-  - `.claude/skills/plan/SKILL.md` (plan research requirements)
-  - `.claude/skills/create-build-todos/SKILL.md` (build todo research requirements)
-  - `.claude/commands/build.md` (verification steps)
+  - `skills/auto-plan/SKILL.md` (plan research requirements)
+  - `skills/create-build-todos/SKILL.md` (build todo research requirements)
+  - `skills/build/SKILL.md` (verification steps)
   - Memory service via MCP (project-specific pitfalls, reusable patterns)

@@ -2,6 +2,9 @@
 
 Standards for performance review and optimization. Apply these to identify bottlenecks and ensure scalability.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Core Analysis Framework
 
 ### 1. Algorithmic Complexity
@@ -50,38 +53,6 @@ Standards for performance review and optimization. Apply these to identify bottl
 - Identify lazy loading opportunities
 - Verify efficient DOM manipulation
 - Monitor JavaScript execution time
-
-## Performance Benchmarks
-
-Enforce these standards:
-
-| Metric               | Target                                         |
-| -------------------- | ---------------------------------------------- |
-| Algorithm complexity | No worse than O(n log n) without justification |
-| Database queries     | Must use appropriate indexes                   |
-| Memory usage         | Bounded and predictable                        |
-| API response times   | Under 200ms for standard operations            |
-| Bundle size increase | Under 5KB per feature                          |
-| Background jobs      | Batch processing for collections               |
-
-## Analysis Output Format
-
-1. **Performance Summary**: High-level assessment
-2. **Critical Issues**: Immediate problems
-   - Issue description
-   - Current impact
-   - Projected impact at scale
-   - Recommended solution
-3. **Optimization Opportunities**: Enhancements
-   - Current implementation
-   - Suggested optimization
-   - Expected gain
-   - Implementation complexity
-4. **Scalability Assessment**: Load projections
-   - Data volume projections
-   - Concurrent user analysis
-   - Resource utilization estimates
-5. **Recommended Actions**: Prioritized list
 
 ## Review Process
 

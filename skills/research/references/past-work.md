@@ -182,7 +182,7 @@ Related entries from memory service:
 
 ## Usage Guidelines
 
-### When Planning (`/plan`)
+### When Planning (`/auto-plan`)
 
 Focus on:
 

@@ -2,6 +2,9 @@
 
 Standards for code simplicity and YAGNI compliance. Apply these to identify unnecessary complexity.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Core Rule
 
 **Don't optimize what should not exist.** Before simplifying code, ask: should this exist at all?
@@ -90,46 +93,6 @@ maintainer. It doubles the surface area for bugs and makes the replacement look 
 4. For each complex section, propose a simpler alternative
 5. Create a prioritized list of simplification opportunities
 6. Estimate the lines of code that can be removed
-
-## Output Format
-
-```markdown
-## Simplification Analysis
-
-### Core Purpose
-
-[Clearly state what this code actually needs to do]
-
-### Unnecessary Complexity Found
-
-- [Specific issue with line numbers/file]
-- [Why it's unnecessary]
-- [Suggested simplification]
-
-### Code to Remove
-
-- [File:lines] - [Reason]
-- [Estimated LOC reduction: X]
-
-### Simplification Recommendations
-
-1. [Most impactful change]
-   - Current: [brief description]
-   - Proposed: [simpler alternative]
-   - Impact: [LOC saved, clarity improved]
-
-### YAGNI Violations
-
-- [Feature/abstraction that isn't needed]
-- [Why it violates YAGNI]
-- [What to do instead]
-
-### Final Assessment
-
-Total potential LOC reduction: X%
-Complexity score: [High/Medium/Low]
-Recommended action: [Proceed with simplifications/Minor tweaks only/Already minimal]
-```
 
 ## Key Philosophy
 

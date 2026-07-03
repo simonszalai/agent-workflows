@@ -46,7 +46,7 @@ const findingSchema = {
     title: { type: 'string', minLength: 4 },
     severity: { type: 'string', enum: ['p1', 'p2', 'p3'] },
     file: { type: 'string' },
-    line: { type: 'integer', minimum: 0 },
+    line: { type: 'integer', minimum: 1 },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     autofix_class: { type: 'string', enum: ['safe_auto', 'gated_auto', 'manual', 'advisory'] },
     owner: { type: 'string', enum: ['review-fixer', 'downstream-resolver', 'human'] },
@@ -89,7 +89,7 @@ function normalizeFile(f) {
   return String(f || '').replace(/\\/g, '/').replace(/^\.\//, '').trim()
 }
 function lineNumber(f) {
-  return Number.isFinite(+f?.line) ? Math.max(0, +f.line | 0) : 0
+  return Number.isFinite(+f?.line) ? Math.max(1, +f.line | 0) : 1
 }
 // Stable per-finding key for skeptic-verdict matching. Not fuzzy — each finding has
 // exactly one key. Dedup uses a separate +/-3 window comparator (see dedupAndMerge).
@@ -213,13 +213,15 @@ function partition(findings) {
   return { inSkillFixer, residualActionable, reportOnly }
 }
 
-function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
+function reviewerPrompt(reviewer, intent, files, diffSummary, diffPath, mode) {
   const scope = reviewer.filesScope?.length ? reviewer.filesScope : files
   return [
     `You are reviewer "${reviewer.key}". Focus: ${reviewer.focus}. Mode: ${mode}.`,
     ``,
     `Intent:`,
     intent,
+    ``,
+    `Diff at: ${diffPath}`,
     ``,
     `Files in scope:`,
     scope.map(p => `  - ${p}`).join('\n'),
@@ -233,7 +235,8 @@ function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
     `Return per the reviewer output schema. Rules:`,
     `- One finding per real issue. Specific file:line. No vague nits.`,
     `- evidence: quote or paraphrase the code that proves the issue (>=1 required).`,
-    `- confidence is code-grounded. >=0.80 requires direct evidence.`,
+    `- confidence is code-grounded. Before assigning >=0.80 you MUST have read the`,
+    `  surrounding function and at least one call site; cite both in evidence.`,
     `- pre_existing: true if the issue exists on main and the diff did not introduce it.`,
     `- autofix_class safe_auto only if the fix is mechanical and obviously correct.`,
     `- owner: review-fixer for safe_auto fixes; downstream-resolver for gated_auto/manual; human for advisory.`,
@@ -241,12 +244,13 @@ function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
   ].join('\n')
 }
 
-function skepticPrompt(finding, idx, intent, diffSummary) {
+function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
   return [
     `You are an adversarial skeptic (#${idx}). Your job is to REFUTE this finding.`,
     `Default to "refute" unless the evidence is concrete and reproducible.`,
     ``,
     `Intent: ${intent}`,
+    `Diff at: ${diffPath}`,
     `Diff summary: ${diffSummary}`,
     ``,
     `Finding under review:`,
@@ -265,13 +269,13 @@ function skepticPrompt(finding, idx, intent, diffSummary) {
 
 // ---------- Script body ----------
 
-const { reviewers, intent, files, diffSummary, mode } = args
+const { reviewers, intent, files, diffSummary, diffPath, mode } = args
 
 // Phase 1: BARRIER fan-out
 phase('Fan out')
 const reviewerResults = await parallel(
   reviewers.map(r => () => agent(
-    reviewerPrompt(r, intent, files, diffSummary, mode),
+    reviewerPrompt(r, intent, files, diffSummary, diffPath, mode),
     { label: `reviewer:${r.key}`, phase: 'Fan out', model: r.model, schema: reviewerOutputSchema }
   ))
 )
@@ -321,8 +325,9 @@ const skepticCalls = []
 for (const f of borderline) {
   for (let i = 1; i <= 2; i++) {
     skepticCalls.push(() => agent(
-      skepticPrompt(f, i, intent, diffSummary),
-      { label: `skeptic:${findingKey(f)}:${i}`, phase: 'Verify', model: 'sonnet', schema: verifyVerdictSchema }
+      skepticPrompt(f, i, intent, diffSummary, diffPath),
+      // p1 findings get the strongest skeptic; everything else stays cheap.
+      { label: `skeptic:${findingKey(f)}:${i}`, phase: 'Verify', model: f.severity === 'p1' ? 'opus' : 'sonnet', schema: verifyVerdictSchema }
     ))
   }
 }

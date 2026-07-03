@@ -74,6 +74,21 @@ success only after a staging `PASS`. `/epic-flow` sequences milestones and owns 
 promotion/verification after all staging gates pass; it must not treat a build-only milestone
 handoff as complete.
 
+## Epic status vocabulary
+
+The epic itself carries an `epic_status` (set via `update_epic`), separate from its step
+tickets' statuses. Canonical values, in lifecycle order:
+
+```text
+planning -> in_progress -> to_verify_staging -> staging_verified -> to_verify_prod -> completed
+```
+
+- `to_verify_staging` / `staging_verified` are set per milestone gate progress (the last
+  milestone gate PASS moves the epic to `staging_verified`).
+- `to_verify_prod` is set when production promotion of the epic lands (`/ticket-promote
+  --epic`); `completed` when `/ticket-verify production` passes the epic scope.
+- Blockers are metadata, not statuses — same rule as tickets (see ticket-lifecycle.md).
+
 ## Verification evidence placement
 
 Epic/milestone verification must leave durable evidence in three places before any lifecycle status

@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review implementation against the plan. Spawns review agents in parallel, collects findings into review_todos/.
+description: Review implementation against the plan. Spawns review agents in parallel, collects findings into review_todo artifacts.
 ---
 
 # Review
@@ -76,7 +76,16 @@ manual sanity check).
 
 ### Step 1: Analyze the Diff
 
-Before spawning any reviewers, analyze the diff to determine which reviewers to spawn:
+**Write the diff ONCE** as a shared artifact — every native reviewer prompt, skeptic prompt,
+and peer dispatch references these paths instead of re-discovering the diff:
+
+```bash
+mkdir -p .context/review
+git diff main > .context/review/diff.patch
+git diff --name-only main > .context/review/files.txt
+```
+
+Then analyze the diff to determine which reviewers to spawn:
 
 ```bash
 # Get changed files
@@ -101,8 +110,11 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 | Agent    | Model    | Review References                                                                    | Focus                                |
 | -------- | -------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
 | reviewer | `sonnet` | references/python-standards.md or typescript-standards.md, references/simplicity.md, references/patterns.md | Code quality, YAGNI, design patterns |
-<!-- TODO: revert `opus` reviewer spawns below back to `fable` once available -->
+<!-- stay on opus — fable is not available on the subscription plan after 2026-07-07 -->
 | reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md        | Architecture, security, performance  |
+
+**Light-diff model downgrade:** when the total diff is < 50 LOC (added + removed via
+`git diff --shortstat`), spawn BOTH always-on reviewers on `sonnet`.
 
 **Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching):
 
@@ -231,6 +243,10 @@ done
 wait
 ```
 
+Peer dispatches (and the `external-reviewer` subagent prompts) reference the shared diff
+artifact from Step 1 — `Diff at: .context/review/diff.patch`, files at
+`.context/review/files.txt` — instead of re-discovering the diff.
+
 **Why a subagent/background process and not a serial foreground shell-out:** the providers are
 slow — Codex at xhigh reasoning takes ~9 minutes for a single review. A serial foreground
 `external-agent` call can exceed the shell tool's hard timeout cap and get SIGKILLed mid-run,
@@ -286,30 +302,42 @@ review artifacts exactly as in any other mode.
 ### Cross-Review Iteration Loop
 
 The loop autonomous orchestrators use to drive build → review → fix → re-review with external
-providers. Provider-neutral; lives here so `auto-build`, `ticket-flow`
-(via `references/execution-phases.md`), and `lfg` all share one definition.
+providers. **This is the canonical definition** — provider-neutral; consumers are `ticket-flow`
+(via `../references/execution-phases.md`) and `lfg`.
+
+**Round budget follows the complexity gate:** the light path (small diffs) runs a **single
+round** — still cross-provider; the heavy path keeps the ≤3-round loop below.
 
 ```
 round = 1
-while round <= 3:
+max_rounds = 1 if light path else 3
+carried = []                        # unresolved advisory/contested findings from prior rounds
+while round <= max_rounds:
     run /review mode:cross          # runner self-review ∥ two peer providers, merged + deduped + boosted
+                                    # include `carried` in each reviewer's prompt context
     actionable = partitions.inSkillFixer + partitions.residualActionable
                  # i.e. findings routed to review-fixer (safe_auto) or
                  #      downstream-resolver (gated_auto | manual)
     if actionable is empty:
         break                       # converged — only advisory / gate-suppressed nits remain
     current runner resolves actionable findings (apply safe_auto inline; resolve gated_auto/manual)
+    carried = unresolved advisory + contested (requires_verification) findings from this round
     re-run affected tests + type check
     round += 1
 ```
+
+**Carry-forward:** unresolved `advisory` and contested (`requires_verification: true`)
+findings from each round MUST be passed into the next round's reviewer context, so skeptic
+outputs and advisory notes are not dropped between rounds.
 
 **Termination — break when EITHER holds:**
 
 - the merged result has **no actionable findings** — actionable means at or above the
   autofix/gated tiers (`safe_auto`, `gated_auto`, `manual`). `advisory` findings and
   confidence-gate-suppressed (<0.60) nits do **not** keep the loop alive; or
-- **3 rounds** have run. Do not loop forever chasing literal agreement — after round 3, stop
-  and surface any remaining `gated_auto`/`manual` findings for a human.
+- **max_rounds** have run (1 on the light path, 3 on the heavy path). Do not loop forever
+  chasing literal agreement — after the final round, stop and surface any remaining
+  `gated_auto`/`manual` findings for a human.
 
 **Cost note:** each round spawns 2 external CLI agents (run in parallel). The loop is the
 expensive part of the workflow, which is why termination is aggressive — only genuinely
@@ -369,7 +397,9 @@ actionable findings re-trigger a round.
 5. **Fan out — light path (inline):**
 
    When the gate selects "Light", issue the reviewer `Agent` calls in parallel (one assistant
-   message, multiple tool-use blocks). No workflow, no skeptics. Each reviewer returns the
+   message, multiple tool-use blocks). No workflow, no skeptics. Every reviewer prompt includes
+   `Diff at: .context/review/diff.patch` (the shared artifact from Step 1) so reviewers read
+   the diff instead of re-computing it. Each reviewer returns the
    reviewer-output JSON shape documented in `workflows/review-fanout.js`
    (`reviewerOutputSchema`). **Unless `mode:solo`, include the two peer providers in this same
    parallel batch** — see Cross-Provider Reviewers above. In Claude Code that means
@@ -419,14 +449,15 @@ actionable findings re-trigger a round.
        reviewers: [
          { key: "code-quality", model: "sonnet", focus: "...",
            references: ["references/python-standards.md", ...] },
-         // TODO: revert model back to "fable" once available
+         // stay on opus — fable is not available on the subscription plan after 2026-07-07
          { key: "architecture-security-performance", model: "opus", focus: "...",
            references: ["references/architecture.md", ...] },
          // ...plus conditional + project-persona reviewers from step 3
        ],
        intent: "<2-3 line intent from plan/commits>",
-       files: ["<changed files>"],
+       files: ["<changed files from .context/review/files.txt>"],
        diffSummary: "<git diff --stat output or short narrative>",
+       diffPath: ".context/review/diff.patch",
        mode: "interactive" | "autofix" | "report-only" | "headless"
      }
    })
@@ -516,7 +547,7 @@ actionable findings re-trigger a round.
    )
 
    # 2. If no duplicate, store the finding
-   mcp__autodev-memory__add_entry(
+   mcp__autodev-memory__create_entry(
      project="<from <!-- mem:project=X --> in CLAUDE.md>",
      title="Review: [finding summary]",
      content="File: [path], Line: [number]. Issue: [description]. Fix: [fix].",
@@ -535,11 +566,18 @@ actionable findings re-trigger a round.
 
    If a related entry exists, use `mcp__autodev-memory__update_entry` to append instead.
 
-   This is critical for autonomous workflows (LFG, auto-build) in cloud environments
+   This is critical for autonomous workflows (lfg, ticket-flow) in cloud environments
    where review findings would otherwise be lost after the session ends.
    If the MCP tool is unavailable, skip this step silently.
 
 8. **Update plan artifact** with review log entry via `update_artifact`
+
+### Ticketless Mode (lfg)
+
+When the review runs without a ticket (e.g. under `/lfg`), there is no MCP ticket to attach
+review_todo artifacts to. Store findings as files in `.context/review_todos/` instead (one
+file per finding, using `templates/review-todo.md`). Everything else is unchanged — the
+memory-persistence step (`create_entry` for P1/P2 findings) still applies.
 
 ---
 
@@ -588,7 +626,7 @@ isn't dead code.
 
 Use the template at `templates/review-todo.md` for output format.
 
-**Formatting:** Limit lines to 100 chars (tables exempt). See AGENTS.md.
+**Formatting:** keep lines ≤100 chars; tables exempt.
 
 ## Finding Quality
 
@@ -610,7 +648,7 @@ Use the template at `templates/review-todo.md` for output format.
 ## Knowledge Persistence
 
 P1/P2 findings are stored in the memory service by the `/review` command orchestrator via
-`mcp__autodev-memory__add_entry`. This ensures future builds learn from past review findings,
+`mcp__autodev-memory__create_entry`. This ensures future builds learn from past review findings,
 even in ephemeral cloud sessions. Individual reviewer agents do NOT call MCP tools directly —
 the orchestrator handles persistence after collecting all findings.
 

@@ -1,9 +1,11 @@
-# Adversarial Review — Skeptic Loop Protocol
+# Adversarial Review — Base Skeptic Loop Protocol
 
-This is the detailed protocol for Step 8 of the dream skill. The goal: subject every
-proposed memory mutation to hostile, evidence-based scrutiny from multiple independent
-angles, and let only the proposals that survive reach execution. No human is in the loop,
-so the skeptics *are* the safety mechanism — they must be genuinely adversarial.
+This is the base protocol for deep-dream's Phase 3 (round structure, verdict schema,
+adjudication table, convergence/cap, anti-patterns); `adversarial-review.md` layers the
+skill-channel deltas on top. The goal: subject every proposed memory mutation to hostile,
+evidence-based scrutiny from multiple independent angles, and let only the proposals that
+survive reach execution. No human is in the loop for the memory channel, so the skeptics
+*are* the safety mechanism — they must be genuinely adversarial.
 
 ## The principle
 
@@ -96,7 +98,7 @@ the tiebreaker.
 
 Maintain an **adjudication log** spanning all rounds. Per action: the three verdicts, your
 ruling, and the evidence for any rebuttal. This is the audit trail that justifies each
-autonomous mutation in Step 9 and populates the "Dropped by critics" section of the report.
+autonomous mutation at apply time and populates the "Dropped by critics" report section.
 
 ### 6. Carry forward / converge
 

@@ -1,5 +1,6 @@
 ---
 name: autodev-ingest
+model: haiku
 description: Ingest structured knowledge from project repos into the autodev-memory database. Modes — knowledge (default), tickets, work-items.
 user_invocable: true
 ---
@@ -12,7 +13,7 @@ Ingest knowledge into the autodev-memory database via MCP tools.
 
 | Mode | What it ingests | Reference |
 |---|---|---|
-| *(default)* | `.claude/knowledge/` files, `CLAUDE.md`, flow failure artifacts | This file |
+| *(default)* | `.claude/knowledge/` files, flow failure artifacts | This file |
 | `tickets` | Filesystem `work_items/` directories into the ticket system | `references/tickets.md` |
 | `work-items` | Work item artifacts (conclusions, retrospectives) into memory entries | `references/work-items.md` |
 
@@ -87,11 +88,7 @@ find {repo_path}/.claude/knowledge -name "*.md" -not -name "README.md"
 The **top-level** directory under `knowledge/` determines the type. Nested subdirectories
 inherit from their parent (e.g., `solutions/database/fix.md` is still `solution`).
 
-### Source B: `CLAUDE.md` (Repo Root)
-
-If `{repo_path}/CLAUDE.md` exists, ingest it as a single `reference` entry.
-
-### Source C: Resolved Flow Failures (Optional)
+### Source B: Resolved Flow Failures (Optional)
 
 ```bash
 find {repo_path}/work_items/flow_failures/resolved -name "conclusion.md"
@@ -126,10 +123,10 @@ For each collected file:
 
 ## Step 4: Ingest via MCP
 
-For each parsed file, call `mcp__autodev-memory__add_entry`:
+For each parsed file, follow the compound skill's store procedure (`skills/compound/references/store-procedure.md`): search first, then create/update:
 
 ```
-mcp__autodev-memory__add_entry(
+mcp__autodev-memory__create_entry(
   title: "Auth Cookie Vicious Cycle",
   content: "<body without frontmatter>",
   entry_type: "gotcha",
@@ -141,7 +138,7 @@ mcp__autodev-memory__add_entry(
   caller_context: {
     "skill": "autodev-ingest",
     "reason": "Bulk knowledge ingestion from .claude/knowledge/gotchas/",
-    "action_rationale": "New ingestion — add_entry handles dedup via content hash",
+    "action_rationale": "<cite the top store-procedure search hits and why none covers this file>",
     "trigger": "user invoked /autodev-ingest"
   }
 )
@@ -154,11 +151,6 @@ mcp__autodev-memory__add_entry(
 - `source`: always `"ingested"`
 - `canonical_key`: generated from filename (Step 3)
 - `summary`: first sentence of the body, or frontmatter `summary` if present
-
-**CLAUDE.md special case:** When ingesting `CLAUDE.md`, use:
-- `canonical_key`: `"{repo_name}-claude-md"`
-- `title`: `"{repo_name} CLAUDE.md"`
-- `repos`: `["{repo_name}"]`
 
 **Work item special case:** When ingesting from `work_items/`, use:
 - `canonical_key`: work item ID from directory name (e.g., `b007-supervisor-prefect-server-520`)
@@ -173,27 +165,27 @@ Ingestion complete for project: ts
 
   ts-prefect:
     knowledge/:    89 files → 42 new, 47 duplicates, 0 errors
-    CLAUDE.md:     1 file  → 0 new, 1 duplicate
     flow_failures: 12 files → 8 new, 4 duplicates
     retrospectives: 2 files → 2 new
 
   ts-dashboard:
     knowledge/:    34 files → 34 new, 0 duplicates, 0 errors
-    CLAUDE.md:     1 file  → 1 new
 
   Total: 139 files processed, 127 new entries, 52 duplicates, 0 errors
 ```
 
 ## Deduplication
 
-The memory system deduplicates via SHA-256 content hash per project. Re-running ingestion
-on unchanged files is safe — they will be reported as duplicates and skipped. Modified files
-get a new hash and create a new entry (the old entry remains; use `merge_entries` or
-`update_entry` to consolidate if needed).
+Dedup follows the compound store procedure: search the memory service for each candidate
+before writing. Re-running ingestion on unchanged files is safe — exact matches are reported
+as duplicates and skipped. When a source file CHANGED, update the prior entry in place
+(`update_entry`, or `supersede_entry` for a rewrite) — never create a sibling entry for the
+same file. Note: CLAUDE.md files are NOT ingested — Tier 1 content is always in context
+already; ingesting it creates the dead-weight entries /deep-dream has to clean up.
 
 ## Handling Errors
 
-- If `add_entry` returns an error, log it and continue with the next file
+- If `create_entry` returns an error, log it and continue with the next file
 - If a repo path doesn't exist, skip and warn
 - If `.claude/knowledge/` doesn't exist for a repo, skip silently (not all repos have it)
 - If frontmatter parsing fails, use filename as title and full content as body
@@ -209,5 +201,5 @@ If ingesting for a project that doesn't exist yet in the memory database:
 ## Parallelism
 
 Process repos sequentially within a project to avoid overwhelming the embedding API. Files
-within a repo can be processed in batches of 5-10 parallel `add_entry` calls since each
+within a repo can be processed in batches of 5-10 parallel `create_entry` calls since each
 call is independent.

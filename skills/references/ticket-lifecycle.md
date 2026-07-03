@@ -30,6 +30,13 @@ to_verify_staging -> verify_staging_failed
                  \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | verify_prod_failed
 ```
 
+`/ticket-promote` is the post-staging production step: it lands the promoted commits on
+`main` AND runs the project's production deploy steps before setting `to_verify_prod`.
+
+`to_verify_prod` means: **production landing AND deploy steps are complete; behavior is
+unverified.** Only `/ticket-verify production` moves a ticket from `to_verify_prod` to
+`completed` (or `verify_prod_failed`).
+
 Use `abandoned` and `on_ice` only for explicit cancellation/deprioritization.
 
 ## Blockers are metadata, not statuses

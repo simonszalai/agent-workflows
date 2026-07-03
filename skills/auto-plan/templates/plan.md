@@ -1,10 +1,3 @@
----
-title: "Plan: [Title]"
-work_item: NNN-title
-type: fix | feature
-created: YYYY-MM-DD
----
-
 # Plan: [Title]
 
 ## Summary
@@ -38,7 +31,8 @@ details. Answer: What will exist after this is done that doesn't exist now?]
 ## How It Works
 
 [Describe the approach at an architectural level. How do the pieces fit together? What's the
-flow of data or control? Don't include code or specific files - that comes in build_todos.]
+flow of data or control? No invented code — snippets only as citations of existing canonical
+patterns with file:line references. Implementation detail comes in build_todo artifacts.]
 
 <!-- Use ONE of the following sections based on work type -->
 
@@ -67,7 +61,7 @@ flow of data or control? Don't include code or specific files - that comes in bu
 
 > Delete this section for features - use Codebase Research instead.
 
-### Root Causes (from investigation.md)
+### Root Causes (from the investigation artifact)
 
 | #   | Root Cause | Severity | How We'll Address |
 | --- | ---------- | -------- | ----------------- |
@@ -77,6 +71,14 @@ flow of data or control? Don't include code or specific files - that comes in bu
 
 - [Component 1]: [how it's affected]
 - [Component 2]: [how it's affected]
+
+## Assumptions
+
+[Every unverified claim about the codebase, data, or infrastructure is an assumption. List each
+one explicitly so reviewers and build planning can check them.]
+
+- [Assumption 1]
+- [Assumption 2]
 
 ## Tradeoffs
 
@@ -119,7 +121,8 @@ flow of data or control? Don't include code or specific files - that comes in bu
 
 ### How to Verify
 
-[Describe how we'll know this works. What behavior should we observe?]
+[Describe how we'll know this works. What behavior should we observe? Name at least one
+reproducible observation per environment (staging and production).]
 
 ### Test Scenarios
 
@@ -134,19 +137,3 @@ flow of data or control? Don't include code or specific files - that comes in bu
 
 - [ ] [Criterion 1]
 - [ ] [Criterion 2]
-
----
-
-## Feedback
-
-<!-- Add feedback here. Mark items as addressed: ✓ or [x] -->
-
-- [ ] [Your feedback here]
-
----
-
-## Work Log
-
-| Date       | Phase | Action               | Result           |
-| ---------- | ----- | -------------------- | ---------------- |
-| YYYY-MM-DD | plan  | Created initial plan | Ready for review |

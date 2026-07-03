@@ -1,5 +1,5 @@
 ---
-name: ce:brainstorm
+name: brainstorm
 description: 'Explore requirements and approaches through collaborative dialogue before writing a right-sized requirements document and planning implementation. Use for feature ideas, problem framing, when the user says ''let''s brainstorm'', or when they want to think through options before deciding what to build. Also use when a user describes a vague or ambitious feature request, asks ''what should we build'', ''help me think through X'', presents a problem with multiple valid solutions, or seems unsure about scope or direction — even if they don''t explicitly ask to brainstorm.'
 argument-hint: "[feature idea or problem to explore]"
 ---
@@ -8,9 +8,13 @@ argument-hint: "[feature idea or problem to explore]"
 
 **Note: The current year is 2026.** Use this when dating requirements documents.
 
-Brainstorming helps answer **WHAT** to build through collaborative dialogue. It precedes `/ce:plan`, which answers **HOW** to build it.
+Brainstorming helps answer **WHAT** to build through collaborative dialogue. It precedes `/auto-plan`, which answers **HOW** to build it.
 
-The durable output of this workflow is a **requirements document**. In other workflows this might be called a lightweight PRD or feature brief. In compound engineering, keep the workflow name `brainstorm`, but make the written artifact strong enough that planning does not need to invent product behavior, scope boundaries, or success criteria.
+The durable output of this workflow is a **requirements document**, stored as the description
+(source artifact) of a new ticket created via `mcp__autodev-memory__create_ticket`. In other
+workflows this might be called a lightweight PRD or feature brief. Make the artifact strong
+enough that planning does not need to invent product behavior, scope boundaries, or success
+criteria.
 
 This skill does not implement code. It explores, clarifies, and documents decisions for later planning or execution.
 
@@ -51,10 +55,11 @@ Do not proceed until you have a feature description from the user.
 
 #### 0.1 Resume Existing Work When Appropriate
 
-If the user references an existing brainstorm topic or document, or there is an obvious recent matching `*-requirements.md` file in `docs/brainstorms/`:
-- Read the document
+If the user references an existing brainstorm topic, or `search_tickets` finds a matching
+non-terminal ticket whose source artifact is a requirements document:
+- Read the ticket's source artifact
 - Confirm with the user before resuming: "Found an existing requirements doc for [topic]. Should I continue from this, or start fresh?"
-- If resuming, summarize the current state briefly, continue from its existing decisions and outstanding questions, and update the existing document instead of creating a duplicate
+- If resuming, summarize the current state briefly, continue from its existing decisions and outstanding questions, and update the existing ticket's source artifact instead of creating a duplicate ticket
 
 #### 0.1b Classify Task Domain
 
@@ -112,7 +117,7 @@ If nothing obvious appears after a short scan, say so and continue. Two rules go
 
 **Slack context** (opt-in, Standard and Deep only) — never auto-dispatch. Route by condition:
 
-- **Tools available + user asked**: Dispatch `compound-engineering:research:slack-researcher` with a brief summary of the brainstorm topic alongside Phase 1.1 work. Incorporate findings into constraint and context awareness.
+- **Tools available + user asked**: Dispatch a `general-purpose` agent to search Slack via the available Slack MCP tools with a brief summary of the brainstorm topic alongside Phase 1.1 work. Incorporate findings into constraint and context awareness.
 - **Tools available + user didn't ask**: Note in output: "Slack tools detected. Ask me to search Slack for organizational context at any point, or include it in your next prompt."
 - **No tools + user asked**: Note in output: "Slack context was requested but no Slack tools are available. Install and authenticate the Slack plugin to enable organizational context search."
 
@@ -187,11 +192,11 @@ For **Lightweight** brainstorms, keep the document compact. Skip document creati
 
 ### Phase 3.5: Document Review
 
-When a requirements document was created or updated, run the `document-review` skill on it before presenting handoff options. Pass the document path as the argument.
-
-If document-review returns findings that were auto-applied, note them briefly when presenting handoff options. If residual P0/P1 findings were surfaced, mention them so the user can decide whether to address them before proceeding.
-
-When document-review returns "Review complete", proceed to Phase 4.
+When a requirements document was created or updated, review it yourself before presenting
+handoff options: check for internal contradictions, ambiguous success criteria, scope items
+without decisions, and unstated assumptions. Apply obvious fixes directly; surface residual
+material gaps to the user so they can decide whether to address them before proceeding. Then
+proceed to Phase 4.
 
 ### Phase 4: Handoff
 

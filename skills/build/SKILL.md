@@ -33,7 +33,7 @@ git worktree list | grep "$(pwd)" | grep -v "bare"  # Must match current dir
 # 2. Load ticket and check artifacts exist
 mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 # Check for build_todo artifacts — if none: STOP - run /create-build-todos first
-# Check for plan artifact — if missing: STOP - run /plan first
+# Check for plan artifact — if missing: STOP - run /auto-plan first
 ```
 
 ### Branch Mode (Cloud)
@@ -48,21 +48,36 @@ git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
 # 2. Load ticket and check artifacts exist
 mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
 # Check for build_todo artifacts — if none: STOP - run /create-build-todos first
-# Check for plan artifact — if missing: STOP - run /plan first
+# Check for plan artifact — if missing: STOP - run /auto-plan first
 ```
 
 **If any prerequisite fails:**
 
-| Missing         | Action                                               |
-| --------------- | ---------------------------------------------------- |
-| Not in worktree | Instruct user to create worktree (see below)         |
-| On main (cloud) | Create branch with `git checkout -b auto-build/{id}` |
-| No build_todos/ | **STOP** - run `/create-build-todos [id]` first      |
-| No plan.md      | **STOP** - run `/plan [id]` first                    |
+| Missing         | Action                                          |
+| --------------- | ----------------------------------------------- |
+| Not in worktree | Instruct user to create worktree (see below)    |
+| On main (cloud) | Create branch with `git checkout -b build/{id}` |
+| No build_todos  | **STOP** - run `/create-build-todos [id]` first |
+| No plan         | **STOP** - run `/auto-plan [id]` first          |
+
+### Ticketless Mode (lfg)
+
+When invoked by `/lfg` (no ticket exists), the filesystem replaces MCP:
+
+- **Prerequisites:** read `.context/plan.md` (plan) and `.context/build_todos/` (todos)
+  instead of `get_ticket`. Missing plan → STOP - run the lfg planning phase first. Missing
+  todos → STOP - run `/create-build-todos` first.
+- **Checkpoints:** on a validated `complete`, update the status header of the todo's file in
+  `.context/build_todos/` (plus Completion Notes) instead of `update_artifact`. That file
+  state is the resume story.
+- **No MCP writes:** skip every `update_ticket` / `update_artifact` call in this skill.
+
+Everything else is identical: one fresh builder per todo, dependency order, bounded
+self-repair (≤2 retries), and the final health gate.
 
 ## Process
 
-1. **Set ticket status to in_progress:**
+1. **Set ticket status to in_progress** (ticketed runs only — skip in ticketless mode):
    ```
    mcp__autodev-memory__update_ticket(
      project=PROJECT, ticket_id=ID, repo=REPO,
@@ -82,7 +97,7 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    **Branch Mode (Cloud):**
    - Detected when `CLAUDE_CODE_REMOTE=true`
    - In branch mode, worktrees are not available - use feature branches instead
-   - If on main: Create branch with `git checkout -b auto-build/{id}` or `git checkout -b lfg/{id}`
+   - If on main: Create branch with `git checkout -b build/{id}`
    - All operations happen in current directory on the feature branch
    - This mode is used for cloud execution where worktrees aren't practical
 
@@ -147,14 +162,14 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    | --------------- | ----------------------------------------------------------------------------------- |
    | `complete`      | Checkpoint (step 6), then dispatch the next todo                                     |
    | `failed`        | **Bounded self-repair** — see below                                                  |
-   | `needs_replan`  | **STOP** the loop, hand back to `/plan` with the builder's `error`; do not build on  |
+   | `needs_replan`  | **STOP** the loop, hand back to `/auto-plan` with the builder's `error`; do not build on |
 
    **Bounded self-repair (on `failed`):** dispatch a *fresh* builder for the **same** todo with
    the previous `error` and `verification_output` prepended as context. Retry at most **2**
    times. If it still fails, **STOP** the loop and report which todo blocked — do **not** attempt
    downstream todos on a broken foundation.
 
-6. **Checkpoint to MCP (only on `complete`):**
+6. **Checkpoint (only on `complete`):**
 
    The orchestrator — not the builder — owns this write, so a todo is marked complete only after
    its result was validated here:
@@ -168,8 +183,12 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    )
    ```
 
+   In ticketless mode, update the status header of the todo's file in `.context/build_todos/`
+   (plus the same Completion Notes) instead of calling `update_artifact`.
+
    This is the entire resume story: re-running `/build` picks up from the first todo still
-   `pending`. No journal, no scratch file — MCP is the source of truth.
+   `pending`. No journal, no scratch file — the MCP artifact (ticketed) or the
+   `.context/build_todos/` file (ticketless) is the source of truth.
 
 7. **Stopping condition — the health gate (the predicate owns "done", not the todo list):**
 
@@ -185,16 +204,22 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
    failure (treat it like a `failed` todo, bounded to 2 retries), then re-run the health command.
    If it still fails, STOP and report.
 
-   Then run the **migration parity sweep** (repo-wide, orchestrator-owned):
+   Then run the **migration parity sweep** (repo-wide, orchestrator-owned): diff the branch
+   against main for the repo's model/schema/migration paths.
+
+   *Example (ts-prefect after E0017):*
 
    ```bash
    git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/ | head -20
    ```
 
-   If model/schema files changed, use the repo's current schema system:
-   - ts-prefect after E0017: do **not** create Alembic migrations. Ensure Atlas plan/safety
-     checks and `verify_schema_truth.py` cover the change; if production DDL is needed, the
-     reviewed committed plan must be updated deliberately.
+   If model/schema files changed, use the repo's current schema system (check the project's
+   CLAUDE.md for which one is active):
+
+   - schema-truth repos: do not create legacy migrations; ensure the repo's schema plan/safety
+     checks cover the change, and update the reviewed committed plan deliberately if production
+     DDL is needed. *Example (ts-prefect after E0017):* no Alembic migrations — Atlas
+     plan/safety checks and `verify_schema_truth.py` must cover the change.
    - legacy migration repos: if no migration exists, STOP and create one (omitting it means the
      column won't exist at runtime). If a migration exists, confirm the deployment guide names a
      migration lane (schema-first with immediate `main→staging` sync, or full parity merge).
@@ -202,9 +227,11 @@ mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
      migration-bearing work.
 
 8. **After the loop converges:**
-   - Write tests: run `/write-tests {work-item-id}`
-   - Run the full test suite once more to confirm no regressions
-   - Update the plan artifact with the Completion Summary via `update_artifact`
+   - Run the full test suite once more to confirm no regressions (final health-gate run)
+   - Record the Completion Summary: ticketed runs update the plan **artifact** via
+     `update_artifact`; ticketless runs append it to `.context/plan.md`
+   - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow`, `/lfg`) owns
+     that step after `/build` returns
 
 ## Status Flow
 
@@ -215,7 +242,8 @@ pending -> in_progress -> complete   (orchestrator sets `complete` after validat
 
 ## Completion Summary Format
 
-After completing all build steps, add this section to `plan.md` (before the Work Log):
+After completing all build steps, add this section to the plan (before the Work Log) — the plan
+**artifact** via `update_artifact` for ticketed runs, or `.context/plan.md` for ticketless runs:
 
 ```markdown
 ---
@@ -248,7 +276,8 @@ After completing all build steps, add this section to `plan.md` (before the Work
 
 ## Work Log Entry Format
 
-After each step, add to `plan.md`:
+After each step, add to the plan's Work Log (plan artifact via `update_artifact` for ticketed
+runs; `.context/plan.md` for ticketless runs):
 
 ```markdown
 | YYYY-MM-DD | build | Completed step NN: [title] | [result/notes] |
@@ -265,7 +294,7 @@ Steps: {N}/{N} completed
 Health gate: PASS (test {p}/{t}, typecheck OK, lint OK)
 Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 
-Next: /review {ID} (review implementation against the plan)
+Next: /write-tests {ID}, then /review {ID} (review implementation against the plan)
 ```
 
 If a todo is **blocked** (returned `failed` and self-repair exhausted its 2 retries):
@@ -286,7 +315,7 @@ Build halted at step {N}: {title} — plan needs revision
 
 Reason: {error from the builder's structured result}
 
-Next: /plan {ID} (revise the plan), then /create-build-todos, then /build {ID}
+Next: /auto-plan {ID} (revise the plan), then /create-build-todos, then /build {ID}
 ```
 
 ## Completion Notes

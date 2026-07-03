@@ -1,7 +1,7 @@
 ---
 status: pending
-source: [agent-name]
-priority: p1 | p2 | p3
+reviewer_key: [agent-name]
+severity: p1 | p2 | p3
 confidence: 0.00
 autofix_class: safe_auto | gated_auto | manual | advisory
 owner: review-fixer | downstream-resolver | human

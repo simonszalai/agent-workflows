@@ -1,11 +1,9 @@
 ---
 name: builder
-description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, /auto-build, and /lfg with task-specific prompts."
+description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, /ticket-flow, and /lfg with task-specific prompts."
 model: inherit
 max_turns: 100
 skills:
-  - build
-  - write-tests
   - autodev-search
 ---
 
@@ -23,12 +21,14 @@ You implement **one** build_todo — the single todo named in your prompt. The o
 
 1. Read the todo — understand the objective and discovered patterns
 2. Search memory for relevant gotchas (see below) before writing any code
-3. Implement changes as specified, following discovered patterns exactly
-4. Count-verify bulk changes (grep to confirm expected count)
-5. Run ALL verification commands listed in the todo's Verification section, **plus** the type
+3. Open the closest analogous existing module (the todo should name one; if not, find one)
+   and mirror its structure before writing new code
+4. Implement changes as specified, following discovered patterns exactly
+5. Count-verify bulk changes (grep to confirm expected count)
+6. Run ALL verification commands listed in the todo's Verification section, **plus** the type
    checker and linter on the files you touched (the orchestrator runs the full test/typecheck/
    lint suite once at its health gate — keep your per-todo checks targeted and fast)
-6. Report the result as a structured JSON block (see Output) — **do not** update the artifact
+7. Report the result as a structured JSON block (see Output) — **do not** update the artifact
    status yourself. The orchestrator records completion only after it validates your result, so
    a todo is never marked `complete` on a builder's say-so alone.
 
@@ -46,7 +46,12 @@ Fix review findings from review_todo artifacts:
    - "modify" → follow user's notes
 2. Before removing any export/class/function: search ALL usages across the codebase
 3. Implement fixes, run linter and type checker after each
-4. Update artifact status to "resolved" or "skipped"
+4. Run the tests covering each touched file — a finding is **not resolved** until they pass
+5. For every p1 correctness fix, add a regression test (demonstrate failing-then-passing) or
+   state an explicit reason why the fix is untestable
+6. Report results as structured JSON (see Output) — you do **NOT** set review_todo artifact
+   status. The orchestrator validates your JSON and sets statuses itself (same trust model
+   as build mode).
 
 ## CRITICAL: Search Memory First
 
@@ -116,5 +121,21 @@ parses this to decide whether to checkpoint, retry, or stop the loop:
 
 ## Output (Resolve Mode)
 
-Return a short markdown summary of which review_todo artifacts you resolved, skipped, or
-deferred, with the artifact status you set for each.
+Return **exactly one JSON array** as your final message — no prose around it. One object per
+finding you were given. The orchestrator validates this and sets review_todo artifact
+statuses; you never set them yourself:
+
+```json
+[
+  {
+    "finding_id": "<review_todo sequence number or artifact id>",
+    "status": "resolved",
+    "files_changed": ["path/one.ts"],
+    "verification_output": "<test/typecheck/lint pass-fail summary for the touched files>",
+    "regression_test": "<p1: test path added, or explicit untestable reason; null for non-p1>"
+  }
+]
+```
+
+`status` is one of `"resolved"`, `"skipped"`, or `"deferred"`. A finding may only be
+`"resolved"` if the tests covering its touched files pass.
