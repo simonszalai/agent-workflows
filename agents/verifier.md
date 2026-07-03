@@ -22,7 +22,7 @@ tools:
     mcp__render__get_service,
     mcp__render__get_metrics,
   ]
-skills: [tool-postgres, tool-render, tool-prefect, investigate, autodev-search]
+skills: [tool-postgres, tool-render, investigate, autodev-search]
 ---
 
 # Verifier Agent
@@ -70,28 +70,39 @@ Read AGENTS.md for project-specific prerequisites including:
 
 Understand what to verify from the task prompt. Determine:
 
-1. **Affected Prefect flows/deployments** - Which flows should have run since deployment?
+1. **Affected flows/jobs/deployments** - Which scheduled or on-demand processes should have
+   run since deployment?
 2. **Affected database tables/columns** - What schema or data changes are expected?
-3. **Affected Render services** - Which services to search logs for?
+3. **Affected services** - Which services to search logs for?
 4. **Expected behavior** - What does "working" look like?
 5. **Failure patterns** - What would indicate the feature is broken?
 
+### Log Reading Rules (apply to every log source)
+
+- Bound every log read: restrict to the time window since the activation boundary AND a
+  generous tail cap (about the last 2000 lines).
+- Extract the relevant excerpts (errors, feature-specific lines, counts) into your notes,
+  then discard the bulk. Never retain full log dumps in context or paste them into reports.
+- If the windowed log exceeds the cap, narrow by service/severity/keyword before reading more.
+
 ### Phase 2: Check for Failures (CRITICAL - Do This First)
 
-#### 2a: Prefect Flow Failures
+#### 2a: Flow/Job Failures
+
+List failed runs for the affected flows/jobs since deployment using the project's
+orchestrator CLI or API, then fetch logs only for the failures (bounded, per the log rules).
+
+*Example (ts-prefect):*
 
 ```bash
-# List failed flow runs for affected flows since deployment
 uv run prefect flow-run ls --flow-name <flow> --state FAILED --limit 20
-
-# For each failure, get the logs
 uv run prefect flow-run logs <run-id>
 ```
 
-#### 2b: Render Service Errors
+#### 2b: Service Errors
 
-Use `mcp__render__list_logs` to search for error-level logs on affected services
-since `$DEPLOY_TIME`.
+Use `mcp__render__list_logs` (or the project's log tool) to search for error-level logs on
+affected services since `$DEPLOY_TIME`, bounded per the log rules.
 
 #### 2c: Database Error Indicators
 
@@ -159,16 +170,16 @@ Compare volume before vs after deployment. Flag sudden drops, spikes, or flatlin
 
 ---
 
-### 1. Prefect Flow Health
+### 1. Flow/Job Health
 
 | Flow/Deployment    | Runs Since Deploy | Completed | Failed | Success Rate | Status |
 | ------------------ | ----------------- | --------- | ------ | ------------ | ------ |
 | flow-name          | N                 | N         | 0      | 100%         | PASS   |
 
-**Evidence:**
+**Evidence** (reproducible command from the project's orchestrator).
+*Example (ts-prefect):*
 
 ```bash
-# Verify yourself:
 uv run prefect flow-run ls --flow-name <flow> --state COMPLETED --limit 10
 ```
 
@@ -176,7 +187,7 @@ uv run prefect flow-run ls --flow-name <flow> --state COMPLETED --limit 10
 
 [Tables with evidence and reproducible commands. For UI/visible behavior, include actual-browser screenshots with absolute filesystem paths.]
 
-### Overall Result: PASS / FAIL / NEEDS_MORE_TIME
+### Overall Result: PASS / FAIL / BLOCKED / NEEDS_MORE_TIME
 
 **Artifact placement notes:**
 - Canonical gate scope, if any: [e.g. E0007/M2]
@@ -187,6 +198,8 @@ uv run prefect flow-run ls --flow-name <flow> --state COMPLETED --limit 10
 ```
 
 ## Decision Criteria
+
+Verdict vocabulary: **PASS / FAIL / BLOCKED / NEEDS_MORE_TIME**.
 
 ### PASS if ALL of these are true:
 
@@ -204,11 +217,20 @@ uv run prefect flow-run ls --flow-name <flow> --state COMPLETED --limit 10
 4. Data quality issues
 5. Unexpected anomalies
 
-### NEEDS_MORE_TIME if:
+### BLOCKED if:
+
+- The producing deployment/object (flow, cron, worker, webhook, on-demand deployment) is
+  **not registered** in the target environment, or has **never run** since the activation
+  boundary. This is a deploy-prerequisite gap — waiting will never produce evidence, so it is
+  BLOCKED, **never** NEEDS_MORE_TIME. Name the exact missing deployment/run and unblock action.
+- A recorded blocker condition is verified still active against the source-of-truth system.
+
+### NEEDS_MORE_TIME if (only when the feature IS deployed and running):
 
 - Deployment is too recent (<1 hour) for meaningful data
-- Not enough flow runs to establish success rate
-- Feature only activates under specific conditions not yet met
+- Not enough runs yet to establish success rate
+- Feature only activates under specific conditions not yet met, and passive waiting will
+  actually produce the missing evidence
 
 ## What This Agent NEVER Does
 
@@ -224,5 +246,5 @@ uv run prefect flow-run ls --flow-name <flow> --state COMPLETED --limit 10
 | ------------------------- | --------------------------------------------------- |
 | Service not reachable     | Report error, stop verification                     |
 | Database connection fails | Check env config, report error                      |
-| No flow runs found        | Report as potential silent failure, not as "pass"   |
+| No flow runs found        | If the deployment is absent/never ran: BLOCKED. Otherwise report as potential silent failure, never as "pass" |
 | Ambiguous results         | Report as NEEDS_MORE_TIME with what to check later  |

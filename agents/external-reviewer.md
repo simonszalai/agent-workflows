@@ -1,7 +1,8 @@
 ---
 name: external-reviewer
 description: "Runs one peer cross-provider reviewer (Claude, Codex, or Grok) via the external-agent adapter and returns its reviewer-output envelope. Spawned in parallel with the native reviewers by /review."
-model: inherit
+model: haiku
+effort: low
 max_turns: 30
 ---
 

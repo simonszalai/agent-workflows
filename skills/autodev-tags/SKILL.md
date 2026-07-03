@@ -1,5 +1,6 @@
 ---
 name: autodev-tags
+model: haiku
 description: Determine tags for new memory entries. Fetches existing tags and applies consistent tagging conventions.
 user_invocable: false
 ---

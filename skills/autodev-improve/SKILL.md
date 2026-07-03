@@ -130,7 +130,7 @@ for i, line in enumerate(open('$SESSION')):
     content = json.dumps(obj)
     if 'autodev-memory-hook-result' in content:
         source = 'unknown'
-        for s in ['session-start', 'pre-agent', 'pre-tool', 'prompt-submit']:
+        for s in ['session-start']:  # the only live injector; pre-agent is a disabled stub
             if s in content: source = s; break
         entry_count = content.count('### [')
         print(f'Line {i}: HOOK={source}, ~{entry_count} entries injected')
@@ -302,7 +302,7 @@ Even when memories ARE injected, Claude sometimes ignores them. Check:
 Check if Claude proactively searched the knowledge base when:
 1. Starting a complex task (should search for related patterns/gotchas)
 2. Encountering an error (should search for known solutions)
-3. The CLAUDE.md says to search the Knowledge Menu on every message
+3. The autodev-search skill says to search when the menu suggests relevant knowledge exists
 
 **Red flags:**
 - Zero `mcp__autodev-memory__search` calls in a long session
@@ -331,7 +331,7 @@ debug_logs(project="<project>", operation="mcp_search", hours=168, limit=200)
 
 Check if injected context is too large:
 1. Starred memories token count (target: <2000 tokens)
-2. Typical pre-agent injection size (target: <1000 tokens)
+2. pre-agent injection is a disabled stub — verify it stays at 0 tokens
 3. Knowledge Menu line count (target: <200 lines)
 
 ### Phase 4: Additional Dimensions

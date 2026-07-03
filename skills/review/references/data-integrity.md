@@ -2,6 +2,9 @@
 
 Standards for data integrity review. Apply these when reviewing database migrations, data models, or code that manipulates persistent data.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Core Review Areas
 
 ### 1. Database Migration Analysis
@@ -194,15 +197,6 @@ WHERE is_new_development = false AND impact_score IS NOT NULL;
 3. Provide specific examples of potential data corruption scenarios
 4. Suggest concrete improvements with code examples
 5. Consider both immediate and long-term implications
-
-## Issue Reporting Format
-
-When identifying issues:
-
-- Explain the specific risk to data integrity
-- Provide clear example of how data could be corrupted
-- Offer safe alternative implementation
-- Include migration strategies for fixing existing data
 
 ## Priority Order
 

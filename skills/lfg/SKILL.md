@@ -16,7 +16,7 @@ production incidents with hypothesis-driven root cause analysis).
 LFG operates **without the ticket system** — no tickets are created, no status
 is tracked, no artifacts are stored in MCP. All coordination uses the
 filesystem (`.context/` directory). For the ticket-tracked version, use
-`/auto-flow`.
+`/ticket-flow`.
 
 ## What LFG does NOT do
 
@@ -80,9 +80,9 @@ as you encounter them across phases.
 - Triggered from a GitHub issue or conversation thread
 - Requirements are clear and you trust the workflow to make decisions
 
-## Relation to /auto-flow
+## Relation to /ticket-flow
 
-| Aspect      | `/lfg`                                     | `/auto-flow`                          |
+| Aspect      | `/lfg`                                     | `/ticket-flow`                        |
 | ----------- | ------------------------------------------ | ------------------------------------- |
 | Ticket      | No ticket created                          | Creates and manages ticket lifecycle  |
 | Status      | No status tracking                         | backlog -> in_progress -> planned -> ... |
@@ -256,7 +256,19 @@ Also include:
 
 Write the plan to `.context/plan.md`.
 
-**In LFG mode, the plan is auto-approved** — proceed immediately to build.
+**Plan critique pass (same runner, no external calls).** LFG's plan is single-provider and
+auto-approved, while its review loop spends up to six external calls downstream — but plan
+errors are the most expensive class to catch at review time (full rebuild). So before
+approving, when the work matches any heavy signal — new system/app from scratch,
+schema/data change, multi-component work, repeated writer (poller/observer/scheduler/
+queue/webhook), or research found no existing pattern to follow — spawn ONE critique agent
+(same runner, correctness + YAGNI lenses combined; it should read the code to check the
+plan's assumptions) and revise the plan once for its must-address findings. Skip the
+critique for work matching none of the signals. This is deliberately lighter than
+`/auto-plan`: no peer providers, no convergence — LFG stays fast and never pushes, so the
+review loop remains the backstop.
+
+**In LFG mode, the (critiqued) plan is then auto-approved** — proceed immediately to build.
 
 **On failure:** STOP, report error.
 
@@ -317,7 +329,9 @@ Run the **Cross-Review Iteration Loop** from the `review` skill. Each round:
    absent, spawn the missing peer provider(s) and fold its envelope into synthesis before
    continuing — do not skip peer providers and proceed.
 2. Resolve the actionable findings (runner fixes — `safe_auto` inline, `gated_auto`/`manual`
-   via `/resolve-review` logic), re-run affected tests, run the type checker.
+   via the `resolve-review` skill's **finding-routing logic only** — do NOT run its
+   commit/push or deployment-guide steps; lfg owns its own commits in Phase 11 and never
+   pushes, and the deploy guide is Phase 10). Re-run affected tests, run the type checker.
 
 Repeat up to **3 rounds**, or stop earlier when no actionable
 (`safe_auto`/`gated_auto`/`manual`) findings remain. `advisory` and gate-suppressed nits do
@@ -343,10 +357,11 @@ Run `/compound` in **autonomous mode** to learn from the build and review proces
 
 ### Phase 10: Create Deployment Guide
 
-Run `/create-deployment-guide` internally:
+Run `/create-deployment-guide` internally in its **ticketless mode**: with no ticket, it
+writes `.context/deployment-guide.md` instead of the MCP `deployment_guide` artifact.
 
 1. Analyze changes for deployment impact (migrations, services, config)
-2. Generate deployment guide
+2. Generate the deployment guide at `.context/deployment-guide.md`
 3. Check for special requirements
 
 **On trivial changes:** Skip if no deployment steps needed.
@@ -374,6 +389,11 @@ For each repo that LFG touched:
    avoid `git add -A` so unrelated working-tree state isn't swept in). If the
    user had pre-existing uncommitted changes, those are already in the Phase 0
    checkpoint commit.
+3b. **Inspect before every commit.** Run `git status --porcelain` and
+   `git diff --staged --stat` and confirm only the intended files are staged —
+   no `.context/` scratch, no unrelated working-tree state, no files belonging
+   to the other commit in this phase. If anything unexpected is staged, unstage
+   it before committing.
 4. Create the final work commit. Subject is a one-line conventional summary; the
    body describes what was done and (briefly) why. Do not include a "Test
    plan" or PR-style sections — this is a commit, not a PR.
@@ -400,7 +420,7 @@ Report back with:
 | Research        | Agent failure          | Log, attempt plan with less context     |
 | Plan            | Planner failure        | STOP, report error                      |
 | Build Todos     | Agent failure          | STOP, report error                      |
-| Build           | Test failure           | Retry 2x, then continue                 |
+| Build           | Test failure           | Retry ≤2x, then STOP (blocked — see Phase 5) |
 | Write Tests     | Test creation fails    | Log, continue to review (non-blocking)  |
 | Review          | Agent failure          | Log, continue with partial review       |
 | Resolve         | Fix introduces error   | Revert fix, mark as deferred            |
@@ -440,7 +460,7 @@ Commits:
 Summary:
 - Implemented user dashboard feature
 - Tests: 12 passing / 12 total (4 unit, 6 integration, 2 e2e)
-- Review: 3 iterations, all P1/P2 resolved
+- Review: 3 rounds, no actionable findings remain
 - Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 - Unrelated fixes: 2 pre-existing type errors in untouched files (separate commit)
 
@@ -460,7 +480,7 @@ Commits:
 Summary:
 - Implemented user dashboard feature
 - Tests: 11 passing / 12 total (1 flaky e2e)
-- 2 P3 findings remain (not blocking)
+- 2 gated_auto/manual findings deferred to the follow-up report (not blocking)
 ```
 
 ### On Failure
@@ -478,7 +498,7 @@ Reason: {error description}
 | --------------- | --------------------- | ------------------------------------- |
 | Trigger         | You run each command  | One command does everything           |
 | Plan approval   | You review plan first | Auto-approved                         |
-| Review handling | You decide on findings| Loop until no P1/P2                   |
+| Review handling | You decide on findings| Loop until no actionable findings (≤3 rounds) |
 | Scope           | You pick the work     | Extracts from issue/conversation      |
 | Stops at        | Wherever you stop     | Final commit on the current branch    |
 | Branch / push   | Up to you             | Stays on current branch; never pushes |
@@ -523,7 +543,7 @@ Commits:
 Summary:
 - Implemented user activity dashboard
 - Tests: 12 passing / 12 total
-- Review: 3 iterations, all P1/P2 resolved
+- Review: 3 rounds, no actionable findings remain
 
 Next: review the diff, then push and open a PR when you're ready.
 ```
@@ -560,7 +580,7 @@ Commits:
 Summary:
 - Implemented bulk invoice PDF export
 - Tests: 6 passing / 6 total (2 unit, 3 integration, 1 e2e)
-- Review: 2 iterations, all P1/P2 resolved
+- Review: 2 rounds, no actionable findings remain
 ```
 
 ### Example C: Bug Fix from Error Report

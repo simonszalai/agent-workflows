@@ -1,4 +1,4 @@
-// plan-fanout — heavyweight orchestrator for /plan when the feature is substantial.
+// plan-fanout — heavyweight orchestrator for /auto-plan when the work is substantial.
 //
 // Plans contain both subjective tradeoffs and factual/architectural claims. The tradeoffs
 // need panel-with-counterweight; the factual claims need cross-provider disagreement
@@ -33,7 +33,6 @@ export const meta = {
   description: 'Cross-provider plan synthesis with diverse drafts, critics, and bounded disagreement convergence.',
   phases: [
     { title: 'Draft', detail: 'N diverse plans in parallel (different framings)' },
-    { title: 'Provider merge', detail: 'include external peer provider drafts' },
     { title: 'Synthesize', detail: 'pick best base, graft strongest elements' },
     { title: 'Critique', detail: 'parallel critics: completeness, correctness, YAGNI' },
     { title: 'Revise', detail: 'incorporate must-address; resolve completeness vs YAGNI explicitly' },
@@ -81,6 +80,11 @@ const planSchema = {
     side_effects: { type: 'string', minLength: 4, description: 'What else this affects, or "none".' },
     elimination: { type: 'string', minLength: 4, description: 'Old code/systems being replaced, or "none".' },
     open_questions: { type: 'array', items: { type: 'string' } },
+    assumptions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Unverified claims about the codebase/data/infra the plan relies on. Optional.',
+    },
   },
 }
 
@@ -257,7 +261,7 @@ function draftPrompt(framing, question, sourceArtifact, codebaseResearch, repoRo
     question,
     ``,
     sourceArtifact ? `Source artifact (ticket description):\n${sourceArtifact}\n` : '',
-    codebaseResearch ? `Existing codebase research (use this, do not re-do it):\n${codebaseResearch}\n` : '',
+    codebaseResearch ? `Existing codebase research (use as a starting point — do not re-do it wholesale,\nbut independently verify the 2-3 research claims your plan most depends on by reading\nthe code; record any claim you contradicted in "assumptions" or "open_questions"):\n${codebaseResearch}\n` : '',
     priorKnowledge ? `Prior knowledge from autodev (related memories + past tickets) — reuse proven\napproaches and avoid the documented gotchas:\n${priorKnowledge}\n` : '',
     ``,
     `Read the codebase as needed (Read, Bash, Grep) to understand existing patterns. Then`,
@@ -276,6 +280,8 @@ function draftPrompt(framing, question, sourceArtifact, codebaseResearch, repoRo
     `- "side_effects": what else this change affects. "none" only if confidently isolated.`,
     `- "alternatives_considered": at least 1 alternative with a real "why_rejected" reason.`,
     `- "open_questions": things you genuinely don't know yet. Empty is OK.`,
+    `- "assumptions": fill this. Every claim about the codebase, data, or infra you did NOT`,
+    `  verify by reading code/artifacts is an assumption — list each one explicitly.`,
     `- Embody your framing in the tradeoffs section explicitly.`,
   ].filter(Boolean).join('\n')
 }
@@ -302,6 +308,13 @@ function synthesizePrompt(question, drafts, repoRoot, priorKnowledge) {
     ] : []),
     `Drafts:`,
     drafts.map((d, i) => d ? `\n--- DRAFT ${i + 1} (framing: ${d.framing}) ---\n${JSON.stringify(d.plan, null, 2)}\nFraming notes: ${d.framing_notes}\n` : `\n--- DRAFT ${i + 1}: FAILED ---\n`).join(''),
+    ``,
+    `Quality rubric for the merged plan:`,
+    `- verification_strategy names at least 1 reproducible observation per environment`,
+    `  (staging AND production): a query/command plus the output that proves success.`,
+    `- "how" names the components touched — not just an abstract description of the approach.`,
+    `- No padding: every sentence carries information. Delete restatements and filler.`,
+    `- Merge the drafts' assumptions: keep every assumption that still underpins the merged plan.`,
     ``,
     `Return per the draft output schema with framing: "synthesized". framing_notes should`,
     `summarize which base you chose and what you grafted from where.`,
@@ -416,6 +429,12 @@ function revisePrompt(plan, critiques, question, codebaseResearch, repoRoot, pri
     `4. Do NOT add scope. If a critic suggests a refactor or migration not in the original`,
     `   plan, reject it unless it's a must-address correctness issue.`,
     ``,
+    `Quality rubric for the revised plan:`,
+    `- verification_strategy names at least 1 reproducible observation per environment`,
+    `  (staging AND production): a query/command plus the output that proves success.`,
+    `- "how" names the components touched — not just an abstract description of the approach.`,
+    `- No padding: every sentence carries information. Delete restatements and filler.`,
+    ``,
     `Return per revisedOutputSchema:`,
     `- plan: the revised plan (same schema as input)`,
     `- revision_log:`,
@@ -425,8 +444,11 @@ function revisePrompt(plan, critiques, question, codebaseResearch, repoRoot, pri
   ].filter(Boolean).join('\n')
 }
 
-function disagreementAuditPrompt(round, plan, allDrafts, critiques, question, codebaseResearch, repoRoot, priorKnowledge) {
+function disagreementAuditPrompt(round, plan, allDrafts, critiques, question, codebaseResearch, repoRoot, priorKnowledge, priorAudits, revisionLog) {
   const providerDrafts = allDrafts.filter(d => d.provider_key)
+  // Payload trim: only round 1 sees the full draft plans. Later rounds audit the current plan
+  // against provider assumptions/disagreements only — the drafts have already been synthesized.
+  const includeFullDrafts = round === 1
   return [
     `You are auditing a synthesized plan for cross-provider disagreements. Round ${round}/3.`,
     ``,
@@ -443,9 +465,11 @@ function disagreementAuditPrompt(round, plan, allDrafts, critiques, question, co
     `Current plan:`,
     JSON.stringify(plan, null, 2),
     ``,
-    `All plan drafts considered:`,
-    allDrafts.map((d, i) => `\n--- DRAFT ${i + 1} (${d.framing}) ---\n${JSON.stringify(d.plan, null, 2)}\nNotes: ${d.framing_notes || ''}\n`).join(''),
-    ``,
+    ...(includeFullDrafts ? [
+      `All plan drafts considered:`,
+      allDrafts.map((d, i) => `\n--- DRAFT ${i + 1} (${d.framing}) ---\n${JSON.stringify(d.plan, null, 2)}\nNotes: ${d.framing_notes || ''}\n`).join(''),
+      ``,
+    ] : []),
     `Provider assumptions / surfaced disagreements:`,
     providerDrafts.length
       ? providerDrafts.map(d => [
@@ -457,11 +481,32 @@ function disagreementAuditPrompt(round, plan, allDrafts, critiques, question, co
         ].join('\n')).join('\n')
       : `No external provider drafts were supplied. Flag this if cross-provider mode was expected.`,
     ``,
-    `Critic findings:`,
-    JSON.stringify(critiques.flatMap(c => (c?.findings || []).map(f => ({ ...f, critic_lens: c.lens }))), null, 2),
-    ``,
-    codebaseResearch ? `Existing codebase research:\n${codebaseResearch}\n` : '',
+    ...(includeFullDrafts ? [
+      `Critic findings:`,
+      JSON.stringify(critiques.flatMap(c => (c?.findings || []).map(f => ({ ...f, critic_lens: c.lens }))), null, 2),
+      ``,
+    ] : []),
+    ...(priorAudits && priorAudits.length ? [
+      `Earlier convergence rounds (audit results):`,
+      JSON.stringify(priorAudits, null, 2),
+      ``,
+      `Revision log so far (what was incorporated / rejected / resolved):`,
+      JSON.stringify(revisionLog || {}, null, 2),
+      ``,
+      `Do NOT re-raise items already classified resolved_by_evidence or preference_rejected in`,
+      `earlier rounds unless NEW evidence contradicts the earlier resolution. Audit only what`,
+      `remains unresolved or newly appeared in the current plan.`,
+      ``,
+    ] : []),
+    codebaseResearch && includeFullDrafts ? `Existing codebase research:\n${codebaseResearch}\n` : '',
     priorKnowledge ? `Prior knowledge from autodev:\n${priorKnowledge}\n` : '',
+    ``,
+    `Evidence discipline (mandatory): for any factual claim about code, schema, data, or`,
+    `infra, run the check YOURSELF (Read/Grep/Bash read-only query) and paste the observed`,
+    `output into "evidence_needed" (command + result). Classifying a disagreement as`,
+    `"resolved_by_evidence" is FORBIDDEN unless evidence_needed contains an actual`,
+    `observation you (or an earlier round) made — a description of what someone should`,
+    `check is not evidence, and adjudicating by plausibility is not convergence.`,
     ``,
     `Return disagreementAuditSchema. Classify each disagreement:`,
     `- resolved_by_evidence: current plan already chose the evidence-backed answer`,
@@ -497,7 +542,10 @@ function convergenceRevisePrompt(plan, audit, question, repoRoot, priorKnowledge
     ``,
     priorKnowledge ? `Prior knowledge to respect:\n${priorKnowledge}\n` : '',
     `Revision rules:`,
-    `1. If evidence settles a disagreement, update the plan to the settled answer.`,
+    `1. If evidence settles a disagreement, update the plan to the settled answer. Evidence`,
+    `   means an actual observation (command + output) — either pasted by the audit or made`,
+    `   by you now (Read/Grep/read-only query). If the audit only asserted a resolution`,
+    `   without observed output, verify it yourself before adopting it.`,
     `2. If the evidence is unavailable but required, add a concrete blocker to open_questions.`,
     `3. If the disagreement is only preference/YAGNI, keep the simpler plan and record why.`,
     `4. Preserve the plan schema exactly. Keep architecture-level, not file-by-file.`,
@@ -535,7 +583,9 @@ phase('Draft')
 const draftResults = await parallel(
   framings.map(f => () => agent(
     draftPrompt(f, question, sourceArtifact, codebaseResearch, repoRoot, priorKnowledge),
-    { label: `draft:${f.key}`, phase: 'Draft', schema: draftOutputSchema }
+    // Drafting is mechanical divergence — sonnet at medium effort is enough; synthesis is
+    // where the judgment happens.
+    { label: `draft:${f.key}`, phase: 'Draft', schema: draftOutputSchema, model: 'sonnet', effort: 'medium' }
   ))
 )
 const validDrafts = draftResults.filter(d => d && d.plan)
@@ -559,7 +609,7 @@ if (allDrafts.length === 1) {
 } else {
   synthesized = await agent(
     synthesizePrompt(question, allDrafts, repoRoot, priorKnowledge),
-    // TODO: revert to model: 'fable' once available (effort xhigh not settable via agent())
+    // stay on opus — fable is not available on the subscription plan after 2026-07-07
     { label: 'synthesize', phase: 'Synthesize', model: 'opus', schema: draftOutputSchema }
   )
   if (!synthesized || !synthesized.plan) {
@@ -573,7 +623,12 @@ phase('Critique')
 const critiqueResults = await parallel(
   ['completeness', 'correctness', 'yagni'].map(lens => () => agent(
     criticPrompt(lens, synthesized.plan, question, codebaseResearch, repoRoot, priorKnowledge),
-    { label: `critic:${lens}`, phase: 'Critique', schema: criticOutputSchema }
+    // Completeness and YAGNI are checklist-style lenses — sonnet at medium effort. The
+    // correctness critic reads the codebase to verify claims, so it keeps the default model.
+    {
+      label: `critic:${lens}`, phase: 'Critique', schema: criticOutputSchema,
+      ...(lens === 'correctness' ? {} : { model: 'sonnet', effort: 'medium' }),
+    }
   ))
 )
 const validCritiques = critiqueResults.filter(c => c && Array.isArray(c.findings))
@@ -598,7 +653,7 @@ if (validCritiques.length === 0 || totalFindings === 0) {
 } else {
   final = await agent(
     revisePrompt(synthesized.plan, validCritiques, question, codebaseResearch, repoRoot, priorKnowledge),
-    // TODO: revert to model: 'fable' once available (effort xhigh not settable via agent())
+    // stay on opus — fable is not available on the subscription plan after 2026-07-07
     { label: 'revise', phase: 'Revise', model: 'opus', schema: revisedOutputSchema }
   )
   if (!final || !final.plan) {
@@ -613,10 +668,13 @@ if (validCritiques.length === 0 || totalFindings === 0) {
 // Phase 5: bounded cross-provider disagreement convergence
 phase('Converge')
 const disagreementLog = []
+const auditHistory = []
+let finalRoundDisagreements = []
 let disagreementRounds = 0
 for (let round = 1; round <= 3; round += 1) {
   const audit = await agent(
-    disagreementAuditPrompt(round, final.plan, allDrafts, validCritiques, question, codebaseResearch, repoRoot, priorKnowledge),
+    disagreementAuditPrompt(round, final.plan, allDrafts, validCritiques, question, codebaseResearch, repoRoot, priorKnowledge, auditHistory, final.revision_log),
+    // stay on opus — fable is not available on the subscription plan after 2026-07-07
     { label: `disagreement-audit:${round}`, phase: 'Converge', model: 'opus', schema: disagreementAuditSchema }
   )
   const disagreements = (audit?.disagreements || []).filter(validDisagreement)
@@ -624,6 +682,15 @@ for (let round = 1; round <= 3; round += 1) {
     d.severity === 'must-resolve' &&
     (d.status === 'material_unresolved' || d.status === 'open_question')
   )
+  auditHistory.push({
+    round,
+    overall_assessment: audit?.overall_assessment || '',
+    disagreements: disagreements.map(d => ({
+      title: d.title, area: d.area, status: d.status, severity: d.severity,
+      resolution: d.suggested_resolution,
+    })),
+  })
+  finalRoundDisagreements = disagreements
   disagreementLog.push(...disagreements.map(d => ({
     round,
     title: d.title,
@@ -641,6 +708,7 @@ for (let round = 1; round <= 3; round += 1) {
   }
   const revised = await agent(
     convergenceRevisePrompt(final.plan, { ...audit, disagreements: actionable }, question, repoRoot, priorKnowledge),
+    // stay on opus — fable is not available on the subscription plan after 2026-07-07
     { label: `convergence-revise:${round}`, phase: 'Converge', model: 'opus', schema: revisedOutputSchema }
   )
   if (!revised || !revised.plan) {
@@ -669,12 +737,15 @@ for (let round = 1; round <= 3; round += 1) {
 const incorporatedCount = final.revision_log?.incorporated?.length || 0
 const rejectedCount = final.revision_log?.rejected?.length || 0
 const tensionCount = final.revision_log?.tension_resolutions?.length || 0
-const disagreementsFound = disagreementLog.length
-const unresolvedDisagreements = disagreementLog.filter(d =>
+// Dedupe re-raised disagreements: the same (title, area) audited across rounds counts once.
+const disagreementsFound = new Set(disagreementLog.map(d => `${d.title}::${d.area}`)).size
+// Unresolved is a final-state question — compute it from the FINAL round only, so items
+// resolved in later rounds are not double-counted as unresolved.
+const unresolvedDisagreements = finalRoundDisagreements.filter(d =>
   d.severity === 'must-resolve' &&
   (d.status === 'material_unresolved' || d.status === 'open_question')
 ).length
-const disagreementsResolved = disagreementsFound - unresolvedDisagreements
+const disagreementsResolved = Math.max(0, disagreementsFound - unresolvedDisagreements)
 
 return {
   question,

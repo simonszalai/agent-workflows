@@ -2,6 +2,9 @@
 
 Standards for reviewing data migrations, backfills, and data transformations. Apply these to prevent data corruption.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Core Principle
 
 **Never trust fixtures or assumptions** - verify mappings match production data.
@@ -118,16 +121,7 @@ WHERE new_column = '<expected_value>';
 3. **Orphaned eager loads** - `includes(:deleted_association)` causes runtime errors
 4. **Incomplete dual-write** - New records only write new column, breaking rollback
 
-## Issue Reporting Format
-
-For each issue:
-
-- **File:Line** - Exact location
-- **Issue** - What's wrong
-- **Blast Radius** - How many records/users affected
-- **Fix** - Specific code change needed
-
-**Refuse approval until there is a written verification + rollback plan.**
+**File a p1 `manual` finding if no written verification + rollback plan exists.**
 
 
 ### Post-Merge Head Check (Branch Merges)

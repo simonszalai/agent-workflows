@@ -38,7 +38,7 @@ have caught this, and why didn't it?"
 |---|---|
 | Memory system didn't surface knowledge | `/autodev-wtf-memory` |
 | Need to find the bug's root cause | `/investigate` |
-| Broad system audit | `/dream` |
+| Broad system audit | `/deep-dream` |
 | Learning moment after correction | `/compound` |
 | Bug not yet in production | Fix directly |
 
@@ -144,10 +144,10 @@ For each approved fix, apply it:
 
 | Gap Found | Fix Target |
 |---|---|
-| Rule violated repeatedly | `AGENTS.md` |
-| Plan didn't research area | `skills/plan/SKILL.md` |
+| Rule violated repeatedly | Project `CLAUDE.md` (Claude) / starred memory rule (both tools) |
+| Plan didn't research area | `skills/auto-plan/SKILL.md` |
 | Build todos missed pattern | `skills/create-build-todos/SKILL.md` |
-| Review didn't catch | `skills/review-*/SKILL.md` |
+| Review didn't catch | `skills/review/references/*.md` |
 | Test missing | Test scenario documented for implementation |
 | Verification missed | Verify skill or verification docs |
 | Workflow step missing | Relevant skill's `SKILL.md` |

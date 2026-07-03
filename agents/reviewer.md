@@ -72,7 +72,7 @@ assuming a fixed stack.
 
    Extract patterns of issues found in similar implementations.
 
-5. **Use loaded standards as your review criteria.** Every finding should reference which
+4. **Use loaded standards as your review criteria.** Every finding should reference which
    standard or gotcha it violates. Cross-reference with past review findings to catch recurring
    issues.
 
@@ -144,11 +144,14 @@ When reviewing data/schema or migration changes, always verify:
 - [ ] No orphaned foreign keys
 - [ ] Transaction boundaries correct
 
-Refuse approval until verification + rollback plan exists.
+File a p1 `manual` finding when the verification + rollback plan is missing.
 
 ## Confidence Calibration
 
 Score each finding 0.0-1.0 based on your certainty:
+
+Before assigning confidence ≥0.80 you MUST have read the surrounding function and at least
+one call site; cite both in `evidence`.
 
 | Score | Meaning | When to use |
 | ----- | ------- | ----------- |
@@ -227,6 +230,10 @@ orchestrator collects findings from all agents and creates artifacts.
 - `owner`: Use `review-fixer` for `safe_auto`, `downstream-resolver` for `gated_auto`/`manual`,
   `human` for findings requiring judgment
 - `pre_existing`: True if the issue exists in unchanged code unrelated to the current diff
+- `absence`: True when the finding claims something is MISSING (migration, test, elimination
+  step, scope item, deploy surface). Anchor `file`/`line` to the closest related artifact and
+  put the exact grep/ls commands that should find the missing thing in `evidence` — skeptics
+  verify absence findings by running those searches, not by reading around the anchor
 - `evidence`: At least 1 item — code snippets, line references, or pattern descriptions
 - `suggested_fix`: Null if no good fix is obvious — a bad suggestion is worse than none
 

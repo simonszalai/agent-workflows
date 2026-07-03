@@ -1,7 +1,8 @@
 ---
 name: external-planner
-description: "Runs one peer cross-provider planner (Claude, Codex, or Grok) via the external-agent adapter and returns its planner-output envelope. Spawned in parallel with the native planner by /plan or /epic-plan."
-model: inherit
+description: "Runs one peer cross-provider planner (Claude, Codex, or Grok) via the external-agent adapter and returns its planner-output envelope. Spawned in parallel with the native planner by /auto-plan or /epic-plan."
+model: haiku
+effort: low
 max_turns: 30
 ---
 

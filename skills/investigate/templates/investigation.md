@@ -93,7 +93,7 @@ evidence_sources: []
 ## Recommended Fix Directions
 
 > **Note:** These are high-level directions based on root cause analysis. Detailed solution
-> design (architecture, tradeoffs, verification) happens in `/plan`.
+> design (architecture, tradeoffs, verification) happens in `/auto-plan`.
 
 ### Priority 1: Critical
 
@@ -170,8 +170,8 @@ evidence_sources: []
 
 ## Next Steps
 
-After investigation is complete, run `/plan {id}` to design the solution.
+After investigation is complete, run `/auto-plan {id}` to design the solution.
 
 - [ ] Review root causes with stakeholders
-- [ ] Run `/plan` to create architecture plan
+- [ ] Run `/auto-plan` to create architecture plan
 - [ ] [Additional action items if needed]

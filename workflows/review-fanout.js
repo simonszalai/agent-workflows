@@ -3,15 +3,24 @@
 // Phase shape (mirrors skills/review/SKILL.md Synthesis Methodology 1-9):
 //   1. BARRIER: parallel() all reviewers, wait for every one.
 //   2. Validate + flatten + union coverage.
-//   3. Dedup with true +/-3 line-window matching, then +0.10 cross-reviewer boost (cap 1.0).
+//   3. Dedup in two passes — exact (+/-3 line window, same normalized title), then a
+//      SEMANTIC same-issue pass (one cheap judge call over same-file/±5-line pairs with
+//      differing titles, and absence-finding pairs). Cross-provider agreement is the core
+//      signal of this pipeline and providers never word titles identically, so exact
+//      matching alone would silently discard consensus. Then +0.10 cross-reviewer boost
+//      per extra reviewer (cap 1.0).
 //   4. Confidence gate (<0.60 suppressed; p1 >=0.50 rescued).
-//   5. Adversarial verify: every surviving finding below the 0.80 skip-verify threshold
-//      gets 2 independent skeptics in parallel. Consensus-boosted findings at >=0.80 skip.
+//   5. Adversarial verify, tiered by corroboration (confidence is self-reported and must
+//      not buy an unconditional skip):
+//        - <0.80: 2 independent skeptics in parallel.
+//        - >=0.80 but p1, or single-reviewer: 1 spot-check skeptic.
+//        - >=0.80 multi-reviewer consensus, p2/p3: skip verify.
 //   6. Apply skeptic verdicts:
-//        - <2 verdicts received: keep finding, requires_verification stays true (track in stats).
-//        - 2 unanimous refute: drop.
-//        - 2 unanimous uphold: +0.10 confidence, clear requires_verification.
-//        - Mixed: keep, requires_verification = true.
+//        - fewer verdicts than expected: keep finding, requires_verification stays true.
+//        - 2-skeptic: unanimous refute drops; unanimous uphold boosts +0.10 and clears
+//          requires_verification; mixed keeps with requires_verification = true.
+//        - 1-skeptic spot-check: uphold clears requires_verification; refute/unsure keeps
+//          the finding contested (never a silent drop on one dissent vs a >=0.80 author).
 //   7. Separate pre-existing.
 //   8. Sort.
 //   9. Normalize routing (coherence between autofix_class and owner) then partition.
@@ -46,7 +55,7 @@ const findingSchema = {
     title: { type: 'string', minLength: 4 },
     severity: { type: 'string', enum: ['p1', 'p2', 'p3'] },
     file: { type: 'string' },
-    line: { type: 'integer', minimum: 0 },
+    line: { type: 'integer', minimum: 1 },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     autofix_class: { type: 'string', enum: ['safe_auto', 'gated_auto', 'manual', 'advisory'] },
     owner: { type: 'string', enum: ['review-fixer', 'downstream-resolver', 'human'] },
@@ -55,6 +64,7 @@ const findingSchema = {
     evidence: { type: 'array', items: { type: 'string' }, minItems: 1 },
     why_it_matters: { type: 'string', minLength: 8 },
     suggested_fix: { type: ['string', 'null'] },
+    absence: { type: 'boolean' },
   },
 }
 
@@ -66,6 +76,24 @@ const reviewerOutputSchema = {
     findings: { type: 'array', items: findingSchema },
     residual_risks: { type: 'array', items: { type: 'string' } },
     testing_gaps: { type: 'array', items: { type: 'string' } },
+  },
+}
+
+const sameIssueSchema = {
+  type: 'object',
+  required: ['decisions'],
+  properties: {
+    decisions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['pair', 'same_issue'],
+        properties: {
+          pair: { type: 'string' },
+          same_issue: { type: 'boolean' },
+        },
+      },
+    },
   },
 }
 
@@ -89,7 +117,7 @@ function normalizeFile(f) {
   return String(f || '').replace(/\\/g, '/').replace(/^\.\//, '').trim()
 }
 function lineNumber(f) {
-  return Number.isFinite(+f?.line) ? Math.max(0, +f.line | 0) : 0
+  return Number.isFinite(+f?.line) ? Math.max(1, +f.line | 0) : 1
 }
 // Stable per-finding key for skeptic-verdict matching. Not fuzzy — each finding has
 // exactly one key. Dedup uses a separate +/-3 window comparator (see dedupAndMerge).
@@ -108,12 +136,13 @@ function validFinding(f) {
   return true
 }
 
-// Dedup: true +/-3 line window. O(n^2) but n is small (<100 in practice).
+// Exact dedup: true +/-3 line window. O(n^2) but n is small (<100 in practice).
 // Two findings collapse iff: same normalized file, same normalized title, AND |line diff|
 // <= 3 against ANY existing member of a group (not just the first). Anchoring on the first
 // member only would break the +/-3 contract when a group spans more than 3 lines.
-// Known limitation: semantically-identical findings with divergent titles will NOT merge.
-// Fixing that requires embedding similarity; out of scope for the deterministic core.
+// Semantically-identical findings with divergent titles are handled by the semanticMerge
+// pass that runs right after this one (see script body) — exact matching alone would
+// discard cross-provider agreement, the signal the cross-reviewer boost exists to reward.
 function dedupAndMerge(findings) {
   const groups = []
   for (const f of findings) {
@@ -167,6 +196,60 @@ function mergeFinding(a, b) {
   }
 }
 
+// Semantic same-issue merge (async — needs agent()). Exact-title dedup cannot see
+// cross-provider agreement: the same defect gets different titles from different
+// reviewers/providers. Candidate pairs — same file within a +/-5 line window with
+// differing titles, or any two absence findings (absences may anchor to different
+// files for the same missing artifact) — are judged in ONE cheap agent call; confirmed
+// pairs merge via mergeFinding so the cross-reviewer boost sees the agreement.
+async function semanticMerge(findings) {
+  const pairs = []
+  for (let i = 0; i < findings.length; i++) {
+    for (let j = i + 1; j < findings.length; j++) {
+      const a = findings[i], b = findings[j]
+      if (normalizeTitle(a.title) === normalizeTitle(b.title)) continue // exact pass owns these
+      const near = normalizeFile(a.file) === normalizeFile(b.file) &&
+                   Math.abs(lineNumber(a) - lineNumber(b)) <= 5
+      const bothAbsence = a.absence === true && b.absence === true
+      if (near || bothAbsence) pairs.push({ id: `${i}-${j}`, i, j })
+    }
+  }
+  if (pairs.length === 0) return findings
+
+  const fmt = f => `[${f.severity}] ${f.file}:${f.line} "${f.title}" — ${f.why_it_matters} (evidence: ${(f.evidence || [])[0] || 'n/a'})`
+  const judgePrompt = [
+    `You are judging whether pairs of code-review findings describe the SAME underlying`,
+    `defect (reported by different reviewers in different words) or genuinely different`,
+    `issues. Judge by the underlying mechanism, not the wording. Same defect at the same`,
+    `code site => same_issue: true. Different defects that happen to be near each other`,
+    `=> same_issue: false. When genuinely unsure, answer false (a missed merge is safer`,
+    `than collapsing two distinct signals).`,
+    ``,
+    ...pairs.map(p => `PAIR ${p.id}:\n  A: ${fmt(findings[p.i])}\n  B: ${fmt(findings[p.j])}\n`),
+    `Return per schema: one decisions entry per pair id above.`,
+  ].join('\n')
+
+  const result = await agent(judgePrompt, {
+    label: 'dedup:same-issue', phase: 'Fan out', schema: sameIssueSchema,
+    model: 'sonnet', effort: 'low',
+  })
+  const same = new Set()
+  for (const d of result?.decisions || []) if (d.same_issue) same.add(String(d.pair))
+  if (same.size === 0) return findings
+
+  // Union-find over confirmed pairs, then reduce each cluster with mergeFinding.
+  const parent = findings.map((_, idx) => idx)
+  const find = x => (parent[x] === x ? x : (parent[x] = find(parent[x])))
+  for (const p of pairs) if (same.has(p.id)) parent[find(p.i)] = find(p.j)
+  const clusters = new Map()
+  findings.forEach((f, idx) => {
+    const root = find(idx)
+    if (!clusters.has(root)) clusters.set(root, [])
+    clusters.get(root).push(f)
+  })
+  return Array.from(clusters.values()).map(g => g.reduce((acc, x) => mergeFinding(acc, x)))
+}
+
 function applyCrossReviewerBoost(f) {
   const extra = Math.max(0, (f.reviewers?.length || 1) - 1)
   return { ...f, confidence: Math.min(1.0, f.confidence + 0.1 * extra) }
@@ -177,9 +260,19 @@ function passesConfidenceGate(f) {
   return f.confidence >= 0.6
 }
 
-// Everything that survived the gate but isn't yet at the verify-skip threshold gets verified.
-function isBorderline(f) {
-  return f.confidence < 0.80
+// Verify tiering: confidence alone cannot buy a skip — it is self-reported by the
+// finding's author, and unpoliced inflation would bypass the only adversarial layer in
+// the pipeline. Corroboration (multi-reviewer agreement after semanticMerge) is what
+// earns the skip; p1 findings gate merges and always get at least a spot-check.
+//   <0.80                                   -> 2 skeptics (full adversarial verify)
+//   >=0.80, p1                              -> 1 skeptic spot-check
+//   >=0.80, single reviewer, p2/p3          -> 1 skeptic spot-check (uncorroborated)
+//   >=0.80, multi-reviewer, p2/p3           -> 0 (corroborated by independent agreement)
+function skepticCount(f) {
+  if (f.confidence < 0.80) return 2
+  if (f.severity === 'p1') return 1
+  if ((f.reviewers?.length || 1) < 2) return 1
+  return 0
 }
 
 // Re-derive owner from autofix_class so (class, owner) is always coherent. Without this,
@@ -213,7 +306,7 @@ function partition(findings) {
   return { inSkillFixer, residualActionable, reportOnly }
 }
 
-function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
+function reviewerPrompt(reviewer, intent, files, diffSummary, diffPath, mode, carried) {
   const scope = reviewer.filesScope?.length ? reviewer.filesScope : files
   return [
     `You are reviewer "${reviewer.key}". Focus: ${reviewer.focus}. Mode: ${mode}.`,
@@ -221,19 +314,38 @@ function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
     `Intent:`,
     intent,
     ``,
+    ...(reviewer.extraContext ? [
+      `Additional context for your focus area:`,
+      reviewer.extraContext,
+      ``,
+    ] : []),
+    `Diff at: ${diffPath}`,
+    ``,
     `Files in scope:`,
     scope.map(p => `  - ${p}`).join('\n'),
     ``,
     `Diff summary:`,
     diffSummary,
     ``,
+    ...(carried && carried.length ? [
+      `Previously contested/advisory findings from earlier review rounds — re-examine`,
+      `each; re-report ONLY with new evidence (do not repeat verbatim) and do not treat`,
+      `this list as resolved:`,
+      ...carried.map(c => `  - [${c.severity || '?'}] ${c.file || '?'}:${c.line || '?'} ${c.title || ''}${c.why_it_matters ? ' — ' + c.why_it_matters : ''}`),
+      ``,
+    ] : []),
     `References to load first:`,
     (reviewer.references || []).map(p => `  - ${p}`).join('\n') || '  (none)',
     ``,
     `Return per the reviewer output schema. Rules:`,
     `- One finding per real issue. Specific file:line. No vague nits.`,
     `- evidence: quote or paraphrase the code that proves the issue (>=1 required).`,
-    `- confidence is code-grounded. >=0.80 requires direct evidence.`,
+    `- confidence is code-grounded. Before assigning >=0.80 you MUST have read the`,
+    `  surrounding function and at least one call site; cite both in evidence.`,
+    `- If the issue is something MISSING (migration, test, elimination step, scope item,`,
+    `  deploy surface): set absence: true, anchor file/line to the closest related`,
+    `  artifact, and put the exact grep/ls commands that should find the missing thing`,
+    `  in evidence — skeptics verify absences by searching, not by reading the anchor.`,
     `- pre_existing: true if the issue exists on main and the diff did not introduce it.`,
     `- autofix_class safe_auto only if the fix is mechanical and obviously correct.`,
     `- owner: review-fixer for safe_auto fixes; downstream-resolver for gated_auto/manual; human for advisory.`,
@@ -241,12 +353,23 @@ function reviewerPrompt(reviewer, intent, files, diffSummary, mode) {
   ].join('\n')
 }
 
-function skepticPrompt(finding, idx, intent, diffSummary) {
+function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
+  const protocol = finding.absence === true ? [
+    `ABSENCE PROTOCOL: this finding claims something is MISSING (a migration, test,`,
+    `elimination step, scope item, or deploy surface). Reading around the anchor line`,
+    `cannot verify an absence. Instead: run the search commands listed in the evidence`,
+    `(grep/ls/Glob), plus your own searches for plausible names and locations of the`,
+    `missing artifact. UPHOLD if it is genuinely absent from the working tree; REFUTE`,
+    `only if you find it — cite where it exists (file:line) in counter_evidence.`,
+  ] : [
+    `Open the file at the line. Read +/- 30 lines of context.`,
+  ]
   return [
     `You are an adversarial skeptic (#${idx}). Your job is to REFUTE this finding.`,
     `Default to "refute" unless the evidence is concrete and reproducible.`,
     ``,
     `Intent: ${intent}`,
+    `Diff at: ${diffPath}`,
     `Diff summary: ${diffSummary}`,
     ``,
     `Finding under review:`,
@@ -254,24 +377,25 @@ function skepticPrompt(finding, idx, intent, diffSummary) {
     `  title: ${finding.title}`,
     `  severity: ${finding.severity}`,
     `  confidence reported: ${finding.confidence}`,
+    ...(finding.absence === true ? [`  absence claim: true (something is missing)`] : []),
     `  why_it_matters: ${finding.why_it_matters}`,
     `  evidence:`,
     (finding.evidence || []).map(e => `    - ${e}`).join('\n'),
     ``,
-    `Open the file at the line. Read +/- 30 lines of context.`,
+    ...protocol,
     `Return per verifyVerdictSchema. finding_key must equal "${findingKey(finding)}".`,
   ].join('\n')
 }
 
 // ---------- Script body ----------
 
-const { reviewers, intent, files, diffSummary, mode } = args
+const { reviewers, intent, files, diffSummary, diffPath, mode, carried = [] } = args
 
 // Phase 1: BARRIER fan-out
 phase('Fan out')
 const reviewerResults = await parallel(
   reviewers.map(r => () => agent(
-    reviewerPrompt(r, intent, files, diffSummary, mode),
+    reviewerPrompt(r, intent, files, diffSummary, diffPath, mode, carried),
     { label: `reviewer:${r.key}`, phase: 'Fan out', model: r.model, schema: reviewerOutputSchema }
   ))
 )
@@ -294,10 +418,15 @@ for (const result of reviewerResults) {
 }
 log(`Fan-out: ${reviewerResults.length} reviewers, ${allFindings.length} valid findings (${invalidDropped} invalid, ${reviewerErrors} reviewer errors)`)
 
-// Phase 3: dedup (+/- 3 line window) + cross-reviewer boost
+// Phase 3: dedup — exact pass (+/- 3 line window, same title), then semantic same-issue
+// pass (so cross-provider agreement is not lost to title wording) + cross-reviewer boost
 const beforeDedup = allFindings.length
-const merged0 = dedupAndMerge(allFindings)
-const dedupCollapsed = beforeDedup - merged0.length
+const exactMerged = dedupAndMerge(allFindings)
+const exactCollapsed = beforeDedup - exactMerged.length
+const merged0 = await semanticMerge(exactMerged)
+const semanticCollapsed = exactMerged.length - merged0.length
+const dedupCollapsed = exactCollapsed + semanticCollapsed
+log(`Dedup: ${exactCollapsed} exact + ${semanticCollapsed} semantic collapsed (${merged0.length} remain)`)
 const merged = merged0.map(applyCrossReviewerBoost)
 
 // Phase 4: confidence gate
@@ -311,18 +440,22 @@ const gated = merged.filter(passesConfidenceGate)
 const preGateSuppressed = merged.filter(f => !passesConfidenceGate(f) && f.confidence >= 0.50)
 const suppressedByGate = beforeGate - gated.length
 
-// Phase 5: adversarial verify on borderline only
+// Phase 5: adversarial verify, tiered by corroboration (see skepticCount)
 phase('Verify')
-const borderline = gated.filter(isBorderline)
-const skipsVerify = gated.filter(f => !isBorderline(f))
-log(`Verify: ${borderline.length} borderline -> 2 skeptics each; ${skipsVerify.length} skip verify`)
+const borderline = gated.filter(f => skepticCount(f) > 0)
+const skipsVerify = gated.filter(f => skepticCount(f) === 0)
+const fullVerify = borderline.filter(f => skepticCount(f) === 2).length
+const spotCheck = borderline.length - fullVerify
+log(`Verify: ${fullVerify} full (2 skeptics) + ${spotCheck} spot-check (1 skeptic); ${skipsVerify.length} skip (>=0.80 multi-reviewer consensus)`)
 
 const skepticCalls = []
 for (const f of borderline) {
-  for (let i = 1; i <= 2; i++) {
+  const n = skepticCount(f)
+  for (let i = 1; i <= n; i++) {
     skepticCalls.push(() => agent(
-      skepticPrompt(f, i, intent, diffSummary),
-      { label: `skeptic:${findingKey(f)}:${i}`, phase: 'Verify', model: 'sonnet', schema: verifyVerdictSchema }
+      skepticPrompt(f, i, intent, diffSummary, diffPath),
+      // p1 findings get the strongest skeptic; everything else stays cheap.
+      { label: `skeptic:${findingKey(f)}:${i}`, phase: 'Verify', model: f.severity === 'p1' ? 'opus' : 'sonnet', schema: verifyVerdictSchema }
     ))
   }
 }
@@ -342,19 +475,39 @@ let skepticFailures = 0      // borderline findings that got <2 verdicts
 let contestedKept = 0         // borderline findings with mixed verdicts
 
 for (const f of borderline) {
+  const expected = skepticCount(f)
   const vs = verdictsByKey.get(findingKey(f)) || []
 
-  // Insufficient verdicts: keep finding, requires_verification stays true. Conservative.
-  if (vs.length < 2) {
+  // Fewer verdicts than dispatched: keep finding, requires_verification stays true.
+  if (vs.length < expected) {
     skepticFailures += 1
     verifiedBorderline.push({ ...f, requires_verification: true })
     continue
   }
 
-  // The prompt tells skeptics to default to "refute" when uncertain, so "unsure" is
-  // treated as a non-uphold (counts toward dropping). This avoids the silent-survive
-  // path where 1 refute + 1 unsure would otherwise keep a finding that no skeptic upheld.
   const upholds = vs.filter(v => v.verdict === 'uphold').length
+  const counter = vs.flatMap(v => v.counter_evidence || [])
+  const evidence = counter.length
+    ? [...(f.evidence || []), ...counter.map(c => `[skeptic] ${c}`)]
+    : f.evidence
+
+  // Spot-check tier (1 skeptic on a >=0.80 self-confident finding): an uphold clears
+  // requires_verification; a refute/unsure contests it — but never silently drops a
+  // high-confidence finding on a single dissent.
+  if (expected === 1) {
+    if (upholds === 1) {
+      verifiedBorderline.push({ ...f, requires_verification: false, evidence })
+    } else {
+      contestedKept += 1
+      verifiedBorderline.push({ ...f, requires_verification: true, evidence })
+    }
+    continue
+  }
+
+  // Full tier (2 skeptics). The prompt tells skeptics to default to "refute" when
+  // uncertain, so "unsure" is treated as a non-uphold (counts toward dropping). This
+  // avoids the silent-survive path where 1 refute + 1 unsure would otherwise keep a
+  // finding that no skeptic upheld.
   const nonUpholds = vs.length - upholds
 
   // No skeptic upheld: drop.
@@ -362,11 +515,6 @@ for (const f of borderline) {
     verifyDropped += 1
     continue
   }
-
-  const counter = vs.flatMap(v => v.counter_evidence || [])
-  const evidence = counter.length
-    ? [...(f.evidence || []), ...counter.map(c => `[skeptic] ${c}`)]
-    : f.evidence
 
   // Unanimous uphold: +0.10 confidence, requires_verification cleared.
   if (upholds === vs.length) {
@@ -412,6 +560,8 @@ return {
     raw_findings: beforeDedup,
     invalid_dropped: invalidDropped,
     dedup_collapsed: dedupCollapsed,
+    dedup_collapsed_exact: exactCollapsed,
+    dedup_collapsed_semantic: semanticCollapsed,
     after_dedup: merged.length,
     after_gate: gated.length,
     suppressed_by_gate: suppressedByGate,

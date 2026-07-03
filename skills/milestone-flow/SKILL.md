@@ -47,7 +47,8 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 
 ### 1. Load milestone graph
 
-- `get_epic(project, epic_id)`.
+- `get_epic(project, epic_id)`. `get_epic` responses are often large (tens of KB) and may
+  be spilled to a file — read with `jq` / offsets; don't try to swallow the whole payload.
 - Resolve milestone by display id (`M2`) or choose the first incomplete milestone for `--next`.
 - Load all step tickets in that milestone.
 - Read parent epic plan, milestone acceptance criteria, blockers, and contracts.
@@ -178,8 +179,9 @@ re-run/fix the evidence write rather than marking the milestone complete.
 
 ### 8. Handle verifier verdicts
 
-- `PASS`: confirm all evidence artifacts exist, update included step ticket statuses according to
-  the lifecycle, and return milestone success.
+- `PASS`: confirm all evidence artifacts exist, confirm `/ticket-verify` updated the included
+  step ticket statuses per the lifecycle (single owner — do not update them here), and return
+  milestone success.
 - `NEEDS_MORE_TIME`: keep polling/re-running the timer-friendly verifier with backoff until it
   becomes `PASS` or `FAIL`. If the session must stop for budget/runtime reasons, persist the gate
   state and exact resume command; do not claim milestone success.

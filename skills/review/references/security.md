@@ -2,6 +2,9 @@
 
 Standards for security review. Apply these when reviewing code for security vulnerabilities.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Core Security Scans
 
 ### 1. Input Validation Analysis
@@ -36,21 +39,6 @@ Standards for security review. Apply these when reviewing code for security vuln
 - Check for sensitive data in logs or error messages
 - Verify proper encryption for sensitive data at rest and in transit
 
-### 6. OWASP Top 10 Compliance
-
-Systematically check against each OWASP Top 10 vulnerability:
-
-1. Injection
-2. Broken Authentication
-3. Sensitive Data Exposure
-4. XML External Entities (XXE)
-5. Broken Access Control
-6. Security Misconfiguration
-7. Cross-Site Scripting (XSS)
-8. Insecure Deserialization
-9. Using Components with Known Vulnerabilities
-10. Insufficient Logging & Monitoring
-
 ## Security Requirements Checklist
 
 - [ ] All inputs validated and sanitized
@@ -63,30 +51,6 @@ Systematically check against each OWASP Top 10 vulnerability:
 - [ ] Security headers properly configured
 - [ ] Error messages don't leak sensitive information
 - [ ] Dependencies are up-to-date and vulnerability-free
-
-## Reporting Format
-
-### Executive Summary
-
-High-level risk assessment with severity ratings
-
-### Detailed Findings
-
-For each vulnerability:
-
-- Description of the issue
-- Potential impact and exploitability
-- Specific code location
-- Proof of concept (if applicable)
-- Remediation recommendations
-
-### Risk Matrix
-
-Categorize findings by severity: Critical, High, Medium, Low
-
-### Remediation Roadmap
-
-Prioritized action items with implementation guidance
 
 ## Special Considerations
 

@@ -25,6 +25,7 @@ decisions embedded in conversation history.
 /autodev-extract --since 7d              # Only sessions from the last 7 days
 /autodev-extract --topic "migration"     # Focus extraction on a specific topic
 /autodev-extract --review-only           # Show candidates without ingesting
+/autodev-extract --auto    # skip the review gate; store accepted candidates directly
 ```
 
 ## Data Sources
@@ -34,7 +35,7 @@ decisions embedded in conversation history.
 **Location:** `~/.claude/projects/`
 
 Each project directory contains:
-- `sessions-index.json` — manifest with session metadata
+- `~/.claude/history.jsonl` — the global session index (per-project manifests do not exist)
 - `{sessionId}.jsonl` — Claude session log (one JSON object per line)
 - `{sessionId}/subagents/` — subagent Claude session logs
 
@@ -160,16 +161,16 @@ limited to explicit phrases — use judgment to detect corrective intent broadly
    correction even if the user is polite or indirect about it
 3. Capture the assistant's prior approach (what was wrong/rejected)
 4. Capture what the user wanted instead (what's right)
-5. Generate a `diagnosis` entry
+5. Generate a `solution` entry
 
 **Example:**
 ```
 User: "No, never suppress flow failures. They are intentional observability."
-→ diagnosis entry: "Flow failures are intentional — never suppress"
+→ solution entry: "Flow failures are intentional — never suppress"
 
 Assistant asks: "Should I add error handling around this?"
 User: "it already has error handling, the issue is the selector changed"
-→ diagnosis entry: "Investigate actual root cause before adding error handling"
+→ solution entry: "Investigate actual root cause before adding error handling"
 ```
 
 ### Pattern 2: Debugging Resolutions
@@ -228,7 +229,7 @@ and arrives at a decision.
    {
      "title": "descriptive title",
      "content": "full knowledge content with context",
-     "entry_type": "gotcha|diagnosis|solution|reference|architecture",
+     "entry_type": "gotcha|pattern|preference|correction|solution|reference|architecture",  // canonical list: compound skill
      "project": "ts",
      "repos": ["ts-prefect"],
      "source_session": "sessionId",
@@ -241,7 +242,7 @@ and arrives at a decision.
      "evidence": "the specific messages that support this"
    }
 5. Filter: only keep candidates with medium or high confidence
-6. Present candidates to user for review (unless --auto flag)
+6. Present candidates to user for review (unless `--auto` was passed — see Usage)
 7. Ingest approved candidates sequentially (see Ingestion Loop below)
 ```
 
@@ -321,7 +322,7 @@ Extraction complete (23 sessions processed, 142 remaining)
 
   Candidates found: 5
     - 2 gotchas (ts-prefect)
-    - 1 diagnosis (ts-scraper)
+    - 1 solution (ts-scraper)
     - 1 solution (ts-prefect)
     - 1 reference (ts-dashboard)
 

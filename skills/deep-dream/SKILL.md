@@ -15,18 +15,18 @@ max_turns: 400
 
 # Deep Dream
 
-`/dream` consolidates the **memory store**. `/deep-dream` consolidates the **whole development
-system** the way an offline "dreaming" pass would: it grounds itself in real evidence (recent
-Claude + Codex session logs and autodev tickets), then runs five consolidation channels at once
-— memory cleanup, knowledge gaps, knowledge *migration* between layers, skill-content
-improvement, and workflow structural fixes. Every change must survive adversarial skeptic review
-before it is applied.
+`/deep-dream` is the consolidation skill: it consolidates the **whole development system** the
+way an offline "dreaming" pass would. It grounds itself in real evidence (recent Claude + Codex
+session logs and autodev tickets), then runs five consolidation channels at once — memory
+cleanup, knowledge gaps, knowledge *migration* between layers, skill-content improvement, and
+workflow structural fixes. Every change must survive adversarial skeptic review before it is
+applied.
 
 It is an **orchestrator**, not a rewrite of the existing skills. It reuses their methodology:
 
 | Channel | Reuses | What deep-dream adds |
 |---|---|---|
-| Memory audit/consolidation | `dream` (audit-checklist + adversarial loop) | evidence from logs/tickets feeds the candidates |
+| Memory audit/consolidation | `references/audit-checklist.md` + `references/adversarial-base.md` | evidence from logs/tickets feeds the candidates |
 | Pipeline evidence (Claude logs) | `autodev-improve` | the same scan over **Codex** logs; ties findings to fixes |
 | New knowledge capture | `compound`, `autodev-extract` | aggregate (cross-session) gaps, not one incident |
 | Workflow structural lint | `heal-workflows` | substantive content improvement, not just broken refs |
@@ -40,8 +40,6 @@ It is an **orchestrator**, not a rewrite of the existing skills. It reuses their
   `~/dev/agent-workflows` (`skills/`, `agents/`, `CLAUDE.md`). Nothing else.
 - **Not `/retrospect`.** Retrospect is one live thread; deep-dream is a broad, periodic,
   evidence-grounded sweep.
-- **Not `/dream`.** Dream is memory-store-only and fully autonomous. Deep-dream is wider
-  (memory + skills + workflows + Codex logs + tickets) and gates the skill-file channel.
 
 ## Usage
 
@@ -63,7 +61,7 @@ Deep-dream writes to two very different places, so it treats them differently:
 
 | Channel | Target | Default behavior |
 |---|---|---|
-| **Memory** (M, G, memory side of P) | autodev-memory store | **Auto-apply** after adversarial survival, exactly like `/dream`. |
+| **Memory** (M, G, memory side of P) | autodev-memory store | **Auto-apply** after adversarial survival. |
 | **Skill / workflow** (K, W, skill side of P) | files in `~/dev/agent-workflows` | **Propose only → human gate → apply → commit+push.** Waive the gate with `--auto-skills`. |
 
 Rationale: a bad memory edit costs a few tokens or one bad surfacing; a bad edit to a *shared*
@@ -153,7 +151,7 @@ its grounding evidence. This is round-0 input to the skeptics — nothing is app
 
 | Code | Channel | Action vocabulary | Authority |
 |---|---|---|---|
-| **M** | Memory consolidation | DELETE / UPDATE / MERGE / ABSTRACT / SPLIT / RESCOPE / SIMPLIFY / RETAG / RETYPE / IMPROVE-SUMMARY / MERGE-TAGS / RESOLVE-contradiction | `dream/references/audit-checklist.md` |
+| **M** | Memory consolidation | DELETE / UPDATE / MERGE / ABSTRACT / SPLIT / RESCOPE / SIMPLIFY / RETAG / RETYPE / IMPROVE-SUMMARY / MERGE-TAGS / RESOLVE-contradiction | `references/audit-checklist.md` |
 | **G** | Knowledge gap | CREATE new entry for a failure that recurs in the evidence and nothing currently captures | `compound`, `autodev-extract` |
 | **P** | Promote / migrate | move knowledge between layers: memory→skill, skill→memory/CLAUDE.md, memory→starred, memory→CLAUDE.md, or the reverse | `references/migration-rules.md` |
 | **K** | Skill content | add/repair a checklist item, step, or reference in a skill, driven by **aggregate** failure evidence (≥2 independent occurrences) | `compound` gap-analysis, extended |
@@ -177,11 +175,11 @@ The discipline that ties them together:
 ### Phase 3 — Adversarial review (skeptic critics, several rounds)
 
 Subject **every** candidate from all five channels to hostile, evidence-based scrutiny before
-anything is applied. Follow `references/adversarial-review.md` (which extends the `dream` loop
-with a skill-channel lens). One round:
+anything is applied. Follow `references/adversarial-review.md` (which layers a skill-channel
+lens on the base protocol in `references/adversarial-base.md`). One round:
 
 1. **Spawn skeptics in parallel** (one message, multiple `Agent` blocks). Memory candidates get
-   `dream`'s three lenses (information-loss / evidence / churn-utility). Skill & migration
+   the three base lenses (information-loss / evidence / churn-utility). Skill & migration
    candidates additionally get a **portability/altitude skeptic**: does this edit inject
    project-specifics into a shared skill? bloat it? rest on a cross-skill claim that isn't true?
    double-capture a fact that already lives in another layer? Brief critics that these facts and
@@ -196,7 +194,8 @@ with a skill-channel lens). One round:
 ### Phase 4 — Apply (two channels)
 
 **Memory channel** (surviving M, G, and memory-side P) — **auto-apply** unless `--dry-run`, via
-the MCP tools mapped in `dream`'s "Executing Surviving Actions" plus:
+the MCP tools mapped in `references/audit-checklist.md` ("Executing Surviving Memory Actions")
+plus:
 - **CREATE (G)** → `mcp__autodev-memory__create_entry(...)` (tags via the `autodev-tags` skill).
 - **Star/unstar (P → Tier 2)** → `mcp__autodev-memory__star_entry` / `unstar_entry`.
 - **Supersede** instead of hard-delete when a chain matters →

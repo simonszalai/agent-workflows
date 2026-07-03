@@ -84,6 +84,10 @@
           "pre_existing": {
             "type": "boolean",
             "description": "True if this issue exists in unchanged code unrelated to the current diff"
+          },
+          "absence": {
+            "type": "boolean",
+            "description": "True if the finding claims something is MISSING (migration, test, elimination step, scope item, deploy surface). Anchor file/line to the closest related artifact and put the exact grep/ls commands that should find the missing thing in evidence. Optional; defaults to false."
           }
         }
       }
@@ -107,6 +111,7 @@
       "confident": "0.70-0.84 — real and important.",
       "certain": "0.85-1.00 — verifiable from code alone."
     },
+    "absence_findings": "Findings about missing artifacts (migrations, tests, elimination steps, scope items, deploy surfaces) set absence: true. The line anchor is the closest related site, evidence lists the search commands that should locate the missing thing, and skeptics verify by running those searches — not by reading around the anchor. Absence findings dedup by semantic same-issue judgment, not the line window.",
     "severity_definitions": {
       "p1": "Must fix — correctness, security, data integrity, data loss risk, missing scope items, dead systems not cleaned up.",
       "p2": "Should fix — YAGNI violations, complexity, type safety, missing validation, N+1 queries, monitoring gaps.",

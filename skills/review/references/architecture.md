@@ -2,6 +2,9 @@
 
 Standards for architectural compliance. Apply these when reviewing code changes for architectural impact.
 
+Output contract: structured findings JSON per `findings-schema.json` (severity p1/p2/p3) —
+no other format.
+
 ## Analysis Approach
 
 1. **Understand System Architecture**: Examine overall system structure through architecture docs, README files, and existing code patterns
@@ -12,14 +15,6 @@ Standards for architectural compliance. Apply these when reviewing code changes 
 ## Compliance Checklist
 
 Verify changes against these principles:
-
-### SOLID Principles
-
-- [ ] **Single Responsibility**: Each class/module has one reason to change
-- [ ] **Open/Closed**: Open for extension, closed for modification
-- [ ] **Liskov Substitution**: Subtypes substitutable for base types
-- [ ] **Interface Segregation**: Clients don't depend on unused interfaces
-- [ ] **Dependency Inversion**: Depend on abstractions, not concretions
 
 ### Architectural Boundaries
 
@@ -41,16 +36,6 @@ Verify changes against these principles:
 - **Parallel systems (P1)** - New system added alongside old system it was meant to replace.
   If both exist and call sites still use the old one, the replacement is incomplete. This is
   always P1 — the old system must be deleted in the same PR that wires up the new one.
-
-## Analysis Output Format
-
-Structure analysis as:
-
-1. **Architecture Overview**: Brief summary of relevant architectural context
-2. **Change Assessment**: How changes fit within the architecture
-3. **Compliance Check**: Specific principles upheld or violated
-4. **Risk Analysis**: Potential architectural risks or technical debt
-5. **Recommendations**: Specific suggestions for improvements or corrections
 
 ## Key Checks
 

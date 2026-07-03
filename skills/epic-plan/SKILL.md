@@ -64,10 +64,13 @@ explicitly asks for a full replan/from-scratch run.
 
 ## Process
 
-1. Resolve project and load `get_epic(project, epic_id)`.
-2. Load all absorbed source tickets with `get_ticket`.
-3. Read all epic artifacts in chronological order.
-4. Determine the planning mode:
+1. Resolve project and load `get_epic(project, epic_id)`. `get_epic` is often large (tens of
+   KB) and gets spilled to a file — read it with `jq` / offsets, don't try to swallow it whole.
+2. Load context in **one parallel batch** — these streams are independent, never serialize them:
+   - load all absorbed source tickets with `get_ticket` and read all epic artifacts in
+     chronological order;
+   - run broad codebase and memory research across involved repos.
+3. Determine the planning mode:
    - **Default / incremental:** use the latest current `plan` artifact, milestone rows, existing
      step tickets, and dependency edges as the baseline. Incorporate the user's latest requested
      changes as amendments. Preserve still-valid prior decisions and step IDs.
@@ -76,8 +79,7 @@ explicitly asks for a full replan/from-scratch run.
      allowed when the user explicitly requested it.
    - **`--plan-only`:** revise the canonical plan and milestones but skip step-ticket/DAG
      reconciliation.
-5. Run broad codebase and memory research across involved repos.
-6. Build the peer-planning packet in `.context/epic-plan/`:
+4. Build the peer-planning packet in `.context/epic-plan/`:
    - source tickets and their artifacts;
    - chronological epic artifacts;
    - latest current plan artifact, if any, clearly labeled as the baseline in incremental mode;
@@ -85,7 +87,7 @@ explicitly asks for a full replan/from-scratch run.
    - current step tickets, milestone assignments, and dependency edges;
    - codebase and memory research;
    - known constraints, open questions, and explicit non-goals.
-7. Run cross-provider planning:
+5. Run cross-provider planning:
    - Determine the current runner with `agent-workflow-provider`. The current runner is the native
      planner; the other two providers are peers.
    - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>` using the
@@ -98,7 +100,7 @@ explicitly asks for a full replan/from-scratch run.
      provider "would" say; actually run the providers and consume their JSON.
    - Stop instead of accepting a one-provider plan if fewer than two providers return usable
      plans.
-8. Run cross-review and convergence:
+6. Run cross-review and convergence:
    - Create `.context/epic-plan/plan-bundle.md` containing the native draft plus every usable peer
      draft, assumptions, evidence, disagreements, proposed milestones, and proposed pass criteria.
    - Run at least one adversarial review pass where each available provider reviews the combined
@@ -110,14 +112,16 @@ explicitly asks for a full replan/from-scratch run.
    - The final plan may choose one provider's proposal, synthesize several, or reject peer advice,
      but every material disagreement must be listed with how it was resolved or why it remains
      blocked.
-9. Consolidate the design:
+7. Consolidate the design:
    - latest confirmed decisions override earlier drafts;
    - in incremental mode, the existing canonical plan remains authoritative for unchanged areas;
    - user-requested modifications are amendments to the current plan, not an excuse to replan
      unrelated areas;
    - duplicates collapse;
    - contradictions become open questions, not guesses.
-10. Draft the epic plan for the **entire epic**:
+8. Draft the epic plan for the **entire epic**. **Code-grounding rule:** before naming
+   files/modules in step plans, READ them; every file/module claim needs a `path:line` citation
+   or an explicit "unverified assumption" label. The plan covers:
    - goal and non-goals;
    - source-ticket synthesis: what each absorbed ticket contributes, supersedes, or makes obsolete;
    - milestone table: `M#`, title, description, pass/acceptance criteria, gate flag, and what
@@ -153,16 +157,24 @@ explicitly asks for a full replan/from-scratch run.
        - a deliberately revised gate that verifies repository behavior in a disposable
          integration DB instead of claiming staging runtime evidence.
      Do not push the runtime surface to a later milestone while the current gate depends on it.
-11. Run adversarial critics for completeness, correctness, YAGNI, sequencing, data safety,
-   deploy/verify gates, milestone independence, and cross-repo contracts.
-12. Revise until no critical unresolved critic findings remain. Stop for user decisions if
-   critics expose unresolved product/architecture choices.
-13. Write the canonical `plan` epic artifact:
+9. Run the bounded adversarial critic loop (≤3 rounds):
+   - spawn **parallel** critics covering completeness, correctness, YAGNI, sequencing, data
+     safety, deploy/verify gates, milestone independence, and cross-repo contracts;
+   - each critic returns findings with the explicit schema
+     `{title, severity: p1|p2|p3, area, issue, suggestion, lens}` (the same shape as
+     plan-fanout's criticOutputSchema);
+   - an empty findings list is acceptable — do NOT invent issues to appear thorough;
+   - after each round, revise the plan against the findings, then re-run the critics;
+   - stop early when a round leaves no unresolved p1 findings; hard cap at 3 rounds.
+10. Unresolved p1 findings **block progression**. Stop for user decisions if critics expose
+   unresolved product/architecture choices; do not continue to artifact writes or step
+   reconciliation with an open p1.
+11. Write the canonical `plan` epic artifact:
     - if no live `plan` artifact exists, create it via `create_epic_artifact`;
     - if a live/current `plan` artifact already exists, update it via `update_artifact` with a
       change note rather than creating a duplicate plan artifact;
     - mark metadata with whether the run was incremental, plan-only, or from-scratch.
-14. Synchronize milestone rows and pass conditions:
+12. Synchronize milestone rows and pass conditions:
     - compare the planned milestone table against `get_epic(...).milestones`;
     - for each missing planned milestone, call `create_epic_milestone(...)` with named arguments:
       `project`, `epic_id`, `title`, `description`, `acceptance_criteria`, `position`,
@@ -178,7 +190,7 @@ explicitly asks for a full replan/from-scratch run.
       prerequisite/decision that keeps it deferred;
     - preserve already-valid human-authored criteria, but tighten vague criteria rather than
       leaving a gate empty.
-15. Reconcile step tickets, per-ticket plans, and the DAG unless `--plan-only` was explicitly
+13. Reconcile step tickets, per-ticket plans, and the DAG unless `--plan-only` was explicitly
     requested:
     - derive the desired **ticket set** from the final plan; do not default to one ticket per
       planned sub-step;
@@ -240,7 +252,7 @@ explicitly asks for a full replan/from-scratch run.
     - do not detach/abandon/delete stale existing steps by default. If a step is obsolete, report
       the proposed removal and only remove it when the plan or user explicitly authorizes that
       cleanup. Never rewrite merged/completed steps; create follow-up steps if new work is needed.
-16. Re-load the epic and verify every planned gate milestone exists, has non-empty acceptance
+14. Re-load the epic and verify every planned gate milestone exists, has non-empty acceptance
     criteria, has the intended `is_gate` value, and can be satisfied independently without later
     milestones. For each gate, re-run the runtime evidence closure check above against the final
     reconciled step set; if any required runtime evidence lacks a producing same-milestone

@@ -6,7 +6,6 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 
 ## Agent Rules (Critical - Never Violate)
 
-- Never commit/push without explicit user approval (except during the resolve-review workflow final step)
 - Never create markdown files unless explicitly instructed
 - Never deploy or run production operations without explicit instruction
 - Always include the repo's active schema-deploy artifact when schema changes require it
@@ -70,7 +69,12 @@ configuration:
 
 1. **Skills** - Portable methodology documents (the HOW)
    - Review checklists, research methods, tool references, testing patterns
-   - NEVER contain project-specific details (no table names, service IDs, routes)
+   - Universal (unprefixed) skills NEVER contain project-specific details (no table names,
+     service IDs, routes) — at most a clearly labeled example (`*Example (ts-prefect):*`)
+   - Exception: skills prefixed with a project identifier (e.g. `ts-`, `workflow-`, `amaru-`)
+     MAY embed that project's specifics even though they live in agent-workflows — this shares
+     one project's skills across its multiple repos. Repo-level skills (in the project repo)
+     may always be project-specific.
    - Loaded by agents as reference material
    - File: `skills/<name>/SKILL.md` with optional `templates/` subdirectory
 
@@ -151,7 +155,7 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                                      | Action                    |
 | ---------------------------------------------- | ------------------------- |
-| "plan", "design", "architect", "how should we" | Use the `plan` skill               |
+| "plan", "design", "architect", "how should we" | Run `/auto-plan`                   |
 | "build", "implement", "start working on"       | Use the `build` skill              |
 | "create build todos", "break this down"        | Use the `create-build-todos` skill |
 
@@ -197,7 +201,8 @@ When the user mentions these activities, proactively use the corresponding skill
 | "compound", "document this", "save this learning"                  | Run `/compound`               |
 | "what did we learn", "learn from review", "learn from this"        | Run `/compound`               |
 | "wtf", "why didn't you know this", "you should have known"         | Run `/autodev-wtf`            |
-| "retrospect", "what went wrong", "post-mortem"                     | Run `/autodev-wtf-workflows`  |
+| "retrospect", "what went wrong", "post-mortem"                     | Run `/retrospect`             |
+| "which workflow stage missed this bug"                             | Run `/autodev-wtf-workflows`  |
 | "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/compound` |
 | "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/compound` |
 
@@ -210,8 +215,7 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 | User says                                                       | Action                 |
 | --------------------------------------------------------------- | ---------------------- |
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
-| "consolidate memories", "audit memories", "clean up memories", "dream" | Run `/dream`     |
-| "deep dream", "consolidate everything", "whole-system dream", "improve skills from logs/tickets" | Run `/deep-dream` |
+| "consolidate memories", "audit memories", "clean up memories", "dream", "deep dream", "whole-system dream", "improve skills from logs/tickets" | Run `/deep-dream` |
 
 ### Ticket Management
 
@@ -224,7 +228,7 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 ### Agent Workflow Modification
 
 No dedicated authoring skill exists. When the user wants to add/modify a skill, agent, or
-command, work directly on the files under `skills/`, `agents/`, or `commands/` in
+workflow, work directly on the files under `skills/`, `agents/`, or `workflows/` in
 agent-workflows. Follow the conventions in this file and the patterns in neighboring skills.
 
 ## Parallelism
@@ -286,6 +290,8 @@ Ticket IDs are **repo-scoped** — each repo maintains its own sequence per type
 | `retrospective` | Post-mortem analysis | content |
 | `deployment_guide` | Deployment instructions | content |
 | `learning_report` | Knowledge/workflow improvements | content |
+| `verification_evidence` | Post-deploy evidence collected by `/ticket-verify` | content |
+| `html` | Rendered plan/epic explainer page (`/plan-explainer`) | content |
 
 ### Status Vocabulary (two enums)
 
@@ -311,9 +317,11 @@ work again by setting `in_progress`. Ticket statuses `planning`, `building`, and
 are retired; use the single actual active-work status `in_progress`.
 `/ticket-flow` may deploy standalone tickets only through `/auto-deploy` after it chooses the
 staging-first or direct-production route. Post-deploy behavior verification remains owned by
-`/ticket-verify`; promotion is owned by `/ticket-promote`; epic milestone staging gates are owned
-by `/milestone-flow`, which must deploy and run the explicit epic/milestone verifier before it can
-return success.
+`/ticket-verify`; promotion (landing on main **plus** running the production deploy steps) is
+owned by `/ticket-promote`, which then invokes `/ticket-verify production`; epic milestone
+staging gates are owned by `/milestone-flow`, which must deploy and run the explicit
+epic/milestone verifier before it can return success. `to_verify_prod` means "production landing
+and deploy steps complete; behavior unverified".
 
 ### Cross-Repository Tickets
 
@@ -338,15 +346,17 @@ create_ticket(
 5. **Build** — `update_artifact(status="in_progress")` then `update_artifact(status="complete")`
 6. **Review** — `create_artifact(artifact_type="review_todo", sequence=N, ...)`
 7. **Resolve** — `update_artifact(status="resolved")` for each review finding
-8. **Verify** — `update_ticket(status="to_verify_prod")`
-9. **Close** — `update_ticket(status="completed")`
+8. **Deploy/promote** — `/auto-deploy` or `/ticket-promote` sets `to_verify_staging`/`to_verify_prod`
+9. **Verify** — `/ticket-verify` collects evidence and sets `completed` (or `verify_*_failed`)
 
 ### Autonomous Workflows
 
 - `/ticket-flow`: Autonomous single-ticket execution — context -> route staging vs production -> plan/critique -> build -> review -> local verify -> deploy via `/auto-deploy`; no behavior verification
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
-- `/ticket-verify`: Timer-friendly staging/production verification; standalone staging PASS calls `/ticket-promote`; explicit epic/milestone mode reports parent gates
-- `/ticket-promote`: Promote staging-verified tickets to main; no production verification
+- `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
+- `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production
+  deploy steps, then invokes `/ticket-verify production`. Modes: single ticket (default,
+  auto-invoked by a gate-passing staging PASS), `--all` batch, `--epic <ID>`, `--all-staging`
 - `/epic-plan`, `/epic-split`, `/milestone-flow`, `/epic-flow`: Epic/milestone orchestration over ticket-flow; `/milestone-flow` deploys/verifies each staging milestone gate, and `/epic-flow` sequences milestones plus final prod after all gates pass
 - `/auto-flow` and `/auto-verify`: Legacy aliases for `/ticket-flow` and `/ticket-verify`
 

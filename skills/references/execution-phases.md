@@ -7,9 +7,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
 1. **Resolve scope** — ticket/issue/conversation input, project, repo, branch, target.
 2. **Gather context** — feature research or bug investigation; similar tickets; relevant memory.
-3. **Plan** — create/update a concise plan artifact.
-4. **Critic loop** — adversarially review the plan; run heavy mode for complex/cross-cutting work
-   and stop if open questions require user decisions.
+3. **Plan** — run `/auto-plan` (the single planning skill; complexity-based light/heavy
+   gate) to create/update the plan artifact.
+4. **Critic loop (heavy path only)** — adversarially review the plan for complex/cross-cutting
+   work and stop if open questions require user decisions. The light path skips the critic
+   panel and relies on single-round cross-provider convergence.
 5. **Build todos** — create detailed implementation steps with discovered patterns/gotchas.
 6. **Build** — invoke the `build` skill: one builder per todo in dependency order, checkpoint
    each to MCP on success, bounded self-repair (≤2 retries) on a failed todo, and finish only
@@ -22,9 +24,18 @@ its existing ticketless `.context` behavior and is not changed by this reference
    reason about what the providers "would" say — actually enter the skill. The `review` skill is
    the single orchestrator that owns the whole fan-out **and** the distillation: in one round the
    main runner performs native/self-review and runs the other two providers through
-   `external-agent`, then distills all three providers into one synthesized set (dedup by
-   `(file, normalized title, |line diff| ≤ 3)`, cross-provider confidence boost, gate,
-   partition). The main runner then resolves the actionable findings.
+   `external-agent`, then distills all three providers into one synthesized set (exact dedup
+   by `(file, normalized title, |line diff| ≤ 3)` plus a semantic same-issue merge for
+   differently-worded duplicates, cross-provider confidence boost, gate, partition). The
+   main runner then resolves the actionable findings.
+
+   **Autonomous gated_auto rule.** In an autonomous run there is no user to answer
+   `resolve-review`'s "Apply?" question for `gated_auto` findings. The runner may
+   self-approve a `gated_auto` fix ONLY when the finding is corroborated — skeptic-upheld
+   (`requires_verification: false` after verify) or multi-reviewer consensus; otherwise
+   defer it to the follow-up report instead of applying or stalling. `manual` findings are
+   never self-approved: defer them to the follow-up report. (Interactive runs keep
+   `resolve-review`'s ask-first behavior.)
 
    **Cross-coverage gate — the review round is NOT complete until all three providers contributed.**
    After each round, confirm the two `.context/review/<provider>.json` files for the peer
@@ -35,7 +46,8 @@ its existing ticketless `.context` behavior and is not changed by this reference
    before treating the round as done. A round where only one provider ran is a **failed** review
    round, not a passing one.
 
-   Repeat up to 3 rounds, or stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
+   The canonical loop definition lives in the `review` skill. Rounds: heavy path ≤3, light
+   path exactly 1. Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
    findings remain. Stop on unresolved design decisions and surface any remaining
    `gated_auto`/`manual` findings for a human.
 9. **Local verification** — run targeted checks and project health commands.
@@ -49,7 +61,8 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
 The loop is bounded and evidence-driven:
 
-- use the existing light/heavy plan gate for single tickets;
+- use `/auto-plan`'s complexity-based light/heavy gate for single tickets (critics are a
+  heavy-path step);
 - always use deep mode for epics;
 - have critics check completeness, correctness, YAGNI/scope, contracts, data safety, and
   verification strategy;

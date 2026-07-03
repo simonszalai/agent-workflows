@@ -34,8 +34,15 @@ First argument must be `staging`, `prod`, or `production`.
   or epic artifact. After the artifact is created or updated, delete any local scratch files this
   verification run created under `.context` (logs, JSON dumps, markdown drafts, screenshots, temp
   artifact JSON files, etc.) unless the user explicitly asked to keep them.
-- On standalone staging PASS, this skill normally invokes `/ticket-promote` for that ticket.
-  Promotion is a separate landing step, not part of evidence collection.
+- On standalone staging PASS, this skill invokes `/ticket-promote` for that ticket **only
+  when the auto-promotion gate (§9b) passes** — low-risk scopes with a fully graded
+  FINALIZED contract. Higher-risk scopes rest at `staging_verified` for an explicit human
+  `/ticket-promote`. Promotion (landing on main + production deploy steps) is a separate
+  step, not part of evidence collection.
+- The verifier agents this skill spawns are strictly read-only. The two narrow mutations this
+  skill allows — the bounded on-demand canary/shadow trigger and the deferred post-PASS
+  cleanup command (§10) — are executed by the ORCHESTRATOR (the ticket-verify runner itself),
+  never by a spawned verifier agent.
 - In explicit `--epic`/`--milestone` mode, do **not** auto-promote. The parent `/epic-flow`
   controls milestone progression and production promotion.
 - On production PASS, set standalone ticket status to `completed`. In epic mode, update the
@@ -72,6 +79,21 @@ Do **not** skip tickets merely because they have `blocked_at`, `blocked_by`, `bl
 `blocked_context` metadata. Blocked candidates stay in scope and go through the blocker re-check
 in §3.
 
+### 1a. Parallel verifier dispatch
+
+Verification of independent scopes is parallel, not sequential:
+
+- **Queue mode (multiple tickets):** spawn one `verifier` agent per selected ticket as a
+  single foreground parallel batch (multiple Agent calls in one message; never
+  `run_in_background`). Each agent gets its ticket's context, evidence contract, and
+  activation boundary, and returns its evidence rows and per-row results.
+- **Large epic/milestone gates:** split the gate's evidence rows by surface — database
+  queries, service logs, flow/deployment health, browser/UI — and spawn one verifier per
+  surface in parallel. The orchestrator merges the rows into the single gate verdict (§7–§8).
+- The orchestrator consolidates all agent output, computes verdicts, writes artifacts, and
+  performs status changes. Verifier agents never write artifacts or change statuses, and never
+  execute the canary/cleanup mutations (see Boundaries).
+
 ### 2. Load context
 
 For each standalone ticket, or for the epic/milestone gate as a unit:
@@ -83,7 +105,8 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   expected good output, and a bad-output interpretation, listed per environment (staging / prod).
   Also read its **Activation boundary**. If the artifact is missing or its evidence rows are still
   `TBD`/empty, fall back to deriving evidence from source + plan acceptance criteria, and flag in
-  the report that the work shipped without a finalized evidence contract;
+  the report that the work shipped without a finalized evidence contract — the best staging
+  verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote;
 - find PR/commit/landing branch from events, tags, PR title, or git history;
 - read `.claude/environments/{env}.md` when present.
 
@@ -231,7 +254,14 @@ The collected evidence is a first-class artifact, separate from the `deployment_
   - `edge_case_count`: total explicit edge cases checked;
   - `screenshot_count`: total screenshots captured;
   - `scope`: ticket id or epic/milestone gate id;
-  - `generated_by`: `/ticket-verify`.
+  - `generated_by`: `/ticket-verify`;
+  - **staging runs only** — co-tenancy attribution (staging is shared, and this ticket's
+    evidence was collected with other tickets' code present):
+    - `staging_head_sha`: `git rev-parse origin/staging` at collection time;
+    - `co_staged_tickets`: ticket IDs found in `git log origin/main..origin/staging`
+      subjects (excluding this scope). `/ticket-promote` compares this against the set it
+      actually promotes; a later prod regression can then distinguish "PASS was never
+      attributable to this ticket alone" from a genuine environment difference.
 
 Content must be the durable proof package: activation boundary, every evidence row with command or
 query, expected good output, actual observed output, bad-output interpretation, screenshot paths,
@@ -298,6 +328,12 @@ The deployment_guide evidence contract is the gate — verdict is determined by 
 items:
 
 - `PASS` — **every** evidence item for this environment passed, and no related failures surfaced;
+- `PASS (contract-missing)` — every derived evidence item passed, but the deployment_guide
+  evidence contract was missing/`TBD` and the items were derived from source/plan acceptance
+  criteria. This is the **best possible verdict** for such a scope. On staging it sets
+  `staging_verified` but does **not** auto-invoke `/ticket-promote`: promotion requires an
+  explicit human go-ahead, or a regenerated FINALIZED deployment guide followed by a re-run
+  that grades the real contract;
 - `FAIL` — any evidence item shows broken behavior or expected-but-missing activity;
 - `NEEDS_MORE_TIME` — the feature **is deployed and running** (its producing deployment is
   registered in the target env and, for scheduled/continuous flows, executing), but one or more
@@ -316,6 +352,15 @@ items:
 Never report `NEEDS_MORE_TIME` for a feature whose producing deployment is absent or has never
 run — that misrepresents "nobody deployed/triggered it" as "wait for data." If §5a could not
 confirm the producing object is live, the verdict is `BLOCKED`, not `NEEDS_MORE_TIME`.
+
+**NEEDS_MORE_TIME cap.** `NEEDS_MORE_TIME` is not an indefinitely repeatable verdict. Record in
+the scope's `verification_evidence` artifact metadata a `needs_more_time_count` and a
+`needs_more_time_first_seen` timestamp, incrementing the counter on every `NEEDS_MORE_TIME`
+run. After **3 NEEDS_MORE_TIME runs or 24 hours** since first seen (whichever comes first),
+escalate: the verdict becomes `FAIL` — or `BLOCKED` when the producing deployment/object is
+absent or has never run — and the report must name the exact evidence row(s) that never
+produced post-activation data. Waiting that long without data means the evidence is not
+coming on its own.
 
 **Moving-target guard (scheduled-event waits).** When `NEEDS_MORE_TIME` waits on a scheduled event
 (e.g. "the next due poll"), the re-run MUST verify the awaited condition actually *arrives*, not
@@ -336,7 +381,8 @@ Standalone ticket mode:
 
 | Environment | Verdict | Action |
 |---|---|---|
-| staging | PASS | write optional staging `verification_evidence`; set status `staging_verified` (green "Ready for prod" flag), then call `/ticket-promote <ID>` unless `--no-promote` or the ticket is held for a batched promotion |
+| staging | PASS | write optional staging `verification_evidence`; set status `staging_verified` (green "Ready for prod" flag), then apply the **auto-promotion gate (§9b)**: call `/ticket-promote <ID>` only if the gate passes and neither `--no-promote` nor a batch/epic hold applies; otherwise rest at `staging_verified` and report exactly which gate condition held promotion |
+| staging | PASS (contract-missing) | write staging `verification_evidence` flagging the missing contract; set status `staging_verified`; do **not** call `/ticket-promote` — require a human go-ahead or a regenerated FINALIZED deployment guide first |
 | staging | FAIL | write staging `verification_evidence`; status `verify_staging_failed` |
 | staging | NEEDS_MORE_TIME | leave status unchanged |
 | staging | BLOCKED | write/update staging `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
@@ -364,7 +410,9 @@ Epic/milestone mode:
 | production | BLOCKED | write/update mandatory production gate `verification_evidence` plus per-step ticket artifacts for every included step, with blocker ground-truth evidence on affected steps; update the epic summary; leave statuses unchanged; update/preserve blocker metadata |
 
 When staging PASS then calls `/ticket-promote` in standalone mode, the status advances from
-`staging_verified` to `to_verify_prod` once the promotion lands on `main`.
+`staging_verified` to `to_verify_prod` once the promotion lands on `main` **and** the
+production deploy steps complete (`/ticket-promote` runs both, then invokes
+`/ticket-verify production <ID>`).
 
 ### 9a. Persist report before status changes and clean scratch
 
@@ -386,11 +434,67 @@ After the autodev artifact write succeeds:
 Do not delete pre-existing user/project `.context` files that this verification run did not
 create.
 
+### 9b. Auto-promotion gate (standalone staging PASS only)
+
+A staging PASS is an LLM-graded verdict, and auto-invoking `/ticket-promote` chains it
+straight into a production mutation (land on main + prod deploy steps) with no human in
+between. That chain is earned only by low-risk, fully-graded scopes. Auto-invoke
+`/ticket-promote <ID>` only when ALL of these hold:
+
+1. **Contract graded, not derived** — the deployment_guide evidence contract was
+   `FINALIZED` and every row for staging was executed (a `PASS (contract-missing)` never
+   auto-promotes; that rule already exists in §8).
+2. **Fresh evidence** — every evidence row passed on post-activation data; no row passed
+   only on pre-existing/ambiguous-provenance data (§5a provenance).
+3. **Low-risk diff** — the ticket's landed diff contains **no schema/migration, deploy-config,
+   or auth/security/payment category**. Detect with the same path checks `/ticket-promote`'s
+   schema gate and `landing-policy.md` use (`migrations/`, `alembic/`, `prisma/`, Atlas
+   model/plan paths, deployment YAML/env config, auth paths). These are exactly the classes
+   landing-policy routes staging-first *because* they are risky — the same risk reasoning
+   applies to leaving staging.
+
+If any condition fails: leave the ticket at `staging_verified` (the dashboard already shows
+it as "Ready for prod"), and report which condition held promotion plus the exact next
+command (`/ticket-promote <ID>`). This costs nothing on the common low-risk case and puts
+the one human gate exactly where a false PASS would be amplified into production.
+
+### 9c. Capture failure knowledge (FAIL verdicts, staging or production)
+
+A FAIL verdict is the most informative event this system produces — a confident
+plan/build/review met reality and lost. Do not let it rest only in the ticket: after
+writing the `verification_evidence` artifact and setting the failed status, persist the
+lesson to memory (same duplicate-check-then-store pattern as `/review` step 7):
+
+```
+# 1. Check for duplicates
+mcp__autodev-memory__search(queries=[{"keywords": ["<feature area>"], "text": "<failure summary>"}], project=PROJECT)
+
+# 2. If no duplicate, store
+mcp__autodev-memory__create_entry(
+  project=PROJECT,
+  title="Verify failure: <1-sentence what broke>",
+  content="Ticket <ID> (<env>). Evidence row that failed: <command + expected vs observed>.
+           Cause (if known): <root cause or 'unknown — see verification_evidence <artifact id>'>.
+           What planning/build should have done differently: <lesson>.",
+  entry_type="gotcha",
+  summary="<1-sentence summary>",
+  tags=["verification", "<area>"],
+  source="captured",
+  caller_context={"skill": "ticket-verify", "reason": "verification FAIL — feed future planning priors",
+                  "action_rationale": "New entry — no existing entry covers this failure",
+                  "trigger": "verify FAIL <env>"}
+)
+```
+
+This closes the loop that `/auto-plan`'s "Related past failures" prior search reads from.
+If the MCP tool is unavailable, skip silently.
+
 ### 10. Deferred post-verification cleanup (production PASS only)
 
 Some tickets carry a cleanup action that must run only once the fix is confirmed live in
 production — never before. This is the single mutation ticket-verify may perform, and only after
-a `PASS` verdict has been recorded for that ticket.
+a `PASS` verdict has been recorded for that ticket. Like the bounded canary trigger, it is
+executed by the orchestrator itself — never delegated to a (read-only) verifier agent.
 
 If a production-PASS ticket has a `flow-run-cleanup` artifact:
 

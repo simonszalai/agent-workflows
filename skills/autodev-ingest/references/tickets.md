@@ -79,7 +79,7 @@ For each duplicate group:
 2. Compare: which is more meaningful? Consider:
    - Does it have a plan.md or build_todos? (more complete = keep)
    - Is the content longer and more detailed?
-   - Is the status further along (completed > building > backlog)?
+   - Is the status further along (completed > in_progress > backlog)?
 3. **Keep the more meaningful one, skip the other**
 4. Log which was skipped and why
 
@@ -106,12 +106,12 @@ Read `source.md` (or first `.md` file if source.md missing).
 
 | Folder | Ticket `status` |
 |---|---|
-| `active/` | `building` |
+| `active/` | `in_progress` |
 | `backlog/` | `backlog` |
 | `to_verify/` | `to_verify_prod` |
 | `closed/` | `completed` |
 | `completed/` | `completed` |
-| `flow_failures/ongoing/` | `building` |
+| `flow_failures/ongoing/` | `in_progress` |
 | `flow_failures/resolved/` | `completed` |
 
 (These are legacy on-disk `work_items/` folders mapped onto the current `ticket_status`

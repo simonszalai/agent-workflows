@@ -9,15 +9,15 @@ max_turns: 100
 Autonomous deployment that picks up a unit ready to deploy, deploys its PR to the target
 environment, and advances its status. **Both standalone tickets and epics can use the staging
 segment** (per-ticket staging statuses were added in migration 025): a unit at
-`ready_to_deploy_staging` deploys to staging and advances to `to_verify_staging`; a unit at
-`ready_to_deploy_production` deploys to prod and advances to `to_verify_prod`. A standalone
-ticket may be landed straight to prod or routed through staging first, depending on its target.
-Epic **members** are still carried by the epic — they reach `merged` and are not deployed
-individually by a scheduled pickup. The milestone gate is owned by `/milestone-flow`: after each
-milestone's member steps are merged, it invokes this skill for the parent epic's staging deploy,
-then invokes the explicit epic/milestone verifier. After all milestone staging gates pass,
-`/epic-flow` uses
-`/promote-to-production --epic` for the ordered production promotion/deploy path.
+`ready_to_deploy_staging` deploys to staging and advances to `to_verify_staging`. Production
+deploys are not picked up from a status: they are invoked explicitly by `/ticket-flow` (the
+direct-production route, target argument `production`) or handled by `/ticket-promote`
+(post-staging landing + deploy). Epic **members** are still carried by the epic — they reach
+`merged` and are not deployed individually by a scheduled pickup. The milestone gate is owned
+by `/milestone-flow`: after each milestone's member steps are merged, it invokes this skill
+for the parent epic's staging deploy, then invokes the explicit epic/milestone verifier. After
+all milestone staging gates pass, `/epic-flow` uses `/ticket-promote --epic` for the ordered
+production promotion/deploy path.
 
 Auto-deploy is also the canonical place to record deployment blockers. "Blocked" is not a
 ticket lifecycle status: a ticket can be blocked in any column. If an automatable deployment
@@ -32,28 +32,26 @@ verification status and set the independent blocker metadata (`blocked_at`, `blo
 /auto-deploy F007 staging           # Deploy to staging (overrides ticket status detection)
 /auto-deploy F007 production        # Deploy to production (overrides ticket status detection)
 /auto-deploy B003                   # Deploy bug fix B003
-/auto-deploy                        # (scheduled) Pick up next ready_to_deploy_staging/production unit
+/auto-deploy                        # (scheduled) Pick up next ready_to_deploy_staging unit
 ```
 
 ## When to Use
 
 - From `/ticket-flow`, after the ticket has been planned, built, reviewed, and locally verified;
-  ticket-flow chooses `staging` vs `production` up front and invokes this skill for the deploy.
-- After `/auto-build` completes for a standalone ticket, with an explicit `staging` or
-  `production` target supplied by the caller's risk route
+  ticket-flow chooses `staging` vs `production` up front and invokes this skill for the deploy
+  (production deploys always arrive via this explicit target argument, never a status pickup)
 - For an epic staging gate: after milestone members are `merged`, when called by
   `/milestone-flow` (deploys the parent epic to staging)
-- For epic production promotion/deploy: prefer `/promote-to-production --epic`, which owns the
-  ordered verified-step promotion path
-- Scheduled agent picks up standalone or epic units at `ready_to_deploy_staging` /
-  `ready_to_deploy_production` automatically
+- For epic or post-staging production promotion/deploy: use `/ticket-promote`, which owns the
+  ordered verified-work landing + production deploy path
+- Scheduled agent picks up standalone or epic units at `ready_to_deploy_staging` automatically
 - Manual trigger when you want to deploy a specific ticket or epic
 
 ## Prerequisites
 
-- A standalone ticket or epic at `ready_to_deploy_staging` / `ready_to_deploy_production`
-  (unless target is overridden via argument)
-- Feature branch must exist on remote (created + pushed by `/auto-build`)
+- A standalone ticket or epic at `ready_to_deploy_staging`, or an explicit target argument
+  supplied by the caller
+- Feature branch must exist on remote (created + pushed by the `/ticket-flow` build phase)
 - A PR is NOT required upfront — this skill creates the PR as its first action if one
   does not already exist for the branch
 - CI checks must be passing on the PR after it exists
@@ -68,7 +66,11 @@ The target environment is determined by **argument override first**, then ticket
 | Status                       | Applies to  | Deploy Target | Next Status          |
 | ---------------------------- | ----------- | ------------- | -------------------- |
 | `ready_to_deploy_staging`    | Ticket/Epic | Staging       | `to_verify_staging`  |
-| `ready_to_deploy_production` | Ticket/Epic | Production    | `to_verify_prod`     |
+
+There is no production pickup status: a production deploy requires the explicit `production`
+target argument (from `/ticket-flow`'s direct-production route). Post-staging production work
+goes through `/ticket-promote` instead. A production deploy advances the unit to
+`to_verify_prod`.
 
 For a standalone ticket the next status is written on the ticket (`update_ticket`); for an epic
 it is written on the epic (`update_epic`, an `epic_status`). When the target is overridden via
@@ -90,9 +92,9 @@ unit must exist but can be in any active status (not `completed` or `abandoned`)
 10. Set Status + Blockers -> Update next status and independent blocker metadata
 ```
 
-**PR creation moved here from auto-build.** Auto-build now pushes a feature branch
-without opening a PR. Auto-deploy creates the PR as its first action (Phase 2) so the
-PR reflects the final state after any auto-polish iterations on the branch.
+**PR creation happens here, not in the build phase.** The `/ticket-flow` build phase pushes a
+feature branch without opening a PR. Auto-deploy creates the PR as its first action (Phase 2)
+so the PR reflects the final state of the branch at deploy time.
 
 ## Detailed Process
 
@@ -106,30 +108,33 @@ ticket = mcp__autodev-memory__get_ticket(
 
 - If not found: STOP - "Ticket not found"
 - Parse arguments: if second arg is `staging` or `production`, use as target override
-- If no override: check ticket status is `ready_to_deploy_staging` or `ready_to_deploy_production`
+- If no override: check ticket status is `ready_to_deploy_staging`
 - If override provided: accept any non-terminal ticket status
 - Determine target environment and corresponding deploy config
 
 ### Phase 2: Find or Create PR
 
+Find the PR by ticket ID (branch naming is not assumed):
+
 ```bash
-gh pr list --search "auto-build/{ticket-id} OR lfg/{ticket-id}" \
+gh pr list --search "{ticket-id} in:title,body" \
   --state all --json number,url,headRefName,state
 ```
 
 - **PR found, open:** continue to Phase 3
 - **PR found, already merged:** skip the merge phase (Phase 7), continue to deploy steps
-- **No PR found:** verify the feature branch exists on remote; then run
+- **No PR found:** fall back to the current branch — if the current branch is a pushed
+  feature branch for this ticket (not `main`/`staging`), use it as the PR head; then run
   `/create-pr {ticket-id}` internally to:
-  1. Collect all ticket artifacts (plan, build_todos, review_todos, polish_report,
-     deployment_guide) via `get_ticket`
+  1. Collect all ticket artifacts (plan, build_todos, review_todos, deployment_guide)
+     via `get_ticket`
   2. Generate the PR summary from those artifacts + test results
   3. Create the PR against the target branch with the generated body
 
   Output the PR URL.
 
-If the branch is not found on remote either: STOP - "No feature branch or PR for this
-ticket. Run /auto-build first."
+If no PR matches the ticket ID and the current branch is not a usable feature branch for this
+ticket: STOP and report - "No PR or feature branch found for this ticket."
 
 ### Phase 3: Load Project-Specific Deploy Command
 
@@ -154,11 +159,12 @@ the generic process; the project-specific command overrides where it differs.
 ### Phase 4: Check CI
 
 ```bash
-gh pr checks {pr_number}
+timeout 600 gh pr checks {pr_number} --watch
 ```
 
+- Use `gh pr checks --watch` with a 10-minute cap (as above) whenever checks are pending
 - If checks failing: STOP - "CI checks failing, cannot deploy"
-- If checks pending: Wait up to 10 minutes, then STOP if still pending
+- If still pending after 10 minutes: STOP - report pending checks
 - If PR already merged: skip CI check (already passed)
 
 ### Phase 5: Rebase onto Target Branch (CRITICAL)
@@ -301,6 +307,27 @@ the target environment determined in Phase 1.
   run from the CLI (e.g., clicking "Deploy" in a web dashboard). Steps
   that have CLI commands are not manual — run them.
 
+**Deployment-guide reconciliation (MANDATORY, after the detected categories run).** The
+project `/deploy` command is the per-repo source of truth for *how* standard categories
+deploy — but the ticket's **`deployment_guide` artifact** (finalized by
+`/create-build-todos`) is where *ticket-specific one-off steps* live: a new secret/
+credential block, a new env var, a pre-enable backfill, a cross-repo ordering constraint.
+Those exist in no generic category and are silently skipped unless reconciled here. After
+executing the detected categories:
+
+1. Read the guide's **Steps** section for the target environment (the artifact is already
+   loaded from Phase 6's evidence-contract check).
+2. For each guide step, classify and report it: `covered` (the project deploy command
+   already ran it), `executed-now` (you ran it in this reconciliation), or `blocked`
+   (genuinely manual — record blocker metadata per Phase 6).
+3. A guide step that cannot be mapped to anything run, executed, or blocked is a **STOP
+   condition**, not a skip — report it as a guide/deploy mismatch. Do not advance the
+   ticket to a verification status with an unexecuted, unaccounted-for deploy step,
+   because `/ticket-verify` will then fail (or worse, falsely pass) on an environment the
+   guide says is incomplete.
+
+Include the per-step reconciliation table in the Phase 9 verification checklist output.
+
 ### Phase 9: Verify Deployment
 
 After all deployment steps complete, verify each one succeeded:
@@ -313,6 +340,11 @@ After all deployment steps complete, verify each one succeeded:
 | Migrations        | CI workflow completed successfully       |
 | Service health    | No new errors in logs since merge       |
 | Activation/content gates | If the deploy activates a DB-stored artifact (prompt version, feature flag, config row), **read the live row back and assert it equals the intended pinned value** — never assume the step set it, and never trust "latest". A project gate command (if any) must report the actual value, not the planned one |
+
+**Bounded log reads (always):** never pull full unbounded logs into context. Constrain every
+log read to the time window since the deploy AND a generous tail cap (e.g. the last 2000
+lines). If the windowed log is still larger than that, spawn a haiku subagent to extract only
+the relevant excerpts (errors, feature-specific lines) and work from the excerpts.
 
 **Project-specific verification** (from `/deploy` command):
 
@@ -423,7 +455,10 @@ mcp__autodev-memory__update_epic(
 | Merge          | Merge failure        | STOP, report (don't change status)  |
 | Deploy Steps   | Step failure         | STOP at failed step, report         |
 | Deploy Steps   | Manual step needed   | Flag to user, wait for confirmation |
-| Verify         | Verification failure | Set verify_staging_failed (epic) / verify_prod_failed (ticket or epic), report |
+| Verify         | Verification failure | STOP, revert status to what it was before auto-deploy started, report |
+
+Auto-deploy never sets `verify_staging_failed` / `verify_prod_failed` — those verdicts belong
+to `/ticket-verify` after behavior/evidence verification.
 
 ## Output
 
@@ -462,10 +497,10 @@ Status reverted to: {original_status}
 
 | Command        | When to Use                                          |
 | -------------- | ---------------------------------------------------- |
-| `/ticket-flow` | Orchestrates the full standalone ticket path and invokes `/auto-deploy` for staging-first or direct-production deployment |
-| `/auto-build`  | Previous step — pushes branch (no PR); sets merged (member) / route-matching ready_to_deploy_* (standalone) |
+| `/ticket-flow` | Orchestrates the full standalone ticket path (its build phase pushes the branch, no PR) and invokes `/auto-deploy` for staging-first or direct-production deployment |
 | `/auto-deploy` | This command — creates PR, rebases, merges, deploys, verifies deployment mechanics |
 | `/ticket-verify` | Next step — verifies feature behavior/evidence in staging or production |
+| `/ticket-promote` | Post-staging path — lands staging-verified work on main and runs prod deploy steps |
 | `/milestone-flow` | Parent orchestrator for milestone-by-milestone epic staging deploy/verify gates |
 | `/epic-flow` | Sequences milestone-flow runs and owns final production promotion/verification |
 | `/deploy`      | Project-specific deployment (consumed by auto-deploy)|
