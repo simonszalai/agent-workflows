@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""external-build — run the Codex CLI (GPT 5.5) as a WRITE-ENABLED builder for one unit of
+implementation work, and return the structured JSON the build/resolve orchestrators expect.
+
+This is the builder counterpart of `external-agent`. It is deliberately a SEPARATE binary:
+`external-agent` runs peers read-only with schema-constrained advisory output, and that
+contract is load-bearing for review safety. external-build is the one sanctioned write path
+to a peer provider.
+
+Used by the Fable-variant skills (`build-fable`, `resolve-review-fable`, and the `-fable`
+orchestrators). The dispatching orchestrator — not this builder — owns all MCP artifact
+status updates, the health gate, and every commit. The Codex side gets no MCP access and is
+forbidden from committing.
+
+Tasks (--task):
+
+  build    Implement ONE build_todo. Prints a single JSON object matching the build-mode
+           contract in agents/builder.md:
+               { "todo_id", "status": "complete|failed|needs_replan",
+                 "files_changed":[...], "verification_output",
+                 "visual_evidence":[...], "deviations":[...], "error" }
+
+  resolve  Apply a batch of review findings. Prints a JSON array, one entry per finding,
+           matching the resolve-mode contract in agents/builder.md:
+               [ { "finding_id", "status": "resolved|skipped|deferred",
+                   "files_changed":[...], "verification_output", "regression_test" } ]
+
+Model and reasoning effort are pinned here (gpt-5.5 / xhigh) so the variant does not drift
+with the user's ~/.codex/config.toml. Override only via explicit flags.
+
+Usage:
+    external-build --task build   --todo-file F   [--context-file F] [common]
+    external-build --task resolve --findings-file F [--context-file F] [common]
+  common: [--repo DIR] [--model gpt-5.5] [--reasoning xhigh] [--timeout SECS]
+          [--out FILE] [--sandbox workspace-write|danger-full-access]
+
+--context-file carries orchestrator-supplied context: plan summary, project health commands,
+relevant memory-service gotchas (the Codex side cannot search memory itself), and — on a
+self-repair retry — the previous attempt's error and verification output.
+
+Exit codes: 0 ok; 2 codex produced no valid output (a valid `failed` result is still
+printed so the caller's retry loop stays uniform); 1 usage/setup error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_REASONING = "xhigh"
+DEFAULT_TIMEOUT = 3600  # xhigh reasoning on a real todo can take tens of minutes
+
+BUILD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "todo_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["complete", "failed", "needs_replan"]},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "verification_output": {"type": "string"},
+        "visual_evidence": {"type": "array", "items": {"type": "string"}},
+        "deviations": {"type": "array", "items": {"type": "string"}},
+        "error": {"type": ["string", "null"]},
+    },
+    "required": ["todo_id", "status", "files_changed", "verification_output",
+                 "visual_evidence", "deviations", "error"],
+    "additionalProperties": False,
+}
+
+RESOLVE_ENTRY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "finding_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["resolved", "skipped", "deferred"]},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "verification_output": {"type": "string"},
+        "regression_test": {"type": ["string", "null"]},
+    },
+    "required": ["finding_id", "status", "files_changed", "verification_output",
+                 "regression_test"],
+    "additionalProperties": False,
+}
+
+# Codex --output-schema wants an object root; the adapter unwraps `results` for the caller.
+RESOLVE_SCHEMA = {
+    "type": "object",
+    "properties": {"results": {"type": "array", "items": RESOLVE_ENTRY_SCHEMA}},
+    "required": ["results"],
+    "additionalProperties": False,
+}
+
+# The Codex builder methodology. Deliberately prescriptive — GPT 5.5 responds well to
+# explicit procedural instructions; do NOT restyle this the way -fable skill files are
+# styled (see skills/references/fable-prompting.md rule 5).
+COMMON_RULES = """\
+You are a code builder working inside this repository's working tree.
+
+HARD RULES (never violate):
+- NEVER run `git commit`, `git push`, `git checkout -b`, `git switch -c`, or open a PR.
+  You change the working tree only; the orchestrator owns all git history operations.
+- NEVER call MCP tools or any ticket/memory system. The orchestrator owns artifact statuses.
+- Do not add features, refactor, or introduce abstractions beyond what the task requires.
+  Do the simplest thing that works well. No backwards-compatibility shims; delete replaced
+  code completely.
+- No `Any` types (TypeScript or Python). No `type: ignore`. Imports only at top of file.
+- Match the existing code style of each file you touch. Follow the discovered patterns
+  given in the task EXACTLY — they were researched from this codebase.
+- Before removing any export/class/function, search ALL usages across the codebase first.
+
+QUALITY LOOP (each change):
+1. Read the target files and the closest analogous module named in the task before writing.
+2. Implement the change.
+3. Run the verification commands listed in the task, plus the type checker and linter on
+   the files you touched. Fix failures before moving on.
+4. Count-verify bulk changes (grep to confirm the expected number of occurrences).
+
+SCHEMA PARITY: if you modify model/schema files, the repo's active schema-deploy artifact
+must exist (Atlas plan / Prisma / Alembic migration — check the repo's CLAUDE.md for which
+system is active). If you cannot produce it, return status "failed" with the missing-schema
+reason in `error` — omitting it means the column/object may not exist at runtime.
+
+Your FINAL message must be exactly the JSON object required by the output schema — no prose.
+Report honestly: only claim a verification passed if you ran it and saw it pass; put real
+command output summaries in `verification_output`.
+"""
+
+BUILD_TASK_RULES = """\
+TASK: implement ONE build_todo (given below). Do not work ahead on other todos.
+
+- If the todo itself is wrong — it contradicts the code you find, or the design does not
+  hold — STOP and return status "needs_replan" with the reason in `error`. Do not improvise
+  a different design to force the todo closed.
+- If this todo implements a repeated writer (poller, observer, scheduler, queue, webhook,
+  scraper) and the design would persist duplicate unchanged source data proportional to
+  polling frequency, return "needs_replan" unless the todo names the downstream consumer,
+  volume budget, dedupe/change-gating behavior, and retention/TTL for that history.
+- status "complete" requires every verification command, the type checker, and the linter
+  to pass for this todo; otherwise "failed" with the concrete failure in `error`.
+- `todo_id` is the sequence number or artifact id named in the todo.
+"""
+
+RESOLVE_TASK_RULES = """\
+TASK: apply the review-finding fixes given below. One result entry per finding.
+
+- Implement each fix exactly as specified (the orchestrator already made the accept/modify
+  decisions). Do not re-litigate the finding.
+- Run linter + type checker after each fix, and re-run the tests covering each touched
+  file — a finding is NOT "resolved" until they pass.
+- For every p1 correctness fix: add a regression test (demonstrate failing-then-passing)
+  and name it in `regression_test`, or state an explicit reason the fix is untestable.
+  Use null for non-p1 findings.
+- If a fix cannot be applied safely, return that entry as "deferred" and say why in its
+  `verification_output`.
+"""
+
+
+def die(msg: str) -> None:
+    print(f"external-build: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def read_file(path: str, what: str) -> str:
+    p = Path(path)
+    if not p.is_file():
+        die(f"{what} not found: {path}")
+    return p.read_text(encoding="utf-8")
+
+
+def failed_result(task: str, reason: str):
+    if task == "build":
+        return {"todo_id": "unknown", "status": "failed", "files_changed": [],
+                "verification_output": "", "visual_evidence": [], "deviations": [],
+                "error": reason}
+    return []  # resolve: empty array — every finding stays pending, caller re-dispatches
+
+
+def run_codex(prompt: str, schema: dict, model: str, reasoning: str, sandbox: str,
+              repo: Path, timeout: int) -> str:
+    with tempfile.TemporaryDirectory() as td:
+        schema_file = Path(td) / "schema.json"
+        last_file = Path(td) / "last.json"
+        schema_file.write_text(json.dumps(schema), encoding="utf-8")
+        cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo),
+               "-s", sandbox,
+               "-m", model,
+               "-c", f"model_reasoning_effort={reasoning}",
+               "--output-schema", str(schema_file),
+               "-o", str(last_file)]
+        try:
+            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except subprocess.TimeoutExpired:
+            print(f"external-build: codex timed out after {timeout}s", file=sys.stderr)
+            return ""
+        if last_file.is_file() and last_file.read_text(encoding="utf-8").strip():
+            return last_file.read_text(encoding="utf-8")
+        err = (res.stderr or "").strip()
+        if err:
+            print("external-build: codex produced no output; stderr tail:\n"
+                  + err[-800:], file=sys.stderr)
+        return ""
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="external-build", add_help=True)
+    ap.add_argument("--task", required=True, choices=["build", "resolve"])
+    ap.add_argument("--todo-file", help="file containing the ONE build_todo (task build)")
+    ap.add_argument("--findings-file",
+                    help="file containing the findings batch to fix (task resolve)")
+    ap.add_argument("--context-file",
+                    help="orchestrator context: plan summary, health commands, memory "
+                         "gotchas, prior-attempt error on retry")
+    ap.add_argument("--repo", default=".", help="repo working directory (default: cwd)")
+    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--reasoning", default=DEFAULT_REASONING,
+                    choices=["low", "medium", "high", "xhigh"])
+    ap.add_argument("--sandbox", default="workspace-write",
+                    choices=["workspace-write", "danger-full-access"])
+    ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--out", help="also write the result JSON to this file")
+    args = ap.parse_args()
+
+    repo = Path(args.repo).resolve()
+    if not repo.is_dir():
+        die(f"repo dir not found: {repo}")
+
+    if args.task == "build":
+        if not args.todo_file:
+            die("--todo-file is required for --task build")
+        work = read_file(args.todo_file, "todo file")
+        task_rules = BUILD_TASK_RULES
+        schema = BUILD_SCHEMA
+        work_header = "BUILD TODO (implement exactly this):"
+    else:
+        if not args.findings_file:
+            die("--findings-file is required for --task resolve")
+        work = read_file(args.findings_file, "findings file")
+        task_rules = RESOLVE_TASK_RULES
+        schema = RESOLVE_SCHEMA
+        work_header = "REVIEW FINDINGS TO FIX (already approved by the orchestrator):"
+
+    context = read_file(args.context_file, "context file") if args.context_file else ""
+
+    parts = [COMMON_RULES, task_rules]
+    if context.strip():
+        parts.append("ORCHESTRATOR CONTEXT (plan summary, health commands, known gotchas, "
+                     "prior attempt if retrying):\n" + context)
+    parts.append(work_header + "\n" + work)
+    prompt = "\n\n---\n\n".join(parts)
+
+    raw = run_codex(prompt, schema, args.model, args.reasoning, args.sandbox,
+                    repo, args.timeout)
+
+    exit_code = 0
+    result = None
+    if raw:
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"external-build: codex output was not valid JSON: {e}", file=sys.stderr)
+    if result is None:
+        result = failed_result(args.task, "codex produced no valid structured output "
+                                          "(timeout, crash, or schema violation)")
+        exit_code = 2
+    elif args.task == "resolve":
+        result = result.get("results", [])
+
+    out_text = json.dumps(result, indent=2)
+    if args.out:
+        Path(args.out).write_text(out_text + "\n", encoding="utf-8")
+    print(out_text)
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
