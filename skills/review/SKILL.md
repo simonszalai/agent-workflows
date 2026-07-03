@@ -112,9 +112,33 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 | reviewer | `sonnet` | references/python-standards.md or typescript-standards.md, references/simplicity.md, references/patterns.md | Code quality, YAGNI, design patterns |
 <!-- stay on opus — fable is not available on the subscription plan after 2026-07-07 -->
 | reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md        | Architecture, security, performance  |
+| reviewer | `sonnet` | (context injected — see Plan-Conformance Reviewer below)                              | Plan/scope conformance, deviations   |
 
 **Light-diff model downgrade:** when the total diff is < 50 LOC (added + removed via
-`git diff --shortstat`), spawn BOTH always-on reviewers on `sonnet`.
+`git diff --shortstat`), spawn BOTH code-focused always-on reviewers on `sonnet` (the
+plan-conformance reviewer is already `sonnet`).
+
+**Plan-conformance reviewer (always-on).** The code-focused reviewers deliberately see only
+the diff — fresh eyes, no plan anchoring. This reviewer exists to close the gap that leaves:
+it is the ONE agent that reviews the implementation *against the contract*. Its prompt gets
+context the others don't (pass it via `extraContext` on the heavy path, or inline on the
+light path):
+
+- the **source artifact's deliverable list** (raw, not a summary — a summary written by the
+  build orchestrator inherits the build's blind spots);
+- the **plan's** `what` / `how` / `elimination` scope and its `assumptions`;
+- the **builders' Deviations** entries collected from build_todo Completion Notes.
+
+Its charter is the Scope Completeness Check (see the section at the end of this skill for
+the method/table): every source deliverable must map to a plan step and to code in the diff;
+every plan elimination must actually be deleted; every builder deviation must be sound
+against the plan's intent. Missing scope items are **p1 `manual` findings with
+`absence: true`** (anchor to the closest related file, evidence = the grep commands that
+should find the missing code). Unsound deviations are p1/p2 per impact. Findings flow
+through the same schema, dedup, gate, and partitions as every other reviewer.
+
+In ticketless mode (lfg) the inputs come from `.context/source.md`, `.context/plan.md`, and
+`.context/build_todos/` status headers instead of MCP artifacts.
 
 **Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching):
 
@@ -190,6 +214,7 @@ Before spawning, announce which reviewers were selected and why:
 Review team:
 - code-quality (always) [sonnet]
 - architecture-security-performance (always) [opus]
+- plan-conformance (always) [sonnet]
 - data-integrity — model/schema/Atlas/migration files changed [opus]
 - react — components changed in app/components/ [sonnet]
 - pipeline-reviewer — DAG node declarations modified [project persona]
@@ -285,9 +310,11 @@ Then fold the two envelopes into the reviewer set:
 2. Add the peer providers to the reviewer list passed into synthesis alongside the runner's
    native/self-reviewers. **Do not run a separate synthesis for them** — they are reviewers,
    not a second review.
-3. Run the normal synthesis (light inline or heavy `review-fanout`): dedup by
-   `(file, normalized title, |line diff| ≤ 3)`, then the cross-reviewer boost
-   `confidence += 0.10 * (reviewers.length - 1)` now counts both peer providers as reviewers,
+3. Run the normal synthesis (light inline or heavy `review-fanout`): exact dedup by
+   `(file, normalized title, |line diff| ≤ 3)` **plus the semantic same-issue merge** —
+   providers never word the same defect identically, so without the semantic pass
+   cross-provider agreement is invisible. The cross-reviewer boost
+   `confidence += 0.10 * (reviewers.length - 1)` then counts both peer providers as reviewers,
    so a finding reported by all three providers is boosted by +0.20. Gate, partition, route as
    usual.
 
@@ -321,14 +348,19 @@ while round <= max_rounds:
     if actionable is empty:
         break                       # converged — only advisory / gate-suppressed nits remain
     current runner resolves actionable findings (apply safe_auto inline; resolve gated_auto/manual)
-    carried = unresolved advisory + contested (requires_verification) findings from this round
+    carried = unresolved advisory + contested (requires_verification) findings
+              + residual_risks from this round's coverage
     re-run affected tests + type check
     round += 1
 ```
 
-**Carry-forward:** unresolved `advisory` and contested (`requires_verification: true`)
-findings from each round MUST be passed into the next round's reviewer context, so skeptic
-outputs and advisory notes are not dropped between rounds.
+**Carry-forward:** unresolved `advisory` findings, contested (`requires_verification: true`)
+findings, AND the round's `residual_risks` coverage entries MUST be passed into the next
+round's reviewer context, so skeptic outputs, advisory notes, and unconfirmed risks are not
+dropped between rounds. On the heavy path, pass them as the workflow's `args.carried`
+(review-fanout renders them into every reviewer prompt); on the light path, include them in
+the inline reviewer prompts. Render a residual-risk entry as a pseudo-finding
+(`title` = the risk text, `severity`/`file`/`line` unknown is fine).
 
 **Termination — break when EITHER holds:**
 
@@ -349,7 +381,9 @@ actionable findings re-trigger a round.
    - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
    - Read plan artifact for intended approach
    - Run `git diff --name-only` to identify changed files
-   - Read build_todo artifact completion notes
+   - Read build_todo artifact completion notes — collect every **Deviations** entry; the
+     deviations, the plan's what/how/elimination/assumptions, and the raw source deliverable
+     list are the input package for the plan-conformance reviewer (Step 2)
 
 2. **Check existing review_todo artifacts:**
    - Count existing review_todo artifacts from `get_ticket` response
@@ -374,17 +408,17 @@ actionable findings re-trigger a round.
    | ≥1 conditional or project-persona reviewer fires                 | Heavy   |
    | ≥5 files changed                                                 | Heavy   |
    | ≥200 LOC changed (added + removed via `git diff --shortstat`)    | Heavy   |
-   | Otherwise (only the always-on pair fires on a small diff)        | Light   |
+   | Otherwise (only the always-on set fires on a small diff)         | Light   |
 
-   The "conditional or persona reviewer fires" signal is what previously read as
-   "≥3 reviewers" — it's the same trigger expressed honestly (the always-on pair is
-   always 2, so any third reviewer means a conditional or persona qualified).
+   The "conditional or persona reviewer fires" signal means a reviewer beyond the
+   always-on set (code-quality, arch-sec-perf, plan-conformance) qualified from the
+   diff analysis.
 
    Announce the chosen path alongside the review team:
 
    ```
-   Review team: code-quality [sonnet], architecture-security-performance [opus]
-   Path: light (2 reviewers, 1 file, 18 LOC) — inline parallel Agent calls, no verify
+   Review team: code-quality [sonnet], architecture-security-performance [opus], plan-conformance [sonnet]
+   Path: light (3 reviewers, 1 file, 18 LOC) — inline parallel Agent calls, no verify
    ```
 
    or:
@@ -414,9 +448,15 @@ actionable findings re-trigger a round.
    function in `workflows/review-fanout.js`.
 
    Then do minimal synthesis inline:
-   1. Dedupe by `(file, normalized title, |line diff| ≤ 3)` pairwise comparison — match
-      against any existing group member, not just the first (keep highest severity and
-      confidence, union evidence, AND-merge `pre_existing`).
+   1. Dedupe in two passes. First exact: `(file, normalized title, |line diff| ≤ 3)`
+      pairwise comparison — match against any existing group member, not just the first
+      (keep highest severity and confidence, union evidence, AND-merge `pre_existing`).
+      Then **semantic**: for same-file findings within ±5 lines whose titles differ (and
+      for any pair of `absence: true` findings regardless of file), judge whether they
+      describe the same underlying defect and merge if so. Do NOT rely on title-string
+      equality to detect cross-reviewer/cross-provider agreement — providers never word
+      the same defect identically, and the confidence boost in step 2 depends on these
+      merges.
    2. Apply cross-reviewer boost: for each merged finding, `confidence += 0.10 *
       (reviewers.length - 1)`, capped at 1.0. With 2 reviewers this only fires on
       consensus findings (rare in light path) but preserves the same-shape contract
@@ -452,13 +492,18 @@ actionable findings re-trigger a round.
          // stay on opus — fable is not available on the subscription plan after 2026-07-07
          { key: "architecture-security-performance", model: "opus", focus: "...",
            references: ["references/architecture.md", ...] },
+         { key: "plan-conformance", model: "sonnet",
+           focus: "implementation vs source deliverables, plan scope/elimination, builder deviations",
+           extraContext: "<raw source deliverable list + plan what/how/elimination/assumptions + builder Deviations entries>" },
          // ...plus conditional + project-persona reviewers from step 3
        ],
        intent: "<2-3 line intent from plan/commits>",
        files: ["<changed files from .context/review/files.txt>"],
        diffSummary: "<git diff --stat output or short narrative>",
        diffPath: ".context/review/diff.patch",
-       mode: "interactive" | "autofix" | "report-only" | "headless"
+       mode: "interactive" | "autofix" | "report-only" | "headless",
+       carried: [ /* rounds ≥2 only: unresolved advisory + contested + residual-risk
+                     carry-overs from the previous round (see Carry-forward below) */ ]
      }
    })
    ```
@@ -504,12 +549,18 @@ actionable findings re-trigger a round.
 5c. **What the heavy path adds over the light path:**
 
    - Structured output enforced at the tool layer (schema retry on mismatch)
+   - Semantic same-issue dedup (one cheap judge call) so cross-provider agreement is
+     detected even when titles differ, before the boost
    - Cross-reviewer agreement boost (+0.10 confidence per additional reviewer)
-   - Adversarial 2-skeptic verify on every gated finding below 0.80 confidence
-     — consensus-boosted findings ≥0.80 skip verify entirely, saving tokens
-   - Skeptic verdict handling: unanimous refute drops, unanimous uphold boosts +0.10
-     and clears `requires_verification`, mixed verdict or <2 skeptics keeps the finding
-     with `requires_verification: true` so downstream can surface it
+   - Tiered adversarial verify — confidence alone cannot buy a skip (it is self-reported):
+     <0.80 gets 2 skeptics; ≥0.80 p1 or single-reviewer findings get a 1-skeptic
+     spot-check; only ≥0.80 multi-reviewer p2/p3 findings skip verify entirely
+   - Skeptic verdict handling (2-skeptic tier): unanimous refute drops, unanimous uphold
+     boosts +0.10 and clears `requires_verification`, mixed verdict or missing verdicts
+     keeps the finding with `requires_verification: true`. Spot-check tier: uphold clears
+     `requires_verification`; refute/unsure contests (never a silent drop on one dissent)
+   - Absence findings (`absence: true`) get a search-based skeptic protocol (grep for the
+     missing artifact) instead of read-around-the-anchor, and semantic-only dedup
    - Workflow journal (developer-only): can resume with `resumeFromRunId` when iterating on the script itself
    - Diagnostic stats: `raw_findings`, `after_dedup`, `after_gate`, `borderline_verified`,
      `verify_dropped`, `skeptic_failures`, `contested_kept`, `final`
@@ -737,18 +788,26 @@ Review complete
 
 ## Scope Completeness Check (CRITICAL)
 
-For every review, compare the source document's scope against the implementation:
+This check is the **charter of the always-on plan-conformance reviewer** (see Step 2). It is
+part of the reviewer fan-out — not an optional post-pass — so it runs on every review by
+construction. The method:
 
 1. **Read the source artifact** from the ticket — enumerate every deliverable it lists
 2. **Read the plan artifact** — verify every source item has a plan step
 3. **Diff against implementation** — for each planned item, verify code exists
-4. **Flag missing items as P1** — scope items that were planned but not implemented
-   are correctness issues, not style nits
+4. **Flag missing items as P1 `manual` with `absence: true`** — scope items that were
+   planned but not implemented are correctness issues, not style nits. Anchor to the
+   closest related file and put the grep commands that should find the missing code in
+   `evidence` (skeptics verify absences by searching)
+5. **Audit builder deviations** — every Deviations entry from the build must be sound
+   against the plan's intent; unsound deviations are findings
 
 | Source Item | Plan Step | Implemented? | Finding |
 |---|---|---|---|
-| [item from source] | Step N | Yes / **No** | [p1] if missing |
+| [item from source] | Step N | Yes / **No** | [p1, absence] if missing |
 
 **Why:** F0076 listed 4 deliverables in the source. The plan marked one as "TBD".
 Implementation skipped it entirely. Review never ran, so no one caught the gap.
-The ticket was marked complete with $110/month in unnecessary cost still running.
+The ticket was marked complete with $110/month in unnecessary cost still running. This
+check was previously a standalone section outside the numbered process, so orchestrators
+skipped it — it is now a mandatory always-on reviewer.

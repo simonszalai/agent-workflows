@@ -353,10 +353,10 @@ create_ticket(
 
 - `/ticket-flow`: Autonomous single-ticket execution — context -> route staging vs production -> plan/critique -> build -> review -> local verify -> deploy via `/auto-deploy`; no behavior verification
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
-- `/ticket-verify`: Timer-friendly staging/production verification; standalone staging PASS calls `/ticket-promote`; explicit epic/milestone mode reports parent gates
+- `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production
   deploy steps, then invokes `/ticket-verify production`. Modes: single ticket (default,
-  auto-invoked by staging PASS), `--all` batch, `--epic <ID>`, `--all-staging`
+  auto-invoked by a gate-passing staging PASS), `--all` batch, `--epic <ID>`, `--all-staging`
 - `/epic-plan`, `/epic-split`, `/milestone-flow`, `/epic-flow`: Epic/milestone orchestration over ticket-flow; `/milestone-flow` deploys/verifies each staging milestone gate, and `/epic-flow` sequences milestones plus final prod after all gates pass
 - `/auto-flow` and `/auto-verify`: Legacy aliases for `/ticket-flow` and `/ticket-verify`
 

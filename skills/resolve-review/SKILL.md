@@ -38,6 +38,14 @@ resolution path:
 | `manual` | `downstream-resolver` | **Hand off.** Requires design decisions. Present options, wait for user choice. |
 | `advisory` | `human` | **Skip.** Already reported during review. No code fix needed. |
 
+**Autonomous runs (ticket-flow / lfg).** The ask-first rows above assume an interactive
+user. When resolve-review runs inside an autonomous orchestrator, there is nobody to ask —
+do NOT stall on a question, and do NOT blanket-self-approve either. The rule (same as
+`references/execution-phases.md`): a `gated_auto` fix may be self-approved only when the
+finding is corroborated — skeptic-upheld (`requires_verification: false` after the verify
+pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-up report.
+`manual` findings are never self-approved in autonomous runs — always `deferred`.
+
 ## Process
 
 1. **Load ticket** via `get_ticket` — identify pending review_todo artifacts
@@ -245,6 +253,12 @@ resolution path:
    - Analyzes changes and creates the `deployment_guide` artifact on the ticket
    - Documents deployment steps, verification, rollback plan
    - Identifies affected services and requirements
+   - **Pass the review's coverage exhaust into it:** the final review round's
+     `testing_gaps` and `residual_risks` become candidate **Verification Evidence rows**
+     (staging section) — each gap/risk turned into a reproducible check with expected
+     good output. This is what converts "risk I couldn't confirm at review time" into a
+     graded staging obligation instead of prose that evaporates. Drop a gap/risk only
+     with a stated reason (e.g. already covered by an existing row).
 
    This step can be skipped for trivial changes (e.g., doc-only updates).
 

@@ -307,6 +307,27 @@ the target environment determined in Phase 1.
   run from the CLI (e.g., clicking "Deploy" in a web dashboard). Steps
   that have CLI commands are not manual — run them.
 
+**Deployment-guide reconciliation (MANDATORY, after the detected categories run).** The
+project `/deploy` command is the per-repo source of truth for *how* standard categories
+deploy — but the ticket's **`deployment_guide` artifact** (finalized by
+`/create-build-todos`) is where *ticket-specific one-off steps* live: a new secret/
+credential block, a new env var, a pre-enable backfill, a cross-repo ordering constraint.
+Those exist in no generic category and are silently skipped unless reconciled here. After
+executing the detected categories:
+
+1. Read the guide's **Steps** section for the target environment (the artifact is already
+   loaded from Phase 6's evidence-contract check).
+2. For each guide step, classify and report it: `covered` (the project deploy command
+   already ran it), `executed-now` (you ran it in this reconciliation), or `blocked`
+   (genuinely manual — record blocker metadata per Phase 6).
+3. A guide step that cannot be mapped to anything run, executed, or blocked is a **STOP
+   condition**, not a skip — report it as a guide/deploy mismatch. Do not advance the
+   ticket to a verification status with an unexecuted, unaccounted-for deploy step,
+   because `/ticket-verify` will then fail (or worse, falsely pass) on an environment the
+   guide says is incomplete.
+
+Include the per-step reconciliation table in the Phase 9 verification checklist output.
+
 ### Phase 9: Verify Deployment
 
 After all deployment steps complete, verify each one succeeded:

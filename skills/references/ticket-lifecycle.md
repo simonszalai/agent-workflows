@@ -30,6 +30,12 @@ to_verify_staging -> verify_staging_failed
                  \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | verify_prod_failed
 ```
 
+Staging PASS **auto**-invokes `/ticket-promote` only for low-risk scopes that pass the
+auto-promotion gate (`ticket-verify` §9b: FINALIZED contract fully graded on fresh
+post-activation evidence, and no schema/deploy-config/auth category in the diff).
+Schema-, deploy-config-, or auth-bearing tickets rest at `staging_verified` until a human
+runs `/ticket-promote` explicitly — that resting state is normal, not a stall.
+
 `/ticket-promote` is the post-staging production step: it lands the promoted commits on
 `main` AND runs the project's production deploy steps before setting `to_verify_prod`.
 

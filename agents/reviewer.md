@@ -230,6 +230,10 @@ orchestrator collects findings from all agents and creates artifacts.
 - `owner`: Use `review-fixer` for `safe_auto`, `downstream-resolver` for `gated_auto`/`manual`,
   `human` for findings requiring judgment
 - `pre_existing`: True if the issue exists in unchanged code unrelated to the current diff
+- `absence`: True when the finding claims something is MISSING (migration, test, elimination
+  step, scope item, deploy surface). Anchor `file`/`line` to the closest related artifact and
+  put the exact grep/ls commands that should find the missing thing in `evidence` — skeptics
+  verify absence findings by running those searches, not by reading around the anchor
 - `evidence`: At least 1 item — code snippets, line references, or pattern descriptions
 - `suggested_fix`: Null if no good fix is obvious — a bad suggestion is worse than none
 

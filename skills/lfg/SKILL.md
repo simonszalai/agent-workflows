@@ -256,7 +256,19 @@ Also include:
 
 Write the plan to `.context/plan.md`.
 
-**In LFG mode, the plan is auto-approved** — proceed immediately to build.
+**Plan critique pass (same runner, no external calls).** LFG's plan is single-provider and
+auto-approved, while its review loop spends up to six external calls downstream — but plan
+errors are the most expensive class to catch at review time (full rebuild). So before
+approving, when the work matches any heavy signal — new system/app from scratch,
+schema/data change, multi-component work, repeated writer (poller/observer/scheduler/
+queue/webhook), or research found no existing pattern to follow — spawn ONE critique agent
+(same runner, correctness + YAGNI lenses combined; it should read the code to check the
+plan's assumptions) and revise the plan once for its must-address findings. Skip the
+critique for work matching none of the signals. This is deliberately lighter than
+`/auto-plan`: no peer providers, no convergence — LFG stays fast and never pushes, so the
+review loop remains the backstop.
+
+**In LFG mode, the (critiqued) plan is then auto-approved** — proceed immediately to build.
 
 **On failure:** STOP, report error.
 

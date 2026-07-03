@@ -73,6 +73,16 @@ similar = mcp__autodev-memory__get_similar_tickets(
   project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
 )
 
+# Also find similar FAILED tickets — completed-only search is survivorship-biased.
+# verify_*_failed tickets are where a confident plan met reality and lost; read their
+# verification_evidence artifacts for what actually broke, don't guess from titles.
+failed_staging = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_staging_failed"
+)
+failed_prod = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_prod_failed"
+)
+
 # Search by keyword
 results = mcp__autodev-memory__search_tickets(
   project=PROJECT, query="<relevant keywords>"
@@ -85,6 +95,8 @@ results = mcp__autodev-memory__search_tickets(
 - **Tradeoffs made** - What was optimized vs sacrificed
 - **Risks that materialized** - What problems actually occurred
 - **Conclusions** - What was learned from completed work
+- **Verification failures** - What the failed tickets' evidence rows showed broke, and
+  which design choice caused it ("do not repeat" input to this plan)
 
 **Include in the plan:**
 

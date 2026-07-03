@@ -24,9 +24,18 @@ its existing ticketless `.context` behavior and is not changed by this reference
    reason about what the providers "would" say — actually enter the skill. The `review` skill is
    the single orchestrator that owns the whole fan-out **and** the distillation: in one round the
    main runner performs native/self-review and runs the other two providers through
-   `external-agent`, then distills all three providers into one synthesized set (dedup by
-   `(file, normalized title, |line diff| ≤ 3)`, cross-provider confidence boost, gate,
-   partition). The main runner then resolves the actionable findings.
+   `external-agent`, then distills all three providers into one synthesized set (exact dedup
+   by `(file, normalized title, |line diff| ≤ 3)` plus a semantic same-issue merge for
+   differently-worded duplicates, cross-provider confidence boost, gate, partition). The
+   main runner then resolves the actionable findings.
+
+   **Autonomous gated_auto rule.** In an autonomous run there is no user to answer
+   `resolve-review`'s "Apply?" question for `gated_auto` findings. The runner may
+   self-approve a `gated_auto` fix ONLY when the finding is corroborated — skeptic-upheld
+   (`requires_verification: false` after verify) or multi-reviewer consensus; otherwise
+   defer it to the follow-up report instead of applying or stalling. `manual` findings are
+   never self-approved: defer them to the follow-up report. (Interactive runs keep
+   `resolve-review`'s ask-first behavior.)
 
    **Cross-coverage gate — the review round is NOT complete until all three providers contributed.**
    After each round, confirm the two `.context/review/<provider>.json` files for the peer

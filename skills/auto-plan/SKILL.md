@@ -208,6 +208,16 @@ similar = mcp__autodev-memory__get_similar_tickets(
 ticket_hits = mcp__autodev-memory__search_tickets(
   project=PROJECT, query="<keywords>"
 )
+
+# Similar past FAILURES — completed-only priors are survivorship-biased. Tickets that
+# failed verification are exactly the ones where plan/build/review confidently produced
+# something reality rejected; their verification_evidence artifacts carry the lesson.
+failed_staging = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_staging_failed"
+)
+failed_prod = mcp__autodev-memory__get_similar_tickets(
+  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_prod_failed"
+)
 ```
 
 Render the hits into a compact markdown blob (omit a section if it is empty), pass it to every
@@ -222,6 +232,11 @@ turns up — never fabricate entries.
 
 ## Related past work
 - <TICKET_ID> "<title>" (<status>): <approach / key learning>
+
+## Related past failures — do not repeat
+- <TICKET_ID> "<title>" (verify_staging_failed|verify_prod_failed): <what the
+  verification evidence showed failed, and why — read the ticket's
+  verification_evidence artifact for the failed rows, don't guess from the title>
 ```
 
 ### Phase 5: Complexity Gate — Light vs Heavy
@@ -302,17 +317,34 @@ subscription-backed `claude -p`, never a direct Anthropic API call.
 `external-planner` is the planning analogue of `/review`'s `external-reviewer` subagent.
 It must not draft or critique the plan itself; it only runs the adapter and returns JSON.
 
+**One peer runs research-blind.** The codebase-research blob is fresh, single-agent,
+unverified output — feeding it to every planner with equal authority converts any research
+error into a *shared unquestioned prior*: all providers agree because all were told the same
+thing, and the disagreement audit only fires on disagreements. So the **second** peer in
+`agent-workflow-provider --peers` order gets the source + prior knowledge but NOT the
+research file — it must read the code itself. Where the blind peer's assumptions contradict
+the research-informed plans, that divergence IS the signal: the convergence audit settles it
+against the code. (The memory/past-ticket prior blob is verified, hard-won knowledge and is
+still shared with everyone.)
+
 ```bash
 mkdir -p .context/plan
 printf '%s' "$QUESTION" > .context/plan/question.txt
 printf '%s' "$SOURCE_ARTIFACT" > .context/plan/source.md
 printf '%s' "$CODEBASE_RESEARCH" > .context/plan/codebase-research.md
 printf '%s' "$PRIOR_KNOWLEDGE" > .context/plan/prior-knowledge.md
+first=1
 for provider in $(agent-workflow-provider --peers); do
+  if [ "$first" = "1" ]; then
+    research_args="--codebase-research-file .context/plan/codebase-research.md"
+    first=0
+  else
+    research_args=""   # second peer is research-blind (see above)
+  fi
   external-agent --task plan --provider "$provider" \
     --question "$(cat .context/plan/question.txt)" \
     --source-artifact-file .context/plan/source.md \
-    --codebase-research-file .context/plan/codebase-research.md \
+    $research_args \
     --prior-knowledge-file .context/plan/prior-knowledge.md \
     --out ".context/plan/${provider}.json" 2>".context/plan/${provider}.log" &
 done

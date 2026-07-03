@@ -1,6 +1,6 @@
 ---
 name: ticket-promote
-description: Promote staging-verified work from staging to main AND run the project's production deploy steps. Modes: single ticket (default; auto-invoked by /ticket-verify staging on PASS), --all batch of every staging_verified ticket, --epic for verified epic steps, --all-staging for the whole staging range. Hands off to /ticket-verify production; never sets completed.
+description: Promote staging-verified work from staging to main AND run the project's production deploy steps. Modes: single ticket (default; auto-invoked by /ticket-verify staging on a PASS that clears the §9b auto-promotion gate), --all batch of every staging_verified ticket, --epic for verified epic steps, --all-staging for the whole staging range. Hands off to /ticket-verify production; never sets completed.
 max_turns: 250
 ---
 
@@ -26,7 +26,10 @@ Infer the mode from the arguments; if ambiguous, stop and ask.
 | `--exclude F0130` | Batch | Promote the ready set except these IDs |
 
 `/ticket-verify staging` calls this automatically (single-ticket mode) on each standalone
-staging PASS. `/epic-flow` calls the epic mode after all milestone staging gates pass.
+staging PASS **that passes its auto-promotion gate** (ticket-verify §9b: FINALIZED contract
+fully graded on fresh evidence, and no schema/deploy-config/auth category in the diff).
+Higher-risk scopes rest at `staging_verified` until a human invokes this skill explicitly.
+`/epic-flow` calls the epic mode after all milestone staging gates pass.
 
 ## Non-Negotiables
 
@@ -242,6 +245,14 @@ issues — no unrelated refactors.
 with OTHER staging commits present; the promoted commit set on top of `main` is a combination
 that has never run anywhere. The worktree's local checks must therefore include at least the
 ticket's own tests (and the affected module's tests), not just a global typecheck/build.
+
+**Co-tenancy check.** Read the staging `verification_evidence` artifact's
+`staging_head_sha` / `co_staged_tickets` metadata (written by `/ticket-verify` §6). If
+co-staged tickets touched files that overlap this promotion's diff and are NOT part of the
+promoted set, the staging PASS may not be attributable to this ticket alone — record that
+in the manifest as residual risk, and weight it when deciding whether to proceed (a shared
+helper fixed by a co-staged ticket is the classic false-PASS mechanism). Missing metadata
+(older evidence artifacts) is not a blocker; note it and continue.
 
 ## Land on main
 
