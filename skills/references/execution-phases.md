@@ -48,8 +48,10 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
    The canonical loop definition lives in the `review` skill. Rounds: heavy path ≤3, light
    path exactly 1. Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
-   findings remain. Stop on unresolved design decisions and surface any remaining
-   `gated_auto`/`manual` findings for a human.
+   findings remain, **or when a round's actionable findings were resolved and the adversarial
+   verify produced no contested findings** (a second round is spent only to resolve genuine
+   adversarial disagreement, not to re-confirm agreed fixes). Stop on unresolved design
+   decisions and surface any remaining `gated_auto`/`manual` findings for a human.
 9. **Local verification** — run targeted checks and project health commands.
 10. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
     the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny
