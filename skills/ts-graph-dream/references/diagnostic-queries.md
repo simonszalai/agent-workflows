@@ -13,12 +13,21 @@ WHERE table_schema = 'public' AND table_name LIKE 'graph_%'
 GROUP BY table_name
 ORDER BY table_name;
 
+-- Environments diverge (e.g. graph_quant was dropped from staging but lives on in prod).
+-- Probe existence first and only query tables that exist:
+SELECT t AS table_name, to_regclass(t) IS NOT NULL AS present
+FROM unnest(ARRAY['graph_entity','graph_edge','graph_claim','graph_quant','graph_mention',
+                  'graph_document','graph_source','graph_taxonomy','graph_note','graph_audit',
+                  'graph_maintenance_run','graph_maintenance_change']) t;
+
 SELECT 'graph_entity' AS table_name, COUNT(*) AS total, COUNT(*) FILTER (WHERE merged_into_id IS NULL) AS active FROM graph_entity
 UNION ALL SELECT 'graph_edge', COUNT(*), COUNT(*) FILTER (WHERE superseded_at IS NULL) FROM graph_edge
 UNION ALL SELECT 'graph_claim', COUNT(*), COUNT(*) FILTER (WHERE superseded_at IS NULL) FROM graph_claim
-UNION ALL SELECT 'graph_quant', COUNT(*), COUNT(*) FILTER (WHERE superseded_at IS NULL) FROM graph_quant
 UNION ALL SELECT 'graph_source', COUNT(*), COUNT(*) FILTER (WHERE is_active) FROM graph_source
-UNION ALL SELECT 'graph_taxonomy', COUNT(*), COUNT(*) FILTER (WHERE status = 'active') FROM graph_taxonomy;
+UNION ALL SELECT 'graph_taxonomy', COUNT(*), COUNT(*) FILTER (WHERE status = 'active') FROM graph_taxonomy
+UNION ALL SELECT 'graph_note', COUNT(*), COUNT(*) FILTER (WHERE status = 'active') FROM graph_note;
+-- add: SELECT 'graph_quant', COUNT(*), COUNT(*) FILTER (WHERE superseded_at IS NULL) FROM graph_quant
+--      only when to_regclass('graph_quant') IS NOT NULL (legacy table).
 ```
 
 ## Exact active edge duplicates
@@ -215,11 +224,46 @@ SELECT
 Apply order: (1) `UPDATE graph_edge SET predicate = canonical` on the variant rows in a transaction
 with `graph_audit` + `graph_maintenance_change` (`reason_code='predicate_canonicalize'`); (2) run the
 **Safe supersede preview** collapse below to absorb the duplicates the rewrite created; (3) re-run the
-**Predicate drift** / vocabulary query and confirm the singleton tail shrank.
+**Predicate drift** / vocabulary query and confirm the singleton tail shrank; (4) persist the approved
+map into `graph_taxonomy` (next section) so ingestion folds the variants going forward.
+
+## Predicate vocabulary overrides (graph_taxonomy — write-time, durable)
+
+Since F0216, the ts-prefect writer loads a `variant -> canonical` override map at write time from:
+
+```sql
+SELECT slug, metadata->>'canonical_slug' AS canonical
+FROM graph_taxonomy
+WHERE taxonomy_type IN ('edge_predicate', 'claim_predicate')
+  AND status = 'active'
+  AND metadata->>'canonical_slug' IS NOT NULL;
+```
+
+DB rows win over the in-code synonym map; rows whose canonical is missing/empty/equal to the slug are
+ignored. So the durable output of a predicate pass is an upsert per approved variant
+(`(taxonomy_type, slug)` is unique; the writer caches the map per instance, so rows apply on the next
+writer start):
+
+```sql
+INSERT INTO graph_taxonomy (id, taxonomy_type, slug, label, description, status, metadata, created_at, updated_at)
+VALUES (gen_random_uuid()::text, 'edge_predicate', :variant, :variant,
+        'ts-graph-dream predicate fold', 'active',
+        jsonb_build_object('canonical_slug', :canonical, 'source', 'ts-graph-dream'),
+        now(), now())
+ON CONFLICT (taxonomy_type, slug) DO UPDATE
+SET metadata = graph_taxonomy.metadata || jsonb_build_object('canonical_slug', :canonical),
+    status = 'active', updated_at = now();
+```
+
+Wrap in the usual `graph_audit` + `graph_maintenance_change` trail. Check the dashboard's
+`graph-valence.ts` / `graph-predicate-class.ts` know each canonical target (unknown → neutral/blank
+in the UI) and list any new canonicals for the dashboard maps (U-channel).
 
 ## Co-occurrence noise
 
-Feeds the SKILL's **Co-occurrence & low-signal noise pass**. Adjust the `lowsig` predicate list per
+Feeds the SKILL's **Co-occurrence & low-signal noise pass**. Since F0216, new co-occurrence edges
+arrive tagged `additional_data.signal_class='co_occurrence'` — an untagged backlog implies pre-F0216
+rows or an environment running old code. Adjust the `lowsig` predicate list per
 graph. Step 1 — measure the noise footprint, support, and whether a `signal_class` tag already exists:
 
 ```sql
@@ -344,6 +388,19 @@ FROM graph_entity WHERE id = :entity_id;
 
 UNMERGE is NOT a simple query — re-homing the merged entity's edges/mentions needs per-row provenance
 that usually isn't recoverable; treat it as a reviewed, dry-run-first migration, not bulk cleanup.
+
+Before ANY entity merge/quarantine, check for user-authored notes (they must be repointed to the
+survivor, and a noted entity should not be silently quarantined):
+
+```sql
+SELECT gn.entity_id, ge.name, count(*) AS notes
+FROM graph_note gn JOIN graph_entity ge ON ge.id = gn.entity_id
+WHERE gn.status = 'active' AND gn.entity_id = ANY(:candidate_ids)
+GROUP BY 1, 2;
+
+-- on merge: UPDATE graph_note SET entity_id = :survivor_id, updated_at = now()
+--           WHERE entity_id = :loser_id;  -- audited like every other repoint
+```
 
 ## Entity name hygiene
 
@@ -547,9 +604,12 @@ WHERE id = ANY(:minority_edge_ids) AND object_entity_id  = :orig_id;
 -- repoint their mentions too if mentions are entity-keyed; write graph_audit(reason_code='geo_sense_split') + change rows
 ```
 
-## Uninterpretable quants
+## Uninterpretable quants (legacy — only when graph_quant exists)
 
-Feeds the SKILL's **Uninterpretable quant pass**. Measure the generic-fallback metrics and whether
+Feeds the SKILL's **Legacy quant pass**. Run `SELECT to_regclass('graph_quant')` first — the table
+was dropped from staging in 2026-07 (quant layer decommissioned; FMP is the financials source). If it
+exists AND is still being written, the finding is environment drift (pre-decommission code), not row
+hygiene. For in-place cleanup of legacy rows, measure the generic-fallback metrics and whether
 any are salvageable (context / unit / period / provenance):
 
 ```sql
