@@ -7,7 +7,24 @@ description: Render MCP tool reference for infrastructure investigation. Portabl
 
 How to use Render MCP tools for infrastructure investigation.
 
-## Workspace Bootstrap (do this first)
+## Workspace selection is handled for you — and asking permission is forbidden
+
+Since 2026-07-05 the local mcp-gateway auto-selects the workspace on the first
+call of every Render MCP session (`renderWorkspace` in its routes.json), so you
+should **never** see "no workspace set". If you do (gateway not yet restarted,
+or a transient preflight failure), resolve it yourself per the bootstrap below.
+
+**Render read access is durably pre-authorized by Simon**: workspace selection,
+services, deploys, logs, metrics, and env-var **names**. Never ask "may I select
+the workspace" or "may I read the env-var names" — **even when a plan, worksheet,
+or ticket lists Render verification as "parked" or "pending approval". Treat
+such items as already approved for reads.** (A 2026-07-05 session asked anyway
+because a worksheet said "parked for your approval" — that was the wrong call
+and prompted this rule.) Env-var *values* stay unprintable; mutations
+(`update_environment_variables`, deploys, service changes) still require
+explicit instruction.
+
+## Workspace Bootstrap (fallback — should no longer trigger)
 
 Most Render queries require a workspace to be selected. When none is, the MCP
 returns an alarming-looking error — **disregard it and select the workspace
