@@ -106,7 +106,10 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   Also read its **Activation boundary**. If the artifact is missing or its evidence rows are still
   `TBD`/empty, fall back to deriving evidence from source + plan acceptance criteria, and flag in
   the report that the work shipped without a finalized evidence contract — the best staging
-  verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote;
+  verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote.
+  Exception — tickets tagged `cleanup=true`: the ticket's `deferred_cleanup.evidence_contract`
+  IS the FINALIZED contract (§10/§10a); the contract-missing verdict cap does not apply and no
+  `deployment_guide` is synthesized;
 - find PR/commit/landing branch from events, tags, PR title, or git history;
 - read `.claude/environments/{env}.md` when present.
 
@@ -386,7 +389,7 @@ Standalone ticket mode:
 | staging | FAIL | write staging `verification_evidence`; status `verify_staging_failed` |
 | staging | NEEDS_MORE_TIME | leave status unchanged |
 | staging | BLOCKED | write/update staging `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
-| production | PASS | write mandatory production `verification_evidence`; status `completed`; then run any deferred post-verification cleanup (see §10) |
+| production | PASS | write mandatory production `verification_evidence`; materialize follow-ups (§10a); set status `completed` only after materialization succeeds; then run any same-cycle cleanup (§10) |
 | production | FAIL | write mandatory production `verification_evidence`; status `verify_prod_failed` |
 | production | NEEDS_MORE_TIME | leave status unchanged |
 | production | BLOCKED | write/update mandatory production `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
@@ -496,19 +499,70 @@ production — never before. This is the single mutation ticket-verify may perfo
 a `PASS` verdict has been recorded for that ticket. Like the bounded canary trigger, it is
 executed by the orchestrator itself — never delegated to a (read-only) verifier agent.
 
-If a production-PASS ticket has a `flow-run-cleanup` artifact:
+The generic contract is a **`deferred_cleanup` artifact**. (The old `flow-run-cleanup` artifact
+name is retired; flow-run deletion is now just a `deferred_cleanup` with
+`cleanup_kind="flow_run_cleanup"`.)
+
+```json
+{
+  "cleanup_command": "<command; run with --artifact <temp-file> --fix-time <activation boundary §4> --execute plus any documented non-interactive flags (e.g. --yes)>",
+  "scope_manifest": ["<exactly what the command may touch: tables, deployments, paths, ids>"],
+  "reversibility": "reversible | destructive (missing/unknown => destructive)",
+  "cleanup_kind": "<e.g. flow_run_cleanup, deployment_retirement, table_drop>",
+  "trigger_condition": {"check_command": "<read-only; exit 0 = trigger true, non-zero = not yet>", "description": "<when this becomes safe>"},
+  "soak_window": "<duration the effect must soak before final verification>",
+  "evidence_contract": [{"command": "<read-only check>", "good": "<expected>", "bad-interpretation": "<what a bad output means>"}],
+  "revert_ref": "<commit/artifact to restore>", "revert_command": "<optional explicit revert>"
+}
+```
+
+Execution rules:
 
 1. Fetch the artifact and write its JSON body to a temp file under the run-scoped scratch
-   directory from §5.
-2. Run its `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation
-   boundary from §4>`, `--execute`, and any flag the command documents for non-interactive use
-   (e.g. `--yes`).
-3. Fold the command's reported counts into the verdict output.
-4. Delete the temp artifact file as part of §9a cleanup.
+   directory from §5; delete it as part of §9a cleanup.
+2. Run `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation boundary
+   from §4>`, `--execute`, and any documented non-interactive flags.
+3. **Scope enforcement:** diff the command's dry-run/reported effects against `scope_manifest`.
+   Anything out of scope → ABORT, capture the diff into `blocked_context`, and do not re-run.
+4. Fold the command's reported counts into the verdict output.
 
-The artifact is the complete, self-describing contract — ticket-verify needs no project-specific
-knowledge; it just runs the command the artifact names. A ticket without such an artifact has no
-cleanup step, and a non-PASS verdict never triggers one.
+**Same-cycle path:** no `trigger_condition` and `reversibility="reversible"` → the orchestrator
+runs the cleanup immediately after the production PASS is recorded (preserving prior behavior).
+Anything else is deferred to a cleanup ticket (§10a). A ticket without a `deferred_cleanup`
+artifact has no cleanup step, and a non-PASS verdict never triggers one.
+
+### 10a. Materialize follow-ups (production PASS only)
+
+Every structured decommission/retirement follow-up identified during verification MUST become a
+**child cleanup ticket**, not prose. Prose-only follow-ups in learning_reports are a violation.
+§10a runs BEFORE the parent is set `completed`; if materialization fails, the parent stays
+`to_verify_prod` with blocker metadata naming the materialization failure.
+
+For each follow-up:
+
+1. Dedup: skip if a child ticket already exists for (parent, `cleanup_kind`).
+2. `create_ticket` in the parent's project, repo = the runtime surface being cleaned, tags
+   `{"cleanup": "true"}`, related → parent.
+3. Attach a `deferred_cleanup` artifact (schema above) to the child ticket.
+
+Cleanup mini-lifecycle (existing statuses only; see `references/ticket-lifecycle.md`):
+
+- Created at `backlog` with `blocked_by="trigger_condition"` (`blocked_context` holds the
+  `check_command`); destructive cleanups instead/additionally carry `blocked_by="approval"`.
+- An explicit `/ticket-verify production <cleanup-ticket>` evaluates the trigger. Trigger false:
+  the §3 blocker-metadata refresh is the **only** permitted write.
+- Trigger true + reversible: clear blocker → `in_progress` → run `cleanup_command` with scope
+  enforcement (§10) → `to_verify_prod` with `blocked_by="soak"`,
+  `blocked_context={"soak_until": ...}`.
+- Destructive: `blocked_by="approval"` is an ABSOLUTE no-run gate regardless of trigger state.
+  Approval = an operator clears the blocker (optionally recording
+  `blocked_context.approved_by`).
+- Post-soak verify grades the artifact's `evidence_contract` — it IS the FINALIZED contract
+  (§2) → `completed` | `verify_prod_failed` (revert = `revert_ref`/`revert_command`). A verify
+  before `soak_until` must refuse completion (`NEEDS_MORE_TIME`).
+
+Periodic sweep/supervisor adoption of due cleanup tickets is a contract-consumer concern
+(ts-prefect follow-up); this skill guarantees explicit-invocation evaluation only.
 
 ## Output
 
