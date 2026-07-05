@@ -163,10 +163,15 @@ round = 1;  max_rounds = 1 if light path else 3;  carried = []
 while round <= max_rounds:
     run /review-fable mode:cross          # include `carried` in reviewer context
     actionable = partitions.inSkillFixer + partitions.residualActionable
+    contested  = findings the adversarial verify DISAGREED on (requires_verification: true —
+                 mixed/missing skeptic verdicts, or reviewers split). Light path never
+                 verifies, so contested is always empty there — it stays single-round.
     if actionable is empty: break         # advisory + gate-suppressed nits don't count
     resolve actionable findings (/resolve-review-fable routing)
-    carried = unresolved advisory + contested (requires_verification) findings
-    re-run affected tests + type check;  round += 1
+    re-run affected tests + type check
+    if contested is empty: break          # verify agreed — fixes trusted; no confirmation round
+    carried = contested + unresolved advisory findings
+    round += 1                            # another round ONLY because the adversarial reviews disagreed
 ```
 
 A round is complete only when all three providers contributed — confirm both

@@ -333,25 +333,34 @@ providers. **This is the canonical definition** — provider-neutral; consumers 
 (via `../references/execution-phases.md`) and `lfg`.
 
 **Round budget follows the complexity gate:** the light path (small diffs) runs a **single
-round** — still cross-provider; the heavy path keeps the ≤3-round loop below.
+round** — still cross-provider; the heavy path allows up to 3, but **a second round only
+runs when the adversarial verify actually disagreed this round.** Extra rounds that merely
+re-confirm already-agreed fixes cost two external CLI agents and, in practice, converge
+without changing the actionable set — so they are spent only to resolve genuine disagreement,
+never as a routine confirmation pass.
 
 ```
 round = 1
 max_rounds = 1 if light path else 3
-carried = []                        # unresolved advisory/contested findings from prior rounds
+carried = []                        # contested + unresolved advisory findings from prior rounds
 while round <= max_rounds:
     run /review mode:cross          # runner self-review ∥ two peer providers, merged + deduped + boosted
                                     # include `carried` in each reviewer's prompt context
     actionable = partitions.inSkillFixer + partitions.residualActionable
                  # i.e. findings routed to review-fixer (safe_auto) or
                  #      downstream-resolver (gated_auto | manual)
+    contested  = findings where the 2-skeptic adversarial verify DISAGREED —
+                 requires_verification: true after verify (mixed or missing skeptic verdicts),
+                 or reviewers split on the same finding. (Light path never verifies, so
+                 contested is always empty there — it stays single-round.)
     if actionable is empty:
         break                       # converged — only advisory / gate-suppressed nits remain
     current runner resolves actionable findings (apply safe_auto inline; resolve gated_auto/manual)
-    carried = unresolved advisory + contested (requires_verification) findings
-              + residual_risks from this round's coverage
     re-run affected tests + type check
-    round += 1
+    if contested is empty:
+        break                       # verify agreed — fixes are trusted; do NOT spend a confirmation round
+    carried = contested + unresolved advisory + residual_risks from this round's coverage
+    round += 1                       # another round ONLY because the adversarial reviews disagreed
 ```
 
 **Carry-forward:** unresolved `advisory` findings, contested (`requires_verification: true`)
@@ -362,18 +371,22 @@ dropped between rounds. On the heavy path, pass them as the workflow's `args.car
 the inline reviewer prompts. Render a residual-risk entry as a pseudo-finding
 (`title` = the risk text, `severity`/`file`/`line` unknown is fine).
 
-**Termination — break when EITHER holds:**
+**Termination — break when ANY holds:**
 
 - the merged result has **no actionable findings** — actionable means at or above the
   autofix/gated tiers (`safe_auto`, `gated_auto`, `manual`). `advisory` findings and
   confidence-gate-suppressed (<0.60) nits do **not** keep the loop alive; or
+- the actionable findings were resolved and **the adversarial verify produced no contested
+  findings** (every finding was unanimously upheld or refuted) — the fixes are trusted, so a
+  confirmation round is not spent; or
 - **max_rounds** have run (1 on the light path, 3 on the heavy path). Do not loop forever
   chasing literal agreement — after the final round, stop and surface any remaining
   `gated_auto`/`manual` findings for a human.
 
 **Cost note:** each round spawns 2 external CLI agents (run in parallel). The loop is the
-expensive part of the workflow, which is why termination is aggressive — only genuinely
-actionable findings re-trigger a round.
+expensive part of the workflow, which is why termination is aggressive — a round is re-spent
+**only** to resolve genuine adversarial disagreement (contested findings), never to
+re-confirm fixes the verify already agreed on.
 
 ## Process
 
@@ -507,6 +520,11 @@ actionable findings re-trigger a round.
      }
    })
    ```
+
+   **Pass `args` as an actual JSON object, never a stringified blob.** If `args` is handed to
+   the `Workflow` tool as a JSON string, the script receives `args` as a string, `args.reviewers`
+   is `undefined`, and the fan-out aborts before any reviewer runs. (The workflow now parses a
+   stringified blob defensively and throws a clear error, but the caller must still pass an object.)
 
    **Unless `mode:solo`, run the two peer providers in parallel with the workflow** — in Claude
    Code, spawn the two `external-reviewer` subagents in the same assistant message that kicks

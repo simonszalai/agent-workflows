@@ -557,6 +557,21 @@ function convergenceRevisePrompt(plan, audit, question, repoRoot, priorKnowledge
 
 // ---------- Script body ----------
 
+// Normalize args: an orchestrator that JSON-stringifies the object (a documented
+// Workflow-tool footgun) hands us a string, which would make every field below
+// undefined. Parse a stringified blob back into an object before destructuring.
+let input = args
+if (typeof input === 'string') {
+  try {
+    input = JSON.parse(input)
+  } catch (e) {
+    throw new Error(`plan-fanout: args was passed as a string that is not valid JSON (${e.message}). Pass args as a JSON object, not a stringified blob.`)
+  }
+}
+if (!input || typeof input !== 'object') {
+  throw new Error(`plan-fanout: expected args to be a JSON object, got ${typeof input}.`)
+}
+
 const {
   question,
   sourceArtifact = null,
@@ -566,7 +581,7 @@ const {
   framings = DEFAULT_FRAMINGS,
   repoRoot,
   mode = 'interactive',
-} = args
+} = input
 
 if (!question || typeof question !== 'string') {
   throw new Error('plan-fanout: args.question is required')
