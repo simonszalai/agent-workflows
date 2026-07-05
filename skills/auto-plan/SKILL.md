@@ -450,6 +450,11 @@ result = Workflow({
 })
 ```
 
+**Pass `args` as an actual JSON object, never a stringified blob.** If `args` reaches the
+`Workflow` tool as a JSON string, the script receives a string and every field
+(`question`, `framings`, …) is `undefined`. (plan-fanout now parses a stringified blob
+defensively and throws a clear error, but the caller must still pass an object.)
+
 ### Phase 6c: Result Shape (both paths produce this object)
 
 ```

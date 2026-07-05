@@ -389,7 +389,25 @@ function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
 
 // ---------- Script body ----------
 
-const { reviewers, intent, files, diffSummary, diffPath, mode, carried = [] } = args
+// Normalize args. The Workflow tool delivers `args` verbatim, but an orchestrator
+// that JSON-stringifies the object (a documented footgun) hands us a string — then
+// `args.reviewers` is silently undefined and `reviewers.map` throws before any
+// reviewer runs. Parse a stringified blob back into an object, then validate.
+let input = args
+if (typeof input === 'string') {
+  try {
+    input = JSON.parse(input)
+  } catch (e) {
+    throw new Error(`review-fanout: args was passed as a string that is not valid JSON (${e.message}). Pass args as a JSON object, not a stringified blob.`)
+  }
+}
+if (!input || typeof input !== 'object') {
+  throw new Error(`review-fanout: expected args to be a JSON object, got ${typeof input}.`)
+}
+const { reviewers, intent, files, diffSummary, diffPath, mode, carried = [] } = input
+if (!Array.isArray(reviewers) || reviewers.length === 0) {
+  throw new Error(`review-fanout: args.reviewers must be a non-empty array (got ${reviewers === undefined ? 'undefined' : JSON.stringify(reviewers).slice(0, 80)}). Pass args as a JSON object, not a stringified blob.`)
+}
 
 // Phase 1: BARRIER fan-out
 phase('Fan out')
