@@ -520,14 +520,24 @@ Execution rules:
 
 1. Fetch the artifact and write its JSON body to a temp file under the run-scoped scratch
    directory from §5; delete it as part of §9a cleanup.
-2. Run `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation boundary
+2. **Dry-run first, independently checked:** run `cleanup_command` WITHOUT `--execute` and diff
+   its declared targets against `scope_manifest` BEFORE any mutating run. Anything out of scope
+   → ABORT here; never reach `--execute`.
+3. Run `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation boundary
    from §4>`, `--execute`, and any documented non-interactive flags.
-3. **Scope enforcement:** diff the command's dry-run/reported effects against `scope_manifest`.
-   Anything out of scope → ABORT, capture the diff into `blocked_context`, and do not re-run.
-4. Fold the command's reported counts into the verdict output.
+4. **Scope enforcement is not self-report alone:** after execution, re-diff reported effects
+   against `scope_manifest` AND corroborate with the out-of-band read-only checks from
+   `evidence_contract` (before/after inventory) rather than trusting the command's own counts.
+   Any out-of-scope effect → ABORT/blocked, capture the diff into `blocked_context`, do not
+   re-run. A command whose executed effects cannot be independently observed is treated as
+   destructive (approval-gated), whatever its label says.
+5. Fold the command's reported counts into the verdict output.
 
 **Same-cycle path:** no `trigger_condition` and `reversibility="reversible"` → the orchestrator
 runs the cleanup immediately after the production PASS is recorded (preserving prior behavior).
+`reversible` is not accepted on assertion alone: the artifact must carry a non-empty
+`revert_ref`/`revert_command`; absent a concrete revert, treat as destructive and defer to a
+§10a approval-gated cleanup ticket regardless of the label.
 Anything else is deferred to a cleanup ticket (§10a). A ticket without a `deferred_cleanup`
 artifact has no cleanup step, and a non-PASS verdict never triggers one.
 
