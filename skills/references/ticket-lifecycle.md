@@ -62,6 +62,26 @@ deploy, set `blocked_by="Thomas"` and include `{"repo":"ts-decrypt-proxy","targe
 in `blocked_context`. The dashboard shows this as a red blocker indicator in the normal status
 column.
 
+## Cleanup tickets (machine-owned mini-lifecycle)
+
+Cleanup tickets are created by `ticket-verify` §10a when a parent ticket passes production
+verification and carries a structured decommission/retirement follow-up. They are tagged
+`cleanup=true` and carry a `deferred_cleanup` artifact. They use EXISTING statuses only:
+
+```text
+backlog (blocked_by="trigger_condition" | "approval")
+  -> in_progress            # cleanup_command executing
+  -> to_verify_prod         # blocked_by="soak" until blocked_context.soak_until;
+                            # here "production landing AND deploy steps" = the
+                            # cleanup_command execution
+  -> completed | verify_prod_failed
+```
+
+No new statuses: approval, trigger, and soak are blocker metadata per the existing blocker
+policy above. Normal pickup queues skip blocked tickets (`next_ticket` excludes them); cleanup
+tickets advance only via explicit `/ticket-verify production <cleanup-ticket>` invocations.
+See `ticket-verify` §10/§10a for the artifact contract and execution rules.
+
 ## Epic-step ticket statuses
 
 Epic source tickets are parked as `absorbed_into_epic` and never land. Epic step tickets are
