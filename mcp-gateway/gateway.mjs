@@ -294,6 +294,96 @@ function matchRoute(pathname) {
 	return null
 }
 
+// --- Render workspace preflight --------------------------------------------------------
+// The hosted Render MCP scopes "selected workspace" to the MCP session, and the selection
+// resets on every new session/reconnect. Every agent's first workspace-requiring call hit
+// "no workspace set … Do NOT try to select a workspace for them" — and despite starred
+// memories saying "never ask", agents kept stopping to ask the user. Each account routed
+// here has exactly ONE workspace, so selection can never target an unintended resource.
+// Fix it below the model entirely: on the first POST of each MCP session to a render
+// route, the gateway itself issues one select_workspace/list_workspaces tools/call
+// upstream, so no client ever observes the unselected state.
+const RENDER_PREFLIGHT_ID = "mcp-gateway-workspace-preflight"
+const renderPreflighted = new Map() // `${prefix}|${mcp-session-id}` -> Promise (pending) | true (done)
+
+function isRenderRoute(route) {
+	return !!route.renderWorkspace || (typeof route.target === "string" && route.target.startsWith("https://mcp.render.com"))
+}
+
+function renderPreflight(route, auth, sessionId) {
+	// With an explicit renderWorkspace id (routes.json) select it deterministically;
+	// otherwise list_workspaces, which auto-selects on single-workspace accounts.
+	const body = Buffer.from(JSON.stringify({
+		jsonrpc: "2.0",
+		id: RENDER_PREFLIGHT_ID,
+		method: "tools/call",
+		params: route.renderWorkspace
+			? { name: "select_workspace", arguments: { ownerID: route.renderWorkspace } }
+			: { name: "list_workspaces", arguments: {} },
+	}))
+	const target = new URL(route.target)
+	const headers = {
+		host: target.host,
+		"content-type": "application/json",
+		accept: "application/json, text/event-stream",
+		"mcp-session-id": sessionId,
+		"content-length": String(body.length),
+	}
+	if (auth) headers[auth.header] = auth.value
+	const transport = target.protocol === "https:" ? https : http
+	const agent = target.protocol === "https:" ? httpsAgent : httpAgent
+	return new Promise((resolve, reject) => {
+		const upstream = transport.request(target, { method: "POST", headers, agent }, (ures) => {
+			const chunks = []
+			ures.on("data", (c) => chunks.push(c))
+			ures.on("end", () => {
+				const text = Buffer.concat(chunks).toString("utf8")
+				if ((ures.statusCode || 0) >= 400) reject(new Error(`status ${ures.statusCode}: ${text.slice(0, 200)}`))
+				else resolve(text)
+			})
+			ures.on("error", reject)
+		})
+		upstream.setTimeout(20_000, () => upstream.destroy(new Error("render preflight time-to-response timeout")))
+		upstream.on("error", reject)
+		upstream.end(body)
+	})
+}
+
+// Resolves once the session has a workspace selected; resolves immediately for
+// non-render routes, session-less requests (initialize), and non-POSTs. Never
+// rejects: a failed preflight is logged and forgotten (the next request retries),
+// and the original call proceeds — worst case the client sees the historical
+// "no workspace set" error and the skill-level fallback still applies.
+function ensureRenderWorkspace(route, auth, req, body) {
+	if (!isRenderRoute(route) || req.method !== "POST") return Promise.resolve()
+	const sessionId = req.headers["mcp-session-id"]
+	if (!sessionId) return Promise.resolve()
+	const key = `${route.prefix}|${sessionId}`
+	const state = renderPreflighted.get(key)
+	if (state === true) return Promise.resolve()
+	if (state) return state
+	// The initialize POST of a resumed session has no tools available yet — skip it;
+	// the session's first real call (usually notifications/initialized) preflights.
+	let method
+	try { method = JSON.parse(body.toString("utf8")).method } catch {}
+	if (method === "initialize") return Promise.resolve()
+	// Bound the map: sessions are short-lived, evict the oldest quarter when full.
+	if (renderPreflighted.size >= 1024) {
+		for (const k of [...renderPreflighted.keys()].slice(0, 256)) renderPreflighted.delete(k)
+	}
+	const p = renderPreflight(route, auth, sessionId)
+		.then(() => {
+			renderPreflighted.set(key, true)
+			log(`render workspace preflight ok ${route.prefix} session=…${sessionId.slice(-12)}`)
+		})
+		.catch((err) => {
+			renderPreflighted.delete(key)
+			log(`render workspace preflight failed ${route.prefix}: ${String(err.message || err)}`)
+		})
+	renderPreflighted.set(key, p)
+	return p
+}
+
 // Returns { header, value } to inject, or null. Defaults to Authorization: Bearer
 // <token>; routes can override authHeader (e.g. context7 uses CONTEXT7_API_KEY)
 // and authScheme ("" for a raw token with no "Bearer " prefix).
@@ -422,7 +512,13 @@ const server = http.createServer((req, res) => {
 		}
 		if (body) headers["content-length"] = String(body.length)
 		else delete headers["content-length"]
-		send(1)
+		// Render routes: make sure the session has its (single) workspace selected
+		// before relaying the call — see ensureRenderWorkspace. No-op elsewhere.
+		if (body && isRenderRoute(route)) {
+			ensureRenderWorkspace(route, auth, req, body).then(() => { if (!clientAborted) send(1) })
+		} else {
+			send(1)
+		}
 	})
 
 	// attempt 1 reuses the pooled socket with a short time-to-first-byte guard; if

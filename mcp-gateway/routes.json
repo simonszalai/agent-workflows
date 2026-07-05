@@ -1,5 +1,5 @@
 {
-  "_comment": "Path prefix -> upstream MCP. prefix = <project>/<server> (project carried in the URL = project-awareness). TWO route kinds: (1) remote HTTP upstreams have `target` (a real remote URL, never a localhost proxy) + `authEnv` (env var name the launchd wrapper exports from 1Password; tokens are NEVER stored here). (2) `spawn` routes are local stdio MCP servers the daemon supervises itself — it launches one long-lived process per entry, binds it to 127.0.0.1:<port>, and proxies to it; `target` is derived as http://127.0.0.1:<port>. Phase 1 = the remote HTTP servers (the mcp-remote proliferation). Phase 2 = postgres, folded in as `spawn` routes (replaces the per-workspace `project-mcp ts postgres_*` stdio spawns + their per-workspace 1Password reads).",
+  "_comment": "Path prefix -> upstream MCP. prefix = <project>/<server> (project carried in the URL = project-awareness). TWO route kinds: (1) remote HTTP upstreams have `target` (a real remote URL, never a localhost proxy) + `authEnv` (env var name the launchd wrapper exports from 1Password; tokens are NEVER stored here). (2) `spawn` routes are local stdio MCP servers the daemon supervises itself — it launches one long-lived process per entry, binds it to 127.0.0.1:<port>, and proxies to it; `target` is derived as http://127.0.0.1:<port>. Phase 1 = the remote HTTP servers (the mcp-remote proliferation). Phase 2 = postgres, folded in as `spawn` routes (replaces the per-workspace `project-mcp ts postgres_*` stdio spawns + their per-workspace 1Password reads). Render routes: the gateway auto-selects the workspace per MCP session (`renderWorkspace` pins the owner id; without it, list_workspaces auto-selects on single-workspace accounts) so clients never see 'no workspace set'.",
   "routes": {
     "shared/autodev-memory": {
       "target": "https://autodev-memory.onrender.com/mcp",
@@ -13,7 +13,8 @@
     },
     "ts/render": {
       "target": "https://mcp.render.com/mcp",
-      "authEnv": "TS_RENDER_API_KEY"
+      "authEnv": "TS_RENDER_API_KEY",
+      "renderWorkspace": "tea-ct11rp0gph6c73bf2kf0"
     },
     "amaru/render": {
       "target": "https://mcp.render.com/mcp",
