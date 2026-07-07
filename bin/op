@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# op audit shim (E0022) — logs every op invocation (WHO/WHAT/WHEN, never values)
+# to ~/.local/state/op-audit.log, then execs the real op.
+#
+# Answers "what is this fingerprint prompt for?": when a 1Password prompt
+# appears, `op-audit` (alias for tail of the log) shows the requesting command,
+# its parent process, and the op:// refs involved.
+#
+# Args are sanitized: any arg containing '=' is truncated at the '=' (field
+# assignments can carry values); op:// refs and subcommands pass through.
+# The mcp-gateway bypasses this shim (it invokes /opt/homebrew/bin/op via
+# OP_BIN) — gateway resolutions are known one-per-restart events.
+
+REAL_OP="/opt/homebrew/bin/op"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
+LOG="$LOG_DIR/op-audit.log"
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+sanitized=()
+for a in "$@"; do
+  case "$a" in
+    *=*) sanitized+=("${a%%=*}=<redacted>") ;;
+    *)   sanitized+=("$a") ;;
+  esac
+done
+
+parent="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1 | tr -d ' ')"
+gparent_pid="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
+gparent="$(ps -o comm= -p "${gparent_pid:-1}" 2>/dev/null | tail -1 | tr -d ' ')"
+auth="interactive"
+[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] && auth="service-account(silent)"
+
+printf '%s pid=%s parent=%s<-%s auth=%s :: op %s\n' \
+  "$(date '+%F %T')" "$$" "$parent" "$gparent" "$auth" "${sanitized[*]}" >> "$LOG" 2>/dev/null
+
+exec "$REAL_OP" "$@"
