@@ -18,7 +18,11 @@ OP_ACCOUNT="${OP_ACCOUNT:-my.1password.com}"
 [[ -x "$OP_BIN" ]] || OP_BIN="$(command -v op)"
 
 TS_MCP_MOUNT_FILE="${TS_MCP_MOUNT_FILE:-/Users/simon/Library/Application Support/6b18dff57e135dcf477c9180dc0d3c88/71e2f97219e5f7cc8fe3b17d4ff23de6}"
-TS_OP_ITEM="${TS_OP_ITEM:-op://Personal/6vfcrew2nps7r3po7f4zxssjva}"
+# TS round (E0022 M2): TS secrets live in the TS / TS-sensitive vaults now
+# (item name = env var name, field `value`). AMARU/WORKFLOW stay on their
+# Personal items until their migration rounds.
+TS_SENS_VAULT="${TS_SENS_VAULT:-op://TS-sensitive}"
+TS_VAULT="${TS_VAULT:-op://TS}"
 AMARU_OP_ITEM="${AMARU_OP_ITEM:-op://Personal/pm2niiuqvqq26ytb2oimytrrdm}"
 WORKFLOW_OP_ITEM="${WORKFLOW_OP_ITEM:-op://Personal/w2imwaf7f3o3p7okpifswnxdmm}"
 
@@ -70,7 +74,7 @@ postgres_url_for_database() { # base-url database-name
 
 export AUTODEV_MEMORY_API_TOKEN="${MOUNT[AUTODEV_MEMORY_API_TOKEN]:-}"
 export CONTEXT7_API_KEY="${MOUNT[CONTEXT7_API_KEY]:-}"
-export TS_RENDER_API_KEY="$(op_read "$TS_OP_ITEM" TS_RENDER_API_KEY)"
+export TS_RENDER_API_KEY="$(op_read "$TS_SENS_VAULT" TS_RENDER_API_KEY/value)"
 export AMARU_RENDER_API_KEY="$(op_read "$AMARU_OP_ITEM" AMARU_RENDER_API_KEY)"
 export WORKFLOW_RENDER_API_KEY="$(op_read "$WORKFLOW_OP_ITEM" WORKFLOW_RENDER_API_KEY)"
 
@@ -79,12 +83,13 @@ export WORKFLOW_RENDER_API_KEY="$(op_read "$WORKFLOW_OP_ITEM" WORKFLOW_RENDER_AP
 # replacing the per-workspace `project-mcp ts postgres_*` stdio spawns (and their
 # per-workspace 1Password reads). Direct mount values:
 export TS_POSTGRES_DEV_URL="${MOUNT[TS_DEV_DATABASE_URL]:-}"
-export TS_POSTGRES_STAGING_URL="${MOUNT[TS_STAGING_DATABASE_URL_EXTERNAL]:-}"
+export TS_POSTGRES_STAGING_URL="$(op_read "$TS_VAULT" STAGING_DATABASE_URL/value)"
+# mem_ts is the autodev-memory project DB (autodev round) — stays on the mount.
 export TS_POSTGRES_AUTODEV_TS_URL="${MOUNT[TS_PROD_MEM_TS_DATABASE_URL_EXTERNAL]:-}"
 # Prod + prod_prefect: base URL is a high-sensitivity op:// read, joined with the DB
 # name from the mount (same as project-mcp's ts_prod_postgres_value). One `op read`,
 # in the same biometric window as the render tokens above.
-ts_prod_base="$(op_read "$TS_OP_ITEM" TS_PROD_POSTGRES_URL_BASE 2>/dev/null || true)"
+ts_prod_base="$(op_read "$TS_SENS_VAULT" TS_PROD_POSTGRES_URL_BASE/value 2>/dev/null || true)"
 if [[ -n "$ts_prod_base" ]]; then
   export TS_POSTGRES_PROD_URL="$(postgres_url_for_database "$ts_prod_base" "${MOUNT[TS_PROD_DATABASE_NAME]:-}")"
   export TS_POSTGRES_PROD_PREFECT_URL="$(postgres_url_for_database "$ts_prod_base" "${MOUNT[TS_PROD_PREFECT_DATABASE_NAME]:-}")"
