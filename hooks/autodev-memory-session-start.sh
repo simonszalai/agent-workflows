@@ -148,6 +148,20 @@ relevant API contracts, shared patterns, or cross-repo conventions."
 </autodev-memory-hook-result>"
   fi
 
+  # Cache the rendered context for the pre-agent hook: SessionStart context only
+  # reaches the MAIN session; autodev-memory-pre-agent.sh injects this cached blob
+  # into every spawned subagent's prompt (via PreToolUse updatedInput). Keyed by
+  # git root so parallel Conductor workspaces don't collide.
+  _CACHE_DIR="$HOME/.cache/autodev-memory"
+  mkdir -p "$_CACHE_DIR" 2>/dev/null || true
+  _CACHE_CWD="${_CWD:-$PWD}"
+  _CACHE_ROOT=$(git -C "$_CACHE_CWD" rev-parse --show-toplevel 2>/dev/null || echo "$_CACHE_CWD")
+  _CACHE_KEY=$(printf '%s' "$_CACHE_ROOT" | /usr/bin/shasum -a 256 2>/dev/null | cut -c1-16 || true)
+  if [[ -n "$_CACHE_KEY" ]]; then
+    printf '%s' "$CONTEXT" > "$_CACHE_DIR/context-$_CACHE_KEY.md" 2>/dev/null || true
+    mem_log INFO "cached subagent context to context-$_CACHE_KEY.md (${#CONTEXT} chars, root=$_CACHE_ROOT)"
+  fi
+
   OUTPUT=$(jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')
   mem_log_output "$OUTPUT"
   echo "$OUTPUT"

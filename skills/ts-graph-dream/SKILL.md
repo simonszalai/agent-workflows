@@ -55,6 +55,23 @@ predate the guard — then the action is a one-time historical cleanup, with no 
 Still open upstream (verify before re-proposing): company `name` populated from the security master
 (ticker-as-name keeps re-accumulating), and geo `geopolitical`/`location` typing at extraction.
 
+**Node-type taxonomy (R0042 final, 9 types — 2026-07).** `company, person, organization, event,
+topic, geopolitical, government, facility, location`. Legacy `theme_situation`/`macro_indicator`/
+`sector` are being backfilled away and must never be re-proposed as retype targets. The governing
+rule is **type by identity, never by narrative role**: `node_type` says what the thing IS; what it
+is doing in a story lives in claims/edges; hierarchy lives in `entity_subtype` + edges (`unit_of`,
+`owned_by`), never in the type. Key conventions: named built installations (fabs, plants, data
+centers, pipelines, refineries) → `facility` (vs natural/geographic → `location`); a jurisdiction
+name denotes TWO entities — the territory (`location`, plain key) and the polity (`government` for
+sub-nationals with keys like `texas state government`, `geopolitical` for sovereigns/blocs); named
+state machinery (regulators, ministries, courts, administrations) → `government`, only the
+sovereign/bloc actor itself → `geopolitical`; corporate divisions/research arms resolve to the
+PARENT company as aliases (only quasi-independent units get their own `company` node with a
+`unit_of` edge); exchanges-as-institutions, SWFs, parties, and non-state armed groups →
+`organization` with a descriptive subtype. Canonical statement of these rules:
+`GRAPH_ENTITY_EXTRACTION_RULES` in ts-prefect `src/graph/assimilate.py`; the maintenance engine's
+set is `GRAPH_NODE_TYPES` in `src/graph/maintenance.py`.
+
 **Consumption (ts-dashboard `app/models/graph.server.ts`, `app/routes/(dashboard)/graph.tsx`).**
 The /graph map renders **`graph_edge` only** (claims/documents/notes never draw as edges):
 
@@ -75,7 +92,11 @@ The /graph map renders **`graph_edge` only** (claims/documents/notes never draw 
   RELABEL that moves the old searchable name into `aliases` makes it invisible to map search; note
   this when relabeling high-traffic entities.
 - Node colors/legend include `geopolitical` (red) and `location` (indigo); unknown node_types render
-  gray but do display — RETYPE targets should stay within the dashboard's known set.
+  gray but do display — RETYPE targets should stay within the dashboard's known set. As of the R0042
+  9-type taxonomy the dashboard color/legend maps still lack `government` and `facility` (they render
+  gray) and still list the legacy `theme_situation`/`macro_indicator`/`sector` entries — update
+  `GRAPH_NODE_COLORS` + `NODE_TYPE_LEGEND_ORDER` in `app/routes/(dashboard)/graph.tsx` after the
+  backfill applies.
 - Cluster labels pick the highest-priority member's `name` (opaque names skipped) — name hygiene
   directly drives label quality.
 

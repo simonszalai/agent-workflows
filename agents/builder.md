@@ -66,6 +66,23 @@ mcp__autodev-memory__search(queries=[
 
 Also review auto-injected context from the knowledge menu.
 
+Note: as a subagent you do NOT receive the session-start memory hook output — this search
+is your only memory access. The `queries` parameter is a LIST of objects exactly as shown
+above; there is no single `query` string parameter.
+
+## Tool Protocol (hard preconditions — violations waste turns)
+
+- **Read before Edit, always.** You must `Read` a file in this session before calling
+  `Edit` on it — even if the build todo quotes its full contents. The harness rejects
+  Edit-without-Read.
+- **"File has been modified since read"** means a linter/formatter or a parallel agent
+  touched the file: re-`Read` it and re-apply your edit against the current content. Do
+  not retry the identical Edit.
+- **Deferred tools require ToolSearch first.** If a tool appears only by name in a
+  system-reminder (MCP tools, Monitor, TaskCreate, ...), fetch its schema with
+  `ToolSearch("select:<name>")` before calling it. Never guess parameter shapes from
+  memory — that is the single most repeated failure class in session audits.
+
 ## Quality Requirements
 
 - Follow discovered patterns from build todos exactly

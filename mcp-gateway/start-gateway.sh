@@ -90,5 +90,12 @@ export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
 # prod postgres URLs and execs node). --no-masking: gateway stdout is its own
 # log stream; masking would scan every log line for secret substrings.
 [[ -x "$OP_BIN" ]] || { print -u2 "mcp-gateway: op CLI not found"; exit 2; }
+# Audit line (the gateway bypasses the bin/op shim via absolute OP_BIN):
+# gateway restarts are the one KNOWN biometric event — log them so op-audit
+# attributes every prompt, including this one.
+AUDIT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
+mkdir -p "$AUDIT_DIR" 2>/dev/null || true
+print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=gateway.env (daemon restart, one-per-lifetime)" \
+  >> "$AUDIT_DIR/op-audit.log" 2>/dev/null || true
 exec "$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$HERE/gateway.env" --no-masking -- \
   /bin/zsh "$HERE/finish-start.zsh"

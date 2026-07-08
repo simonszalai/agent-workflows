@@ -1,8 +1,24 @@
 # Plan: [Title]
 
+## The Ask
+
+[The user's request restated in one or two plain sentences, in their vocabulary. If this
+plan's scope differs from the literal ask (broader, narrower, different deliverable), state
+the difference explicitly here — never let the reader discover it in the build.]
+
+**Scope split:** [If the request bundles separable concerns, name each piece and which one
+this plan covers; recommend separate tickets for the rest. Otherwise "None — single concern."]
+
 ## Summary
 
 [2-3 sentences describing what we're building and why this approach was chosen]
+
+## Feasibility / Domain Fit
+
+[The core mechanism assumption this plan rests on (e.g. "a script can transform these
+one-shot", "this is batchable", "the data exists at that pipeline stage") and the evidence
+it holds in this domain. If the mechanism is unverified, it belongs in Open Questions as a
+build-blocking item, not silently assumed here.]
 
 ## First-Principles Analysis
 

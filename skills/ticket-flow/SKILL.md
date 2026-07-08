@@ -248,6 +248,13 @@ to `to_verify_staging` directly — no epic required.
 
 ## Output
 
+**Evidence rules (apply to every variant below):** each PASS/complete line must be traceable
+to concrete evidence — the command run, test counts, PR link, deploy output, artifact id.
+End every report with an explicit "Not verified:" line listing anything claimed but not
+exercised in this run (behavior verification is always listed there for standalone tickets,
+since ticket-flow never runs it). The user must never have to ask "did you actually do X?" —
+if X lacks evidence, the report says so first.
+
 Standalone ticket:
 
 ```text
