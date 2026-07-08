@@ -327,6 +327,15 @@ the research-informed plans, that divergence IS the signal: the convergence audi
 against the code. (The memory/past-ticket prior blob is verified, hard-won knowledge and is
 still shared with everyone.)
 
+**Pre-flight the adapter contract before dispatching.** Audits caught a peer planner failing
+at runtime on a CLI flag mismatch (`--research-file` vs the current flag name), which the
+orchestrator papered over by silently reassigning which peer ran research-blind — degrading
+the design without telling anyone. Before the dispatch below, run
+`external-agent --task plan --help` (or `--help`) and confirm every flag you are about to
+pass exists (`--question`, `--source-artifact-file`, `--codebase-research-file`,
+`--prior-knowledge-file`, `--out`). On a mismatch, STOP and report the adapter contract
+drift — do not improvise alternate flags or quietly re-pair peers.
+
 ```bash
 mkdir -p .context/plan
 printf '%s' "$QUESTION" > .context/plan/question.txt
@@ -372,7 +381,13 @@ Each peer returns:
 A provider failure contributes an empty envelope with a note; surface it but do not block if the
 other two providers plus the current runner can still converge. If fewer than two providers
 return usable plans, stop and report the provider failure instead of accepting a one-provider
-plan. `.context/plan/*.json` is scratch only; the converged artifact is the persisted plan.
+plan. **Treat an empty/near-empty envelope (plan null, zero assumptions/disagreements) as a
+failure, not a quiet no-op** — a peer returning 0 items silently has happened and it removes a
+whole provider's judgment from convergence without anyone noticing. The final plan report MUST
+include a per-provider status line: `providers: claude=<ok|failed: reason>, codex=<...>,
+grok=<...>; research-blind peer=<provider> (as designed | re-paired because <reason>)`. Any
+runtime deviation from the planned blind/informed pairing must appear there, never be absorbed
+silently. `.context/plan/*.json` is scratch only; the converged artifact is the persisted plan.
 
 **Convergence rule:** Planning has subjective tradeoffs, but it also contains factual claims
 about code, data, infra, sequencing, migrations, verification, and elimination. Iterate on
@@ -404,7 +419,8 @@ When the gate selects "Light", spawn ONE native/current-runner `planner` agent w
 knowledge) **and** run the two peer provider planners from Phase 6 unless `--solo` was passed.
 The native planner returns the markdown plan (per `templates/plan.md`) as its final message;
 peer planners return the envelope shown above. Validate the native plan covers the required
-sections (`title`, `what`, `why`, `how`, `tradeoffs`, `alternatives_considered`, `risks`,
+sections (`title`, `the_ask` (restated request + scope split), `feasibility/domain fit`,
+`what`, `why`, `how`, `tradeoffs`, `alternatives_considered`, `risks`,
 `verification_strategy`, `side_effects`, `elimination`, `open_questions`, `assumptions`). If
 validation fails, re-prompt the planner with the template rather than accepting a partial plan.
 

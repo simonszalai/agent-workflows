@@ -294,8 +294,21 @@ Steps: {N}/{N} completed
 Health gate: PASS (test {p}/{t}, typecheck OK, lint OK)
 Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
 
+Evidence:
+- {todo NN}: {one line: what changed} — verified by {command/test + result}
+- {todo NN}: ...
+
+Not verified: {anything claimed done but not exercised by a command/test in this run, with
+the reason — or "nothing; every step above has evidence"}
+
 Next: /write-tests {ID}, then /review {ID} (review implementation against the plan)
 ```
+
+**Evidence rules for the final report (trust contract):** every "done" claim must name the
+evidence that backs it — the command run and its result, the test that passed, the artifact
+written. Anything you did not actually exercise goes under "Not verified", explicitly. Never
+report a bare "complete"; session audits show users repeatedly having to ask "did you
+actually verify?" — the report must answer that question before it is asked.
 
 If a todo is **blocked** (returned `failed` and self-repair exhausted its 2 retries):
 

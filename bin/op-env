@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Resolve committed op:// reference env files and exec a command.
+# Defaults to .env; override with ENV_FILE=.env.prod (or another reference file).
+# Secret values stay inside `op run` and must never be printed by callers.
+
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "usage: op-env <command> [args...]" >&2
+  echo "       ENV_FILE=.env.prod op-env <command> [args...]" >&2
+  exit 2
+fi
+
+OP_BIN="${OP_BIN:-op}"
+ENV_FILE="${ENV_FILE:-.env}"
+
+if ! command -v "$OP_BIN" >/dev/null 2>&1; then
+  echo "op-env: missing 1Password CLI: $OP_BIN" >&2
+  exit 2
+fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "op-env: env file not found: $ENV_FILE" >&2
+  exit 2
+fi
+
+# Prefer an explicit token. Otherwise, use Simon's dev automation service-account
+# token from Keychain when present.
+if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+  token="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
+  if [[ -n "$token" ]]; then
+    export OP_SERVICE_ACCOUNT_TOKEN="$token"
+  fi
+fi
+
+# *-sensitive vaults are interactive-only (the service account has no grant).
+# With a token set, op run would fail with a permission error instead of
+# falling back to Touch ID — so drop the token when the file references one.
+if grep -qE '=["'"'"']?op://[A-Za-z0-9_-]+-sensitive/' "$ENV_FILE"; then
+  unset OP_SERVICE_ACCOUNT_TOKEN
+fi
+
+exec "$OP_BIN" run --env-file="$ENV_FILE" -- "$@"

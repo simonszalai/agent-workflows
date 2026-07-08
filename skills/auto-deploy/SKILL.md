@@ -197,7 +197,10 @@ git rebase origin/{target_branch}
 git push --force-with-lease
 ```
 
-Wait for CI to re-run after rebase (checks must pass again).
+Wait for CI to re-run after rebase (checks must pass again). Waiting is **bounded**: poll
+`gh pr checks` at increasing intervals (~2m, ~5m, ~10m). If checks are still pending after
+~20 minutes total, stop polling and report the current check states plus the exact command
+to resume — do not loop "still waiting" indefinitely.
 
 If rebase has conflicts: STOP - "Rebase conflicts, manual resolution needed"
 

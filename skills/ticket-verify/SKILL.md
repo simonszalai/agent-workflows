@@ -1,6 +1,6 @@
 ---
 name: ticket-verify
-description: Timer-friendly evidence collection for tickets or explicit epic/milestone gates in staging or production. Read-only while verifying; standalone staging PASS promotes unless disabled.
+description: Timer-friendly evidence collection for tickets and epic/milestone gates in staging or production. Default queue includes both to_verify and verify_failed statuses plus pending epic gates. Read-only while verifying; standalone staging PASS promotes unless disabled.
 max_turns: 200
 ---
 
@@ -12,8 +12,8 @@ completed. Use this instead of legacy `/auto-verify`.
 ## Usage
 
 ```text
-/ticket-verify staging              # verify all standalone tickets in to_verify_staging
-/ticket-verify production           # verify all standalone tickets in to_verify_prod
+/ticket-verify staging              # to_verify_staging + verify_staging_failed tickets, plus pending epic gates
+/ticket-verify production           # to_verify_prod + verify_prod_failed tickets, plus pending epic gates
 /ticket-verify staging F0123 B0042
 /ticket-verify production F0123 --lookback 24h
 /ticket-verify staging --no-promote # report staging PASS but do not call ticket-promote
@@ -43,8 +43,9 @@ First argument must be `staging`, `prod`, or `production`.
   skill allows — the bounded on-demand canary/shadow trigger and the deferred post-PASS
   cleanup command (§10) — are executed by the ORCHESTRATOR (the ticket-verify runner itself),
   never by a spawned verifier agent.
-- In explicit `--epic`/`--milestone` mode, do **not** auto-promote. The parent `/epic-flow`
-  controls milestone progression and production promotion.
+- In `--epic`/`--milestone` mode — **including epics auto-included by the default queue (§1)** —
+  do **not** auto-promote. The parent `/epic-flow` controls milestone progression and production
+  promotion.
 - On production PASS, set standalone ticket status to `completed`. In epic mode, update the
   parent epic/milestone gate and included step tickets according to the epic lifecycle.
 - On failure, set `verify_staging_failed` or `verify_prod_failed` on the standalone ticket, or
@@ -67,13 +68,37 @@ If `--epic` is provided:
 3. Include epic step tickets explicitly. The default queue skip for epic steps does not apply
    when the parent epic/milestone is the requested scope.
 
-If explicit ticket IDs are provided, load those. Otherwise:
+If explicit ticket IDs are provided, load those. Otherwise the default queue selects, for the
+target environment, the **union of both verify statuses** plus **pending epic gates**:
 
-- `staging` -> `list_tickets(status="to_verify_staging")`
-- `production` -> `list_tickets(status="to_verify_prod")`
+- `staging` -> `list_tickets(status="to_verify_staging")` ∪ `list_tickets(status="verify_staging_failed")`
+- `production` -> `list_tickets(status="to_verify_prod")` ∪ `list_tickets(status="verify_prod_failed")`
 
-For the default queue mode, skip `abandoned`, `completed`, source tickets, and epic step tickets
-whose parent milestone owns verification.
+Including the `verify_*_failed` status means a ticket that previously failed verification is
+re-attempted automatically on the next queue run instead of being stranded. A re-selected failed
+ticket still runs the full evidence collection (§5); if its activation boundary (§4) shows no
+newly-landed fix commit since the recorded failure, say so in the report — a re-run without a new
+fix will usually just re-confirm the `FAIL`, and that should be stated rather than presented as a
+fresh result.
+
+Also auto-include **pending epic gates** for the target environment, each verified exactly as if
+`--epic <ID>` had been passed (the epic branch above, aggregated per §7). An epic has a pending
+gate when **either**:
+
+- its `epic_status` is the environment's verify status (e.g. `to_verify_prod` /
+  `verify_prod_failed`, `staging` analogues for staging), **or**
+- it owns at least one step ticket currently in `to_verify_prod`/`verify_prod_failed` (staging
+  analogues for staging).
+
+Discover these with `list_epics(project, status=...)` plus a scan of the step tickets already
+pulled above for their parent epic. Verifying the epic gate **subsumes its step tickets**, so a
+step ticket covered by an auto-included epic gate is not also verified as a standalone item in the
+same run (avoid double work and conflicting verdicts).
+
+For the default queue mode, skip `abandoned`, `completed`, and source tickets. Epic step tickets
+are still not verified as loose standalone items — but because any step sitting in a verify status
+makes its parent epic a pending gate above, those steps are now covered through their parent epic
+rather than skipped and stranded.
 
 Do **not** skip tickets merely because they have `blocked_at`, `blocked_by`, `blocked_reason`, or
 `blocked_context` metadata. Blocked candidates stay in scope and go through the blocker re-check
@@ -182,6 +207,39 @@ canary) are not evidence that **this** ticket's flow ran. Confirm the rows were 
 deployment under verification (matching deployment/run id, scraper id, or source marker) before
 crediting them.
 
+### 5b. Visible-surface (UI) acceptance is graded on STAGING, never production
+
+Dashboard/UI rendering is **environment-independent**: the same frontend code reads the same table
+shapes in staging and production, so "does this surface render/behave correctly" is a property of the
+code + schema, not of the environment. Do **not** require a production browser session to grade a UI
+row, and **never** stand up autonomous production dashboard/session/browser tooling for it — a live
+prod session breaks the read-only guarantee by capability (the dashboard has write actions) and is a
+standing credential attack surface.
+
+For any ticket/gate whose acceptance includes a **visible surface** (UI, rendered page/chart, badge,
+heatmap, email/document preview, browser-visible state):
+
+- **Grade the rendering half on staging.** Open the surface in a real browser against the **staging**
+  dashboard, authenticating via `.claude/environments/staging.md` (§2). A staging visual PASS (from
+  this run or a recorded prior staging `verification_evidence` artifact) is the terminal gate for the
+  rendered behavior.
+- **A production run grades only the environment-specific halves, read-only:** (a) the code is
+  deployed (commit on the expected branch, §4), and (b) the production **data precondition** holds
+  (read-only DB/query — the rows the surface reads exist and are correct). If both hold and the
+  rendering already passed on staging, the UI acceptance is satisfied — do **not** leave the row
+  BLOCKED waiting for a production screenshot, which would add nothing.
+- A production-only rendering difference (a prod-only feature flag, or a data shape staging cannot
+  reproduce) is the only case that needs a real prod capture; treat it as a human-in-the-loop spot
+  check, not a reason to provision standing prod tooling.
+
+**Staging-deployment precondition for UI scopes (check FIRST).** Because work sometimes goes direct to
+`main` and skips staging, before grading any UI row confirm the change is actually deployed to staging:
+the commit is on `origin/staging` **and** the staging dashboard is serving it. If the UI change is
+**not** on staging, the UI scope's verdict is **BLOCKED** — not FAIL, and not a prod-graded pass — with
+the reason "**needs to be deployed to staging as well, not only main**". The unblock action is to
+land/deploy the change to staging, then verify the rendering via `/ticket-verify staging <scope>`. This
+is a deploy-prerequisite gap (§8 case (c)); waiting alone will not resolve it.
+
 ### 5. Collect evidence
 
 Run **every** Verification Evidence item listed for the environment being verified (staging items
@@ -231,8 +289,10 @@ self-contained enough that the local scratch directory can be deleted without lo
 verification record.
 
 For any evidence item that verifies a visible surface (UI, rendered document, email preview,
-chart, public page, browser-visible error/success state), open the actual target in a real browser
-and save a screenshot only as temporary scratch. If the surface is behind authentication, get the
+chart, public page, browser-visible error/success state), grade the rendering on **staging** per §5b
+(a production run checks only deployed-code + the read-only prod data precondition for such rows, and
+BLOCKs a UI scope that never reached staging). To capture such a surface, open the actual target in a
+real browser and save a screenshot only as temporary scratch. If the surface is behind authentication, get the
 login method and credentials from the repo-specific `.claude/environments/{env}.md` (see §2) and
 authenticate before capture; read secrets from the source it names (e.g. a 1Password-mounted env
 file) at runtime and never print, echo, or persist them. Only if that env file is missing or does
@@ -346,11 +406,14 @@ items:
   blocking condition is still active; or (b) the **deployment precondition (§5a) is unmet** — a
   required producing deployment is not registered in the target environment, or an
   on-demand/non-scheduled deployment has never run since the activation boundary and the bounded
-  on-demand canary/shadow run exception does not apply or failed to start. Case (b) is a
-  deploy-prerequisite gap, **not** `NEEDS_MORE_TIME`: waiting alone will never produce evidence
+  on-demand canary/shadow run exception does not apply or failed to start; or (c) a UI/visible-surface
+  scope's change is not deployed to **staging** (§5b), so its rendering cannot be graded — reason:
+  **needs to be deployed to staging as well, not only main**. Cases (b) and (c) are
+  deploy-prerequisite gaps, **not** `NEEDS_MORE_TIME`: waiting alone will never produce evidence
   because nothing is scheduled to run. The reason must name the exact unblock action (run the
-  milestone deploy via `/milestone-flow`, or `prefect deploy` + trigger the deployment). This is an
-  explicit outcome, never an omitted row.
+  milestone deploy via `/milestone-flow`; `prefect deploy` + trigger the deployment; or land/deploy the
+  UI change to staging then `/ticket-verify staging <scope>`). This is an explicit outcome, never an
+  omitted row.
 
 Never report `NEEDS_MORE_TIME` for a feature whose producing deployment is absent or has never
 run — that misrepresents "nobody deployed/triggered it" as "wait for data." If §5a could not

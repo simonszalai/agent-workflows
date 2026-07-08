@@ -18,9 +18,8 @@ OP_ACCOUNT="${OP_ACCOUNT:-my.1password.com}"
 [[ -x "$OP_BIN" ]] || OP_BIN="$(command -v op)"
 
 TS_MCP_MOUNT_FILE="${TS_MCP_MOUNT_FILE:-/Users/simon/Library/Application Support/6b18dff57e135dcf477c9180dc0d3c88/71e2f97219e5f7cc8fe3b17d4ff23de6}"
-TS_OP_ITEM="${TS_OP_ITEM:-op://Personal/6vfcrew2nps7r3po7f4zxssjva}"
-AMARU_OP_ITEM="${AMARU_OP_ITEM:-op://Personal/pm2niiuqvqq26ytb2oimytrrdm}"
-WORKFLOW_OP_ITEM="${WORKFLOW_OP_ITEM:-op://Personal/w2imwaf7f3o3p7okpifswnxdmm}"
+# TS round (E0022 M2): all op:// refs (TS/TS-sensitive vaults + the AMARU/
+# WORKFLOW Personal items) live in gateway.env, resolved by one `op run` below.
 
 # Local listener secret (OPT-IN). v1 relies on the 127.0.0.1-only bind as the
 # boundary, so clients need no header — this avoids depending on `${VAR}`
@@ -53,44 +52,22 @@ load_mount() {
 }
 load_mount
 
-op_read() { # item-ref key
-  [[ -x "$OP_BIN" ]] || { print -u2 "mcp-gateway: op CLI not found"; exit 2; }
-  "$OP_BIN" whoami >/dev/null 2>&1 || "$OP_BIN" signin --account "$OP_ACCOUNT" >/dev/null
-  "$OP_BIN" read "$1/$2"
-}
-
-# Join a base postgres URL and a database name, preserving any query string.
-# Mirrors bin/project-mcp's postgres_url_for_database so prod URLs come out identical.
-postgres_url_for_database() { # base-url database-name
-  local base="$1" db="$2" head tail
-  if [[ "$base" == *\?* ]]; then head="${base%%\?*}"; tail="?${base#*\?}"; else head="$base"; tail=""; fi
-  head="${head%/}"
-  print -r -- "$head/$db$tail"
-}
-
+# --- secrets via ONE `op run` (E0022 M2) -----------------------------------
+# Every op:// ref lives in gateway.env; a single op process resolves them all
+# in one auth window (one biometric, no per-spawn TCC prompt storm — the old
+# op_read helper spawned 2 op processes per secret and triggered 11 macOS
+# dialogs). Composition of the prod postgres URLs happens in finish-start.zsh
+# INSIDE the op run (op can't compose partial values in env files).
 export AUTODEV_MEMORY_API_TOKEN="${MOUNT[AUTODEV_MEMORY_API_TOKEN]:-}"
 export CONTEXT7_API_KEY="${MOUNT[CONTEXT7_API_KEY]:-}"
-export TS_RENDER_API_KEY="$(op_read "$TS_OP_ITEM" TS_RENDER_API_KEY)"
-export AMARU_RENDER_API_KEY="$(op_read "$AMARU_OP_ITEM" AMARU_RENDER_API_KEY)"
-export WORKFLOW_RENDER_API_KEY="$(op_read "$WORKFLOW_OP_ITEM" WORKFLOW_RENDER_API_KEY)"
 
-# --- Phase 2: postgres DATABASE_URIs (resolved ONCE; mirror bin/project-mcp) ---
-# The daemon spawns one long-lived `postgres-mcp --transport sse` per DB from these,
-# replacing the per-workspace `project-mcp ts postgres_*` stdio spawns (and their
-# per-workspace 1Password reads). Direct mount values:
+# --- postgres DATABASE_URIs from the mount (non-op values) -------------------
 export TS_POSTGRES_DEV_URL="${MOUNT[TS_DEV_DATABASE_URL]:-}"
-export TS_POSTGRES_STAGING_URL="${MOUNT[TS_STAGING_DATABASE_URL_EXTERNAL]:-}"
+# mem_ts is the autodev-memory project DB (autodev round) — stays on the mount.
 export TS_POSTGRES_AUTODEV_TS_URL="${MOUNT[TS_PROD_MEM_TS_DATABASE_URL_EXTERNAL]:-}"
-# Prod + prod_prefect: base URL is a high-sensitivity op:// read, joined with the DB
-# name from the mount (same as project-mcp's ts_prod_postgres_value). One `op read`,
-# in the same biometric window as the render tokens above.
-ts_prod_base="$(op_read "$TS_OP_ITEM" TS_PROD_POSTGRES_URL_BASE 2>/dev/null || true)"
-if [[ -n "$ts_prod_base" ]]; then
-  export TS_POSTGRES_PROD_URL="$(postgres_url_for_database "$ts_prod_base" "${MOUNT[TS_PROD_DATABASE_NAME]:-}")"
-  export TS_POSTGRES_PROD_PREFECT_URL="$(postgres_url_for_database "$ts_prod_base" "${MOUNT[TS_PROD_PREFECT_DATABASE_NAME]:-}")"
-else
-  print -u2 "mcp-gateway: warning — TS_PROD_POSTGRES_URL_BASE empty; ts/postgres_prod* routes will 502 until set"
-fi
+# prod URL composition inputs for finish-start.zsh:
+export TS_PROD_DATABASE_NAME="${MOUNT[TS_PROD_DATABASE_NAME]:-}"
+export TS_PROD_PREFECT_DATABASE_NAME="${MOUNT[TS_PROD_PREFECT_DATABASE_NAME]:-}"
 
 # amaru / workflow / shared postgres DBs — all plain mount values (no op read). Access
 # modes (prod=restricted, others=unrestricted) live in routes.json, mirroring project-mcp.
@@ -109,4 +86,16 @@ export POSTGRES_MCP_BIN="${POSTGRES_MCP_BIN:-/Users/simon/dev/ts-prefect/.venv/b
 export MCP_GATEWAY_HOST="${MCP_GATEWAY_HOST:-127.0.0.1}"
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
 
-exec "$NODE_BIN" "$HERE/gateway.mjs"
+# ONE op invocation resolves gateway.env and execs stage 2 (which composes the
+# prod postgres URLs and execs node). --no-masking: gateway stdout is its own
+# log stream; masking would scan every log line for secret substrings.
+[[ -x "$OP_BIN" ]] || { print -u2 "mcp-gateway: op CLI not found"; exit 2; }
+# Audit line (the gateway bypasses the bin/op shim via absolute OP_BIN):
+# gateway restarts are the one KNOWN biometric event — log them so op-audit
+# attributes every prompt, including this one.
+AUDIT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
+mkdir -p "$AUDIT_DIR" 2>/dev/null || true
+print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=gateway.env (daemon restart, one-per-lifetime)" \
+  >> "$AUDIT_DIR/op-audit.log" 2>/dev/null || true
+exec "$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$HERE/gateway.env" --no-masking -- \
+  /bin/zsh "$HERE/finish-start.zsh"

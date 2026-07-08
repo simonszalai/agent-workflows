@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# op audit shim (E0022) — logs every op invocation (WHO/WHAT/WHEN, never values)
+# to ~/.local/state/op-audit.log, then execs the real op.
+#
+# Answers "what is this fingerprint prompt for?": when a 1Password prompt
+# appears, `op-audit` (alias for tail of the log) shows the requesting command,
+# its parent process, and the op:// refs involved.
+#
+# SILENT-BY-DEFAULT (2026-07-08): if OP_SERVICE_ACCOUNT_TOKEN is not already
+# set, the shim reads it from Keychain (service "op-dev-token") and injects it
+# ONLY into the exec'd op process — never into the ambient shell environment.
+# This makes routine reads (TS vault) zero-prompt while keeping the token out
+# of env dumps. The SA can only see the TS vault; writes and TS-sensitive
+# reads fail with a permission error instead of prompting — hand those to the
+# user as ONE batched command, or run with OP_DESKTOP=1 to force the desktop
+# (biometric) path deliberately.
+#
+# Args are sanitized: any arg containing '=' is truncated at the '=' (field
+# assignments can carry values); op:// refs and subcommands pass through.
+# The mcp-gateway bypasses this shim (it invokes /opt/homebrew/bin/op via
+# OP_BIN) — start-gateway.sh appends its own audit line instead.
+
+REAL_OP="/opt/homebrew/bin/op"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
+LOG="$LOG_DIR/op-audit.log"
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+sanitized=()
+for a in "$@"; do
+  case "$a" in
+    *=*) sanitized+=("${a%%=*}=<redacted>") ;;
+    *)   sanitized+=("$a") ;;
+  esac
+done
+
+parent="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1 | tr -d ' ')"
+gparent_pid="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
+gparent="$(ps -o comm= -p "${gparent_pid:-1}" 2>/dev/null | tail -1 | tr -d ' ')"
+
+# --- auth mode resolution ---------------------------------------------------
+# signin/account subcommands and explicit --account calls are desktop-only
+# (SA tokens can't run them / conflict with --account);
+# OP_DESKTOP=1 is the deliberate biometric escape hatch.
+wants_desktop=0
+case " $* " in *" --account "*|*" --account="*) wants_desktop=1 ;; esac
+[ "${OP_DESKTOP:-0}" = "1" ] && wants_desktop=1
+case "${1:-}" in signin|account) wants_desktop=1 ;; esac
+
+auth="interactive BIOMETRIC-PROMPT"
+if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+  auth="service-account(silent)"
+elif [ "$wants_desktop" != "1" ]; then
+  OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s op-dev-token -w 2>/dev/null)"
+  if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+    export OP_SERVICE_ACCOUNT_TOKEN
+    auth="service-account(keychain)"
+  fi
+fi
+
+printf '%s pid=%s parent=%s<-%s auth=%s :: op %s\n' \
+  "$(date '+%F %T')" "$$" "$parent" "$gparent" "$auth" "${sanitized[*]}" >> "$LOG" 2>/dev/null
+
+exec "$REAL_OP" "$@"

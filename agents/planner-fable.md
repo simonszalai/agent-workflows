@@ -41,6 +41,12 @@ name what's missing (`/investigate` first, or a `researcher` pass) instead of pl
 
 Follow the structure in `skills/auto-plan/templates/plan.md`. Every plan must cover:
 
+- **The Ask** — the user's request restated in their own vocabulary (one or two sentences);
+  if the plan's scope or deliverable differs from the literal ask, say so explicitly. When
+  the request bundles separable concerns, propose the split here and plan only one piece.
+- **Feasibility / Domain Fit** — the core mechanism assumption the plan rests on (e.g. "a
+  script can do this", "this is batchable") and evidence it holds; if unverified, it is a
+  build-blocking Open Question, not a silent premise
 - **What / How / Why** — including alternatives considered and why they lost
 - **What We're NOT Building** — eliminated scope, and evidence each remaining component earns
   its existence (don't optimize what should not exist)

@@ -31,11 +31,18 @@ remaining providers instead of using this Claude-specific subagent wrapper.
 
 ## Procedure
 
-1. Prepare paths:
+1. Prepare paths and pre-flight the adapter contract:
 
    ```bash
    mkdir -p .context/plan
+   external-agent --task plan --help 2>&1 | head -40
    ```
+
+   Confirm every flag you are about to pass appears in the help output (`--question`,
+   `--source-artifact-file`, `--codebase-research-file`, `--prior-knowledge-file`, `--out`).
+   If any flag is missing or renamed, do NOT guess alternates — return an empty envelope
+   immediately with `notes: "adapter contract mismatch: <expected flag> not in
+   external-agent --help"` so the orchestrator reports the drift loudly.
 
 2. **Launch the adapter in the background** (`run_in_background: true`). Do NOT run it
    foreground — a Codex/Grok planning pass can be slow enough to exceed foreground tool

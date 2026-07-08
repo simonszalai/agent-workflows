@@ -182,9 +182,14 @@ re-run/fix the evidence write rather than marking the milestone complete.
 - `PASS`: confirm all evidence artifacts exist, confirm `/ticket-verify` updated the included
   step ticket statuses per the lifecycle (single owner — do not update them here), and return
   milestone success.
-- `NEEDS_MORE_TIME`: keep polling/re-running the timer-friendly verifier with backoff until it
-  becomes `PASS` or `FAIL`. If the session must stop for budget/runtime reasons, persist the gate
-  state and exact resume command; do not claim milestone success.
+- `NEEDS_MORE_TIME`: re-run the timer-friendly verifier with backoff, but **bounded**: at most
+  3 re-runs in-session with increasing intervals (~5m, ~15m, ~30m). If still not `PASS`/`FAIL`
+  after the third re-run, stop polling — persist the gate state, the awaited condition (what
+  evidence is missing and when it is expected), and the exact resume command, then report that
+  status to the user instead of another "still waiting" cycle. Open-ended polling with repeated
+  "Still running; waiting" is an audit-flagged anti-pattern; a bounded stop with a clear resume
+  command beats a fourth silent retry. If the session must stop earlier for budget/runtime
+  reasons, same rule; do not claim milestone success.
 - `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
   Stop only for a genuine external/manual blocker or the same unresolved failure repeating after
