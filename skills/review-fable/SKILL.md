@@ -121,13 +121,14 @@ confidence → file → line, route (`safe_auto`→review-fixer, `gated_auto|man
 downstream-resolver, `advisory`→human), partition into
 `{inSkillFixer, residualActionable, reportOnly}`.
 
-**Heavy path:** invoke the shared `review-fanout` workflow with the reviewer list (pass
-`model: "fable"` for the reviewer-fable-tier entries, `"sonnet"` for the rest), intent,
-files, diffSummary, `diffPath: ".context/review/diff.patch"`, and mode; run the peer
-dispatch concurrently in the same assistant message and merge peer envelopes into the
-workflow's reviewer set before boost/gate. The workflow adds tool-layer schema enforcement
-and the 2-skeptic adversarial verify on gated findings <0.80. No `Workflow` primitive in the
-host → run the equivalent algorithm inline; never downgrade to one provider.
+**Heavy path:** invoke `review-collect` with the native reviewer list (pass `model: "fable"`
+for reviewer-fable-tier entries, `"sonnet"` for the rest), intent, files, diffSummary,
+`diffPath: ".context/review/diff.patch"`, and mode. Run that collection concurrently with both
+peer dispatches. After all return, concatenate `native.reviewer_results` plus the peer envelopes
+and invoke `review-synthesize` exactly once. No boost, gate, or skeptic may run before the peer
+barrier. `review-synthesize` adds semantic dedup and tiered adversarial verify. No `Workflow`
+primitive in the host → run the equivalent two-stage algorithm inline; never downgrade to one
+provider.
 
 **Both paths produce the same result object** (`findings, pre_existing,
 pre_gate_suppressed, partitions, suppressed, coverage, stats` — light path zero-fills the

@@ -20,7 +20,7 @@ Tasks (--task):
                      "disagreements":[...], "evidence":[...],
                      "open_questions":[...], "notes" }
 
-  review       Review the working diff. Output matches workflows/review-fanout.js
+  review       Review the working diff. Output matches workflows/review-collect.js envelopes
                reviewerOutputSchema:
                    { "reviewer_key", "findings":[...], "residual_risks":[...], "testing_gaps":[...] }
 

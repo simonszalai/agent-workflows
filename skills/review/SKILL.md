@@ -251,8 +251,10 @@ surface is far more likely real, and the cross-reviewer confidence boost rewards
 automatically.
 
 **Claude Code dispatch:** when Claude Code is the main runner, use `external-reviewer`
-subagents for `codex` and `grok` in the same parallel `Agent` batch as the native Claude
-reviewers. This keeps the slow peer calls out of the foreground shell timeout.
+subagents for `codex` and `grok`. On the heavy path, issue those two calls in the same assistant
+message as the `review-collect` Workflow call; on the light path, issue them with the native
+reviewer Agent calls. This keeps slow peers out of the foreground shell timeout while preserving
+one collection barrier.
 
 **Codex/Grok dispatch:** when Codex or Grok is the main runner, call `external-agent` directly
 for the two peer providers (including `--provider claude` when Claude is a peer). The Claude
@@ -290,9 +292,9 @@ agent-workflows, symlinked onto `PATH`; the legacy `external-review` name still 
 `references/findings-schema.json` — the exact shape the native reviewers return, so external
 findings flow through the *same* synthesis path with no special-casing.
 
-**Claude Code dispatch details:** in the *same* parallel `Agent` batch as the Claude native
-reviewers (one assistant message, multiple tool-use blocks — never serialize them), spawn two
-`external-reviewer` subagents:
+**Claude Code dispatch details:** in one assistant message, spawn two `external-reviewer`
+subagents plus the heavy-path `review-collect` Workflow call (or the light-path native reviewer
+Agent calls). Never serialize independent collection:
 
 - `external-reviewer` with prompt `provider=<first peer>` (plus the diff `base` if you already
   computed it; otherwise the agent computes `git merge-base HEAD origin/main`).
@@ -307,10 +309,10 @@ Then fold the two envelopes into the reviewer set:
 1. Take the envelope returned by each peer (`reviewer_key` = provider key). A provider that
    failed still returns a valid envelope with empty `findings` and a
    `residual_risks` note — it simply contributes no findings; surface its note but do not block.
-2. Add the peer providers to the reviewer list passed into synthesis alongside the runner's
-   native/self-reviewers. **Do not run a separate synthesis for them** — they are reviewers,
-   not a second review.
-3. Run the normal synthesis (light inline or heavy `review-fanout`): exact dedup by
+2. Finish collection before any gate: heavy mode runs native `review-collect` concurrently with
+   the two peer dispatches; light mode runs all native and peer calls in one parallel batch.
+3. Concatenate the raw native and peer envelopes, then run exactly one synthesis (light inline
+   or heavy `review-synthesize`): exact dedup by
    `(file, normalized title, |line diff| ≤ 3)` **plus the semantic same-issue merge** —
    providers never word the same defect identically, so without the semantic pass
    cross-provider agreement is invisible. The cross-reviewer boost
@@ -367,7 +369,7 @@ while round <= max_rounds:
 findings, AND the round's `residual_risks` coverage entries MUST be passed into the next
 round's reviewer context, so skeptic outputs, advisory notes, and unconfirmed risks are not
 dropped between rounds. On the heavy path, pass them as the workflow's `args.carried`
-(review-fanout renders them into every reviewer prompt); on the light path, include them in
+(review-collect renders them into every native reviewer prompt); on the light path, include them in
 the inline reviewer prompts. Render a residual-risk entry as a pseudo-finding
 (`title` = the risk text, `severity`/`file`/`line` unknown is fine).
 
@@ -407,7 +409,8 @@ re-confirm fixes the verify already agreed on.
 4. **Decide the execution path — complexity gate:**
 
    The mechanical fan-out, dedup, cross-reviewer boost, adversarial verify, and partition
-   logic lives in the `review-fanout` workflow at `workflows/review-fanout.js`. Workflows
+   logic lives in the `review-synthesize` workflow at `workflows/review-synthesize.js`; native
+   raw-envelope collection lives separately in `workflows/review-collect.js`. Workflows
    have non-trivial token overhead (spawning many subagents, structured-output enforcement,
    2-skeptic verification per borderline finding). They pay off only when there is enough
    material to dedup and verify across. For small diffs the orchestration cost dwarfs the work.
@@ -438,7 +441,7 @@ re-confirm fixes the verify already agreed on.
 
    ```
    Review team: code-quality, arch-sec-perf, data-integrity, react, pipeline-reviewer
-   Path: heavy (5 reviewers, 12 files, 340 LOC) — review-fanout workflow with verify
+   Path: heavy (5 reviewers, 12 files, 340 LOC) — collect all providers, then one synthesis with verify
    ```
 
 5. **Fan out — light path (inline):**
@@ -447,7 +450,7 @@ re-confirm fixes the verify already agreed on.
    message, multiple tool-use blocks). No workflow, no skeptics. Every reviewer prompt includes
    `Diff at: .context/review/diff.patch` (the shared artifact from Step 1) so reviewers read
    the diff instead of re-computing it. Each reviewer returns the
-   reviewer-output JSON shape documented in `workflows/review-fanout.js`
+   reviewer-output JSON shape documented in `workflows/review-collect.js`
    (`reviewerOutputSchema`). **Unless `mode:solo`, include the two peer providers in this same
    parallel batch** — see Cross-Provider Reviewers above. In Claude Code that means
    `external-reviewer` subagents; in Codex/Grok that means direct `external-agent` peer calls.
@@ -458,7 +461,7 @@ re-confirm fixes the verify already agreed on.
    that don't have all of `title`, `severity`, `file`, `line`, `confidence`, `autofix_class`,
    `owner`, `requires_verification`, `pre_existing`, `evidence` (non-empty array),
    `why_it_matters`. Count dropped findings into `suppressed`. Mirror the `validFinding`
-   function in `workflows/review-fanout.js`.
+   function in `workflows/review-synthesize.js`.
 
    Then do minimal synthesis inline:
    1. Dedupe in two passes. First exact: `(file, normalized title, |line diff| ≤ 3)`
@@ -483,21 +486,21 @@ re-confirm fixes the verify already agreed on.
 
    Skip steps 5a-5c below — they are for the heavy path only.
 
-5a. **Fan out — heavy path (workflow):**
+5a. **Collect, then synthesize — heavy path (two workflows):**
 
-   When the gate selects "Heavy", invoke the workflow by name. The runtime resolves
-   `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
-   environment (local, NanoClaw, cloud SessionStart copy):
+   When the gate selects "Heavy", collection and synthesis are separate barriers. The runtime
+   resolves `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
+   environment (local, NanoClaw, cloud SessionStart copy).
 
    If the current host tool does not expose Claude's `Workflow` tool (for example a
-   Codex/Grok-orchestrated run), execute the equivalent heavy-path algorithm inline: parallel
-   native/self-review + peer provider calls, validate envelopes, dedup, apply cross-reviewer
-   boost, gate, verify borderline findings if available, then partition. Do **not** downgrade a
-   heavy review to a one-provider review just because the Claude `Workflow` primitive is absent.
+   Codex/Grok-orchestrated run), execute the equivalent heavy-path algorithm inline but preserve
+   the same barrier: finish all native/self-review + peer provider calls first, then validate,
+   dedup, boost, gate, verify, and partition once. Do **not** downgrade a heavy review to a
+   one-provider review because the Claude `Workflow` primitive is absent.
 
    ```
-   result = Workflow({
-     name: "review-fanout",
+   native = Workflow({
+     name: "review-collect",
      args: {
        reviewers: [
          { key: "code-quality", model: "sonnet", focus: "...",
@@ -519,21 +522,32 @@ re-confirm fixes the verify already agreed on.
                      carry-overs from the previous round (see Carry-forward below) */ ]
      }
    })
+   // Unless mode:solo, run this Workflow call and the two external-reviewer dispatches
+   // concurrently. Wait for all three operations to finish.
+   raw = [
+     ...native.reviewer_results,
+     peerCodexEnvelope,
+     peerGrokEnvelope,
+   ]
+
+   result = Workflow({
+     name: "review-synthesize",
+     args: {
+       reviewerResults: raw,
+       intent: "<same intent>",
+       diffSummary: "<same summary>",
+       diffPath: ".context/review/diff.patch"
+     }
+   })
    ```
 
-   **Pass `args` as an actual JSON object, never a stringified blob.** If `args` is handed to
-   the `Workflow` tool as a JSON string, the script receives `args` as a string, `args.reviewers`
-   is `undefined`, and the fan-out aborts before any reviewer runs. (The workflow now parses a
-   stringified blob defensively and throws a clear error, but the caller must still pass an object.)
+   Under `mode:solo`, `raw` contains only `native.reviewer_results`; synthesis is otherwise
+   identical. A failed provider contributes its valid empty envelope plus `residual_risks` note.
+   Never call `review-synthesize` while a peer is still running, and never synthesize native
+   findings first and append peers afterward.
 
-   **Unless `mode:solo`, run the two peer providers in parallel with the workflow** — in Claude
-   Code, spawn the two `external-reviewer` subagents in the same assistant message that kicks
-   off the workflow, so the `Workflow` call and peer `Agent` calls run together. In Codex/Grok,
-   run the direct `external-agent` peer calls concurrently with the closest available heavy-path
-   implementation. When all return, merge each external envelope's `findings` into the
-   workflow's reviewer set (treat peers as two more reviewers) *before* the cross-reviewer
-   boost and gate in 5b/6, so three-provider consensus is rewarded. Do not run a separate
-   synthesis for them.
+   **Pass `args` as actual JSON objects, never stringified blobs.** Both workflows parse a
+   stringified blob defensively only to return a clear error; callers must use real objects.
 
 5b. **Result shape (both paths must produce this object):**
 
@@ -566,7 +580,8 @@ re-confirm fixes the verify already agreed on.
 
 5c. **What the heavy path adds over the light path:**
 
-   - Structured output enforced at the tool layer (schema retry on mismatch)
+   - A hard all-provider collection barrier before any synthesis decision
+   - Structured native output enforced at the tool layer (schema retry on mismatch)
    - Semantic same-issue dedup (one cheap judge call) so cross-provider agreement is
      detected even when titles differ, before the boost
    - Cross-reviewer agreement boost (+0.10 confidence per additional reviewer)
@@ -579,7 +594,7 @@ re-confirm fixes the verify already agreed on.
      `requires_verification`; refute/unsure contests (never a silent drop on one dissent)
    - Absence findings (`absence: true`) get a search-based skeptic protocol (grep for the
      missing artifact) instead of read-around-the-anchor, and semantic-only dedup
-   - Workflow journal (developer-only): can resume with `resumeFromRunId` when iterating on the script itself
+   - Workflow journals for native collection and synthesis (developer-only)
    - Diagnostic stats: `raw_findings`, `after_dedup`, `after_gate`, `borderline_verified`,
      `verify_dropped`, `skeptic_failures`, `contested_kept`, `final`
 
@@ -652,10 +667,10 @@ memory-persistence step (`create_entry` for P1/P2 findings) still applies.
 
 ## Synthesis Methodology
 
-Synthesis (validate → confidence gate → dedup → cross-reviewer boost → separate pre-existing
-→ normalize routing → partition → sort → coverage union) lives in
-`workflows/review-fanout.js`. The heavy path runs it inside the workflow; the light path
-runs an inlined subset in this skill (see step 5).
+Synthesis (validate → dedup → cross-reviewer boost → confidence gate → adversarial verify →
+separate pre-existing → normalize routing → partition → sort → coverage union) lives in
+`workflows/review-synthesize.js`. The heavy path invokes it only after `review-collect` and every
+external peer have returned raw envelopes; the light path runs an inlined subset in this skill.
 
 **Memory-assisted confidence upgrade (skill-side, both paths):** Iterate
 `result.pre_gate_suppressed` (findings in [0.50, gate-threshold) that the gate dropped).

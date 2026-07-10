@@ -8,7 +8,8 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 - **Agents** - Tool-specific specialized agent roles (reviewer, planner, researcher, etc.)
 - **Hooks** - Shared shell hooks for autodev-memory context injection
 - **Commands** - Legacy Claude command wrappers kept only where still needed
-- **Workflows** - Claude Code dynamic workflow scripts (`plan-fanout`, `review-fanout`, etc.) for
+- **Workflows** - Claude Code dynamic workflow scripts (`plan-fanout`, `review-collect`,
+  `review-synthesize`, etc.) for
   heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
   equivalent logic inline on Codex/Grok
 - **bin/** - Shared executables: `project-mcp` (legacy/fallback MCP launcher; new configs should prefer `mcp-gateway`) and `external-agent` (cross-provider adapter — runs Claude, Codex, or Grok as a peer reviewer, investigation hypothesis generator, or research searcher, each emitting the same schema for that task; `external-review` is a back-compat shim for `external-agent --task review`)
