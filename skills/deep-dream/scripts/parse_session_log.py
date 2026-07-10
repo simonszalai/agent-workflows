@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Stream Claude or Codex JSONL into a compact, evidence-safe event timeline.
+
+The parser deliberately distinguishes a tool *attempt* found in source from a confirmed
+tool result. Current Codex `custom_tool_call(name="exec")` records nested calls only in the
+JavaScript input; the matching output is an ordered list of rendered text blocks without
+per-nested-call identity. Treating every `tools.<name>(...)` occurrence as a success would
+manufacture evidence.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from collections.abc import Iterable
+from pathlib import Path
+
+
+CORRECTION_RE = re.compile(
+    r"^(?:no\b|stop\b|again\b|that's wrong\b|that is wrong\b|actually\b|you missed\b)",
+    re.IGNORECASE,
+)
+NESTED_TOOL_RE = re.compile(r"\btools\.([A-Za-z0-9_]+)\s*\(")
+EXIT_RE = re.compile(r"Process exited with code\s+(\d+)")
+MEMORY_MARKERS = ("<autodev-memory-hook-result", "<!-- mem:")
+SYSTEM_PREFIXES = (
+    "<system_instruction>",
+    "<collaboration_mode>",
+    "<environment_context>",
+    "<developer>",
+)
+
+
+def _dict(value: object) -> dict[str, object]:
+    return value if isinstance(value, dict) else {}
+
+
+def _string(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _content_text(content: object, allowed_types: set[str]) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        block = _dict(item)
+        if _string(block.get("type")) in allowed_types:
+            text = _string(block.get("text")) or _string(block.get("content"))
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _message_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _nested_tools(source: str) -> list[str]:
+    return list(dict.fromkeys(NESTED_TOOL_RE.findall(source)))
+
+
+def _rendered_output_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            text = _string(_dict(item).get("text"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        return json.dumps(value, default=str)
+    return ""
+
+
+def _outer_status(text: str) -> tuple[str, int | None]:
+    exit_match = EXIT_RE.search(text)
+    if exit_match:
+        code = int(exit_match.group(1))
+        return ("completed" if code == 0 else "failed", code)
+    if text.startswith("Script completed"):
+        return "completed", 0
+    if text.startswith("Script failed"):
+        return "failed", None
+    if text.startswith("Script running with cell ID"):
+        return "running", None
+    return "unknown", None
+
+
+def _is_memory_context(text: str) -> bool:
+    return any(marker in text for marker in MEMORY_MARKERS)
+
+
+def _is_system_message(text: str) -> bool:
+    stripped = text.lstrip()
+    return any(stripped.startswith(prefix) for prefix in SYSTEM_PREFIXES)
+
+
+def _event(line: int, timestamp: str, kind: str, **fields: object) -> dict[str, object]:
+    return {"line": line, "timestamp": timestamp, "kind": kind, **fields}
+
+
+def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
+    events: list[dict[str, object]] = []
+    calls: dict[str, dict[str, object]] = {}
+    seen_human: set[str] = set()
+    memory_context_observed = False
+
+    for line_number, raw in enumerate(lines, 1):
+        try:
+            record = _dict(json.loads(raw))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        timestamp = _string(record.get("timestamp"))
+        record_type = _string(record.get("type"))
+        payload = _dict(record.get("payload"))
+        payload_type = _string(payload.get("type"))
+
+        if record_type == "session_meta":
+            git = _dict(payload.get("git"))
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "session",
+                    cwd=_string(payload.get("cwd")),
+                    branch=_string(git.get("branch")),
+                    repository_url=_string(git.get("repository_url")),
+                )
+            )
+            continue
+
+        if record_type == "event_msg" and payload_type == "user_message":
+            text = _string(payload.get("message"))
+            digest = _message_hash(text)
+            if text and digest not in seen_human and not _is_system_message(text):
+                seen_human.add(digest)
+                events.append(
+                    _event(
+                        line_number,
+                        timestamp,
+                        "human_message",
+                        message_hash=digest,
+                        correction_candidate=bool(CORRECTION_RE.match(text.strip())),
+                    )
+                )
+            continue
+
+        if record_type == "response_item" and payload_type == "message":
+            role = _string(payload.get("role"))
+            text = _content_text(payload.get("content"), {"input_text", "output_text"})
+            if role == "developer" and _is_memory_context(text) and not memory_context_observed:
+                memory_context_observed = True
+                events.append(_event(line_number, timestamp, "memory_context", role=role))
+            elif role == "user" and text and not _is_system_message(text):
+                digest = _message_hash(text)
+                if digest not in seen_human:
+                    seen_human.add(digest)
+                    events.append(
+                        _event(
+                            line_number,
+                            timestamp,
+                            "human_message",
+                            message_hash=digest,
+                            correction_candidate=bool(CORRECTION_RE.match(text.strip())),
+                        )
+                    )
+            continue
+
+        if record_type == "response_item" and payload_type in {
+            "function_call",
+            "custom_tool_call",
+        }:
+            call_id = _string(payload.get("call_id")) or _string(payload.get("id"))
+            name = _string(payload.get("name"))
+            custom = payload_type == "custom_tool_call"
+            source = _string(payload.get("input")) if custom else ""
+            nested = _nested_tools(source) if name == "exec" else []
+            calls[call_id] = {"tool": name, "custom": custom, "nested_tools": nested}
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "tool_attempt",
+                    call_id=call_id,
+                    tool=name,
+                    encoding=payload_type,
+                    nested_tool_attempts=nested,
+                    nested_results="not_individually_attributed" if nested else None,
+                )
+            )
+            continue
+
+        if record_type == "response_item" and payload_type in {
+            "function_call_output",
+            "custom_tool_call_output",
+        }:
+            call_id = _string(payload.get("call_id"))
+            prior = calls.get(call_id, {})
+            rendered = _rendered_output_text(payload.get("output"))
+            status, exit_code = _outer_status(rendered)
+            tool = _string(prior.get("tool"))
+            if status == "unknown" and tool == "apply_patch":
+                if "apply_patch verification failed" in rendered:
+                    status = "failed"
+                elif "Done!" in rendered:
+                    status = "completed"
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "tool_result",
+                    call_id=call_id,
+                    tool=tool,
+                    status=status,
+                    exit_code=exit_code,
+                    nested_tool_attempts=prior.get("nested_tools", []),
+                    nested_results=(
+                        "not_individually_attributed"
+                        if prior.get("nested_tools")
+                        else None
+                    ),
+                )
+            )
+            continue
+
+        if record_type == "event_msg" and payload_type == "patch_apply_end":
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "patch_result",
+                    status="completed" if payload.get("success") is True else "failed",
+                )
+            )
+            continue
+
+        if record_type == "event_msg" and payload_type == "mcp_tool_call_end":
+            result = payload.get("result")
+            result_text = json.dumps(result, default=str) if result is not None else ""
+            invocation = _dict(payload.get("invocation"))
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "mcp_result",
+                    server=_string(invocation.get("server")),
+                    tool=_string(invocation.get("tool")),
+                    status="failed" if "Err" in result_text else "completed",
+                )
+            )
+            continue
+
+        if record_type == "event_msg" and payload_type == "task_complete":
+            events.append(_event(line_number, timestamp, "task_complete"))
+
+    return {
+        "provider": "codex",
+        "events": events,
+        "summary": {
+            "memory_context_observed": memory_context_observed,
+            "memory_context_absence_is_evidence": False,
+            "nested_exec_results_are_individually_attributed": False,
+        },
+    }
+
+
+def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
+    events: list[dict[str, object]] = []
+    calls: dict[str, str] = {}
+    memory_context_observed = False
+
+    for line_number, raw in enumerate(lines, 1):
+        try:
+            record = _dict(json.loads(raw))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        timestamp = _string(record.get("timestamp"))
+        record_type = _string(record.get("type"))
+        message = _dict(record.get("message"))
+        content = message.get("content")
+
+        if record_type == "assistant" and isinstance(content, list):
+            for block_value in content:
+                block = _dict(block_value)
+                if _string(block.get("type")) != "tool_use":
+                    continue
+                call_id = _string(block.get("id"))
+                tool = _string(block.get("name"))
+                calls[call_id] = tool
+                events.append(
+                    _event(
+                        line_number,
+                        timestamp,
+                        "tool_attempt",
+                        call_id=call_id,
+                        tool=tool,
+                        encoding="tool_use",
+                    )
+                )
+            continue
+
+        if record_type != "user":
+            continue
+
+        text = _content_text(content, {"text"})
+        if _is_memory_context(text) and not memory_context_observed:
+            memory_context_observed = True
+            events.append(_event(line_number, timestamp, "memory_context", role="user"))
+
+        if isinstance(content, str) and content and not _is_system_message(content):
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "human_message",
+                    message_hash=_message_hash(content),
+                    correction_candidate=bool(CORRECTION_RE.match(content.strip())),
+                )
+            )
+            continue
+
+        if not isinstance(content, list):
+            continue
+        if text and not _is_system_message(text):
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "human_message",
+                    message_hash=_message_hash(text),
+                    correction_candidate=bool(CORRECTION_RE.match(text.strip())),
+                )
+            )
+        for block_value in content:
+            block = _dict(block_value)
+            if _string(block.get("type")) != "tool_result":
+                continue
+            call_id = _string(block.get("tool_use_id"))
+            result_text = _content_text(block.get("content"), {"text"})
+            is_error = block.get("is_error") is True
+            events.append(
+                _event(
+                    line_number,
+                    timestamp,
+                    "tool_result",
+                    call_id=call_id,
+                    tool=calls.get(call_id, ""),
+                    status="failed" if is_error else "completed",
+                    error_marker=bool(
+                        is_error
+                        or "Traceback" in result_text
+                        or "Error:" in result_text
+                    ),
+                )
+            )
+
+    return {
+        "provider": "claude",
+        "events": events,
+        "summary": {
+            "memory_context_observed": memory_context_observed,
+            "memory_context_absence_is_evidence": False,
+            "session_start_output_is_transcript_persisted": False,
+        },
+    }
+
+
+def detect_provider(lines: Iterable[str]) -> str:
+    for index, raw in enumerate(lines):
+        if index == 20:
+            break
+        try:
+            record = _dict(json.loads(raw))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if record.get("type") == "session_meta" or "payload" in record:
+            return "codex"
+        if record.get("type") in {"assistant", "user", "progress"}:
+            return "claude"
+    raise ValueError("Could not detect Claude or Codex JSONL format")
+
+
+def parse_session(path: Path, provider: str = "auto") -> dict[str, object]:
+    if provider == "auto":
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            resolved_provider = detect_provider(handle)
+    else:
+        resolved_provider = provider
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        parsed = _parse_codex(handle) if resolved_provider == "codex" else _parse_claude(handle)
+    parsed["path"] = str(path)
+    return parsed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--provider", choices=("auto", "claude", "codex"), default="auto")
+    arguments = parser.parse_args()
+    print(json.dumps(parse_session(arguments.path, arguments.provider), indent=2))
+
+
+if __name__ == "__main__":
+    main()

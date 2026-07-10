@@ -40,7 +40,7 @@ that lens (overlap is fine; blind spots are not):
 
 - **Critic 1 — Information-loss skeptic.** Hunts for anything a destructive or
   consolidating action would silently erase: a case-specific caveat, an exception, a worked
-  example, provenance, a WHY. Default suspicion toward DELETE / MERGE / ABSTRACT / SIMPLIFY
+  example, provenance, a WHY. Default suspicion toward QUARANTINE / MERGE / ABSTRACT / SIMPLIFY
   / SPLIT. Question: *"After this runs, what does a future task no longer know that it
   needed?"*
 - **Critic 2 — Evidence skeptic.** Re-verifies the *justification* of each action against
@@ -87,7 +87,7 @@ For each action, combine the three verdicts:
 | Any `KILL` you **cannot** rebut with cited evidence | **Drop the action.** |
 | Any `KILL` you **can** rebut with cited evidence | Survives — **log the rebuttal + evidence.** |
 | `AMEND` (and no surviving `KILL`) | Rewrite the action to the safer form; it re-enters next round as a new candidate. |
-| Destructive action (DELETE/MERGE/ABSTRACT/SPLIT) with **any** unrebutted `KILL` | **Drop** — higher bar; do not try to salvage. |
+| Retirement/consolidation action (QUARANTINE/MERGE/ABSTRACT/SPLIT) with **any** unrebutted `KILL` | **Drop** — higher bar; do not try to salvage. |
 
 Rebuttal discipline (principle 12): you may overrule a critic **only** by citing something
 concrete. If your rebuttal would be "I still think it's fine," the critic wins. When two

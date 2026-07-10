@@ -12,7 +12,7 @@ below that justifies the move.
 | **L1 · CLAUDE.md** (project) | project conventions: stack, branch policy, repo layout, structural rules | Yes — auto-loaded | file edit + commit (project repo) |
 | **L1g · agent-workflows/CLAUDE.md** | universal cross-project conventions (code style, agent rules) | Yes — auto-loaded | file edit + commit+push (shared) |
 | **L2 · Starred memory** | critical self-contained rules/gotchas that must always apply | Yes — auto-injected with CLAUDE.md authority | `star_entry` / `unstar_entry` |
-| **L3 · Memory (unstarred)** | detailed gotchas, solutions, references, patterns; **project/repo-specific** | No — surfaced by search | `create/update/supersede/delete_entry` |
+| **L3 · Memory (unstarred)** | detailed gotchas, solutions, references, patterns; **project/repo-specific** | No — surfaced by search | `create/update/supersede`; `delete_entry` only as reversible quarantine |
 | **Skill** | **portable methodology** — the reusable HOW: checklists, procedures, references | Loaded when the skill runs | file edit + commit+push (shared) |
 
 The two anchoring facts that drive every rule:
@@ -55,11 +55,11 @@ For each durable lesson the evidence surfaced, ask in order:
 
 | Move | When | Mechanics |
 |---|---|---|
-| **memory → skill** | a memory entry is really a portable method (a HOW that any project could use), and a skill owns that area | graft the method into the skill's checklist/reference (gated K-style edit); **then** delete/supersede the entry — *skill edit committed first, entry removed after* |
+| **memory → skill** | a memory entry is really a portable method (a HOW that any project could use), and a skill owns that area | graft the method into the skill's checklist/reference (gated K-style edit); **then** quarantine/supersede the entry — *skill edit committed first, entry retired after* |
 | **skill → memory / CLAUDE.md** | a shared skill contains project-specific detail (leak) | move the specifics to L3 (memory, project-scoped) or the project L1 (CLAUDE.md); strip them from the skill, leaving the portable method |
 | **L3 → L2 (star)** | an unstarred entry encodes a simple rule that the evidence shows was violated ≥2× | `star_entry`; tighten the summary so it reads as an imperative rule |
 | **L2 → L3 (unstar)** | a starred entry no longer earns always-in-context cost (niche, superseded) | `unstar_entry`; keep it searchable in L3 |
-| **L3 → L1** | a memory fact is actually a navigation convention a new contributor needs | add one line to the project CLAUDE.md; delete/supersede the entry |
+| **L3 → L1** | a memory fact is actually a navigation convention a new contributor needs | add one line to the project CLAUDE.md; quarantine/supersede the entry |
 | **L1 → L2/L3** | CLAUDE.md is bloated with a self-contained gotcha that doesn't need to be always-loaded | move it to a (starred or plain) memory entry; trim CLAUDE.md |
 
 ## Guardrails (the portability/altitude skeptic enforces these)
@@ -73,8 +73,8 @@ For each durable lesson the evidence surfaced, ask in order:
 - **Method ≠ instance.** One project incident is an *instance*, not a method. Promote to a skill
   only when the lesson generalizes into a repeatable check that isn't tied to the one case
   (this is the abstraction discipline from `dream/references/audit-checklist.md` §M).
-- **Order of operations for cross-layer moves:** create/commit the destination first, delete the
-  source second. Never delete the only copy of a load-bearing fact before its replacement exists
-  and is durable (committed for skills, written for memory).
+- **Order of operations for cross-layer moves:** create/commit the destination first, quarantine
+  the source second. Never retire the only copy of a load-bearing fact before its replacement
+  exists and is durable (committed for skills, written for memory).
 - **CLAUDE.md edits to the shared file (L1g) are skill-channel** — they go through the gate and
   the mandatory commit+push, same as skill edits.
