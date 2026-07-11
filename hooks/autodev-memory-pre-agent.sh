@@ -28,8 +28,18 @@ SESSION_ID=$(jq -r '.session_id // .sessionId // ""' <<<"$INPUT" 2>/dev/null)
 [[ -n "$SESSION_ID" ]] || { _log SKIP 'session_id=absent'; emit_empty; }
 AGENT_TYPE=$(jq -r '.tool_input.subagent_type // "generic"' <<<"$INPUT" 2>/dev/null)
 
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$0"
+if [[ -L "$0" ]]; then
+  _RESOLVED_SCRIPT=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null) \
+    || { _log SKIP 'helper=unresolved-hook-symlink'; emit_empty; }
+  [[ -n "$_RESOLVED_SCRIPT" && "$_RESOLVED_SCRIPT" != "$0" ]] \
+    || { _log SKIP 'helper=unresolved-hook-symlink'; emit_empty; }
+  SCRIPT_PATH="$_RESOLVED_SCRIPT"
+fi
+HOOK_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 HELPER="$HOOK_DIR/../bin/autodev-memory-task-packet"
+# Resolve the hook symlink first so the helper comes from the exact same immutable
+# version tree. Never prefer ~/.claude/bin or an arbitrary PATH entry.
 [[ -x "$HELPER" ]] || { _log SKIP 'helper=unavailable'; emit_empty; }
 PACKET=$(printf '%s' "$PROMPT" | "$HELPER" --cwd "$CWD" --session-id "$SESSION_ID" \
   --agent-type "$AGENT_TYPE" --provider claude --mechanism prompt_rewrite \
