@@ -102,6 +102,47 @@ class HookContractTest(unittest.TestCase):
                              ["task_selection", "packet_prepared", "child_packet"])
             self.assertEqual(events[-1]["confirmation_stage"], "pretool_output_emitted")
 
+    def test_pre_agent_installed_layout_resolves_managed_local_bin_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            hooks = home / ".claude/hooks"
+            binaries = home / ".local/bin"
+            hooks.mkdir(parents=True)
+            binaries.mkdir(parents=True)
+            (hooks / "autodev-memory-pre-agent.sh").symlink_to(
+                ROOT / "hooks/autodev-memory-pre-agent.sh"
+            )
+            (hooks / "memory_context.py").symlink_to(ROOT / "hooks/memory_context.py")
+            helper = binaries / "autodev-memory-task-packet"
+            helper.write_text(
+                "#!/bin/sh\n"
+                "cat >/dev/null\n"
+                "printf '%s\\n' '<autodev-memory-task-context status=\"delivered\" "
+                "packet-version=\"v2\" corpus-generation=\""
+                + "0" * 64
+                + "\" delivery-id=\"canary\">safe</autodev-memory-task-context>'\n"
+            )
+            helper.chmod(0o755)
+            payload = {
+                "tool_name": "Agent",
+                "session_id": "installed-session",
+                "cwd": str(ROOT),
+                "tool_input": {"subagent_type": "reviewer", "prompt": "installed canary"},
+            }
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            result = subprocess.run(
+                [str(hooks / "autodev-memory-pre-agent.sh")],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
+            self.assertIn("installed canary", updated)
+            self.assertEqual(updated.count("<autodev-memory-task-context"), 1)
+
     def test_pre_agent_output_failure_never_confirms_prepared_packet(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

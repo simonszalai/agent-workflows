@@ -30,6 +30,12 @@ AGENT_TYPE=$(jq -r '.tool_input.subagent_type // "generic"' <<<"$INPUT" 2>/dev/n
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HELPER="$HOOK_DIR/../bin/autodev-memory-task-packet"
+if [[ ! -x "$HELPER" ]]; then
+  # The versioned installer links hook files into ~/.claude/hooks and binaries
+  # into ~/.local/bin, so they are no longer sibling directories at runtime.
+  # Prefer that fixed managed destination over an arbitrary PATH lookup.
+  HELPER="$HOME/.local/bin/autodev-memory-task-packet"
+fi
 [[ -x "$HELPER" ]] || { _log SKIP 'helper=unavailable'; emit_empty; }
 PACKET=$(printf '%s' "$PROMPT" | "$HELPER" --cwd "$CWD" --session-id "$SESSION_ID" \
   --agent-type "$AGENT_TYPE" --provider claude --mechanism prompt_rewrite \
