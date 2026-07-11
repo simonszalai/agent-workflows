@@ -378,6 +378,40 @@ def _restore_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
         raise
 
 
+def _validate_snapshot(snapshot: object) -> None:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("exists"), bool):
+        raise SystemExit("install-agent-workflows: invalid rollback snapshot")
+    if not snapshot["exists"]:
+        return
+    if not isinstance(snapshot.get("mode"), int) or not isinstance(snapshot.get("content_b64"), str):
+        raise SystemExit("install-agent-workflows: invalid rollback snapshot")
+    try:
+        base64.b64decode(snapshot["content_b64"], validate=True)
+    except (ValueError, TypeError) as error:
+        raise SystemExit("install-agent-workflows: invalid rollback snapshot") from error
+
+
+def _preflight_legacy_roots(roots: list[dict[str, str]], home: Path, store: Path) -> None:
+    """Prove legacy restoration can complete before rollback mutates any live state."""
+    allowed = {name for name, _ in DESTINATIONS}
+    for item in roots:
+        if not isinstance(item, dict) or item.get("relative_path") not in allowed \
+                or not isinstance(item.get("target"), str) or not item["target"]:
+            raise SystemExit("install-agent-workflows: invalid legacy rollback path")
+        path = home / item["relative_path"]
+        if path.is_symlink():
+            if os.readlink(path) != item["target"]:
+                raise SystemExit(f"install-agent-workflows: legacy root target changed: {path}")
+            continue
+        if path.is_dir():
+            unmanaged = [child for child in path.iterdir()
+                         if not (child.is_symlink() and _is_under(child.resolve(strict=False), store))]
+            if unmanaged:
+                raise SystemExit(f"install-agent-workflows: legacy rollback root is not empty: {path}")
+        elif path.exists():
+            raise SystemExit(f"install-agent-workflows: cannot restore legacy root: {path}")
+
+
 def _restore_legacy_roots(roots: list[dict[str, str]], home: Path, store: Path) -> None:
     allowed = {name for name, _ in DESTINATIONS}
     for item in roots:
@@ -461,7 +495,7 @@ def install(source: Path, home: Path, commit: str) -> None:
             "version": commit, "version_target": f"versions/{commit}",
             "manifest_sha256": hashlib.sha256((final / "manifest.json").read_bytes()).hexdigest(),
         })
-    except BaseException:
+    except BaseException as install_error:
         if old:
             atomic_symlink(current, Path(old))
         else:
@@ -479,14 +513,22 @@ def install(source: Path, home: Path, commit: str) -> None:
                 atomic_symlink(link, Path(target))
         for path in settings_paths:
             _restore_snapshot(path, settings_snapshots[str(path)])
-        for path, target in reversed(migrated_roots):
-            try:
-                path.rmdir()
-                path.symlink_to(target)
-            except OSError:
-                pass
-        _restore_snapshot(previous_path, previous_snapshot)
-        raise
+        restore_error: BaseException | None = None
+        try:
+            _restore_legacy_roots(
+                [{"relative_path": str(path.relative_to(home)), "target": target}
+                 for path, target in migrated_roots],
+                home,
+                store,
+            )
+        except BaseException as error:
+            restore_error = error
+        finally:
+            _restore_snapshot(previous_path, previous_snapshot)
+        if restore_error is not None:
+            raise RuntimeError("install-agent-workflows: failed to restore legacy roots") \
+                from restore_error
+        raise install_error
 
 
 def rollback(home: Path) -> None:
@@ -498,9 +540,13 @@ def rollback(home: Path) -> None:
     target_name = previous.get("version_target")
     legacy_roots = previous.get("legacy_roots", [])
     if target_name:
+        target_match = re.fullmatch(r"versions/([0-9a-f]{40,64})", str(target_name))
+        if not target_match:
+            raise SystemExit("install-agent-workflows: rollback target is invalid")
         target = store / target_name
         if not target.is_dir() or store / "versions" not in target.parents:
             raise SystemExit("install-agent-workflows: rollback target is invalid")
+        _verify_existing(target, target_match.group(1))
     elif not legacy_roots:
         raise SystemExit("install-agent-workflows: rollback transaction has no target")
     desired_mappings: list[tuple[Path, Path]] = []
@@ -513,32 +559,69 @@ def rollback(home: Path) -> None:
     allowed_settings = {str(home / ".claude/settings.json"), str(home / ".codex/hooks.json")}
     if not isinstance(settings, dict) or not set(settings).issubset(allowed_settings):
         raise SystemExit("install-agent-workflows: invalid settings rollback snapshot")
-    for raw_path, snapshot in settings.items():
-        _restore_snapshot(Path(raw_path), snapshot)
+    for snapshot in settings.values():
+        _validate_snapshot(snapshot)
     current = store / "current"
     old = os.readlink(current) if current.is_symlink() else ""
-    if target_name:
-        atomic_symlink(current, Path(target_name))
-        desired = {link for link, _ in desired_mappings}
-        for link in managed_links(home, store, store):
-            if link not in desired:
-                link.unlink()
-        for link, target in desired_mappings:
-            atomic_symlink(link, target)
-    else:
+    if current.exists() and not current.is_symlink():
+        raise SystemExit("install-agent-workflows: current activation is not a symlink")
+    _preflight_legacy_roots(legacy_roots, home, store)
+
+    live_settings = {raw_path: _snapshot(Path(raw_path)) for raw_path in settings}
+    live_links = {link: os.readlink(link) for link in managed_links(home, store, store)}
+    current_json_path = store / "current.json"
+    previous_json_path = store / "previous.json"
+    current_json_snapshot = _snapshot(current_json_path)
+    previous_json_snapshot = _snapshot(previous_json_path)
+
+    try:
+        for raw_path, snapshot in settings.items():
+            _restore_snapshot(Path(raw_path), snapshot)
+        if target_name:
+            atomic_symlink(current, Path(target_name))
+            desired = {link for link, _ in desired_mappings}
+            for link in managed_links(home, store, store):
+                if link not in desired:
+                    link.unlink()
+            for link, target in desired_mappings:
+                atomic_symlink(link, target)
+        else:
+            _remove_managed_links(home, store)
+            try:
+                current.unlink()
+            except FileNotFoundError:
+                pass
+            _restore_legacy_roots(legacy_roots, home, store)
+        atomic_json(current_json_path, {
+            "version": Path(target_name).name if target_name else "legacy",
+            "version_target": target_name,
+        })
+        atomic_json(previous_json_path, {
+            "version_target": old or None, "legacy_roots": [], "settings": {},
+        })
+    except BaseException:
+        # Roll back the rollback from the pre-mutation journal. This path is deliberately
+        # best-effort only for external filesystem races; every expected collision was preflighted.
+        for item in legacy_roots:
+            path = home / item["relative_path"]
+            if path.is_symlink() and os.readlink(path) == item["target"]:
+                path.unlink()
+                path.mkdir(parents=True, exist_ok=True)
+        if old:
+            atomic_symlink(current, Path(old))
+        else:
+            try:
+                current.unlink()
+            except FileNotFoundError:
+                pass
         _remove_managed_links(home, store)
-        try:
-            current.unlink()
-        except FileNotFoundError:
-            pass
-        _restore_legacy_roots(legacy_roots, home, store)
-    atomic_json(store / "current.json", {
-        "version": Path(target_name).name if target_name else "legacy",
-        "version_target": target_name,
-    })
-    atomic_json(store / "previous.json", {
-        "version_target": old or None, "legacy_roots": [], "settings": {},
-    })
+        for link, target in live_links.items():
+            atomic_symlink(link, Path(target))
+        for raw_path, snapshot in live_settings.items():
+            _restore_snapshot(Path(raw_path), snapshot)
+        _restore_snapshot(current_json_path, current_json_snapshot)
+        _restore_snapshot(previous_json_path, previous_json_snapshot)
+        raise
 
 
 def main() -> int:

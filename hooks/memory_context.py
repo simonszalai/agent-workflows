@@ -17,6 +17,7 @@ import os
 import re
 import tempfile
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -27,8 +28,32 @@ PARENT_LIMIT = 9_000
 CHILD_LIMIT = 3_000
 V2_NAMES = {"2", "v2", "packet-v2"}
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+HEX64_TOKEN = re.compile(r"^[0-9a-fA-F]{64}$")
 SHA256_TOKEN = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
 LEGACY_FALLBACK_SUNSET = date(2026, 8, 15)
+
+TELEMETRY_FIELDS: dict[str, dict[str, type | tuple[type, ...]]] = {
+    "parent_packet": {
+        "provider": str, "mechanism": str, "status": str, "packet_version": str,
+        "corpus_generation": str, "render_hash": str, "chars": int,
+        "session_key": str, "request_epoch": int,
+    },
+    "task_selection": {
+        "provider": str, "mechanism": str, "status": str, "by_skill_count": int,
+        "search_count": int, "selected_count": int, "selected_ids": list,
+        "expansion_status": str, "expanded_ids": list, "failure_stage": str,
+        "session_key": str, "delegation_id": str, "corpus_generation": str,
+    },
+    "child_packet": {
+        "provider": str, "mechanism": str, "status": str, "packet_version": str,
+        "corpus_generation": str, "render_hash": str, "chars": int,
+        "session_key": str, "delegation_id": str,
+    },
+}
+TELEMETRY_TOKEN_FIELDS = {
+    "provider", "mechanism", "status", "packet_version", "failure_stage",
+}
+TELEMETRY_TOKEN = re.compile(r"^[A-Za-z0-9._:+-]{1,128}$")
 
 
 class PacketError(ValueError):
@@ -99,6 +124,10 @@ def parse_session_response(response: dict[str, Any]) -> dict[str, Any]:
             packet.get("generation", packet.get("corpus_generation")),
             "generation",
         )
+        generation_match = HEX64_TOKEN.fullmatch(generation)
+        if not generation_match:
+            raise PacketError("packet v2 generation is not a SHA-256 digest")
+        generation = generation_match.group(0).lower()
         render_hash = _safe_token(packet.get("render_hash"), "render_hash")
         hash_match = SHA256_TOKEN.fullmatch(render_hash)
         if not hash_match:
@@ -170,7 +199,8 @@ def render_parent_context(packet: dict[str, Any], source: str, searchable_count:
         "available. Do NOT announce this to the user."
     )
     context = (
-        f'<autodev-memory-hook-result source="session-start" packet-version="{version}">\n'
+        f'<autodev-memory-hook-result source="session-start" status="delivered" '
+        f'packet-version="{version}">\n'
         f"{status}\n\n{packet['text']}\n"
         "</autodev-memory-hook-result>"
     )
@@ -242,14 +272,23 @@ def _session_lock(cache_dir: Path, session_id: str):
         os.close(fd)
 
 
-def invalidate_cache(cache_dir: Path, session_id: str) -> None:
+def invalidate_cache(cache_dir: Path, session_id: str, request_epoch: int | None = None) -> None:
     if not session_id or cache_dir.is_symlink():
         return
     index, _ = _cache_paths(cache_dir, session_id)
-    try:
-        index.unlink()
-    except FileNotFoundError:
-        pass
+    with _session_lock(cache_dir, session_id):
+        if request_epoch is not None:
+            try:
+                current = json.loads(index.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, TypeError):
+                current = {}
+            current_epoch = current.get("request_epoch", 0)
+            if isinstance(current_epoch, int) and current_epoch > request_epoch:
+                return
+        try:
+            index.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def cleanup_cache(cache_dir: Path, keep_days: int = 14) -> None:
@@ -360,6 +399,42 @@ def read_cache(cache_dir: Path, session_id: str, project: str, repo: str) -> dic
 def _append_telemetry(path: Path | None, **event: object) -> None:
     if path is None:
         return
+    event_name = event.get("event")
+    schema = TELEMETRY_FIELDS.get(str(event_name))
+    if schema is None:
+        raise ValueError("unknown telemetry event")
+    unknown = set(event) - {"event", *schema}
+    if unknown:
+        raise ValueError(f"unknown telemetry fields for {event_name}: {sorted(unknown)}")
+    for key, value in event.items():
+        if key == "event" or value is None:
+            continue
+        expected = schema[key]
+        if not isinstance(value, expected):
+            raise TypeError(f"invalid telemetry field type: {event_name}.{key}")
+        if isinstance(value, list) and not all(isinstance(item, str) for item in value):
+            raise TypeError(f"telemetry list must contain strings: {event_name}.{key}")
+        if key in TELEMETRY_TOKEN_FIELDS and isinstance(value, str) \
+                and not TELEMETRY_TOKEN.fullmatch(value):
+            raise ValueError(f"invalid telemetry token: {event_name}.{key}")
+        if key == "delegation_id" and isinstance(value, str) \
+                and not re.fullmatch(r"[0-9a-f]{24}", value):
+            raise ValueError("invalid telemetry delegation_id")
+        if key == "session_key" and isinstance(value, str) \
+                and not re.fullmatch(r"[0-9a-f]{24}", value):
+            raise ValueError("invalid telemetry session_key")
+        if key == "corpus_generation" and isinstance(value, str) \
+                and value not in {"legacy", "unavailable"} and not HEX64_TOKEN.fullmatch(value):
+            raise ValueError("invalid telemetry corpus_generation")
+        if key == "render_hash" and isinstance(value, str) \
+                and value != "unavailable" and not SHA256_TOKEN.fullmatch(value):
+            raise ValueError("invalid telemetry render_hash")
+        if key in {"selected_ids", "expanded_ids"} and isinstance(value, list):
+            try:
+                for item in value:
+                    uuid.UUID(item)
+            except ValueError as error:
+                raise ValueError(f"invalid telemetry entry id: {event_name}.{key}") from error
     if path.parent.is_symlink() or path.is_symlink():
         return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -420,8 +495,8 @@ def hook_output(context: str) -> dict[str, Any]:
 
 
 def _escape_task_envelope(text: str) -> str:
-    return (text.replace("<autodev-memory-task-context>",
-                         "&lt;autodev-memory-task-context&gt;")
+    return (text.replace("<autodev-memory-task-context",
+                         "&lt;autodev-memory-task-context")
                 .replace("</autodev-memory-task-context>",
                          "&lt;/autodev-memory-task-context&gt;"))
 
@@ -467,7 +542,21 @@ def render_task_packet(manifest: dict[str, Any] | None, response: dict[str, Any]
             "No automatic task memories were selected. Search autodev memory for task-specific "
             "gotchas when the task touches an indexed area; report unavailable if the tool cannot be used."
         )
-    packet = "<autodev-memory-task-context>\n" + "\n\n".join(sections) + "\n</autodev-memory-task-context>"
+    attributes = {
+        "status": _string(response.get("packet_status")) or ("delivered" if manifest else "base_unavailable"),
+        "packet-version": (
+            _string(response.get("packet_version"))
+            or _string((manifest or {}).get("packet_version"))
+            or "unavailable"
+        ),
+        "corpus-generation": generation or "unavailable",
+        "delivery-id": _string(response.get("delegation_id")),
+    }
+    rendered_attributes = " ".join(
+        f'{key}="{value}"' for key, value in attributes.items() if SAFE_TOKEN.fullmatch(value)
+    )
+    opening = f"<autodev-memory-task-context {rendered_attributes}>"
+    packet = opening + "\n" + "\n\n".join(sections) + "\n</autodev-memory-task-context>"
     if len(packet) > CHILD_LIMIT:
         # Drop whole expanded bodies first, then whole result lines; never slice semantic text.
         while detail_blocks and len(packet) > CHILD_LIMIT:
@@ -481,7 +570,7 @@ def render_task_packet(manifest: dict[str, Any] | None, response: dict[str, Any]
                     + _string(response.get("delivery_note"))
                 )
             packet = (
-                "<autodev-memory-task-context>\n"
+                opening + "\n"
                 + "\n\n".join(sections)
                 + "\n</autodev-memory-task-context>"
             )
@@ -493,7 +582,7 @@ def render_task_packet(manifest: dict[str, Any] | None, response: dict[str, Any]
                 "Selected memory handles are the full IDs above. Additional selections were omitted "
                 "as whole entries to preserve the task budget. " + _string(response.get("delivery_note"))
             )
-            packet = ("<autodev-memory-task-context>\n" + "\n\n".join(sections)
+            packet = (opening + "\n" + "\n\n".join(sections)
                       + "\n</autodev-memory-task-context>")
     if len(packet) > CHILD_LIMIT:
         raise PacketError("backend child base leaves no room within the 3000-character task budget")
@@ -533,10 +622,11 @@ def _main() -> int:
     invalidate = sub.add_parser("invalidate")
     invalidate.add_argument("--session-id", required=True)
     invalidate.add_argument("--cache-dir", type=Path, required=True)
+    invalidate.add_argument("--request-epoch", type=int)
 
     args = parser.parse_args()
     if args.command == "invalidate":
-        invalidate_cache(args.cache_dir, args.session_id)
+        invalidate_cache(args.cache_dir, args.session_id, args.request_epoch)
         return 0
 
     try:
@@ -572,13 +662,15 @@ def _main() -> int:
                 status="fallback" if packet["fallback"] else "delivered",
                 packet_version=packet["version"],
                 corpus_generation=packet["generation"],
+                render_hash=packet["render_hash"],
                 chars=len(context),
                 session_key=session_key,
+                request_epoch=args.request_epoch,
             )
             print(json.dumps(hook_output(context)))
             return 0
         except PacketError as error:
-            invalidate_cache(args.cache_dir, args.session_id)
+            invalidate_cache(args.cache_dir, args.session_id, args.request_epoch)
             _append_telemetry(
                 args.telemetry_file,
                 event="parent_packet",
@@ -587,8 +679,10 @@ def _main() -> int:
                 status="unavailable",
                 packet_version="unknown",
                 corpus_generation=None,
+                render_hash=None,
                 chars=0,
                 session_key=session_key,
+                request_epoch=args.request_epoch,
             )
             print(json.dumps(hook_output(render_unavailable_context(str(error)))))
             return 2
@@ -602,6 +696,8 @@ def _main() -> int:
         mechanism=args.mechanism,
         status="delivered",
         packet_version=_string((manifest or {}).get("packet_version")) or "unavailable",
+        corpus_generation=_string((manifest or {}).get("corpus_generation")) or "unavailable",
+        render_hash=_string((manifest or {}).get("render_hash")) or "unavailable",
         chars=len(packet),
     )
     print(packet)

@@ -94,6 +94,28 @@ say — the only valid peer contribution is the envelope its process returned.
   .context/review/<provider>.json` loops, then wait. Use one <=3K task envelope; never rely on
   ambient child SessionStart.
 
+Create the referenced file before either dispatch path:
+
+```bash
+mkdir -p .context/review
+base="$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)"
+for provider in $(agent-workflow-provider --peers); do
+  memory_packet=".context/review/${provider}-memory-task.md"
+  if ! { printf 'Review diff against %s\n' "$base"; cat .context/review/diff.patch; } | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type reviewer-fable --provider "$provider" --mechanism external_peer \
+        --task-prompt-stdin --allow-unavailable > "$memory_packet"; then
+    cat > "$memory_packet" <<'EOF'
+<autodev-memory-task-context status="unavailable">
+Memory context is unavailable. Do not infer that review memories were loaded.
+</autodev-memory-task-context>
+EOF
+  fi
+  # Pass "$memory_packet" to external-reviewer or to
+  # external-agent --task review ... --memory-context-file "$memory_packet".
+done
+```
+
 Each peer returns the same envelope shape as native reviewers
 (`{reviewer_key, findings, residual_risks, testing_gaps}` per `findings-schema.json`); a
 failed provider returns a valid empty envelope with a `residual_risks` note — surface it,

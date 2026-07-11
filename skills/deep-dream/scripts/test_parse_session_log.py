@@ -258,6 +258,24 @@ class ParseSessionLogTest(unittest.TestCase):
         }], "claude")
         self.assertEqual(parsed["summary"]["session_role"], "child")
 
+    def test_envelope_status_version_and_internal_delivery_id_are_parsed_without_body(self) -> None:
+        delivery_id = "c" * 24
+        text = (
+            f'<autodev-memory-task-context status="unavailable" packet-version="v2" '
+            f'corpus-generation="{"d" * 64}" delivery-id="{delivery_id}">'
+            "private memory body</autodev-memory-task-context>"
+        )
+        records = [{"type": "user", "isSidechain": True, "message": {"content": text}}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            path.write_text(json.dumps(records[0]))
+            parsed = parse_session(path, "claude", include_correlation=True)
+        event = parsed["events"][0]
+        self.assertEqual(event["delivery_status"], "unavailable")
+        self.assertEqual(event["packet_version"], "v2")
+        self.assertEqual(event["delivery_id"], delivery_id)
+        self.assertNotIn("private memory body", json.dumps(parsed))
+
 
 if __name__ == "__main__":
     unittest.main()

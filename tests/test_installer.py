@@ -112,6 +112,32 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(collision.read_text(), "mine")
             self.assertFalse((home / ".local/share/agent-workflows/current").exists())
 
+    def test_legacy_rollback_collision_is_preflighted_before_live_state_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            home = root / "home"
+            (home / ".claude").mkdir(parents=True)
+            legacy = home / ".claude/agents"
+            legacy.symlink_to(source / "agents")
+            installed = self.run_install(source, home)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            current = home / ".local/share/agent-workflows/current"
+            active_target = current.readlink()
+            collision = legacy / "operator-owned.txt"
+            collision.write_text("keep")
+
+            rollback = self.run_install(source, home, "--rollback")
+            self.assertNotEqual(rollback.returncode, 0)
+            self.assertEqual(current.readlink(), active_target)
+            self.assertTrue((legacy / "builder.md").is_symlink())
+            self.assertEqual(collision.read_text(), "keep")
+
+            collision.unlink()
+            rollback = self.run_install(source, home, "--rollback")
+            self.assertEqual(rollback.returncode, 0, rollback.stderr)
+            self.assertTrue(legacy.is_symlink())
+
     def test_dirty_worktree_is_not_copied_into_commit_named_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

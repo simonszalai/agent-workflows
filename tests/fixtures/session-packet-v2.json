@@ -1,25 +1,29 @@
 {
-  "context_version": "v2",
-  "project": "autodev",
-  "repo": "agent-workflows",
-  "register_status": "existing",
-  "packet": {
-    "text": "## Memory Rules\n- Use the bounded packet",
-    "chars": 40,
-    "budget_chars": 8700,
-    "delivery_budget_chars": 9000,
-    "adapter_headroom_chars": 300,
-    "headroom_chars": 8660,
-    "generation": "generation-sha256",
-    "render_hash": "5798394f1441bba8c8a091eb5443a9ab994a2b97077d5030cbb653d6db49d455",
-    "health": "ok",
-    "child_base_text": "## Critical memory rules\n- rule",
-    "child_base_chars": 31,
-    "sections": [{"key": "rules", "label": "Memory rules", "chars": 40, "included_count": 1, "omitted_count": 0}],
-    "handles": {"always_rule_ids": ["00000000-0000-0000-0000-000000000001"], "catalog_representative_ids": ["00000002"]}
+  "catalog": {
+    "categorized": 1,
+    "coverage_percent": 100.0,
+    "topics": [{"aliases": ["hooks"], "count": 1, "key": "testing-investigation", "label": "Testing and investigation", "representatives": [{"id": "00000002", "title": "Inspect hook failures"}]}],
+    "uncategorized": 0
   },
-  "corpus": {"searchable": 2},
-  "catalog": {"topics": [], "coverage_percent": 100.0, "categorized": 1, "uncategorized": 0},
-  "scope": {"repo_scoped": 1, "project_wide": 0, "global_universal": 0, "global_repo_matched": 0, "repo_mismatched_excluded": 0},
+  "context_version": "v2",
+  "corpus": {"activation_modes": {"always": 1, "search_only": 1}, "categorized": 1, "deleted": 0, "inactive": 0, "searchable": 2, "superseded": 0, "total": 2, "uncategorized": 0},
+  "packet": {
+    "adapter_headroom_chars": 300,
+    "budget_chars": 8700,
+    "chars": 37,
+    "child_base_chars": 31,
+    "child_base_text": "## Critical memory rules\n- rule",
+    "delivery_budget_chars": 9000,
+    "generation": "0000000000000000000000000000000000000000000000000000000000000000",
+    "handles": {"always_rule_ids": ["00000000-0000-0000-0000-000000000001"], "catalog_representative_ids": ["00000002"]},
+    "headroom_chars": 8663,
+    "health": "ok",
+    "render_hash": "1b5d246995a2303cef1cbecc9b2313b380f8a29fb1e39624cc680f87f1ddf098",
+    "sections": [{"chars": 37, "included_count": 1, "key": "rules", "label": "Memory rules", "omitted_count": 0}],
+    "text": "## Memory Rules\n- A compact rule card"
+  },
+  "project": "autodev",
+  "repo": "autodev-memory",
+  "scope": {"global_repo_matched": 0, "global_universal": 0, "project_wide": 1, "repo_mismatched_excluded": 0, "repo_scoped": 1},
   "warnings": []
 }

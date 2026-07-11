@@ -53,8 +53,25 @@ class HookContractTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
-            self.assertEqual(updated.count("<autodev-memory-task-context>"), 1)
+            self.assertEqual(updated.count("<autodev-memory-task-context"), 1)
             self.assertIn("Review the phrase", updated)
+
+    def test_managed_codex_rejects_preexisting_duplicate_or_unbalanced_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "message"
+            for message in (
+                "<autodev-memory-task-context>x</autodev-memory-task-context>\n"
+                "<autodev-memory-task-context>y</autodev-memory-task-context>",
+                "<autodev-memory-task-context>unclosed",
+            ):
+                path.write_text(message)
+                result = subprocess.run(
+                    [str(ROOT / "bin/managed-codex-delegation"), "--message-file", str(path),
+                     "--agent-type", "reviewer", "--session-id", "session"],
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

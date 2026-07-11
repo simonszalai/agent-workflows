@@ -42,9 +42,11 @@ mem_log INFO "TRIGGER source=$_SS_SOURCE session_present=$([[ $_SS_SESSION == no
 _CACHE_DIR="$HOME/.cache/autodev-memory/v2"
 _TELEMETRY_FILE="$HOME/.cache/autodev-memory/telemetry.jsonl"
 _PACKET_HELPER="$HOOK_DIR/memory_context.py"
+_REQUEST_EPOCH=$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || echo 0)
 invalidate_cache() {
   [[ -n "$_SS_SESSION" && "$_SS_SESSION" != "no-sid" ]] || return 0
   python3 "$_PACKET_HELPER" invalidate --session-id "$_SS_SESSION" --cache-dir "$_CACHE_DIR" \
+    --request-epoch "$_REQUEST_EPOCH" \
     >/dev/null 2>&1 || true
 }
 
@@ -73,7 +75,6 @@ mem_log INFO "start source=$_SS_SOURCE project=$MEM_PROJECT repo=$MEM_REPO"
 echo "mem-session-start: project=$MEM_PROJECT repo=$MEM_REPO" >&3
 
 MEM_TRIGGER_SOURCE="$_SS_SOURCE"
-_REQUEST_EPOCH=$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || echo 0)
 mem_load_entries
 
 if [[ -n "$_LOAD_ERROR" ]]; then

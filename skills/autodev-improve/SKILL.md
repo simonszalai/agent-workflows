@@ -122,19 +122,20 @@ for name, count in counts.most_common():
     print(f'{count:3d}  {name}')
 "
 
-# 3. Hook injections — what the memory system delivered to Claude
+# 3. Memory delivery — use the provider-aware parser; never dump packet/prompt bodies
 python3 -c "
 import json, sys
 for i, line in enumerate(open('$SESSION')):
     obj = json.loads(line)
     content = json.dumps(obj)
     if 'autodev-memory-hook-result' in content:
-        source = 'unknown'
-        for s in ['session-start']:  # the only live injector; pre-agent is a disabled stub
-            if s in content: source = s; break
-        entry_count = content.count('### [')
-        print(f'Line {i}: HOOK={source}, ~{entry_count} entries injected')
+        print(f'Line {i}: parent SessionStart envelope observed (body suppressed)')
+    if 'autodev-memory-task-context' in content:
+        print(f'Line {i}: managed task envelope observed (body suppressed)')
 "
+
+# For authoritative mechanism/status/generation/counts across Claude and Codex:
+python3 skills/deep-dream/scripts/audit_memory_compliance.py --days 7
 
 # 4. User messages (topics for memory matching)
 python3 -c "
@@ -330,9 +331,10 @@ debug_logs(project="<project>", operation="mcp_search", hours=168, limit=200)
 #### E. Injection size
 
 Check if injected context is too large:
-1. Starred memories token count (target: <2000 tokens)
-2. pre-agent injection is a disabled stub — verify it stays at 0 tokens
-3. Knowledge Menu line count (target: <200 lines)
+1. Final parent packet (hard maximum: 9000 characters, including adapter wrapper)
+2. Managed child task packet (hard maximum: 3000 characters)
+3. Verify whole-section omission rather than sliced rules/bodies, and distinguish unavailable
+   delivery from a delivered packet in the compliance audit
 
 ### Phase 4: Additional Dimensions
 

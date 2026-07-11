@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -202,7 +203,7 @@ def retrieve_task_context(
         selected.append({
             "id": entry_id,
             "title": raw.get("title", ""),
-            "summary": raw.get("summary") or raw.get("matched_excerpt") or "",
+            "summary": raw.get("summary") or raw.get("matched_chunk") or raw.get("matched_excerpt") or "",
             "type": raw.get("type", "memory"),
         })
     generation = str(search.get("corpus_generation") or corpus_generation or "")
@@ -282,6 +283,7 @@ def build_task_packet(
     task_prompt: str = "",
 ) -> str:
     manifest = read_cache(cache_dir, session_id, project, repo)
+    delegation_id = secrets.token_hex(12)
     tags, types = selection_for_agent(cwd, agent_type)
     outcome = retrieve_task_context(
         project=project, repo=repo, prompt=task_prompt, tags=tags, types=types,
@@ -289,7 +291,18 @@ def build_task_packet(
         corpus_generation=str((manifest or {}).get("corpus_generation", "")),
         external_no_mcp=mechanism.startswith("external"),
     )
-    packet = render_task_packet(manifest, outcome.packet_response())
+    packet_status = (
+        "base_unavailable" if not manifest
+        else "delivered" if outcome.status in {"selected", "no_match", "not_applicable"}
+        else "partial"
+    )
+    packet_response = outcome.packet_response()
+    packet_response.update(
+        delegation_id=delegation_id,
+        packet_status=packet_status,
+        packet_version=(manifest or {}).get("packet_version", "unavailable"),
+    )
+    packet = render_task_packet(manifest, packet_response)
     session_key = telemetry_session_key(telemetry_file, session_id)
     _append_telemetry(
         telemetry_file,
@@ -298,6 +311,7 @@ def build_task_packet(
         search_count=outcome.search_count, selected_count=len(outcome.selected_ids),
         selected_ids=outcome.selected_ids, expansion_status=outcome.expansion_status,
         expanded_ids=outcome.expanded_ids, failure_stage=outcome.failure_stage or None,
+        delegation_id=delegation_id, corpus_generation=outcome.corpus_generation or "unavailable",
         session_key=session_key,
     )
     _append_telemetry(
@@ -305,11 +319,12 @@ def build_task_packet(
         event="child_packet",
         provider=provider,
         mechanism=mechanism,
-        status=("delivered" if manifest and outcome.status in {"selected", "no_match",
-                                                                "not_applicable"} else
-                "partial" if manifest else "base_unavailable"),
+        status=packet_status,
         packet_version=(manifest or {}).get("packet_version", "unavailable"),
+        corpus_generation=outcome.corpus_generation or "unavailable",
+        render_hash=(manifest or {}).get("render_hash", "unavailable"),
         chars=len(packet),
+        delegation_id=delegation_id,
         session_key=session_key,
     )
     return packet

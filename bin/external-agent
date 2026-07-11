@@ -181,7 +181,7 @@ def read_memory_context(path: str | None) -> str:
         die(f"memory context file is empty or unreadable: {path}")
     if len(packet) > 3_000:
         die("memory context exceeds the 3000-character external-task budget")
-    if packet.count("<autodev-memory-task-context>") != 1 or \
+    if packet.count("<autodev-memory-task-context") != 1 or \
             packet.count("</autodev-memory-task-context>") != 1:
         die("memory context must contain exactly one bounded task-context envelope")
     return packet

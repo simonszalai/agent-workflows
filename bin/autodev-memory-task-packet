@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -64,8 +65,10 @@ def main() -> int:
     project, repo = args.project or detected_project, args.repo or detected_repo
     if not project or not repo or not args.session_id:
         if args.allow_unavailable:
+            delegation_id = secrets.token_hex(12)
             unavailable = (
-                "<autodev-memory-task-context>\n"
+                f'<autodev-memory-task-context status="unavailable" packet-version="unavailable" '
+                f'corpus-generation="unavailable" delivery-id="{delegation_id}">\n'
                 "Memory context is unavailable. Do not infer that critical or task-specific "
                 "memories were loaded. This delegated agent may have no memory tool; report the "
                 "limitation.\n</autodev-memory-task-context>"
@@ -73,7 +76,8 @@ def main() -> int:
             _append_telemetry(
                 args.telemetry_file, event="child_packet", provider=args.provider,
                 mechanism=args.mechanism, status="unavailable", packet_version="unavailable",
-                chars=len(unavailable),
+                corpus_generation="unavailable", render_hash="unavailable",
+                chars=len(unavailable), delegation_id=delegation_id,
             )
             print(unavailable)
             return 0

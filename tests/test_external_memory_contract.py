@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import json
+import re
 import tempfile
 import subprocess
 import unittest
@@ -56,12 +58,17 @@ class ExternalMemoryContractTest(unittest.TestCase):
             self.assertNotIn("private prompt canary", result.stdout)
             self.assertNotIn("private prompt canary", telemetry.read_text())
             self.assertNotIn("private prompt canary", " ".join(command))
+            delivery_id = re.search(r'delivery-id="([0-9a-f]{24})"', result.stdout).group(1)
+            events = [json.loads(line) for line in telemetry.read_text().splitlines()]
+            self.assertEqual({event["delegation_id"] for event in events}, {delivery_id})
 
     def test_every_executable_external_recipe_creates_a_packet_and_fallback(self) -> None:
         recipes = [
             "skills/auto-plan/SKILL.md", "skills/review/SKILL.md",
             "skills/investigate/SKILL.md", "skills/research/SKILL.md",
             "skills/build-fable/SKILL.md", "skills/resolve-review-fable/SKILL.md",
+            "skills/auto-plan-fable/SKILL.md", "skills/review-fable/SKILL.md",
+            "skills/epic-plan/SKILL.md",
         ]
         for relative in recipes:
             text = (ROOT / relative).read_text()

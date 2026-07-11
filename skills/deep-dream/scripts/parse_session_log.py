@@ -26,8 +26,8 @@ CORRECTION_RE = re.compile(
 )
 NESTED_TOOL_RE = re.compile(r"\btools\.([A-Za-z0-9_]+)\s*\(")
 EXIT_RE = re.compile(r"Process exited with code\s+(\d+)")
-MEMORY_MARKERS = ("<autodev-memory-hook-result", "<autodev-memory-task-context", "<!-- mem:")
-TASK_PACKET_MARKER = "<autodev-memory-task-context>"
+ENVELOPE_RE = re.compile(r"<(autodev-memory-hook-result|autodev-memory-task-context)([^>]*)>")
+ATTRIBUTE_RE = re.compile(r'([a-z][a-z0-9-]*)="([A-Za-z0-9._:-]{1,256})"')
 SYSTEM_PREFIXES = (
     "<system_instruction>",
     "<collaboration_mode>",
@@ -105,8 +105,27 @@ def _outer_status(text: str) -> tuple[str, int | None]:
     return "unknown", None
 
 
-def _is_memory_context(text: str) -> bool:
-    return any(marker in text for marker in MEMORY_MARKERS)
+def _memory_metadata(text: str, include_correlation: bool, include_hashes: bool) -> dict[str, object]:
+    """Return envelope metadata only; never retain or emit packet content."""
+    match = ENVELOPE_RE.search(text)
+    if not match:
+        return {}
+    attributes = {key: value for key, value in ATTRIBUTE_RE.findall(match.group(2))}
+    result: dict[str, object] = {
+        "mechanism": (
+            "explicit_task_packet"
+            if match.group(1) == "autodev-memory-task-context"
+            else "native_session_start"
+        ),
+        "delivery_status": attributes.get("status", "unknown"),
+        "packet_version": attributes.get("packet-version", "unknown"),
+        "corpus_generation": attributes.get("corpus-generation", "unknown"),
+    }
+    if include_correlation and attributes.get("delivery-id"):
+        result["delivery_id"] = attributes["delivery-id"]
+    if include_hashes and attributes.get("render-hash"):
+        result["render_hash"] = attributes["render-hash"]
+    return result
 
 
 def _is_system_message(text: str) -> bool:
@@ -120,6 +139,7 @@ def _event(line: int, timestamp: str, kind: str, **fields: object) -> dict[str, 
 
 def _parse_codex(
     lines: Iterable[str], include_locators: bool = False, diagnostic_key: bytes | None = None,
+    include_correlation: bool = False,
 ) -> dict[str, object]:
     events: list[dict[str, object]] = []
     calls: dict[str, dict[str, object]] = {}
@@ -147,13 +167,12 @@ def _parse_codex(
 
         if record_type == "event_msg" and payload_type == "user_message":
             text = _string(payload.get("message"))
-            if _is_memory_context(text):
+            memory_metadata = _memory_metadata(text, include_correlation, diagnostic_key is not None)
+            if memory_metadata:
                 if not memory_context_observed:
                     memory_context_observed = True
                     events.append(_event(
-                        line_number, timestamp, "memory_context", role="user",
-                        mechanism=("explicit_task_packet" if TASK_PACKET_MARKER in text
-                                   else "native_session_start"),
+                        line_number, timestamp, "memory_context", role="user", **memory_metadata,
                     ))
                 continue
             digest = _message_fingerprint(text)
@@ -174,7 +193,8 @@ def _parse_codex(
         if record_type == "response_item" and payload_type == "message":
             role = _string(payload.get("role"))
             text = _content_text(payload.get("content"), {"input_text", "output_text"})
-            if role in {"developer", "user"} and _is_memory_context(text):
+            memory_metadata = _memory_metadata(text, include_correlation, diagnostic_key is not None)
+            if role in {"developer", "user"} and memory_metadata:
                 # Explicit task packets travel as user prompts in managed/external Codex. Detect
                 # markers before human-message diagnostics so packet bodies are never classified
                 # as user corrections or diagnostic prompt hashes.
@@ -182,9 +202,7 @@ def _parse_codex(
                     continue
                 memory_context_observed = True
                 events.append(_event(
-                    line_number, timestamp, "memory_context", role=role,
-                    mechanism=("explicit_task_packet" if TASK_PACKET_MARKER in text
-                               else "native_session_start"),
+                    line_number, timestamp, "memory_context", role=role, **memory_metadata,
                 ))
             elif role == "user" and text and not _is_system_message(text):
                 digest = _message_fingerprint(text)
@@ -322,6 +340,7 @@ def _parse_codex(
 
 def _parse_claude(
     lines: Iterable[str], include_locators: bool = False, diagnostic_key: bytes | None = None,
+    include_correlation: bool = False,
 ) -> dict[str, object]:
     events: list[dict[str, object]] = []
     calls: dict[str, str] = {}
@@ -350,6 +369,7 @@ def _parse_claude(
                 tool_input = _dict(block.get("input"))
                 prompt = _string(tool_input.get("prompt"))
                 agent_type = _string(tool_input.get("subagent_type"))
+                task_metadata = _memory_metadata(prompt, include_correlation, diagnostic_key is not None)
                 events.append(
                     _event(
                         line_number,
@@ -363,9 +383,13 @@ def _parse_claude(
                            if tool == "Agent" and prompt and diagnostic_key else {}),
                         delegation_mechanism=(
                             "claude_agent_explicit_task_packet"
-                            if tool == "Agent" and TASK_PACKET_MARKER in prompt
+                            if tool == "Agent" and task_metadata.get("mechanism") == "explicit_task_packet"
                             else "claude_agent_without_observed_packet" if tool == "Agent"
                             else None
+                        ),
+                        **(
+                            {"delivery_id": task_metadata["delivery_id"]}
+                            if tool == "Agent" and task_metadata.get("delivery_id") else {}
                         ),
                     )
                 )
@@ -375,13 +399,12 @@ def _parse_claude(
             continue
 
         text = _content_text(content, {"text"})
-        memory_message = _is_memory_context(text)
+        memory_metadata = _memory_metadata(text, include_correlation, diagnostic_key is not None)
+        memory_message = bool(memory_metadata)
         if memory_message and not memory_context_observed:
             memory_context_observed = True
             events.append(_event(
-                line_number, timestamp, "memory_context", role="user",
-                mechanism=("explicit_task_packet" if TASK_PACKET_MARKER in text
-                           else "native_session_start"),
+                line_number, timestamp, "memory_context", role="user", **memory_metadata,
             ))
 
         if isinstance(content, str) and content and not _is_system_message(content) and not memory_message:
@@ -469,6 +492,7 @@ def detect_provider(lines: Iterable[str]) -> str:
 def parse_session(
     path: Path, provider: str = "auto", include_locators: bool = False,
     diagnostic_key: bytes | None = None,
+    include_correlation: bool = False,
 ) -> dict[str, object]:
     if provider == "auto":
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -476,9 +500,9 @@ def parse_session(
     else:
         resolved_provider = provider
     with path.open(encoding="utf-8", errors="replace") as handle:
-        parsed = (_parse_codex(handle, include_locators, diagnostic_key)
+        parsed = (_parse_codex(handle, include_locators, diagnostic_key, include_correlation)
                   if resolved_provider == "codex"
-                  else _parse_claude(handle, include_locators, diagnostic_key))
+                  else _parse_claude(handle, include_locators, diagnostic_key, include_correlation))
     if include_locators:
         parsed["path"] = str(path)
     return parsed

@@ -16,7 +16,7 @@ INPUT=$(cat) || emit_empty
 
 PROMPT=$(jq -r '.tool_input.prompt // ""' <<<"$INPUT" 2>/dev/null) || emit_empty
 [[ -n "$PROMPT" ]] || emit_empty
-if [[ "$PROMPT" == *"<autodev-memory-task-context>"* \
+if [[ "$PROMPT" == *"<autodev-memory-task-context"* \
    && "$PROMPT" == *"</autodev-memory-task-context>"* ]]; then
   emit_empty
 fi

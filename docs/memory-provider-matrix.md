@@ -57,6 +57,45 @@ helper prepares context only; the workflow still owns the spawn, result collecti
 python3 ~/.agents/skills/deep-dream/scripts/audit_memory_compliance.py --days 7
 ```
 
-The default report contains only coarse classifications and counts. Use
-`--restricted-diagnostics` only for a live local investigation; its prompt hashes are keyed with a
-new random key per run and must not be persisted or uploaded.
+The default report contains typed mechanism/status, packet version, corpus generation, and counts.
+It omits entry IDs, delivery IDs, render hashes, prompts, bodies, and locators. Use
+`--restricted-diagnostics` only for a live local investigation; its IDs and prompt/render hashes
+must not be persisted or uploaded (prompt hashes use a new random key per run).
+
+## Deployment-time evidence gate (not satisfied by this repository's unit tests)
+
+Cloud installation and real-provider delivery are deployment evidence. Do not mark them PASS from
+the synthetic fixtures. In each cloud image/session, pin the reviewed commit and use the same
+transactional installer as local environments:
+
+```bash
+test "$AGENT_WORKFLOWS_COMMIT" = "$(git -C "$AGENT_WORKFLOWS_CLONE" rev-parse HEAD)"
+"$AGENT_WORKFLOWS_CLONE/bin/install-agent-workflows" \
+  --source "$AGENT_WORKFLOWS_CLONE" --home "$HOME" --version "$AGENT_WORKFLOWS_COMMIT"
+python3 "$HOME/.agents/skills/deep-dream/scripts/audit_memory_compliance.py" \
+  --days 1 > "$EVIDENCE_DIR/memory-delivery-audit.json"
+```
+
+The deployment runner must additionally execute one real canary for each supported mechanism:
+Claude parent SessionStart and Agent child, Codex parent and managed collaboration child, and one
+external adapter invocation (Fable is recorded under its actual Claude/Codex provider). Save a
+metadata-only evidence document with this allowlisted shape:
+
+```json
+{
+  "agent_workflows_commit": "<40-hex commit>",
+  "environment": "staging|production",
+  "installer": {"status": "observed_pass|observed_fail", "current_commit": "<40-hex>"},
+  "mechanisms": [
+    {"provider": "claude|codex|grok", "mechanism": "<stable slug>",
+     "status": "delivered|partial|unavailable", "packet_version": "v2|v1|unknown",
+     "corpus_generation": "<generation or unknown>", "selected_count": 0,
+     "expanded_count": 0, "chars": 0}
+  ]
+}
+```
+
+The evidence must contain no packet/prompt body, path, token, environment value, entry ID, delivery
+ID, or render hash. IDs and hashes are available only in a local `--restricted-diagnostics` run and
+must not be copied into deployment evidence. Missing canaries remain `unavailable`/not run; they are
+never inferred from installation success.

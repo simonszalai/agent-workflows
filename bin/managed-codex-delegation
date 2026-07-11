@@ -26,10 +26,13 @@ def main() -> int:
         message = args.message_file.read_text(encoding="utf-8")
     except OSError:
         return 2
-    if (message.count("<autodev-memory-task-context>") == 1
-            and message.count("</autodev-memory-task-context>") == 1):
+    opening_count = message.count("<autodev-memory-task-context")
+    closing_count = message.count("</autodev-memory-task-context>")
+    if opening_count == 1 and closing_count == 1:
         print(message, end="")
         return 0
+    if opening_count or closing_count:
+        return 2
     helper = Path(__file__).resolve().with_name("autodev-memory-task-packet")
     command = [
         str(helper), "--cwd", str(args.cwd), "--agent-type", args.agent_type,

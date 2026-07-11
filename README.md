@@ -107,6 +107,10 @@ read-only analyst item) when the Mac FIFO mount isn't present.
 Each project's `deploy/cloud-setup.sh` handles cloning this repo and copying files into
 the tool-specific config directory when running in a remote environment. The GitHub app for
 that environment must be installed on this repo for the clone to work.
+Cloud setup must pin the reviewed commit and invoke `bin/install-agent-workflows --home "$HOME"
+--version "$AGENT_WORKFLOWS_COMMIT"`; a clone/copy alone is not activation evidence. The required
+real-provider canaries and metadata-only evidence contract are documented in
+[`docs/memory-provider-matrix.md`](docs/memory-provider-matrix.md#deployment-time-evidence-gate-not-satisfied-by-this-repositorys-unit-tests).
 
 ### NanoClaw setup
 
