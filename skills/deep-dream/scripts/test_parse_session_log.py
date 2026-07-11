@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from parse_session_log import parse_session  # noqa: E402
+
+
+class ParseSessionLogTest(unittest.TestCase):
+    def parse(self, records: list[dict[str, object]], provider: str,
+              diagnostics: bool = False) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            path.write_text("\n".join(json.dumps(record) for record in records))
+            return parse_session(path, provider, diagnostic_key=(b"test-key" if diagnostics else None))
+
+    def test_current_codex_exec_reports_nested_calls_as_attempts_only(self) -> None:
+        records = [
+            {
+                "timestamp": "2026-07-10T10:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "call-1",
+                    "input": (
+                        "const a = await tools.exec_command({cmd: 'true'});\n"
+                        "const b = await tools.mcp__autodev_memory__search({});"
+                    ),
+                },
+            },
+            {
+                "timestamp": "2026-07-10T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call-1",
+                    "output": [
+                        {"type": "input_text", "text": "Script completed\n"},
+                        {"type": "input_text", "text": "combined rendered output"},
+                    ],
+                },
+            },
+        ]
+
+        parsed = self.parse(records, "codex")
+        events = parsed["events"]
+        self.assertIsInstance(events, list)
+        attempt = events[0]
+        result = events[1]
+        self.assertEqual(
+            attempt["nested_tool_attempts"],
+            ["exec_command", "mcp__autodev_memory__search"],
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["nested_results"], "not_individually_attributed")
+
+    def test_old_codex_function_call_nonzero_exit_is_failed(self) -> None:
+        records = [
+            {
+                "timestamp": "2026-07-08T10:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-2",
+                    "arguments": "{}",
+                },
+            },
+            {
+                "timestamp": "2026-07-08T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-2",
+                    "output": "Process exited with code 7",
+                },
+            },
+        ]
+
+        parsed = self.parse(records, "codex")
+        result = parsed["events"][1]
+        self.assertEqual(result["tool"], "exec_command")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_code"], 7)
+
+    def test_custom_apply_patch_failure_is_detected_without_output_body(self) -> None:
+        records = [
+            {
+                "timestamp": "2026-07-10T10:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "apply_patch",
+                    "call_id": "patch-1",
+                    "input": "*** Begin Patch",
+                },
+            },
+            {
+                "timestamp": "2026-07-10T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "patch-1",
+                    "output": ["apply_patch verification failed: expected context missing"],
+                },
+            },
+        ]
+
+        parsed = self.parse(records, "codex")
+        result = parsed["events"][1]
+        self.assertEqual(result["tool"], "apply_patch")
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("expected context missing", json.dumps(parsed))
+
+    def test_codex_developer_memory_context_is_observed_without_copying_content(self) -> None:
+        message = {
+            "timestamp": "2026-07-10T10:00:00Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "developer",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "<autodev-memory-hook-result>secret body</autodev-memory-hook-result>",
+                    }
+                ],
+            },
+        }
+        records = [message, message]
+
+        parsed = self.parse(records, "codex")
+        self.assertTrue(parsed["summary"]["memory_context_observed"])
+        self.assertEqual(parsed["events"][0]["kind"], "memory_context")
+        self.assertEqual(len(parsed["events"]), 1)
+        self.assertNotIn("secret body", json.dumps(parsed))
+
+    def test_claude_tool_use_and_error_result_are_correlated(self) -> None:
+        records = [
+            {
+                "timestamp": "2026-07-10T10:00:00Z",
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {}}
+                    ]
+                },
+            },
+            {
+                "timestamp": "2026-07-10T10:00:01Z",
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tool-1",
+                            "is_error": True,
+                            "content": "Error: failed",
+                        }
+                    ]
+                },
+            },
+        ]
+
+        parsed = self.parse(records, "claude", diagnostics=True)
+        result = parsed["events"][1]
+        self.assertEqual(result["tool"], "Bash")
+        self.assertEqual(result["status"], "failed")
+
+    def test_claude_list_text_human_message_is_not_dropped(self) -> None:
+        records = [
+            {
+                "timestamp": "2026-07-10T10:00:00Z",
+                "type": "user",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "No, keep the repository-qualified id."}
+                    ]
+                },
+            }
+        ]
+
+        parsed = self.parse(records, "claude", diagnostics=True)
+        self.assertEqual(parsed["events"][0]["kind"], "human_message")
+        self.assertTrue(parsed["events"][0]["correction_candidate"])
+        self.assertNotIn("repository-qualified", json.dumps(parsed))
+
+    def test_claude_agent_records_type_and_packet_mechanism_not_prompt(self) -> None:
+        records = [{
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "id": "a1", "name": "Agent",
+                "input": {"subagent_type": "reviewer", "prompt":
+                          "secret task\n<autodev-memory-task-context>rules</autodev-memory-task-context>"},
+            }]},
+        }]
+        parsed = self.parse(records, "claude", diagnostics=True)
+        event = parsed["events"][0]
+        self.assertEqual(event["agent_type"], "reviewer")
+        self.assertEqual(event["delegation_mechanism"], "claude_agent_explicit_task_packet")
+        self.assertEqual(len(event["delegated_prompt_hash"]), 12)
+        self.assertNotIn("secret task", json.dumps(parsed))
+
+    def test_codex_native_child_packet_and_direct_delegation_are_classified(self) -> None:
+        records = [
+            {"type": "response_item", "payload": {"type": "message", "role": "developer",
+             "content": [{"type": "input_text", "text":
+                          "<autodev-memory-task-context>x</autodev-memory-task-context>"}]}},
+            {"type": "response_item", "payload": {"type": "function_call",
+             "name": "spawn_agent", "call_id": "s1"}},
+        ]
+        parsed = self.parse(records, "codex")
+        self.assertEqual(parsed["events"][0]["mechanism"], "explicit_task_packet")
+        self.assertEqual(parsed["events"][1]["delegation_mechanism"], "managed_codex_direct")
+        self.assertEqual(parsed["events"][1]["delegation_certainty"], "confirmed_attempt")
+
+    def test_codex_user_task_packet_is_not_a_human_diagnostic(self) -> None:
+        parsed = self.parse([{
+            "type": "response_item", "payload": {"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text":
+                         "task\n<autodev-memory-task-context>x</autodev-memory-task-context>"}]},
+        }], "codex", diagnostics=True)
+        self.assertTrue(parsed["summary"]["memory_context_observed"])
+        self.assertEqual(parsed["events"][0]["kind"], "memory_context")
+        self.assertNotIn("message_hash", parsed["events"][0])
+
+    def test_codex_event_user_task_packet_is_not_a_human_diagnostic(self) -> None:
+        parsed = self.parse([{
+            "type": "event_msg", "payload": {"type": "user_message", "message":
+            "task\n<autodev-memory-task-context>x</autodev-memory-task-context>"},
+        }], "codex", diagnostics=True)
+        self.assertTrue(parsed["summary"]["memory_context_observed"])
+        self.assertEqual([event["kind"] for event in parsed["events"]], ["memory_context"])
+        self.assertNotIn("message_hash", parsed["events"][0])
+
+    def test_prompt_hashes_are_absent_by_default_and_keyed_when_requested(self) -> None:
+        records = [{"type": "user", "message": {"content": "ordinary private prompt"}}]
+        self.assertNotIn("message_hash", self.parse(records, "claude")["events"][0])
+        first = self.parse(records, "claude", diagnostics=True)["events"][0]["message_hash"]
+        second = self.parse(records, "claude", diagnostics=True)["events"][0]["message_hash"]
+        self.assertEqual(first, second)
+
+    def test_locators_are_omitted_by_default_and_opt_in(self) -> None:
+        records = [{"type": "session_meta", "payload": {"cwd": "/secret/path", "git": {
+            "branch": "topic", "repository_url": "ssh://secret"}}}]
+        parsed = self.parse(records, "codex")
+        self.assertNotIn("/secret/path", json.dumps(parsed))
+
+    def test_claude_sidechain_is_classified_as_child(self) -> None:
+        parsed = self.parse([{
+            "type": "user", "isSidechain": True,
+            "message": {"content": "child task"},
+        }], "claude")
+        self.assertEqual(parsed["summary"]["session_role"], "child")
+
+    def test_envelope_status_version_and_internal_delivery_id_are_parsed_without_body(self) -> None:
+        delivery_id = "c" * 24
+        text = (
+            f'<autodev-memory-task-context status="unavailable" packet-version="v2" '
+            f'corpus-generation="{"d" * 64}" delivery-id="{delivery_id}">'
+            "private memory body</autodev-memory-task-context>"
+        )
+        records = [{"type": "user", "isSidechain": True, "message": {"content": text}}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session.jsonl"
+            path.write_text(json.dumps(records[0]))
+            parsed = parse_session(path, "claude", include_correlation=True)
+        event = parsed["events"][0]
+        self.assertEqual(event["delivery_status"], "unavailable")
+        self.assertEqual(event["packet_version"], "v2")
+        self.assertEqual(event["delivery_id"], delivery_id)
+        self.assertNotIn("private memory body", json.dumps(parsed))
+
+
+if __name__ == "__main__":
+    unittest.main()

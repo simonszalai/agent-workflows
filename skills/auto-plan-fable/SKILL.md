@@ -116,11 +116,34 @@ Actually run them — never summarize what a provider "would" say:
 - **Claude Code runner:** spawn two `external-planner` subagents in the same parallel `Agent`
   batch as the native planner; each calls `external-agent --task plan` for one peer and
   returns the planner envelope (`{planner_key, plan{…}, assumptions, disagreements, evidence,
-  open_questions, notes}`).
-- **Codex/Grok runner:** call `external-agent --task plan` directly for both peers (Claude
-  peer via subscription-backed `claude -p`, never a direct API call). Write inputs to
+  open_questions, notes}`). Include the bounded memory-packet path; the adapter call passes it
+  via `--memory-context-file`.
+- **Codex/Grok runner:** call `external-agent --task plan` directly for both peers with one
+  explicit <=3K `--memory-context-file` (Claude peer via subscription-backed `claude -p`,
+  never a direct API call). Write inputs to
   `.context/plan/` (question, source, codebase research, prior knowledge) and pass them as
   files, `--out .context/plan/<provider>.json`.
+
+Every direct or dispatcher-backed peer gets a real packet file, never a placeholder:
+
+```bash
+mkdir -p .context/plan
+for provider in $(agent-workflow-provider --peers); do
+  memory_packet=".context/plan/${provider}-memory-task.md"
+  if ! cat .context/plan/question.txt .context/plan/source.md | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type planner-fable --provider "$provider" --mechanism external_peer \
+        --task-prompt-stdin --allow-unavailable > "$memory_packet"; then
+    cat > "$memory_packet" <<'EOF'
+<autodev-memory-task-context status="unavailable">
+Memory context is unavailable. Do not infer that planning memories were loaded.
+</autodev-memory-task-context>
+EOF
+  fi
+  # Pass "$memory_packet" to the external-planner dispatcher or directly as:
+  # external-agent --task plan ... --memory-context-file "$memory_packet"
+done
+```
 
 A failed provider contributes an empty envelope with a note — surface it, don't block. But if
 fewer than **two** providers return usable plans, STOP, revert to `STARTING_STATUS`, and

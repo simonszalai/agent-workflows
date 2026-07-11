@@ -1,0 +1,646 @@
+#!/usr/bin/env python3
+"""Install one verified git commit and atomically switch stable workflow links."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import base64
+import fcntl
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+
+MANAGED = ("agents", "commands", "skills", "hooks", "workflows", "bin")
+DESTINATIONS = (
+    (".claude/agents", "agents"), (".claude/commands", "commands"),
+    (".claude/skills", "skills"), (".claude/hooks", "hooks"),
+    (".claude/workflows", "workflows"), (".agents/skills", "skills"),
+    (".codex/skills", "skills"), (".codex/hooks", "hooks"), (".local/bin", "bin"),
+)
+COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
+
+
+@contextmanager
+def installation_lock(home: Path):
+    store = home / ".local/share/agent-workflows"
+    store.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = store / "install.lock"
+    if lock.is_symlink():
+        raise SystemExit("install-agent-workflows: refusing symlinked install lock")
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def committed_version(source: Path, revision: str | None) -> str:
+    ref = revision or "HEAD"
+    if ref in {".", ".."} or "\x00" in ref:
+        raise SystemExit("install-agent-workflows: unsafe revision")
+    result = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    commit = result.stdout.strip().lower()
+    if result.returncode or not COMMIT_RE.fullmatch(commit):
+        raise SystemExit("install-agent-workflows: revision is not an exact git commit")
+    return commit
+
+
+def atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_symlink(link: Path, target: Path) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    temporary = link.parent / f".{link.name}.agent-workflows-{os.getpid()}"
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+    temporary.symlink_to(target)
+    os.replace(temporary, link)
+
+
+def _archive_commit(source: Path, commit: str, staging: Path) -> None:
+    tree = subprocess.run(
+        ["git", "-C", str(source), "ls-tree", "-d", "--name-only", commit],
+        capture_output=True, text=True,
+    )
+    available = set(tree.stdout.splitlines()) if tree.returncode == 0 else set()
+    paths = [name for name in MANAGED if name in available]
+    if not paths:
+        raise SystemExit("install-agent-workflows: commit has no managed directories")
+    result = subprocess.run(
+        ["git", "-C", str(source), "archive", "--format=tar", commit, *paths],
+        capture_output=True,
+    )
+    if result.returncode:
+        raise SystemExit("install-agent-workflows: git archive failed")
+    with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+        for member in archive.getmembers():
+            path = Path(member.name)
+            if path.is_absolute() or ".." in path.parts or member.isdev():
+                raise SystemExit("install-agent-workflows: unsafe path in git archive")
+        archive.extractall(staging)
+
+
+def _symlinks(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        base = Path(directory)
+        for name in [*dirs, *files]:
+            candidate = base / name
+            if candidate.is_symlink():
+                found.append(candidate)
+    return sorted(found, key=lambda path: len(path.parts), reverse=True)
+
+
+def _materialize_committed_links(staging: Path, source: Path) -> None:
+    """Materialize internal links from the archive; omit machine-local external links."""
+    for link in _symlinks(staging):
+        raw = os.readlink(link)
+        target = Path(raw)
+        if target.is_absolute():
+            try:
+                relative = target.relative_to(source)
+            except ValueError:
+                # Historical committed links used the canonical ~/dev/agent-workflows absolute
+                # path. Resolve their suffix clone-independently, but never materialize links to
+                # a different repository.
+                positions = [index for index, part in enumerate(target.parts)
+                             if part == "agent-workflows"]
+                if not positions:
+                    link.unlink()
+                    continue
+                relative = Path(*target.parts[positions[-1] + 1:])
+            archived_target = staging / relative
+        else:
+            archived_target = (link.parent / target).resolve(strict=False)
+            if staging != archived_target and staging not in archived_target.parents:
+                link.unlink()
+                continue
+        if not archived_target.exists() or archived_target.is_symlink():
+            link.unlink()
+            continue
+        link.unlink()
+        if archived_target.is_dir():
+            shutil.copytree(archived_target, link)
+        else:
+            shutil.copy2(archived_target, link)
+
+
+def _entry_manifest(root: Path) -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path == root / "manifest.json":
+            continue
+        relative = str(path.relative_to(root))
+        entries[relative] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "executable": bool(path.stat().st_mode & 0o111),
+        }
+    return entries
+
+
+def _validate_artifact(root: Path) -> None:
+    required = (
+        root / "hooks/autodev-memory-session-start.sh",
+        root / "hooks/memory_context.py",
+        root / "bin/autodev-memory-task-packet",
+        root / "bin/install-agent-workflows",
+    )
+    if not all(path.is_file() for path in required):
+        raise SystemExit("install-agent-workflows: staged artifact is missing required files")
+    for path in (root / "hooks/memory_context.py", root / "hooks/task_packet.py",
+                 root / "bin/autodev-memory-task-packet", root / "bin/install-agent-workflows"):
+        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for path in (root / "hooks/autodev-memory-session-start.sh",
+                 root / "hooks/autodev-memory-pre-agent.sh"):
+        check = subprocess.run(["bash", "-n", str(path)], capture_output=True)
+        if check.returncode:
+            raise SystemExit(f"install-agent-workflows: shell validation failed for {path.name}")
+
+
+def _make_immutable(root: Path) -> None:
+    for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+        if path.is_file():
+            os.chmod(path, 0o555 if path.stat().st_mode & 0o111 else 0o444)
+        elif path.is_dir():
+            os.chmod(path, 0o555)
+    os.chmod(root, 0o555)
+
+
+def _verify_existing(final: Path, commit: str) -> None:
+    try:
+        manifest = json.loads((final / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as error:
+        raise SystemExit(f"install-agent-workflows: existing version is unverifiable: {error}")
+    if manifest.get("commit") != commit or manifest.get("entries") != _entry_manifest(final):
+        raise SystemExit("install-agent-workflows: existing immutable version checksum mismatch")
+
+
+def build_version(source: Path, versions: Path, commit: str) -> Path:
+    final = versions / commit
+    if final.exists():
+        _verify_existing(final, commit)
+        return final
+    staging = versions / f".{commit}.{os.getpid()}"
+    staging.mkdir(mode=0o700)
+    try:
+        _archive_commit(source, commit, staging)
+        _materialize_committed_links(staging, source)
+        _validate_artifact(staging)
+        manifest = {"schema": 1, "commit": commit, "entries": _entry_manifest(staging)}
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        _make_immutable(staging)
+        os.replace(staging, final)
+    except BaseException:
+        try:
+            os.chmod(staging, 0o700)
+        except OSError:
+            pass
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return final
+
+
+def link_children(home: Path, store: Path, version_dir: Path) -> list[tuple[Path, Path]]:
+    current = store / "current"
+    mappings: list[tuple[Path, Path]] = []
+    for destination_name, source_dir in DESTINATIONS:
+        destination = home / destination_name
+        resolved_source = version_dir / source_dir
+        if not resolved_source.is_dir():
+            continue
+        for child in sorted(resolved_source.iterdir()):
+            if source_dir == "bin" and not os.access(child, os.X_OK):
+                continue
+            mappings.append((destination / child.name, current / source_dir / child.name))
+    return mappings
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def plan_destination_roots(home: Path, source: Path) -> list[tuple[Path, str]]:
+    """Validate and describe legacy root migration without changing the filesystem."""
+    planned: list[tuple[Path, str]] = []
+    for destination_name, source_dir in DESTINATIONS:
+        destination = home / destination_name
+        if destination.is_symlink():
+            raw = os.readlink(destination)
+            resolved = destination.resolve(strict=False)
+            expected = (source / source_dir).resolve(strict=False)
+            if resolved != expected:
+                raise SystemExit(f"install-agent-workflows: refusing unrelated root symlink: {destination}")
+            planned.append((destination, raw))
+        elif destination.exists() and not destination.is_dir():
+            raise SystemExit(f"install-agent-workflows: destination root is not a directory: {destination}")
+    return planned
+
+
+def apply_destination_roots(home: Path, planned: list[tuple[Path, str]]) -> None:
+    planned_paths = {path for path, _ in planned}
+    for destination_name, _ in DESTINATIONS:
+        destination = home / destination_name
+        if destination in planned_paths:
+            destination.unlink()
+        destination.mkdir(parents=True, exist_ok=True)
+
+
+def preflight_link(link: Path, store: Path, source: Path) -> None:
+    if link.is_symlink():
+        resolved = link.resolve(strict=False)
+        if not (_is_under(resolved, store) or _is_under(resolved, source)):
+            raise SystemExit(f"install-agent-workflows: refusing to replace unmanaged symlink: {link}")
+    elif link.exists():
+        raise SystemExit(f"install-agent-workflows: refusing to replace unmanaged path: {link}")
+
+
+def managed_links(home: Path, store: Path, source: Path) -> list[Path]:
+    links: list[Path] = []
+    for destination_name, _ in DESTINATIONS:
+        root = home / destination_name
+        if not root.is_dir() or root.is_symlink():
+            continue
+        for child in root.iterdir():
+            if child.is_symlink() and (_is_under(child.resolve(strict=False), store)
+                                       or _is_under(child.resolve(strict=False), source)):
+                links.append(child)
+    return links
+
+
+def hook_entry(command: str) -> dict[str, object]:
+    return {"hooks": [{"type": "command", "command": command}]}
+
+
+def _read_settings(path: Path) -> dict[str, Any]:
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"install-agent-workflows: cannot safely merge {path}: {error}")
+    if not isinstance(settings, dict):
+        raise SystemExit(f"install-agent-workflows: settings must be an object in {path}")
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SystemExit(f"install-agent-workflows: hooks must be an object in {path}")
+    for event in ("SessionStart", "PreToolUse"):
+        if event in hooks and not isinstance(hooks[event], list):
+            raise SystemExit(f"install-agent-workflows: hooks.{event} must be an array in {path}")
+    return settings
+
+
+def merge_hooks(path: Path, home: Path) -> None:
+    settings = _read_settings(path)
+    hooks = settings.setdefault("hooks", {})
+    hook_root = home / (".codex/hooks" if path.parent.name == ".codex" else ".claude/hooks")
+    desired = {
+        "SessionStart": str(hook_root / "autodev-memory-session-start.sh"),
+        "PreToolUse": str(hook_root / "autodev-memory-pre-agent.sh"),
+    }
+    for event, command in desired.items():
+        values = hooks.setdefault(event, [])
+        if not any(command in json.dumps(item) for item in values):
+            entry = hook_entry(command)
+            if event == "PreToolUse":
+                entry["matcher"] = "Agent"
+            values.append(entry)
+    atomic_json(path, settings)
+
+
+def _snapshot(path: Path) -> dict[str, Any]:
+    try:
+        content = path.read_bytes()
+        mode = path.stat().st_mode & 0o777
+        return {"exists": True, "content_b64": base64.b64encode(content).decode(), "mode": mode}
+    except FileNotFoundError:
+        return {"exists": False}
+
+
+def _restore_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
+    if not snapshot.get("exists"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = int(snapshot.get("mode", 0o600))
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.restore.", dir=path.parent)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(base64.b64decode(snapshot["content_b64"]))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, mode)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _validate_snapshot(snapshot: object) -> None:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("exists"), bool):
+        raise SystemExit("install-agent-workflows: invalid rollback snapshot")
+    if not snapshot["exists"]:
+        return
+    if not isinstance(snapshot.get("mode"), int) or not isinstance(snapshot.get("content_b64"), str):
+        raise SystemExit("install-agent-workflows: invalid rollback snapshot")
+    try:
+        base64.b64decode(snapshot["content_b64"], validate=True)
+    except (ValueError, TypeError) as error:
+        raise SystemExit("install-agent-workflows: invalid rollback snapshot") from error
+
+
+def _preflight_legacy_roots(roots: list[dict[str, str]], home: Path, store: Path) -> None:
+    """Prove legacy restoration can complete before rollback mutates any live state."""
+    allowed = {name for name, _ in DESTINATIONS}
+    for item in roots:
+        if not isinstance(item, dict) or item.get("relative_path") not in allowed \
+                or not isinstance(item.get("target"), str) or not item["target"]:
+            raise SystemExit("install-agent-workflows: invalid legacy rollback path")
+        path = home / item["relative_path"]
+        if path.is_symlink():
+            if os.readlink(path) != item["target"]:
+                raise SystemExit(f"install-agent-workflows: legacy root target changed: {path}")
+            continue
+        if path.is_dir():
+            unmanaged = [child for child in path.iterdir()
+                         if not (child.is_symlink() and _is_under(child.resolve(strict=False), store))]
+            if unmanaged:
+                raise SystemExit(f"install-agent-workflows: legacy rollback root is not empty: {path}")
+        elif path.exists():
+            raise SystemExit(f"install-agent-workflows: cannot restore legacy root: {path}")
+
+
+def _restore_legacy_roots(roots: list[dict[str, str]], home: Path, store: Path) -> None:
+    allowed = {name for name, _ in DESTINATIONS}
+    for item in roots:
+        if item.get("relative_path") not in allowed:
+            raise SystemExit("install-agent-workflows: invalid legacy rollback path")
+        path = home / item["relative_path"]
+        if path.is_symlink():
+            if os.readlink(path) == item["target"]:
+                continue
+            raise SystemExit(f"install-agent-workflows: legacy root target changed: {path}")
+        if path.is_dir():
+            for child in list(path.iterdir()):
+                if child.is_symlink() and _is_under(child.resolve(strict=False), store):
+                    child.unlink()
+            try:
+                path.rmdir()
+            except OSError as error:
+                raise SystemExit(
+                    f"install-agent-workflows: legacy rollback root is not empty: {path}"
+                ) from error
+        elif path.exists() or path.is_symlink():
+            raise SystemExit(f"install-agent-workflows: cannot restore legacy root: {path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(item["target"])
+
+
+def _remove_managed_links(home: Path, store: Path) -> None:
+    for destination_name, _ in DESTINATIONS:
+        root = home / destination_name
+        if not root.is_dir() or root.is_symlink():
+            continue
+        for child in list(root.iterdir()):
+            if child.is_symlink() and _is_under(child.resolve(strict=False), store):
+                child.unlink()
+
+
+def install(source: Path, home: Path, commit: str) -> None:
+    store = home / ".local/share/agent-workflows"
+    versions = store / "versions"
+    versions.mkdir(parents=True, exist_ok=True, mode=0o700)
+    final = build_version(source, versions, commit)
+    settings_paths = (home / ".claude/settings.json", home / ".codex/hooks.json")
+    settings_snapshots = {str(path): _snapshot(path) for path in settings_paths}
+    for path in settings_paths:
+        _read_settings(path)  # complete config preflight before activation
+
+    migrated_roots = plan_destination_roots(home, source)
+    link_snapshots: dict[Path, str | None] = {}
+    current = store / "current"
+    old = os.readlink(current) if current.is_symlink() else ""
+    previous_path = store / "previous.json"
+    previous_snapshot = _snapshot(previous_path)
+    previous = {
+        "version_target": old or None,
+        "legacy_roots": [
+            {"relative_path": str(path.relative_to(home)), "target": target}
+            for path, target in migrated_roots
+        ],
+        "settings": settings_snapshots,
+    }
+    # Persist the complete rollback transaction before root migration or activation.
+    atomic_json(previous_path, previous)
+    try:
+        apply_destination_roots(home, migrated_roots)
+        mappings = link_children(home, store, final)
+        desired = {link for link, _ in mappings}
+        for link in managed_links(home, store, source):
+            link_snapshots[link] = os.readlink(link)
+        for link, _ in mappings:
+            preflight_link(link, store, source)
+            link_snapshots.setdefault(link, os.readlink(link) if link.is_symlink() else None)
+        atomic_symlink(current, Path("versions") / commit)
+        for link in list(link_snapshots):
+            if link not in desired:
+                link.unlink()
+        for link, target in mappings:
+            atomic_symlink(link, target)
+        merge_hooks(settings_paths[0], home)
+        merge_hooks(settings_paths[1], home)
+        atomic_json(store / "current.json", {
+            "version": commit, "version_target": f"versions/{commit}",
+            "manifest_sha256": hashlib.sha256((final / "manifest.json").read_bytes()).hexdigest(),
+        })
+    except BaseException as install_error:
+        if old:
+            atomic_symlink(current, Path(old))
+        else:
+            try:
+                current.unlink()
+            except FileNotFoundError:
+                pass
+        for link, target in link_snapshots.items():
+            if target is None:
+                try:
+                    link.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                atomic_symlink(link, Path(target))
+        for path in settings_paths:
+            _restore_snapshot(path, settings_snapshots[str(path)])
+        restore_error: BaseException | None = None
+        try:
+            _restore_legacy_roots(
+                [{"relative_path": str(path.relative_to(home)), "target": target}
+                 for path, target in migrated_roots],
+                home,
+                store,
+            )
+        except BaseException as error:
+            restore_error = error
+        finally:
+            _restore_snapshot(previous_path, previous_snapshot)
+        if restore_error is not None:
+            raise RuntimeError("install-agent-workflows: failed to restore legacy roots") \
+                from restore_error
+        raise install_error
+
+
+def rollback(home: Path) -> None:
+    store = home / ".local/share/agent-workflows"
+    try:
+        previous = json.loads((store / "previous.json").read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError) as error:
+        raise SystemExit("install-agent-workflows: no rollback transaction recorded") from error
+    target_name = previous.get("version_target")
+    legacy_roots = previous.get("legacy_roots", [])
+    if target_name:
+        target_match = re.fullmatch(r"versions/([0-9a-f]{40,64})", str(target_name))
+        if not target_match:
+            raise SystemExit("install-agent-workflows: rollback target is invalid")
+        target = store / target_name
+        if not target.is_dir() or store / "versions" not in target.parents:
+            raise SystemExit("install-agent-workflows: rollback target is invalid")
+        _verify_existing(target, target_match.group(1))
+    elif not legacy_roots:
+        raise SystemExit("install-agent-workflows: rollback transaction has no target")
+    desired_mappings: list[tuple[Path, Path]] = []
+    if target_name:
+        desired_mappings = link_children(home, store, store / target_name)
+        for link, _ in desired_mappings:
+            if link.exists() and not link.is_symlink():
+                raise SystemExit(f"install-agent-workflows: rollback collision: {link}")
+    settings = previous.get("settings", {})
+    allowed_settings = {str(home / ".claude/settings.json"), str(home / ".codex/hooks.json")}
+    if not isinstance(settings, dict) or not set(settings).issubset(allowed_settings):
+        raise SystemExit("install-agent-workflows: invalid settings rollback snapshot")
+    for snapshot in settings.values():
+        _validate_snapshot(snapshot)
+    current = store / "current"
+    old = os.readlink(current) if current.is_symlink() else ""
+    if current.exists() and not current.is_symlink():
+        raise SystemExit("install-agent-workflows: current activation is not a symlink")
+    _preflight_legacy_roots(legacy_roots, home, store)
+
+    live_settings = {raw_path: _snapshot(Path(raw_path)) for raw_path in settings}
+    live_links = {link: os.readlink(link) for link in managed_links(home, store, store)}
+    current_json_path = store / "current.json"
+    previous_json_path = store / "previous.json"
+    current_json_snapshot = _snapshot(current_json_path)
+    previous_json_snapshot = _snapshot(previous_json_path)
+
+    try:
+        for raw_path, snapshot in settings.items():
+            _restore_snapshot(Path(raw_path), snapshot)
+        if target_name:
+            atomic_symlink(current, Path(target_name))
+            desired = {link for link, _ in desired_mappings}
+            for link in managed_links(home, store, store):
+                if link not in desired:
+                    link.unlink()
+            for link, target in desired_mappings:
+                atomic_symlink(link, target)
+        else:
+            _remove_managed_links(home, store)
+            try:
+                current.unlink()
+            except FileNotFoundError:
+                pass
+            _restore_legacy_roots(legacy_roots, home, store)
+        atomic_json(current_json_path, {
+            "version": Path(target_name).name if target_name else "legacy",
+            "version_target": target_name,
+        })
+        atomic_json(previous_json_path, {
+            "version_target": old or None, "legacy_roots": [], "settings": {},
+        })
+    except BaseException:
+        # Roll back the rollback from the pre-mutation journal. This path is deliberately
+        # best-effort only for external filesystem races; every expected collision was preflighted.
+        for item in legacy_roots:
+            path = home / item["relative_path"]
+            if path.is_symlink() and os.readlink(path) == item["target"]:
+                path.unlink()
+                path.mkdir(parents=True, exist_ok=True)
+        if old:
+            atomic_symlink(current, Path(old))
+        else:
+            try:
+                current.unlink()
+            except FileNotFoundError:
+                pass
+        _remove_managed_links(home, store)
+        for link, target in live_links.items():
+            atomic_symlink(link, Path(target))
+        for raw_path, snapshot in live_settings.items():
+            _restore_snapshot(Path(raw_path), snapshot)
+        _restore_snapshot(current_json_path, current_json_snapshot)
+        _restore_snapshot(previous_json_path, previous_json_snapshot)
+        raise
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--home", type=Path, default=Path.home())
+    parser.add_argument("--version", help="git revision to resolve to an exact full commit")
+    parser.add_argument("--rollback", action="store_true")
+    args = parser.parse_args()
+    home = args.home.resolve()
+    home.mkdir(parents=True, exist_ok=True)
+    with installation_lock(home):
+        if args.rollback:
+            rollback(home)
+        else:
+            source = args.source.resolve()
+            install(source, home, committed_version(source, args.version))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

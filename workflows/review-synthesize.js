@@ -1,8 +1,8 @@
-// review-fanout — heavyweight orchestrator for /review when the diff is non-trivial.
+// review-synthesize — one heavyweight synthesis/gating pass over raw findings from EVERY
+// provider. Native collection and external peer dispatch finish before this workflow starts.
 //
 // Phase shape (mirrors skills/review/SKILL.md Synthesis Methodology 1-9):
-//   1. BARRIER: parallel() all reviewers, wait for every one.
-//   2. Validate + flatten + union coverage.
+//   1. Validate + flatten the already-collected reviewer envelopes + union coverage.
 //   3. Dedup in two passes — exact (+/-3 line window, same normalized title), then a
 //      SEMANTIC same-issue pass (one cheap judge call over same-file/±5-line pairs with
 //      differing titles, and absence-finding pairs). Cross-provider agreement is the core
@@ -28,56 +28,21 @@
 // Returns the synthesized object only. MCP persistence, mode behavior, and presentation
 // stay in the skill — the workflow never touches MCP.
 //
-// WHY A BARRIER (load-bearing): the +0.10 cross-reviewer boost can lift a 0.70 finding
-// past the 0.80 verify-skip threshold. Pipeline-streaming would launch skeptics on
-// findings that consensus would have skipped, wasting the most expensive tokens in
-// the graph. The ~10-20% wall-clock cost saves ~30-50% of borderline skeptic spend.
+// WHY COLLECTION MUST FINISH FIRST (load-bearing): the +0.10 cross-reviewer boost can lift a
+// 0.70 finding past the 0.80 verify-skip threshold. Synthesizing native results before peer
+// envelopes arrive changes both confidence and skeptic routing, so peers would never truly
+// participate in the documented gate.
 
 export const meta = {
-  name: 'review-fanout',
-  description: 'Fan out reviewers under a barrier, dedup with cross-reviewer boost, adversarially verify only borderline findings, partition results. Skill handles MCP and presentation.',
+  name: 'review-synthesize',
+  description: 'Synthesize raw native and external review envelopes in one dedup, confidence, skeptic, and routing pass.',
   phases: [
-    { title: 'Fan out', detail: 'all reviewers in parallel (barrier)' },
+    { title: 'Synthesize', detail: 'validate all provider envelopes, dedup, boost, and gate' },
     { title: 'Verify', detail: 'adversarial 2-skeptic verify on borderline findings only' },
   ],
 }
 
 // ---------- Inline schemas ----------
-
-const findingSchema = {
-  type: 'object',
-  required: [
-    'title', 'severity', 'file', 'line', 'confidence',
-    'autofix_class', 'owner', 'requires_verification',
-    'pre_existing', 'evidence', 'why_it_matters',
-  ],
-  properties: {
-    title: { type: 'string', minLength: 4 },
-    severity: { type: 'string', enum: ['p1', 'p2', 'p3'] },
-    file: { type: 'string' },
-    line: { type: 'integer', minimum: 1 },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
-    autofix_class: { type: 'string', enum: ['safe_auto', 'gated_auto', 'manual', 'advisory'] },
-    owner: { type: 'string', enum: ['review-fixer', 'downstream-resolver', 'human'] },
-    requires_verification: { type: 'boolean' },
-    pre_existing: { type: 'boolean' },
-    evidence: { type: 'array', items: { type: 'string' }, minItems: 1 },
-    why_it_matters: { type: 'string', minLength: 8 },
-    suggested_fix: { type: ['string', 'null'] },
-    absence: { type: 'boolean' },
-  },
-}
-
-const reviewerOutputSchema = {
-  type: 'object',
-  required: ['reviewer_key', 'findings', 'residual_risks', 'testing_gaps'],
-  properties: {
-    reviewer_key: { type: 'string' },
-    findings: { type: 'array', items: findingSchema },
-    residual_risks: { type: 'array', items: { type: 'string' } },
-    testing_gaps: { type: 'array', items: { type: 'string' } },
-  },
-}
 
 const sameIssueSchema = {
   type: 'object',
@@ -230,7 +195,7 @@ async function semanticMerge(findings) {
   ].join('\n')
 
   const result = await agent(judgePrompt, {
-    label: 'dedup:same-issue', phase: 'Fan out', schema: sameIssueSchema,
+    label: 'dedup:same-issue', phase: 'Synthesize', schema: sameIssueSchema,
     model: 'sonnet', effort: 'low',
   })
   const same = new Set()
@@ -252,7 +217,11 @@ async function semanticMerge(findings) {
 
 function applyCrossReviewerBoost(f) {
   const extra = Math.max(0, (f.reviewers?.length || 1) - 1)
-  return { ...f, confidence: Math.min(1.0, f.confidence + 0.1 * extra) }
+  // Decimal boosts such as 0.70 + 0.10 can be represented as 0.799999..., which would
+  // incorrectly route a consensus finding into the <0.80 skeptic tier. Confidence is
+  // contractually two-decimal precision, so normalize before threshold comparisons.
+  const boosted = Math.round((f.confidence + 0.1 * extra) * 100) / 100
+  return { ...f, confidence: Math.min(1.0, boosted) }
 }
 
 function passesConfidenceGate(f) {
@@ -306,53 +275,6 @@ function partition(findings) {
   return { inSkillFixer, residualActionable, reportOnly }
 }
 
-function reviewerPrompt(reviewer, intent, files, diffSummary, diffPath, mode, carried) {
-  const scope = reviewer.filesScope?.length ? reviewer.filesScope : files
-  return [
-    `You are reviewer "${reviewer.key}". Focus: ${reviewer.focus}. Mode: ${mode}.`,
-    ``,
-    `Intent:`,
-    intent,
-    ``,
-    ...(reviewer.extraContext ? [
-      `Additional context for your focus area:`,
-      reviewer.extraContext,
-      ``,
-    ] : []),
-    `Diff at: ${diffPath}`,
-    ``,
-    `Files in scope:`,
-    scope.map(p => `  - ${p}`).join('\n'),
-    ``,
-    `Diff summary:`,
-    diffSummary,
-    ``,
-    ...(carried && carried.length ? [
-      `Previously contested/advisory findings from earlier review rounds — re-examine`,
-      `each; re-report ONLY with new evidence (do not repeat verbatim) and do not treat`,
-      `this list as resolved:`,
-      ...carried.map(c => `  - [${c.severity || '?'}] ${c.file || '?'}:${c.line || '?'} ${c.title || ''}${c.why_it_matters ? ' — ' + c.why_it_matters : ''}`),
-      ``,
-    ] : []),
-    `References to load first:`,
-    (reviewer.references || []).map(p => `  - ${p}`).join('\n') || '  (none)',
-    ``,
-    `Return per the reviewer output schema. Rules:`,
-    `- One finding per real issue. Specific file:line. No vague nits.`,
-    `- evidence: quote or paraphrase the code that proves the issue (>=1 required).`,
-    `- confidence is code-grounded. Before assigning >=0.80 you MUST have read the`,
-    `  surrounding function and at least one call site; cite both in evidence.`,
-    `- If the issue is something MISSING (migration, test, elimination step, scope item,`,
-    `  deploy surface): set absence: true, anchor file/line to the closest related`,
-    `  artifact, and put the exact grep/ls commands that should find the missing thing`,
-    `  in evidence — skeptics verify absences by searching, not by reading the anchor.`,
-    `- pre_existing: true if the issue exists on main and the diff did not introduce it.`,
-    `- autofix_class safe_auto only if the fix is mechanical and obviously correct.`,
-    `- owner: review-fixer for safe_auto fixes; downstream-resolver for gated_auto/manual; human for advisory.`,
-    `- Set reviewer_key to "${reviewer.key}".`,
-  ].join('\n')
-}
-
 function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
   const protocol = finding.absence === true ? [
     `ABSENCE PROTOCOL: this finding claims something is MISSING (a migration, test,`,
@@ -390,35 +312,26 @@ function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
 // ---------- Script body ----------
 
 // Normalize args. The Workflow tool delivers `args` verbatim, but an orchestrator
-// that JSON-stringifies the object (a documented footgun) hands us a string — then
-// `args.reviewers` is silently undefined and `reviewers.map` throws before any
-// reviewer runs. Parse a stringified blob back into an object, then validate.
+// that JSON-stringifies the object (a documented footgun) hands us a string. Parse a
+// stringified blob back into an object, then validate.
 let input = args
 if (typeof input === 'string') {
   try {
     input = JSON.parse(input)
   } catch (e) {
-    throw new Error(`review-fanout: args was passed as a string that is not valid JSON (${e.message}). Pass args as a JSON object, not a stringified blob.`)
+    throw new Error(`review-synthesize: args was passed as a string that is not valid JSON (${e.message}). Pass args as a JSON object, not a stringified blob.`)
   }
 }
 if (!input || typeof input !== 'object') {
-  throw new Error(`review-fanout: expected args to be a JSON object, got ${typeof input}.`)
+  throw new Error(`review-synthesize: expected args to be a JSON object, got ${typeof input}.`)
 }
-const { reviewers, intent, files, diffSummary, diffPath, mode, carried = [] } = input
-if (!Array.isArray(reviewers) || reviewers.length === 0) {
-  throw new Error(`review-fanout: args.reviewers must be a non-empty array (got ${reviewers === undefined ? 'undefined' : JSON.stringify(reviewers).slice(0, 80)}). Pass args as a JSON object, not a stringified blob.`)
+const { reviewerResults, intent, diffSummary, diffPath } = input
+if (!Array.isArray(reviewerResults) || reviewerResults.length === 0) {
+  throw new Error(`review-synthesize: args.reviewerResults must contain every raw native and peer envelope before synthesis starts.`)
 }
 
-// Phase 1: BARRIER fan-out
-phase('Fan out')
-const reviewerResults = await parallel(
-  reviewers.map(r => () => agent(
-    reviewerPrompt(r, intent, files, diffSummary, diffPath, mode, carried),
-    { label: `reviewer:${r.key}`, phase: 'Fan out', model: r.model, schema: reviewerOutputSchema }
-  ))
-)
-
-// Phase 2: validate + flatten + union coverage
+// Phase 1: validate + flatten every provider envelope + union coverage
+phase('Synthesize')
 const allFindings = []
 const residualRisks = new Set()
 const testingGaps = new Set()
@@ -434,9 +347,9 @@ for (const result of reviewerResults) {
   for (const r of result.residual_risks || []) residualRisks.add(r)
   for (const g of result.testing_gaps || []) testingGaps.add(g)
 }
-log(`Fan-out: ${reviewerResults.length} reviewers, ${allFindings.length} valid findings (${invalidDropped} invalid, ${reviewerErrors} reviewer errors)`)
+log(`Collected: ${reviewerResults.length} reviewer envelopes, ${allFindings.length} valid findings (${invalidDropped} invalid, ${reviewerErrors} reviewer errors)`)
 
-// Phase 3: dedup — exact pass (+/- 3 line window, same title), then semantic same-issue
+// Phase 2: dedup — exact pass (+/- 3 line window, same title), then semantic same-issue
 // pass (so cross-provider agreement is not lost to title wording) + cross-reviewer boost
 const beforeDedup = allFindings.length
 const exactMerged = dedupAndMerge(allFindings)
@@ -447,7 +360,7 @@ const dedupCollapsed = exactCollapsed + semanticCollapsed
 log(`Dedup: ${exactCollapsed} exact + ${semanticCollapsed} semantic collapsed (${merged0.length} remain)`)
 const merged = merged0.map(applyCrossReviewerBoost)
 
-// Phase 4: confidence gate
+// Phase 3: confidence gate
 //
 // Findings in [0.50, gate-threshold) are returned separately as `pre_gate_suppressed` so
 // the skill can run a memory-assisted upgrade pass on them (the workflow has no MCP
@@ -458,7 +371,7 @@ const gated = merged.filter(passesConfidenceGate)
 const preGateSuppressed = merged.filter(f => !passesConfidenceGate(f) && f.confidence >= 0.50)
 const suppressedByGate = beforeGate - gated.length
 
-// Phase 5: adversarial verify, tiered by corroboration (see skepticCount)
+// Phase 4: adversarial verify, tiered by corroboration (see skepticCount)
 phase('Verify')
 const borderline = gated.filter(f => skepticCount(f) > 0)
 const skipsVerify = gated.filter(f => skepticCount(f) === 0)
@@ -486,7 +399,7 @@ for (const v of verdicts) {
   verdictsByKey.get(v.finding_key).push(v)
 }
 
-// Phase 6: apply verdicts
+// Phase 5: apply verdicts
 const verifiedBorderline = []
 let verifyDropped = 0
 let skepticFailures = 0      // borderline findings that got <2 verdicts
@@ -550,7 +463,7 @@ for (const f of borderline) {
   verifiedBorderline.push({ ...f, requires_verification: true, evidence })
 }
 
-// Phase 7-9: recombine, separate pre-existing, sort, normalize routing, partition
+// Phase 6-8: recombine, separate pre-existing, sort, normalize routing, partition
 const finalFindings = [...skipsVerify, ...verifiedBorderline]
 const preExisting = finalFindings.filter(f => f.pre_existing === true)
 const currentDiff = finalFindings.filter(f => f.pre_existing !== true)
@@ -573,7 +486,7 @@ return {
     testing_gaps: Array.from(testingGaps),
   },
   stats: {
-    reviewers: reviewers.length,
+    reviewers: reviewerResults.length,
     reviewer_errors: reviewerErrors,
     raw_findings: beforeDedup,
     invalid_dropped: invalidDropped,

@@ -4,6 +4,7 @@ description: "Runs one peer cross-provider reviewer (Claude, Codex, or Grok) via
 model: haiku
 effort: low
 max_turns: 30
+memory_types: [gotcha, diagnosis, architecture]
 ---
 
 You are a thin **dispatcher** for one external code reviewer. You do not review code yourself
@@ -23,6 +24,8 @@ providers instead of using this Claude-specific subagent wrapper.
 - **base** — the diff base ref. If not given, compute it:
   `git merge-base HEAD origin/main 2>/dev/null || echo origin/main`.
 - **out** — output path for the envelope. Default `.context/review/<provider>.json`.
+- **memory_context_file** — required path to one <=3K task-context envelope prepared by the
+  orchestrator. Do not reconstruct or omit it.
 
 ## Procedure
 
@@ -40,6 +43,7 @@ providers instead of using this Claude-specific subagent wrapper.
 
    ```bash
    external-agent --task review --provider <provider> --base "$base" \
+     --memory-context-file <memory_context_file> \
      --out .context/review/<provider>.json 2>.context/review/<provider>.log
    ```
 

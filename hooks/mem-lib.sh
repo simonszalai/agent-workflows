@@ -14,12 +14,11 @@
 #   mem_init "$INPUT"
 #   case "$MEM_INIT_STATUS" in
 #     skip)  echo '{}'; exit 0 ;;
-#     error) mem_init_offline_output "session-start" "SessionStart"; exit 0 ;;
+#     error) emit a bounded unavailable context; exit 0 ;;
 #   esac
 #   MEM_TRIGGER_SOURCE="session_start"
 #   mem_load_entries
-#   # Sets: STARRED_RESULT, STARRED_COUNT, MENU_RESULT, MENU_COUNT,
-#   #       TOTAL_COUNT, _LOAD_ERROR
+#   # Sets: INIT_RESULT, REG_STATUS, _LOAD_ERROR
 # =============================================================================
 
 
@@ -65,9 +64,19 @@ mem_log() {
 
 mem_log_output() {
   local json="$1"
-  local ctx
-  ctx=$(echo "$json" | jq -r '.hookSpecificOutput.additionalContext // "(empty)"' 2>/dev/null || echo "(parse failed)")
-  mem_log DEBUG "output -> $ctx"
+  local chars status version
+  chars=$(echo "$json" | jq -r '(.hookSpecificOutput.additionalContext // "") | length' 2>/dev/null || echo 0)
+  status=$(echo "$json" | jq -r '
+    .hookSpecificOutput.additionalContext // "" |
+    if contains("status=\"unavailable\"") then "unavailable"
+    elif contains("status=\"error\"") then "error"
+    elif length > 0 then "delivered" else "empty" end
+  ' 2>/dev/null || echo "parse-failed")
+  version=$(echo "$json" | jq -r '
+    .hookSpecificOutput.additionalContext // "" |
+    capture("packet-version=\\\"(?<v>[^\\\"]+)\\\"").v // "unknown"
+  ' 2>/dev/null || echo "unknown")
+  mem_log DEBUG "output status=$status packet_version=$version chars=$chars"
 }
 
 
@@ -136,50 +145,14 @@ _mem_parse_env() {
     return 1
   fi
 
-  # Fetch topology
-  local topo_raw topo_http topo_body
-  topo_raw=$(_mem_curl_with_retry -sS --max-time 15 \
-    -w '\n%{http_code}' \
-    -H "Authorization: Bearer $MEM_TOKEN" \
-    "$MEM_URL/topology?project=$MEM_PROJECT") || {
-    echo "HOOK ERROR [mem-lib]: memory API unreachable at $MEM_URL: $topo_raw" >&2
-    return 1
-  }
-  topo_http=$(echo "$topo_raw" | tail -1)
-  topo_body=$(echo "$topo_raw" | sed '$d')
-
-  if [[ "$topo_http" -lt 200 || "$topo_http" -ge 300 ]] 2>/dev/null; then
-    local detail
-    detail=$(echo "$topo_body" | jq -r '.detail // .error // empty' 2>/dev/null || true)
-    echo "HOOK ERROR [mem-lib]: topology API returned HTTP $topo_http: ${detail:-$topo_body}" >&2
-    return 1
-  fi
-
-  MEM_TOPOLOGY=$(echo "$topo_body" | jq -r '
-    "Project: " + .project + " \u2014 " + .project_description + "\nRepos:\n" +
-    ([.repos[] | "  - " + .repo_name + ": " + .repo_description +
-      (if (.tech_tags | length) > 0 then " [" + (.tech_tags | join(", ")) + "]" else "" end)
-    ] | join("\n"))
-  ' 2>/dev/null)
-  if [[ -z "$MEM_TOPOLOGY" ]]; then
-    echo "HOOK ERROR [mem-lib]: failed to parse topology: $topo_body" >&2
-    return 1
-  fi
-
-  MEM_TECH_TAGS=$(echo "$topo_body" | jq -r --arg repo "$MEM_REPO" '
-    [.repos[] | select(.repo_name == $repo) | .tech_tags // [] | .[]] | join(",")
-  ' 2>/dev/null || echo "")
-
-  MEM_SIBLING_REPOS=$(echo "$topo_body" | jq -r --arg repo "$MEM_REPO" '
-    [.repos[] | select(.repo_name != $repo) | .repo_name] | join(",")
-  ' 2>/dev/null || echo "")
-
-  MEM_SIBLING_REPOS_DETAIL=$(echo "$topo_body" | jq -r --arg repo "$MEM_REPO" '
-    [.repos[] | select(.repo_name != $repo) |
-      "- **" + .repo_name + "**: " + (.repo_description // "no description") +
-      (if (.tech_tags | length) > 0 then " [" + (.tech_tags | join(", ")) + "]" else "" end)
-    ] | join("\n")
-  ' 2>/dev/null || echo "")
+  # Packet v2 owns topology and its character budget.  The old client fetched topology in a
+  # second request and rebuilt sibling context after the server rendered its digest, which made
+  # the final size unknowable.  Keep empty compatibility variables for legacy callers; do not
+  # reconstruct topology client-side.
+  MEM_TOPOLOGY=""
+  MEM_TECH_TAGS=""
+  MEM_SIBLING_REPOS=""
+  MEM_SIBLING_REPOS_DETAIL=""
 
   # Session ID resolution (Claude session ID → stable Conductor session ID)
   MEM_CLAUDE_SESSION_ID=$(echo "$input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null)
@@ -201,17 +174,8 @@ _mem_parse_env() {
     fi
   fi
 
-  # User prompt (available in SessionStart)
-  local raw_prompt
-  raw_prompt=$(echo "$input" | jq -r '.prompt // empty' 2>/dev/null || true)
-  if [[ -n "$raw_prompt" ]]; then
-    MEM_USER_PROMPT=$(echo "$raw_prompt" | head -c 200 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')
-  else
-    MEM_USER_PROMPT=""
-  fi
-
   export MEM_PROJECT MEM_REPO MEM_URL MEM_TOKEN MEM_TOPOLOGY MEM_TECH_TAGS MEM_GITHUB_URL
-  export MEM_SESSION_ID MEM_CLAUDE_SESSION_ID MEM_CONDUCTOR_TITLE MEM_USER_PROMPT
+  export MEM_SESSION_ID MEM_CLAUDE_SESSION_ID MEM_CONDUCTOR_TITLE
   export MEM_SIBLING_REPOS MEM_SIBLING_REPOS_DETAIL
 }
 
@@ -241,27 +205,6 @@ mem_init() {
   # Resolve git branch once (used in curl headers)
   _MEM_GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 }
-
-mem_init_offline_output() {
-  local source="$1"
-  local event="$2"
-  local message="${3:-memory API unreachable}"
-
-  exec 2>&3
-  : > "$_ERR_FILE" 2>/dev/null || true
-
-  local warning="<autodev-memory-hook-result source=\"$source\" status=\"error\">
-MANDATORY: Start your first reply with this single status line (no extra text around it):
-Memory: OFFLINE -- $message
-
-The autodev-memory API is not reachable. Starred entries and search are unavailable.
-Tell the user the memory system is offline so they can start it if needed.
-</autodev-memory-hook-result>"
-
-  jq -n --arg ctx "$warning" --arg event "$event" \
-    '{hookSpecificOutput: {hookEventName: $event, additionalContext: $ctx}}'
-}
-
 
 # =============================================================================
 # HTTP requests
@@ -310,7 +253,6 @@ mem_curl() {
     -H "X-Cwd: ${_MEM_LOG_CWD:-}"
     -H "X-Trigger-Source: ${MEM_TRIGGER_SOURCE:-}"
     -H "X-Git-Branch: ${_MEM_GIT_BRANCH:-}"
-    -H "X-User-Prompt: ${MEM_USER_PROMPT:-}"
     -H "X-Workspace: ${CONDUCTOR_WORKSPACE_NAME:-}"
     -H "X-Conductor-Root: ${CONDUCTOR_ROOT_PATH:-}"
   )
@@ -364,7 +306,7 @@ mem_load_entries() {
     --arg project "$MEM_PROJECT" \
     --arg repo "$MEM_REPO" \
     --arg url "${MEM_GITHUB_URL:-}" \
-    '{project: $project, repo: $repo, github_url: (if $url == "" then null else $url end)}')
+    '{project: $project, repo: $repo, github_url: (if $url == "" then null else $url end), context_version: "v2"}')
 
   INIT_RESULT=""
   if ! INIT_RESULT=$(mem_curl POST "/session-init" "$init_body" "$MEM_TRIGGER_SOURCE"); then
@@ -375,19 +317,8 @@ mem_load_entries() {
   REG_STATUS=$(echo "$INIT_RESULT" | jq -r '.register_status // "unknown"' 2>/dev/null || echo "unknown")
   mem_log INFO "repo registration: $REG_STATUS"
 
-  STARRED_RESULT=$(echo "$INIT_RESULT" | jq '.starred' 2>/dev/null || echo '{"entries":[],"count":0}')
-  STARRED_COUNT=$(echo "$STARRED_RESULT" | jq '.count // 0' 2>/dev/null || echo "0")
-  mem_log INFO "starred entries: $STARRED_COUNT"
-
-  MENU_RESULT=$(echo "$INIT_RESULT" | jq '.knowledge_menu' 2>/dev/null || echo '{"items":[],"count":0}')
-  MENU_COUNT=$(echo "$MENU_RESULT" | jq '.count // 0' 2>/dev/null || echo "0")
-  mem_log INFO "menu entries: $MENU_COUNT"
-
-  # Server-rendered rules digest (title + summary + id per starred entry, tag index).
-  # Replaces full-content injection: Claude Code and Codex both cap hook context at
-  # 10K chars, so payloads must stay under that to be delivered at all.
-  DIGEST_TEXT=$(echo "$INIT_RESULT" | jq -r '.digest.text // ""' 2>/dev/null || echo "")
-  mem_log INFO "digest chars: ${#DIGEST_TEXT}"
-
-  TOTAL_COUNT=$((STARRED_COUNT + MENU_COUNT))
+  local context_version packet_chars
+  context_version=$(echo "$INIT_RESULT" | jq -r '.context_version // "v1"' 2>/dev/null || echo "unknown")
+  packet_chars=$(echo "$INIT_RESULT" | jq -r '.packet.chars // .digest.chars // 0' 2>/dev/null || echo 0)
+  mem_log INFO "session packet: version=$context_version chars=$packet_chars"
 }

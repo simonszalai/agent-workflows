@@ -4,6 +4,7 @@ description: "Investigate issues using MCP tools. Spawned with a specific focus 
 model: sonnet
 effort: medium
 max_turns: 50
+memory_types: [gotcha, diagnosis, solution]
 skills:
   - investigate
   - tool-postgres

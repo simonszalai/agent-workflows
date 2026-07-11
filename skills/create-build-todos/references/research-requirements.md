@@ -14,7 +14,7 @@ mcp__autodev-memory__search(queries=[
 ])
 ```
 
-Also review auto-injected context from the knowledge menu in the system prompt.
+Also review bounded injected context in the system/task prompt when present.
 
 **Document in each build todo:**
 

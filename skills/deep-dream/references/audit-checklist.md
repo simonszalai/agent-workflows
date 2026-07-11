@@ -50,25 +50,27 @@ Borrowed from offline "memory consolidation" / agent "dreaming" research (Auto-D
 Active Dreaming Memory). Dimensions A–C ask "is it true?"; this asks "would a future task fail
 or regress if it were gone?" An accurate but never-load-bearing entry is still token cost.
 
-The autodev-memory API exposes **no per-entry usage signals** (no recall count, query
-diversity, or last-surfaced timestamp — `get_entry`/`list_entries` return only `id`, `title`,
-`entry_type`, `summary`, `content`, `tags`, `repos`, `scope`, `created_at`, `updated_at`,
-`token_estimate`). So judge utility **structurally and counterfactually**, not from data:
+The store exposes retrieval counters/timestamps, but they are **delivery signals, not utility
+signals**. A hit means the entry occupied a returned result slot; it does not mean an agent read,
+cited, or applied it. Search also updates `last_searched_at` and currently trips the generic
+`updated_at` trigger, so `updated_at` cannot be trusted as content freshness. Audit searches
+contaminate both fields. Judge utility structurally and counterfactually unless normalized
+retrieval-feedback events prove actual use:
 
 - **Counterfactual test:** Imagine the entry deleted. Does any realistic future task get worse
   — a bug reintroduced, a settled decision relitigated, time wasted rediscovering it? If
   nothing breaks, it does not earn its place.
 - **Discoverability:** Would the search pipeline ever surface it? An entry whose summary/tags
   don't match the vocabulary of the tasks it should inform is effectively invisible — flag for
-  IMPROVE SUMMARY / RETAG, or DELETE if it has no audience at all.
+  IMPROVE SUMMARY / RETAG. Lack of observed returns alone is never enough to retire it.
 - **Redundant with always-loaded context:** If the fact is already obvious from CLAUDE.md, a
   starred entry, or the code itself, it is dead weight.
 - **One-off trivia:** A detail that mattered for exactly one closed ticket and has no recurring
   relevance rarely earns its place.
 
-Flag earn-its-place failures as **DELETE (low-utility)** candidates even when the content is
-accurate — and state in the reason that the deletion is on utility grounds, not correctness,
-so it isn't mistaken for a staleness call.
+Low apparent utility is a review flag, not a standalone quarantine reason. A retirement
+candidate needs additional evidence that the entry is obsolete, harmful, redundant with a
+durable canonical source, or has no plausible audience after scope/discoverability repair.
 
 ## Cross-Entry Analysis
 
@@ -102,7 +104,8 @@ so it isn't mistaken for a staleness call.
 - Entries with missing or inconsistent tags.
 - Entries whose `entry_type` doesn't match their content (e.g., a "gotcha" that reads
   like a "reference").
-- Entries with fewer than 2 or more than 5 tags (outside the recommended range).
+- Extremely broad or fragmented tag sets are review signals, not automatic defects. Preserve
+  exact identifiers and symbols; do not force every entry into an arbitrary tag-count range.
 
 ### L. Tag Vocabulary Audit
 
@@ -131,9 +134,9 @@ Analyze the full tag list for:
 - **Overly broad tags:** Tags like `code`, `dev`, `fix`, `bug`, `misc`, `other` are too
   generic to aid search. Propose replacing with more specific alternatives.
 
-- **Overly narrow tags:** Tags used by only 1 entry that could be generalized. Example:
-  `alembic-batch-mode` used once -> should probably just be `alembic` (the entry title
-  and content already provide specificity).
+- **Singleton tags:** inspect whether they are valuable exact identifiers, error codes, or symbols
+  before merging. Singleton frequency alone does not prove noise. Keep exact-search terms
+  separate from semantic concepts when the schema supports it.
 
 - **Near-duplicates with different separators:** e.g., `error-handling` vs `errorhandling`
   vs `error_handling`.
@@ -171,17 +174,22 @@ When proposing ABSTRACT:
 
 ## Executing Surviving Memory Actions (MCP tool mapping)
 
-After the adversarial loop converges, apply every surviving memory action via these tools:
+After the adversarial loop converges **and the memory gate is approved** (or
+`--apply-memory` was explicit), apply surviving actions via these tools:
 
-- **DELETE** / **DELETE (low-utility)** -> `mcp__autodev-memory__delete_entry(entry_id, project)`
+- **QUARANTINE** -> for an approved starred entry, unstar first; then call
+  `mcp__autodev-memory__delete_entry(entry_id, project)`. This is a recoverable soft-delete that
+  excludes the entry from search; call it quarantine, never permanent deletion.
+- **SUPERSEDE** -> `mcp__autodev-memory__supersede_entry(...)`. Prefer this over quarantine when
+  corrected guidance can replace the stale entry and preserve an explicit chain.
 - **UPDATE** -> `mcp__autodev-memory__update_entry(entry_id, project, content, summary, ...)`
 - **MERGE** -> Create new entry with merged content via `mcp__autodev-memory__create_entry()`,
-  then delete the source entries
+  then quarantine the source entries after verifying the destination is durable
 - **ABSTRACT** -> Create new general-rule entry via `mcp__autodev-memory__create_entry()`
-  (carry over any exception that still applies), then delete the subsumed instance entries
-- **RESCOPE** -> Create new entry in the target scope, then delete the original (scope is
-  immutable per entry, so rescoping requires recreate + delete)
-- **SPLIT** -> Create 2 new entries, delete the original
+  (carry over any exception that still applies), then quarantine the subsumed instances
+- **RESCOPE** -> Create new entry in the target scope, verify it, then quarantine the original
+  (scope is immutable per entry, so rescoping requires recreate + quarantine)
+- **SPLIT** -> Create and verify the replacement entries, then quarantine the original
 - **SIMPLIFY** -> `mcp__autodev-memory__update_entry()` with trimmed content
 - **RETYPE/RETAG** -> `mcp__autodev-memory__update_entry()` with corrected type/tags
 - **IMPROVE SUMMARY** -> `mcp__autodev-memory__update_entry()` with better summary
@@ -190,7 +198,10 @@ After the adversarial loop converges, apply every surviving memory action via th
 - **DROP TAG** -> `mcp__autodev-memory__update_entry()` removing the tag, optionally adding
   a replacement
 - **RESOLVE contradiction** -> With no human to arbitrate, the codebase decides: verify both
-  entries against the current code and keep/repair the one the code supports, deleting or
-  updating the other. If the code is genuinely ambiguous and the skeptics can't break the tie,
-  take **no action** — leave both entries and report the unresolved contradiction for a human
-  to settle.
+  entries against the current code and propose keeping/repairing the one the code supports,
+  superseding or quarantining the other. If the code is genuinely ambiguous, take **no action**
+  and report the contradiction for a human. Preferences and architecture decisions cannot be
+  arbitrated from code alone.
+
+Any action that touches a starred entry always stops for explicit human approval, even under
+`--apply-memory`.

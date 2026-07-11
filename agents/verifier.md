@@ -4,6 +4,7 @@ description: "Observe environments to collect evidence that features are deploye
 model: sonnet
 effort: medium
 max_turns: 50
+memory_types: [gotcha, diagnosis, reference]
 tools:
   [
     Bash,
@@ -21,6 +22,8 @@ tools:
     mcp__render__list_services,
     mcp__render__get_service,
     mcp__render__get_metrics,
+    mcp__autodev-memory__search,
+    mcp__autodev-memory__expand_entries,
   ]
 skills: [tool-postgres, tool-render, investigate, autodev-search]
 ---

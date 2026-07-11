@@ -67,7 +67,7 @@ Use the base protocol's adjudication table, with these overrides:
 
 ## Cross-channel ordering at apply time (re-checked here)
 
-A migration that spans both channels (e.g. "promote entry X's method into skill Y, then delete
+A migration that spans both channels (e.g. "promote entry X's method into skill Y, then quarantine
 X") must survive as a **pair**. If the skill-side edit is killed or gated-but-unapproved, the
 memory-side deletion **does not run** — never retire the source before the destination is durable.
 The skeptics flag any P pair whose two halves don't both survive.

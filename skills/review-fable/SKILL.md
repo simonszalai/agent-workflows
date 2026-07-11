@@ -86,11 +86,35 @@ claude/codex/grok). Never simulate a provider's findings by reasoning about what
 say — the only valid peer contribution is the envelope its process returned.
 
 - **Claude Code runner:** spawn two `external-reviewer` subagents (prompt: `provider=<peer>`,
-  plus the diff base) **in the same parallel Agent batch** as the native reviewers — the
+  plus the diff base and bounded memory-packet path) **in the same parallel Agent batch** as the native reviewers — the
   adapter can take ~9 minutes at xhigh and a foreground shell-out would hit the Bash timeout
   and silently drop the provider.
 - **Codex/Grok runner:** background `external-agent --task review --provider <peer> --base
-  <merge-base> --out .context/review/<provider>.json` loops, then wait.
+  <merge-base> --memory-context-file <bounded-task-packet> --out
+  .context/review/<provider>.json` loops, then wait. Use one <=3K task envelope; never rely on
+  ambient child SessionStart.
+
+Create the referenced file before either dispatch path:
+
+```bash
+mkdir -p .context/review
+base="$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)"
+for provider in $(agent-workflow-provider --peers); do
+  memory_packet=".context/review/${provider}-memory-task.md"
+  if ! { printf 'Review diff against %s\n' "$base"; cat .context/review/diff.patch; } | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type reviewer-fable --provider "$provider" --mechanism external_peer \
+        --task-prompt-stdin --allow-unavailable > "$memory_packet"; then
+    cat > "$memory_packet" <<'EOF'
+<autodev-memory-task-context status="unavailable">
+Memory context is unavailable. Do not infer that review memories were loaded.
+</autodev-memory-task-context>
+EOF
+  fi
+  # Pass "$memory_packet" to external-reviewer or to
+  # external-agent --task review ... --memory-context-file "$memory_packet".
+done
+```
 
 Each peer returns the same envelope shape as native reviewers
 (`{reviewer_key, findings, residual_risks, testing_gaps}` per `findings-schema.json`); a
@@ -121,13 +145,14 @@ confidence → file → line, route (`safe_auto`→review-fixer, `gated_auto|man
 downstream-resolver, `advisory`→human), partition into
 `{inSkillFixer, residualActionable, reportOnly}`.
 
-**Heavy path:** invoke the shared `review-fanout` workflow with the reviewer list (pass
-`model: "fable"` for the reviewer-fable-tier entries, `"sonnet"` for the rest), intent,
-files, diffSummary, `diffPath: ".context/review/diff.patch"`, and mode; run the peer
-dispatch concurrently in the same assistant message and merge peer envelopes into the
-workflow's reviewer set before boost/gate. The workflow adds tool-layer schema enforcement
-and the 2-skeptic adversarial verify on gated findings <0.80. No `Workflow` primitive in the
-host → run the equivalent algorithm inline; never downgrade to one provider.
+**Heavy path:** invoke `review-collect` with the native reviewer list (pass `model: "fable"`
+for reviewer-fable-tier entries, `"sonnet"` for the rest), intent, files, diffSummary,
+`diffPath: ".context/review/diff.patch"`, and mode. Run that collection concurrently with both
+peer dispatches. After all return, concatenate `native.reviewer_results` plus the peer envelopes
+and invoke `review-synthesize` exactly once. No boost, gate, or skeptic may run before the peer
+barrier. `review-synthesize` adds semantic dedup and tiered adversarial verify. No `Workflow`
+primitive in the host → run the equivalent two-stage algorithm inline; never downgrade to one
+provider.
 
 **Both paths produce the same result object** (`findings, pre_existing,
 pre_gate_suppressed, partitions, suppressed, coverage, stats` — light path zero-fills the

@@ -20,7 +20,7 @@ Tasks (--task):
                      "disagreements":[...], "evidence":[...],
                      "open_questions":[...], "notes" }
 
-  review       Review the working diff. Output matches workflows/review-fanout.js
+  review       Review the working diff. Output matches workflows/review-collect.js envelopes
                reviewerOutputSchema:
                    { "reviewer_key", "findings":[...], "residual_risks":[...], "testing_gaps":[...] }
 
@@ -50,6 +50,7 @@ Usage:
     external-agent --task investigate --provider claude|codex|grok --bug STR [--evidence-file F] [--environment ENV]
     external-agent --task research    --provider claude|codex|grok --question STR
   common: [--model M] [--repo DIR] [--out FILE] [--timeout SECS] [--skill-dir DIR]
+          --memory-context-file F
 
 Exit codes: 0 ok; 2 provider produced no valid output (a valid empty envelope with a
 residual note is still printed); 1 usage/setup error.
@@ -65,6 +66,9 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from memory_context import confirm_packet_delivery  # noqa: E402
 
 # Review reference selection. Always-on pair mirrors skills/review SKILL.md Step 2,
 # plus core simplicity/patterns. Language/domain refs added by select_review_references().
@@ -170,6 +174,20 @@ def read_text(p: Path) -> str:
         return p.read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def read_memory_context(path: str | None) -> str:
+    if not path:
+        return ""
+    packet = read_text(Path(path)).strip()
+    if not packet:
+        die(f"memory context file is empty or unreadable: {path}")
+    if len(packet) > 3_000:
+        die("memory context exceeds the 3000-character external-task budget")
+    if packet.count("<autodev-memory-task-context") != 1 or \
+            packet.count("</autodev-memory-task-context>") != 1:
+        die("memory context must contain exactly one bounded task-context envelope")
+    return packet
 
 
 # ---------------------------------------------------------------- reference selection
@@ -942,7 +960,9 @@ def run_claude(prompt: str, schema: dict, model: str | None,
     if model:
         cmd += ["--model", model]
     try:
-        res = subprocess.run(cmd, input=prompt, text=True, cwd=str(repo),
+        env = os.environ.copy()
+        env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
+        res = subprocess.run(cmd, input=prompt, text=True, cwd=str(repo), env=env,
                              capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         print("external-agent: claude timed out", file=sys.stderr)
@@ -988,7 +1008,9 @@ def run_codex(prompt: str, schema: dict, model: str | None,
         if model:
             cmd += ["-m", model]
         try:
-            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout,
+            env = os.environ.copy()
+            env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
+            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout, env=env,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except subprocess.TimeoutExpired:
             print("external-agent: codex timed out", file=sys.stderr)
@@ -1028,7 +1050,9 @@ def run_grok(prompt: str, schema: dict, model: str | None,
                "output; never attempt to modify anything. Output only the requested JSON "
                "object."]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            env = os.environ.copy()
+            env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
             return ""
         out = res.stdout.strip()
@@ -1078,6 +1102,12 @@ def main() -> None:
                     default=int(os.environ.get("EXTERNAL_AGENT_TIMEOUT",
                                 os.environ.get("EXTERNAL_REVIEW_TIMEOUT", "900"))))
     ap.add_argument("--skill-dir", default=None)
+    ap.add_argument("--memory-context-file", required=True,
+                    help="one explicit <=3K task packet; suppresses ambient SessionStart")
+    ap.add_argument(
+        "--telemetry-file", type=Path,
+        default=Path.home() / ".cache/autodev-memory/telemetry.jsonl",
+    )
     # review-only
     ap.add_argument("--base", default=os.environ.get("EXTERNAL_REVIEW_BASE", "origin/main"))
     # investigate-only
@@ -1094,6 +1124,7 @@ def main() -> None:
     ap.add_argument("--prior-knowledge-file", default=None,
                     help="file with rendered memories / related tickets (plan)")
     args = ap.parse_args()
+    memory_context = read_memory_context(args.memory_context_file)
 
     task = TASKS[args.task]
 
@@ -1157,6 +1188,10 @@ def main() -> None:
         prompt = build_research_prompt(args.provider, skill_dir, refs, args.question, repo)
         meta = f"refs={len(refs)} q={len(args.question)}c"
 
+    if memory_context:
+        prompt += ("\n\n" + "=" * 78 + "\n# EXPLICIT MEMORY TASK CONTEXT\n\n"
+                   + memory_context)
+
     runner = {"claude": run_claude, "codex": run_codex, "grok": run_grok}[args.provider]
     print(f"external-agent: task={args.task} provider={args.provider} {meta} "
           f"model={args.model or '(default)'}", file=sys.stderr)
@@ -1169,6 +1204,13 @@ def main() -> None:
         raw = runner(p, schema, args.model, repo, args.timeout)
         env, err = task["validate"](extract_json_object(raw), args.provider)
         if env is not None:
+            confirm_packet_delivery(
+                memory_context,
+                provider=args.provider,
+                mechanism=f"external_{args.task}",
+                confirmation_stage="validated_provider_response",
+                telemetry_file=args.telemetry_file,
+            )
             n = len(env.get("findings", env.get("hypotheses", env.get("occurrences", []))))
             print(f"external-agent: {args.provider} returned {n} item(s) "
                   f"(attempt {attempt})", file=sys.stderr)

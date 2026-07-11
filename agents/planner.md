@@ -5,6 +5,7 @@ description: "Create implementation plans for fixes and features."
 model: opus
 effort: xhigh
 max_turns: 50
+memory_types: [architecture, pattern, preference]
 skills:
   - first-principles
   - research

@@ -3,6 +3,7 @@ name: reviewer
 description: "Code reviewer. Spawned by /review with a specific focus area and reference files to load."
 model: inherit
 max_turns: 50
+memory_types: [gotcha, diagnosis, architecture]
 skills:
   - review
   - first-principles
@@ -61,7 +62,8 @@ assuming a fixed stack.
    ]
    ```
 
-2. **Review auto-injected context** from the knowledge menu in the system prompt.
+2. **Review bounded injected context** in the system/task prompt when present. It is a
+   representative shortlist, not an exhaustive knowledge menu.
 
 3. **Search similar past work items:**
 
