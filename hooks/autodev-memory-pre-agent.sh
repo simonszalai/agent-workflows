@@ -28,14 +28,15 @@ SESSION_ID=$(jq -r '.session_id // .sessionId // ""' <<<"$INPUT" 2>/dev/null)
 [[ -n "$SESSION_ID" ]] || { _log SKIP 'session_id=absent'; emit_empty; }
 AGENT_TYPE=$(jq -r '.tool_input.subagent_type // "generic"' <<<"$INPUT" 2>/dev/null)
 
-HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-HELPER="$HOOK_DIR/../bin/autodev-memory-task-packet"
-if [[ ! -x "$HELPER" ]]; then
-  # The versioned installer links hook files into ~/.claude/hooks and binaries
-  # into ~/.local/bin, so they are no longer sibling directories at runtime.
-  # Prefer that fixed managed destination over an arbitrary PATH lookup.
-  HELPER="$HOME/.local/bin/autodev-memory-task-packet"
+SCRIPT_PATH="$0"
+if _RESOLVED_SCRIPT=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null) \
+  && [[ -n "$_RESOLVED_SCRIPT" ]]; then
+  SCRIPT_PATH="$_RESOLVED_SCRIPT"
 fi
+HOOK_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+HELPER="$HOOK_DIR/../bin/autodev-memory-task-packet"
+# Resolve the hook symlink first so the helper comes from the exact same immutable
+# version tree. Never prefer ~/.claude/bin or an arbitrary PATH entry.
 [[ -x "$HELPER" ]] || { _log SKIP 'helper=unavailable'; emit_empty; }
 PACKET=$(printf '%s' "$PROMPT" | "$HELPER" --cwd "$CWD" --session-id "$SESSION_ID" \
   --agent-type "$AGENT_TYPE" --provider claude --mechanism prompt_rewrite \

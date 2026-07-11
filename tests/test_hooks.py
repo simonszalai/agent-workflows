@@ -102,18 +102,31 @@ class HookContractTest(unittest.TestCase):
                              ["task_selection", "packet_prepared", "child_packet"])
             self.assertEqual(events[-1]["confirmation_stage"], "pretool_output_emitted")
 
-    def test_pre_agent_installed_layout_resolves_managed_local_bin_helper(self) -> None:
+    def test_pre_agent_installed_layout_resolves_same_version_helper(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             hooks = home / ".claude/hooks"
-            binaries = home / ".local/bin"
+            unmanaged = home / ".claude/bin"
+            store = home / ".local/share/agent-workflows"
+            version = store / "versions" / ("a" * 40)
+            version_hooks = version / "hooks"
+            version_bin = version / "bin"
             hooks.mkdir(parents=True)
-            binaries.mkdir(parents=True)
-            (hooks / "autodev-memory-pre-agent.sh").symlink_to(
-                ROOT / "hooks/autodev-memory-pre-agent.sh"
+            unmanaged.mkdir(parents=True)
+            version_hooks.mkdir(parents=True)
+            version_bin.mkdir(parents=True)
+            (version_hooks / "autodev-memory-pre-agent.sh").write_bytes(
+                (ROOT / "hooks/autodev-memory-pre-agent.sh").read_bytes()
             )
-            (hooks / "memory_context.py").symlink_to(ROOT / "hooks/memory_context.py")
-            helper = binaries / "autodev-memory-task-packet"
+            (version_hooks / "autodev-memory-pre-agent.sh").chmod(0o755)
+            (version_hooks / "memory_context.py").write_bytes(
+                (ROOT / "hooks/memory_context.py").read_bytes()
+            )
+            (store / "current").symlink_to(Path("versions") / ("a" * 40))
+            (hooks / "autodev-memory-pre-agent.sh").symlink_to(
+                store / "current/hooks/autodev-memory-pre-agent.sh"
+            )
+            helper = version_bin / "autodev-memory-task-packet"
             helper.write_text(
                 "#!/bin/sh\n"
                 "cat >/dev/null\n"
@@ -123,6 +136,12 @@ class HookContractTest(unittest.TestCase):
                 + "\" delivery-id=\"canary\">safe</autodev-memory-task-context>'\n"
             )
             helper.chmod(0o755)
+            untrusted = unmanaged / "autodev-memory-task-packet"
+            untrusted.write_text(
+                "#!/bin/sh\ncat >/dev/null\n"
+                "printf '%s\\n' '<autodev-memory-task-context>UNTRUSTED</autodev-memory-task-context>'\n"
+            )
+            untrusted.chmod(0o755)
             payload = {
                 "tool_name": "Agent",
                 "session_id": "installed-session",
@@ -142,6 +161,7 @@ class HookContractTest(unittest.TestCase):
             updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
             self.assertIn("installed canary", updated)
             self.assertEqual(updated.count("<autodev-memory-task-context"), 1)
+            self.assertNotIn("UNTRUSTED", updated)
 
     def test_pre_agent_output_failure_never_confirms_prepared_packet(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
