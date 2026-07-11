@@ -89,6 +89,13 @@ summarize_error_file() {
 # prod postgres URLs are composed from the canonicals in finish-start.zsh INSIDE
 # that op run (op can't transform values in an env file). Nothing is read from
 # the 1Password mount here anymore.
+#
+# Machine-local override: if gateway.local.env exists (gitignored), it is used
+# INSTEAD of gateway.env. This lets a machine whose 1Password account lacks some
+# project vaults (e.g. TS/AMARU) list only the refs it can resolve — the gateway
+# treats routes with unset URL envs as unavailable (502) instead of failing.
+GATEWAY_ENV_FILE="$HERE/gateway.env"
+[[ -f "$HERE/gateway.local.env" ]] && GATEWAY_ENV_FILE="$HERE/gateway.local.env"
 
 # postgres-mcp launcher the daemon spawns (one SSE server per DB). Absolute path to the
 # ts-prefect dev venv binary by default; override POSTGRES_MCP_BIN for another env.
@@ -104,14 +111,14 @@ export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
 # Audit line (the gateway bypasses the bin/op shim via absolute OP_BIN):
 # gateway restarts are the one KNOWN biometric event — log them so op-audit
 # attributes every prompt, including this one.
-print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=gateway.env (daemon restart, one-per-lifetime)" \
+print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=${GATEWAY_ENV_FILE:t} (daemon restart, one-per-lifetime)" \
   >> "$AUDIT_DIR/op-audit.log" 2>/dev/null || true
 
 START_ERR_FILE="$(mktemp -t mcp-gateway-op-run.XXXXXX.err)"
 trap 'rm -f "${START_ERR_FILE:-}"' EXIT
 
 set +e
-"$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$HERE/gateway.env" --no-masking -- \
+"$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
   /bin/zsh "$HERE/finish-start.zsh" 2> >(tee "$START_ERR_FILE" >&2)
 status=$?
 set -e
