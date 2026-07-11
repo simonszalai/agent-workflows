@@ -68,14 +68,87 @@ job) is possible but unsupported; prefer WSL2.
 
 ### Prerequisites (per machine)
 - **Node** ≥ 20 (`node -v`). Set `NODE_BIN` if it isn't on the service's `PATH`.
-- **1Password CLI** `op`, signed in and unlocked, with desktop-app integration enabled so
-  `op read` is biometric, not a password prompt. Set `OP_BIN` / `OP_ACCOUNT` if needed.
+- **1Password CLI** `op`, signed in and unlocked. Two auth models (pick one):
+  - **Interactive (default, daily-driver Mac):** enable desktop-app integration —
+    1Password desktop app → **Settings → Developer → "Integrate with 1Password CLI"** (Touch
+    ID) — then `op account add` / `op signin` for the account. Now `op read`/`op run` are
+    biometric, not a password prompt (one Touch ID per daemon lifetime). Set `OP_BIN` /
+    `OP_ACCOUNT` if needed.
+  - **Headless (service account, no Touch ID):** for a boot-time / CI / no-desktop-app host,
+    use a **1Password service account** token instead — see
+    [Headless auth with a service account](#headless-auth-1password-service-account-no-touch-id)
+    below.
   - WSL: enable "Integrate with 1Password CLI" + the WSL toggle in the Windows 1Password app
     so `op` inside WSL authorizes via Windows Hello.
 - **`postgres-mcp`** binary on the box; `POSTGRES_MCP_BIN` must be a single absolute path to
   it (the daemon `spawn`s it directly — no shell, so `uvx postgres-mcp` as two words won't
   work). With `uv` installed: `uv tool install postgres-mcp`, then point
   `POSTGRES_MCP_BIN` at the resulting `~/.local/bin/postgres-mcp`.
+
+### Headless auth: 1Password service account (no Touch ID) {#headless-auth-1password-service-account-no-touch-id}
+The default resolves secrets **interactively** — `op run`/`op read` go through the desktop-app
+integration and raise one Touch ID prompt per daemon lifetime. To run the gateway **fully
+headless** (a fresh boot, a CI box, a host with no logged-in desktop app), authenticate `op`
+with a **1Password service account** token instead: setting `OP_SERVICE_ACCOUNT_TOKEN` makes
+every `op` call non-interactive — no desktop app, no biometric.
+
+> **Security tradeoff.** The token is a bearer credential with *standing* read access to every
+> vault you grant it, **with no biometric gate**. Anyone who can read it can read those
+> secrets. Keep it in the login/System keychain (below) — never in a file, the plist, or
+> `gateway.env`. Prefer the interactive Touch ID default on a daily-driver Mac; reach for the
+> service account only for headless hosts.
+
+**1. Create the service account (1Password web app).** Developer → Directory → **Other**
+(under *Infrastructure Secrets Management*) → **Create a Service Account** (or the
+[wizard](https://start.1password.com/developer-tools/infrastructure-secrets/serviceaccount/)).
+Grant it **read** on every vault this host's routes need — `TS`, `TS-sensitive`, `AMARU`,
+`AMARU-sensitive`, `WORKFLOW`, `WORKFLOW-sensitive`, `AUTODEV-sensitive`, `MCP` (a route whose
+`op://` ref lives in an ungranted vault ends up empty → 502). A service account **cannot** be
+granted the built-in Personal/Private vault or the default Shared vault; all gateway secrets
+already live in the named vaults above, so that limit doesn't bite. Copy the `ops_…` token —
+it's shown only once, at creation. Requires `op` ≥ 2.18.
+
+**2. Store the token in the macOS keychain** (not a dotfile). Paste it at the `-w` prompt so it
+never enters shell history:
+```bash
+security add-generic-password -a "$USER" -s mcp-gateway-op-service-account -U -w
+# (paste ops_… at the prompt, press return)
+```
+Confirm it's retrievable without printing it:
+```bash
+security find-generic-password -a "$USER" -s mcp-gateway-op-service-account -w >/dev/null && echo ok
+```
+
+**3. Make the daemon read it before `op run`.** Add this near the top of `start-gateway.sh`,
+*above* the `op run` block. When the keychain item exists, `op` uses the service account; when
+it's absent, the script falls through to the interactive Touch ID path unchanged:
+```bash
+# Headless auth: prefer a service-account token from the keychain. Present → op runs
+# non-interactively (no Touch ID). Absent → interactive desktop-app integration as before.
+if _sa_tok="$(/usr/bin/security find-generic-password -a "$USER" -s mcp-gateway-op-service-account -w 2>/dev/null)"; then
+  export OP_SERVICE_ACCOUNT_TOKEN="$_sa_tok"
+fi
+```
+Then **drop `--account` when the token is set** — a service-account token identifies its own
+account, so `op run --account …` is redundant and can error. The `op run` line becomes:
+```bash
+if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+  exec "$OP_BIN" run --env-file="$HERE/gateway.env" --no-masking -- /bin/zsh "$HERE/finish-start.zsh"
+else
+  exec "$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$HERE/gateway.env" --no-masking -- /bin/zsh "$HERE/finish-start.zsh"
+fi
+```
+> **Keychain + launchd timing.** A launchd agent can't unlock the *login* keychain until you've
+> logged in once after boot. For a truly boot-time start, put the item in the **System**
+> keychain instead (`sudo security add-generic-password -A -s mcp-gateway-op-service-account -w
+> /Library/Keychains/System.keychain`) and read from there; otherwise keep `RunAtLoad` and
+> accept that the first successful start happens after your first login.
+
+**4. Rotate / revoke** from the same web-app screen. Update the keychain item in place with the
+same `security add-generic-password … -U` command, then restart the daemon
+(`launchctl kickstart -k gui/$(id -u)/com.simon.mcp-gateway`). Service accounts also carry
+request **rate limits/quotas** — irrelevant for the gateway's once-per-lifetime resolve, but
+worth knowing if you script bulk `op read`s.
 
 ### Secret sourcing without the FIFO mount
 `start-gateway.sh` reads most secrets from Simon's 1Password **FIFO mount** — a *Local
