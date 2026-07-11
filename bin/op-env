@@ -14,6 +14,14 @@ fi
 OP_BIN="${OP_BIN:-op}"
 ENV_FILE="${ENV_FILE:-.env}"
 
+# The HUMAN 1Password account that owns *-sensitive vaults (Touch ID). The dev
+# service account has no grant there, so interactive reads must select this
+# account explicitly — otherwise op uses the CLI default account, which may lack
+# the vault ("<vault> isn't a vault in this account"). Override if the account
+# changes (user ID, sign-in URL, or shorthand from `op account list`). Mirrors
+# ts-prefect scripts/secrets/lib.sh's op_human.
+OP_HUMAN_ACCOUNT="${OP_HUMAN_ACCOUNT:-PT2BTBT4RJFEDPAMWIZCJGX5HY}"
+
 if ! command -v "$OP_BIN" >/dev/null 2>&1; then
   echo "op-env: missing 1Password CLI: $OP_BIN" >&2
   exit 2
@@ -35,9 +43,14 @@ fi
 
 # *-sensitive vaults are interactive-only (the service account has no grant).
 # With a token set, op run would fail with a permission error instead of
-# falling back to Touch ID — so drop the token when the file references one.
+# falling back to Touch ID — so drop the token when the file references one, and
+# pin --account to the human tenant so op doesn't fall back to a default account
+# that can't see the vault. --account cannot be combined with a live SA token,
+# so it is added only on this interactive path.
+op_cmd=("$OP_BIN")
 if grep -qE '=["'"'"']?op://[A-Za-z0-9_-]+-sensitive/' "$ENV_FILE"; then
   unset OP_SERVICE_ACCOUNT_TOKEN
+  op_cmd+=(--account "$OP_HUMAN_ACCOUNT")
 fi
 
-exec "$OP_BIN" run --env-file="$ENV_FILE" -- "$@"
+exec "${op_cmd[@]}" run --env-file="$ENV_FILE" -- "$@"

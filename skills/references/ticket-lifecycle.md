@@ -23,11 +23,11 @@ After a successful standalone landing/deployment:
 
 ```text
 # direct-to-production landing/deployment
-to_verify_prod -> completed | verify_prod_failed
+to_verify_prod -> completed | prod_verified_needs_cleanup | verify_prod_failed
 
 # staging landing/deployment
 to_verify_staging -> verify_staging_failed
-                 \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | verify_prod_failed
+                 \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | prod_verified_needs_cleanup | verify_prod_failed
 ```
 
 Staging PASS **auto**-invokes `/ticket-promote` only for low-risk scopes that pass the
@@ -41,7 +41,12 @@ runs `/ticket-promote` explicitly — that resting state is normal, not a stall.
 
 `to_verify_prod` means: **production landing AND deploy steps are complete; behavior is
 unverified.** Only `/ticket-verify production` moves a ticket from `to_verify_prod` to
-`completed` (or `verify_prod_failed`).
+`completed`, `prod_verified_needs_cleanup`, or `verify_prod_failed`.
+
+`prod_verified_needs_cleanup` means: **production behavior passed verification, but deferred
+cleanup still needs trigger/approval/execution/soak/final evidence on the same ticket/epic.**
+Only `/ticket-verify production` moves it to `completed` (cleanup evidence passed) or
+`verify_prod_failed` (cleanup evidence failed/out-of-scope/revert required).
 
 Use `abandoned` and `on_ice` only for explicit cancellation/deprioritization.
 
@@ -62,25 +67,24 @@ deploy, set `blocked_by="Thomas"` and include `{"repo":"ts-decrypt-proxy","targe
 in `blocked_context`. The dashboard shows this as a red blocker indicator in the normal status
 column.
 
-## Cleanup tickets (machine-owned mini-lifecycle)
+## Deferred cleanup holding status
 
-Cleanup tickets are created by `ticket-verify` §10a when a parent ticket passes production
-verification and carries a structured decommission/retirement follow-up. They are tagged
-`cleanup=true` and carry a `deferred_cleanup` artifact. They use EXISTING statuses only:
+Deferred cleanup is not split into a child cleanup ticket. When `ticket-verify` §10a finds a
+structured decommission/retirement follow-up after production verification passes, the original
+ticket/epic keeps a `deferred_cleanup` artifact and moves to `prod_verified_needs_cleanup`:
 
 ```text
-backlog (blocked_by="trigger_condition" | "approval")
-  -> in_progress            # cleanup_command executing
-  -> to_verify_prod         # blocked_by="soak" until blocked_context.soak_until;
-                            # here "production landing AND deploy steps" = the
-                            # cleanup_command execution
+to_verify_prod
+  -> prod_verified_needs_cleanup  # blocked_by trigger_condition | approval | soak as needed
   -> completed | verify_prod_failed
 ```
 
-No new statuses: approval, trigger, and soak are blocker metadata per the existing blocker
-policy above. Normal pickup queues skip blocked tickets (`next_ticket` excludes them); cleanup
-tickets advance only via explicit `/ticket-verify production <cleanup-ticket>` invocations.
-See `ticket-verify` §10/§10a for the artifact contract and execution rules.
+Approval, trigger, and soak are blocker metadata per the existing blocker policy above, not
+separate statuses. Normal pickup queues skip blocked items (`next_ticket` excludes them); cleanup
+holders advance only via explicit `/ticket-verify production <ID>` invocations. See
+`ticket-verify` §10/§10a for the artifact contract and execution rules. Legacy
+`cleanup=true` child tickets may be read for historical context, but new cleanup work stays on
+the parent item.
 
 ## Epic-step ticket statuses
 

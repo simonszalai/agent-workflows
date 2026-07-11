@@ -1,178 +1,112 @@
 ---
 name: html-chart
-description: Create a standalone, modern, minimal, interactive HTML visual explainer from the current conversation thread or provided context. Use when the user asks to visualize, explain, summarize, map, chart, diagram, synthesize, or make a high-bandwidth HTML artifact from discussion, plans, concepts, decisions, tradeoffs, workflows, research, or complex ideas; especially when they want an absolute path to the generated HTML file.
+description: Create a standalone, well-designed, interactive HTML visual explainer from the current conversation thread or provided context. Use when the user asks to visualize, explain, summarize, map, chart, diagram, synthesize, or make a high-bandwidth HTML artifact from discussion, plans, concepts, decisions, tradeoffs, workflows, research, or complex ideas; especially when they want an absolute path to the generated HTML file.
 ---
 
 # HTML Chart
 
-Create a single self-contained `.html` document that turns available context into a concise, complete, visually structured explainer optimized for fast human comprehension.
+Create a single self-contained `.html` document that helps a reader understand a system,
+decision, or concept faster than reading the source material. The output is a bespoke
+explainer designed *for this specific content* — not a template filled in, not a Markdown
+export, not a transcript.
 
-The goal is **not** a pretty Markdown export and not a transcript of the conversation. The goal is a high-bandwidth cognition surface: clear hierarchy, spatial grouping, diagrams, comparison surfaces, progressive disclosure, and lightweight interaction that helps a reader understand the **final system, decision, or concept** faster than reading the thread.
+## Two non-negotiables
 
-## Core principle: outcome over process
+1. **Truth.** Every fact in the artifact comes from the source context. Mark inferences as
+   inferences. Don't invent data points, numbers, or relationships to make a visual look
+   complete.
+2. **Design the artifact around the content, not the content around a layout.** Decide what
+   the reader needs to understand, in what order, and let that dictate the structure. There
+   is no required set of sections. A great explainer might be one big annotated diagram, a
+   scrollytelling narrative, a single dense comparison table, or an interactive playground —
+   whatever fits.
 
-When the source is a long conversation, do **not** document the whole path taken to reach the conclusion unless the user explicitly asks for a history or postmortem. Most HTML explainers should present the **arrived-at model** as if it were a clean reference artifact.
+## Distill before you draw
 
-Prioritize:
+- Use the conversation thread and any referenced files as the source. Don't ask the user to
+  restate context.
+- Present the **final outcome** (the arrived-at model/decision/system), not the winding path
+  that led there — unless the user explicitly wants a history or postmortem. If process
+  context helps, collapse it into a small appendix.
+- Before writing HTML, get the conceptual model straight: what the entities are, what each
+  relationship actually means (containment vs dependency vs reference vs sequence), and
+  which invariants matter. A diagram that encodes a wrong relationship is worse than prose.
+  When multiple relationship types appear in one diagram, differentiate them visually and
+  add a legend.
+- Lead with the answer. Whatever the layout, the core thesis should be understood within
+  the first screenful.
 
-- The final canonical system/model/decision.
-- The key entities and their definitions.
-- The exact relationships between entities.
-- The rules, invariants, and constraints.
-- The few caveats/open questions that matter for using the model correctly.
+## Design quality
 
-Avoid by default:
+This is the part that separates a good artifact from generated-looking slop. Principles,
+not a formula:
 
-- “First we thought X, then we corrected Y...” chronology.
-- Conversation recap sections.
-- Repeated caveats from earlier false starts.
-- Process-heavy workflow narrative when the user needs a clean system explanation.
+- **Commit to one aesthetic direction** chosen for the content and audience — e.g. calm
+  editorial light, technical dark, print-like report, playful. Execute it consistently:
+  one type scale, one spacing rhythm, one corner radius, one shadow style, a small
+  deliberate palette. Vary the direction between artifacts; don't converge on a house
+  style.
+- **Typography does most of the work.** Strong size contrast between levels (not
+  everything 13–15px), generous line-height for reading text, tight letter-spacing only
+  on large headings, tabular/monospace numerals for data. System font stacks are fine;
+  pick weights deliberately.
+- **Whitespace over boxes.** Prefer spacing and alignment to separate content. Reach for
+  borders, cards, and panels only when grouping genuinely needs enclosure. Nested
+  box-in-box-in-box layouts are a smell.
+- **Color is information.** Use accent colors to encode meaning (states, series,
+  good/bad) and almost nowhere else. Ensure readable contrast in whatever scheme you
+  pick. Semantic colors must stay consistent throughout the artifact.
+- **Charts and diagrams get real design attention:** direct-label instead of relying on
+  legends where possible, gridlines lighter than data, axes labeled with units, data ink
+  dominant over decoration. If a dataviz/design skill is available in the environment,
+  apply its palette and mark guidance.
+- **Avoid the generated look:** emoji as section bullets, badge/pill clutter, gradient
+  blob backgrounds, glassmorphism blur, uniform card grids of three, centered-everything,
+  decorative icons that carry no meaning. None of these are banned tools — but each must
+  earn its place.
+- **Density with hierarchy.** Don't dilute content into fragments-per-card; a well-set
+  paragraph or a dense labeled table often beats six cards. Use progressive disclosure
+  (`<details>`, tabs, toggles) for depth that would slow the first read.
 
-If historical context is useful, put it in a short collapsed `<details>` appendix titled “How we got here” — never make it the spine of the artifact.
+## Interaction
+
+Add interaction only where it reveals structure that's hard to show statically: toggling
+scenarios or layers, focusing a path through a diagram, filtering many items, comparing
+before/after. Essential information must be readable with zero interaction. Controls must
+be real focusable elements with visible focus states, deterministic, and fully local.
+
+## Engineering requirements
+
+- Standalone file: inline CSS/JS, no external network dependencies, no dev server.
+- Semantic HTML; responsive down to mobile widths; respect `prefers-reduced-motion`;
+  print-friendly enough to save as a PDF.
+- SVG for diagrams whose spatial relationships must be exact. For hand-positioned SVG,
+  verify geometry before finalizing: every label/node fits inside its container with
+  padding, nothing overlaps, lines don't cut through node interiors. Overflow is a hard
+  blocker — resize, wrap, or reposition until it fits.
+- Charts drawn from data should be *computed* from the data values (even if hand-written
+  into coordinates) — never eyeballed shapes that contradict the numbers.
 
 ## Output contract
 
-- Generate an actual `.html` file; do not stop at a Markdown summary.
-- Make the file standalone: inline CSS and JavaScript; avoid external network dependencies.
-- Write repo artifacts to `artifacts/html/<filename>.html` when working in a git repo; create the directory if needed. Only fall back to `.context/` or the current directory when there is no repo/artifacts location available.
-- If the artifact is attached to a ticket, the filename must start with the ticket prefix, e.g. `F123-flow-map.html`. If there are multiple artifacts for the same ticket, use a descriptive suffix such as `F123-data-model.html` or `F123-mobile-layout.html`.
-- When iterating on an existing artifact, overwrite the same `artifacts/html/<filename>.html` file directly. Do not create timestamped, numbered, or duplicate versions unless the user explicitly asks for separate versions.
-- End the final response with the absolute path in a fenced code block, and put nothing after that code block.
-- If browser tools are available and the task is non-trivial, open or inspect the file once before final response. If not, at minimum verify the file exists and is non-empty.
-
-## Workflow
-
-### 1. Gather and distill the context
-
-Use the visible conversation thread as the primary source. Also load any directly referenced local files, attached artifacts, prior generated plans, or previous HTML artifacts if they are needed to understand or improve the output. Do not ask the user to restate context unless the source material is truly unavailable.
-
-Extract two layers:
-
-1. **Final outcome layer** — the canonical model, entities, relationships, rules, decisions, constraints, outcomes.
-2. **Source/evidence layer** — why those decisions are true, corrections made, caveats, uncertain inferences.
-
-Render the final outcome layer prominently. Render source/evidence only when it helps trust or prevents misuse.
-
-Mark uncertain inferences as inferences. Do not invent facts to make the visualization look complete.
-
-### 2. Build an information model before drawing
-
-Before writing HTML, make the artifact’s conceptual model explicit in your own reasoning:
-
-- What are the entity types?
-- Which things are containers vs line items vs properties vs states vs events?
-- Which relationships mean containment, dependency, rollup, reference, snapshot, capability, or lifecycle transition?
-- Which fields are columns/properties rather than child entities?
-- What are the invariants that must never be violated?
-
-The final diagram must respect this model. **Correctness beats visual cleverness.** If a relationship has a different meaning, show it with a different visual encoding and a legend.
-
-Recommended relationship encodings:
-
-- Solid line/arrow: parent-child containment or rollup.
-- Dashed line: snapshot/copy-from/template source.
-- Dotted line: indirect capability or eligibility.
-- Double-line or highlighted path: active calculation path.
-- Group boundary/lane: category, layer, or ownership boundary.
-
-### 3. Choose the best visual model
-
-Select visual structures based on the information shape, not habit:
-
-| Information shape | Use |
-| --- | --- |
-| Final system ontology | Entity map, layered diagram, glossary cards |
-| Architecture or dependencies | Node-link SVG, layered dependency grid, ownership map |
-| Hierarchy or rollup | Tree, nested lanes, expandable node graph |
-| Pricing/cost rules | Calculation ladder, active-path diagram, formula cards |
-| Template vs instance | Split-pane snapshot map, before/after copy diagram |
-| Capability/eligibility | Indirect relationship map, matrix, dependency chain |
-| Tradeoffs or options | Comparison matrix, scorecards, decision tree |
-| Process/lifecycle | Timeline, swimlane, state machine — only when lifecycle is central |
-| Many related concepts | Searchable/filterable cards or concept index |
-| Before/after change | Split panels, delta table, annotated callouts |
-
-Use 3-6 complementary sections rather than one overloaded mega-diagram. Every section should answer a distinct comprehension question.
-
-### 4. Design for high-bandwidth comprehension
-
-Apply these rules aggressively:
-
-- Put the answer above the fold: title, one-sentence thesis, and 3-5 key takeaways.
-- Make it a reference artifact: a reader should understand the final system without reading the conversation.
-- Replace walls of prose with visual chunks: cards, lanes, matrices, callouts, SVG diagrams, and concise labels.
-- Use progressive disclosure for details: concise visible summary, expandable evidence/details.
-- Encode relationships spatially: proximity for related items, arrows/lines for dependencies, columns for contrast, lanes for categories.
-- Use a restrained visual system: neutral canvas, one accent palette, consistent radius, spacing, and type scale.
-- When using semantic badges/tags, make them content-sized with consistent horizontal/vertical padding. Do not use arbitrary fixed widths that leave empty space around short labels. Tags with equal semantic weight (for example estimate vs actual cost) should have comparable visual intensity; do not make one filled/strong and the other pale/secondary unless that difference is meaningful.
-- Make scanning easy: strong headings, short labels, bold only for signal, no decorative noise.
-- Keep it concise but complete: include every material concept; remove filler and repeated phrasing.
-- Optimize for information transfer and likelihood of being read, not minimal HTML length.
-
-### 5. Add sophisticated interaction only where it improves understanding
-
-For complex concepts, at least one interaction should reveal structure that would be hard to read statically. Good interactions:
-
-- Click a diagram node to show definition, fields, relationships, and examples.
-- Toggle diagram layers such as structure / snapshots / pricing / capability.
-- Highlight a rollup path or dependency chain.
-- Search/filter when there are many cards or concepts.
-- Tabs for alternate views of the same system, not unrelated hidden sections.
-- Expand/collapse details for caveats, examples, evidence, or open questions.
-- Copy buttons for commands, paths, IDs, formulas, or generated prompts.
-
-Interaction requirements:
-
-- Essential information must still be visible without interaction.
-- Controls must be accessible real buttons/inputs with visible focus states.
-- Interactions must be deterministic and local; no external libraries or network calls.
-- A chart is “interactive” only if the interaction improves comprehension, not if it merely hides text.
-
-### 6. Build the HTML
-
-Start from `assets/template.html` when useful. Replace all placeholder content with task-specific content and remove unused sections.
-
-Before writing, choose the stable output path:
-
-1. Find the repo root with `git rev-parse --show-toplevel` when available.
-2. Use `<repo-root>/artifacts/html/` as the output directory and create it if missing.
-3. Reuse the existing artifact path when the user is iterating. Overwrite it in place.
-4. For ticketed artifacts, ensure the basename starts with the ticket prefix.
-
-
-Implementation requirements:
-
-- Use semantic HTML (`header`, `main`, `section`, `article`, `details`, `button`, `figure`, `figcaption`).
-- Prefer SVG for diagrams where relationships must be spatially correct; use HTML/CSS cards for supporting summaries.
-- **Never allow diagram elements to protrude from their containers.** For lane/grid diagrams, every node, badge, label, halo, and callout must have explicit coordinates and dimensions that stay inside its containing lane/card with visible padding. If a node cannot fit, widen the container, shrink the node, wrap text, or move the node; do not accept overflow as a tradeoff.
-- For manually positioned SVG, create a small geometry check before finalizing: define container boxes and child boxes, then verify each child box is fully contained by its parent and no node boxes overlap. Treat any failure as a hard blocker and regenerate the layout.
-- Keep CSS in a `<style>` block and JS in a `<script>` block.
-- Support mobile and desktop with responsive CSS Grid/Flexbox/SVG scaling.
-- Use accessible controls: real buttons, visible focus states, `aria-selected`, `aria-controls`, `aria-expanded`, and `aria-live` where relevant.
-- Respect `prefers-reduced-motion`.
-- Use print-friendly styles so the artifact can be saved as PDF.
-- Never depend on a running dev server.
-
-### 7. Quality check before final
-
-Before replying, inspect the generated file for:
-
-- No template placeholders remain.
-- The main thesis and key takeaways are visible immediately.
-- The artifact explains the **final outcome**, not the whole conversation process.
-- The visual structures match the actual information shape.
-- Diagrams are conceptually correct: no columns shown as child entities, no references shown as containment, no lifecycle shown as ownership.
-- Diagram geometry is valid: no node/card/badge/callout protrudes outside its lane/container, no node overlaps another node, and relationship lines do not cross through node interiors.
-- Relationship line styles have a legend when multiple relationship types appear.
-- Interactions work without external dependencies.
-- The file exists, is non-empty, and the absolute path is copyable.
+- Write repo artifacts to `<repo-root>/artifacts/html/<filename>.html` (create the
+  directory if needed); fall back to `.context/` or cwd only when there is no repo.
+- Ticket-attached artifacts: filename starts with the ticket ID, e.g. `F123-flow-map.html`;
+  use descriptive suffixes when a ticket has several artifacts.
+- When iterating, overwrite the same file in place — no timestamped or numbered copies
+  unless the user asks for versions.
+- Before replying, verify the file exists and is non-empty (open it in a browser tool if
+  one is available and the artifact is non-trivial), placeholders are gone, the thesis is
+  visible immediately, diagrams are conceptually and geometrically correct, and
+  interactions work.
+- `assets/template.html` is an optional minimal skeleton (reset, print/reduced-motion
+  handling). It carries no visual design on purpose — the design is yours to make.
 
 ## Final response format
 
+Briefly explain what the artifact shows, then end with the absolute path in a fenced code
+block, with nothing after it:
+
 ```text
-Created the interactive HTML explainer.
-
-`/absolute/path/to/file.html`
+/absolute/path/to/file.html
 ```
-
-The path must be the last thing in the response.

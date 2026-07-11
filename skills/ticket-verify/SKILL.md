@@ -132,9 +132,10 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   `TBD`/empty, fall back to deriving evidence from source + plan acceptance criteria, and flag in
   the report that the work shipped without a finalized evidence contract — the best staging
   verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote.
-  Exception — tickets tagged `cleanup=true`: the ticket's `deferred_cleanup.evidence_contract`
-  IS the FINALIZED contract (§10/§10a); the contract-missing verdict cap does not apply and no
-  `deployment_guide` is synthesized;
+  Exception — items in `prod_verified_needs_cleanup` (or legacy tickets tagged
+  `cleanup=true`): the item's `deferred_cleanup.evidence_contract` IS the FINALIZED cleanup
+  contract (§10/§10a); the contract-missing verdict cap does not apply and no
+  `deployment_guide` is synthesized for cleanup-only verification;
 - find PR/commit/landing branch from events, tags, PR title, or git history;
 - read `.claude/environments/{env}.md` when present.
 
@@ -452,7 +453,7 @@ Standalone ticket mode:
 | staging | FAIL | write staging `verification_evidence`; status `verify_staging_failed` |
 | staging | NEEDS_MORE_TIME | leave status unchanged |
 | staging | BLOCKED | write/update staging `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
-| production | PASS | write mandatory production `verification_evidence`; materialize follow-ups (§10a); set status `completed` only after materialization succeeds; then run any same-cycle cleanup (§10) |
+| production | PASS | write mandatory production `verification_evidence`; if a `deferred_cleanup` item exists, run same-cycle cleanup when §10 permits it, otherwise set status `prod_verified_needs_cleanup` and leave the cleanup on this same item (§10a); set status `completed` only when no cleanup remains or cleanup verification passes |
 | production | FAIL | write mandatory production `verification_evidence`; status `verify_prod_failed` |
 | production | NEEDS_MORE_TIME | leave status unchanged |
 | production | BLOCKED | write/update mandatory production `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
@@ -470,7 +471,7 @@ Epic/milestone mode:
 | staging | FAIL | write canonical staging gate `verification_evidence` plus per-step ticket artifacts for every included step, with failed evidence-to-step mapping on affected steps; update the epic summary; leave the milestone unpassed for `/epic-flow` fix loop |
 | staging | NEEDS_MORE_TIME | write/update canonical staging gate `verification_evidence` plus per-step ticket artifacts for collected evidence; update the epic summary; leave milestone and step statuses unchanged |
 | staging | BLOCKED | write/update canonical staging gate `verification_evidence` plus per-step ticket artifacts for every included step, with blocker ground-truth evidence on affected steps; update the epic summary; leave milestone and step statuses unchanged |
-| production | PASS | write mandatory final production gate `verification_evidence` on the epic; write full per-step ticket `verification_evidence` artifacts; update the compact epic verification summary; mark included step tickets `completed` when their parent epic owns completion; mark epic complete only if all milestones are done |
+| production | PASS | write mandatory final production gate `verification_evidence` on the epic; write full per-step ticket `verification_evidence` artifacts; update the compact epic verification summary; if deferred cleanup remains, set the epic/affected owning item to `prod_verified_needs_cleanup`; otherwise mark included step tickets `completed` when their parent epic owns completion and mark epic complete only if all milestones are done |
 | production | FAIL | write mandatory production gate `verification_evidence` plus per-step ticket artifacts for every included step; update the epic summary; mark epic/affected step production verification failed if supported, otherwise record blocker/failure metadata |
 | production | NEEDS_MORE_TIME | write/update mandatory production gate `verification_evidence` plus per-step ticket artifacts for collected evidence; update the epic summary; leave statuses unchanged |
 | production | BLOCKED | write/update mandatory production gate `verification_evidence` plus per-step ticket artifacts for every included step, with blocker ground-truth evidence on affected steps; update the epic summary; leave statuses unchanged; update/preserve blocker metadata |
@@ -599,43 +600,51 @@ Execution rules:
 **Same-cycle path:** no `trigger_condition` and `reversibility="reversible"` → the orchestrator
 runs the cleanup immediately after the production PASS is recorded (preserving prior behavior).
 `reversible` is not accepted on assertion alone: the artifact must carry a non-empty
-`revert_ref`/`revert_command`; absent a concrete revert, treat as destructive and defer to a
-§10a approval-gated cleanup ticket regardless of the label.
-Anything else is deferred to a cleanup ticket (§10a). A ticket without a `deferred_cleanup`
+`revert_ref`/`revert_command`; absent a concrete revert, treat as destructive and move to the
+§10a approval-gated cleanup-holding path regardless of the label.
+Anything else is deferred in-place (§10a). A ticket/epic without a `deferred_cleanup`
 artifact has no cleanup step, and a non-PASS verdict never triggers one.
 
-### 10a. Materialize follow-ups (production PASS only)
+### 10a. In-place cleanup holding status (production PASS only)
 
-Every structured decommission/retirement follow-up identified during verification MUST become a
-**child cleanup ticket**, not prose. Prose-only follow-ups in learning_reports are a violation.
-§10a runs BEFORE the parent is set `completed`; if materialization fails, the parent stays
-`to_verify_prod` with blocker metadata naming the materialization failure.
+Every structured decommission/retirement follow-up identified during verification MUST stay on
+the **same parent ticket/epic** as a `deferred_cleanup` artifact. Do **not** create a child
+cleanup ticket by default. Prose-only follow-ups in learning_reports are a violation: normalize
+them into the parent's `deferred_cleanup` artifact before changing status.
 
-For each follow-up:
+§10a runs BEFORE the parent is set `completed`:
 
-1. Dedup: skip if a child ticket already exists for (parent, `cleanup_kind`).
-2. `create_ticket` in the parent's project, repo = the runtime surface being cleaned, tags
-   `{"cleanup": "true"}`, related → parent.
-3. Attach a `deferred_cleanup` artifact (schema above) to the child ticket.
+1. Dedup/normalize: if equivalent cleanup is already represented by a parent
+   `deferred_cleanup` artifact (`cleanup_kind` + scope), update it rather than duplicating it.
+   Legacy child cleanup tickets may be read for context, but new work remains on the parent.
+2. Set the parent status to `prod_verified_needs_cleanup`.
+3. Set blocker metadata on the parent when appropriate:
+   - `blocked_by="trigger_condition"` with `blocked_context.check_command` when the trigger is
+     not yet true;
+   - `blocked_by="approval"` for destructive cleanup or when reversibility lacks a concrete
+     `revert_ref`/`revert_command`;
+   - `blocked_by="soak"` with `blocked_context={"soak_until": ...}` after cleanup execution if a
+     soak window must elapse before final cleanup verification.
 
-Cleanup mini-lifecycle (existing statuses only; see `references/ticket-lifecycle.md`):
+Cleanup holding lifecycle (same item, new status; see `references/ticket-lifecycle.md`):
 
-- Created at `backlog` with `blocked_by="trigger_condition"` (`blocked_context` holds the
-  `check_command`); destructive cleanups instead/additionally carry `blocked_by="approval"`.
-- An explicit `/ticket-verify production <cleanup-ticket>` evaluates the trigger. Trigger false:
-  the §3 blocker-metadata refresh is the **only** permitted write.
-- Trigger true + reversible: clear blocker → `in_progress` → run `cleanup_command` with scope
-  enforcement (§10) → `to_verify_prod` with `blocked_by="soak"`,
-  `blocked_context={"soak_until": ...}`.
+- `to_verify_prod` production PASS + pending cleanup → `prod_verified_needs_cleanup`.
+- An explicit `/ticket-verify production <ID>` on `prod_verified_needs_cleanup` evaluates the
+  cleanup trigger/approval/soak from blocker metadata and the `deferred_cleanup` artifact.
+- Trigger false: the §3 blocker-metadata refresh is the **only** permitted write.
+- Trigger true + reversible: clear trigger blocker → run `cleanup_command` with scope
+  enforcement (§10) → keep `prod_verified_needs_cleanup` with `blocked_by="soak"` if soaking is
+  required, otherwise grade the cleanup `evidence_contract`.
 - Destructive: `blocked_by="approval"` is an ABSOLUTE no-run gate regardless of trigger state.
   Approval = an operator clears the blocker (optionally recording
   `blocked_context.approved_by`).
-- Post-soak verify grades the artifact's `evidence_contract` — it IS the FINALIZED contract
-  (§2) → `completed` | `verify_prod_failed` (revert = `revert_ref`/`revert_command`). A verify
-  before `soak_until` must refuse completion (`NEEDS_MORE_TIME`).
+- Post-soak/final cleanup verification grades the artifact's `evidence_contract` — it IS the
+  FINALIZED cleanup contract (§2) → `completed` | `verify_prod_failed` (revert =
+  `revert_ref`/`revert_command`). A verify before `soak_until` must refuse completion
+  (`NEEDS_MORE_TIME`).
 
-Periodic sweep/supervisor adoption of due cleanup tickets is a contract-consumer concern
-(ts-prefect follow-up); this skill guarantees explicit-invocation evaluation only.
+Periodic sweep/supervisor adoption of due cleanup holders is a contract-consumer concern; this
+skill guarantees explicit-invocation evaluation only.
 
 ## Output
 

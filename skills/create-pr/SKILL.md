@@ -9,6 +9,9 @@ Generate a summary of all work done, create a commit, push, and open a pull requ
 invoked by `/auto-deploy` Phase 2 (which creates the PR just before merging/deploying) and can
 also be called manually.
 
+**PR type invariant:** Always create a regular, ready-for-review PR immediately. Never create a
+draft PR, never pass `--draft` to `gh pr create`, and never defer converting a draft later.
+
 For multi-repo epics, read `../references/conductor-multi-repo.md`: `/create-pr` is repo-local.
 Create one PR for the current repo/step only; sibling repo PRs are separate and ordered by the
 epic DAG.
@@ -18,7 +21,6 @@ epic DAG.
 ```
 /create-pr F007                     # Create PR for feature F007
 /create-pr B001                     # Create PR for bug fix B001
-/create-pr F007 --draft             # Create as draft PR
 /create-pr F007 --issue 123         # Link to GitHub issue #123
 ```
 
@@ -234,7 +236,8 @@ EOF
 )"
 ```
 
-**If `--draft`:** Add `--draft` flag to `gh pr create`.
+The command must create a regular PR immediately. Do not add `--draft`, even when the caller asks
+for a draft; explain that this workflow only creates regular PRs.
 
 **If `--issue` or GitHub issue in source.md:**
 
