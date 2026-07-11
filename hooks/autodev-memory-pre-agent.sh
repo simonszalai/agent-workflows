@@ -29,8 +29,11 @@ SESSION_ID=$(jq -r '.session_id // .sessionId // ""' <<<"$INPUT" 2>/dev/null)
 AGENT_TYPE=$(jq -r '.tool_input.subagent_type // "generic"' <<<"$INPUT" 2>/dev/null)
 
 SCRIPT_PATH="$0"
-if _RESOLVED_SCRIPT=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null) \
-  && [[ -n "$_RESOLVED_SCRIPT" ]]; then
+if [[ -L "$0" ]]; then
+  _RESOLVED_SCRIPT=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null) \
+    || { _log SKIP 'helper=unresolved-hook-symlink'; emit_empty; }
+  [[ -n "$_RESOLVED_SCRIPT" && "$_RESOLVED_SCRIPT" != "$0" ]] \
+    || { _log SKIP 'helper=unresolved-hook-symlink'; emit_empty; }
   SCRIPT_PATH="$_RESOLVED_SCRIPT"
 fi
 HOOK_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"

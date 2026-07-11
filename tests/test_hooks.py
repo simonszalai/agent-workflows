@@ -163,6 +163,45 @@ class HookContractTest(unittest.TestCase):
             self.assertEqual(updated.count("<autodev-memory-task-context"), 1)
             self.assertNotIn("UNTRUSTED", updated)
 
+    def test_pre_agent_installed_layout_fails_closed_when_realpath_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            hooks = home / ".claude/hooks"
+            unmanaged = home / ".claude/bin"
+            fake_bin = home / "fake-bin"
+            hooks.mkdir(parents=True)
+            unmanaged.mkdir(parents=True)
+            fake_bin.mkdir()
+            (hooks / "autodev-memory-pre-agent.sh").symlink_to(
+                ROOT / "hooks/autodev-memory-pre-agent.sh"
+            )
+            executed = home / "unmanaged-executed"
+            helper = unmanaged / "autodev-memory-task-packet"
+            helper.write_text(f"#!/bin/sh\ntouch '{executed}'\n")
+            helper.chmod(0o755)
+            python = fake_bin / "python3"
+            python.write_text("#!/bin/sh\nexit 9\n")
+            python.chmod(0o755)
+            payload = {
+                "tool_name": "Agent",
+                "session_id": "installed-session",
+                "cwd": str(ROOT),
+                "tool_input": {"subagent_type": "reviewer", "prompt": "installed canary"},
+            }
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+            result = subprocess.run(
+                [str(hooks / "autodev-memory-pre-agent.sh")],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {})
+            self.assertFalse(executed.exists())
+
     def test_pre_agent_output_failure_never_confirms_prepared_packet(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
