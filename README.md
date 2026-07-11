@@ -18,7 +18,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 
 | Environment     | Mechanism                                      | Direction |
 | --------------- | ---------------------------------------------- | --------- |
-| Local dev       | `~/.claude/`, `~/.agents`, `~/.codex` symlinks | Two-way   |
+| Local dev       | Versioned installer + stable per-item symlinks | One-way, rollback-safe |
 | Cloud sessions  | SessionStart hook clones + copies              | One-way   |
 | NanoClaw        | Volume mount into container                    | Two-way   |
 
@@ -26,18 +26,17 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 
 ```bash
 git clone git@github.com:simonszalai/agent-workflows.git ~/dev/agent-workflows
-ln -s ~/dev/agent-workflows/agents ~/.claude/agents
-ln -s ~/dev/agent-workflows/commands ~/.claude/commands
-ln -s ~/dev/agent-workflows/skills ~/.claude/skills
-ln -s ~/dev/agent-workflows/skills ~/.agents/skills
-ln -s ~/dev/agent-workflows/hooks ~/.claude/hooks
-ln -s ~/dev/agent-workflows/hooks ~/.codex/hooks
-ln -s ~/dev/agent-workflows/workflows ~/.claude/workflows
-ln -s ~/dev/agent-workflows/bin/agent-workflow-provider ~/.local/bin/agent-workflow-provider
-ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
-ln -s ~/dev/agent-workflows/bin/external-agent ~/.local/bin/external-agent
-ln -s ~/dev/agent-workflows/bin/external-review ~/.local/bin/external-review   # back-compat shim
+~/dev/agent-workflows/bin/install-agent-workflows
+
+# Roll back atomically to the previously installed immutable version:
+~/.local/bin/install-agent-workflows --rollback
 ```
+
+The installer copies an immutable version under
+`~/.local/share/agent-workflows/versions/`, atomically switches `current`, creates only
+managed per-item links (it refuses to overwrite unrelated files), and merges Claude/Codex hook
+configuration without deleting unrelated settings. CI tests use `--home <temporary-dir>` for
+fresh install, upgrade, and rollback; never test installation against the operator's real HOME.
 
 `external-agent` shells out to peer provider CLIs (`claude`, `codex`, and/or `grok`), so the
 providers you want as peers must be installed and authenticated. Cross-provider participation is
@@ -56,6 +55,11 @@ All peer providers run **read-only with repo access** so they can grep/read code
 output — Claude via `claude -p` with only Read/Grep/Glob tools, Codex via `-s read-only`, and
 Grok via a read/search-only tool allowlist (`--tools Read,Grep,Glob`, no Bash/Write/Edit).
 None can modify the repo.
+
+External calls must receive the required, separately generated `--memory-context-file` (maximum 3K) and set
+the adapter's ambient-hook suppression automatically. See
+[`docs/memory-provider-matrix.md`](docs/memory-provider-matrix.md). Fable is a workflow/model
+variant, not a fourth provider.
 
 ### MCP gateway daemon — 1Password secrets loaded once (once per machine)
 
@@ -164,8 +168,10 @@ hooks fail silently on resume/compact triggers with "AUTODEV_MEMORY_API_TOKEN no
 
 | File | Event | Purpose |
 |---|---|---|
-| `autodev-memory-session-start.sh` | SessionStart | Injects starred entries + knowledge menu |
-| `autodev-memory-pre-agent.sh` | PreToolUse (Agent) | Briefs sub-agents with memory context |
+| `autodev-memory-session-start.sh` | SessionStart | Validates/injects one server-rendered packet v2 (bounded v1 digest fallback) |
+| `autodev-memory-pre-agent.sh` | PreToolUse (Agent) | Adds one <=3K skill-scoped task packet to managed Claude children |
+| `memory_context.py` | helper | Validates counts/hash, renders wrappers, manages atomic 0600 session cache |
+| `task_packet.py` | helper | Calls strict repo-scoped `/entries/by-skill` and renders task packets |
 | `mem-lib.sh` | (shared library) | Logging, env parsing, HTTP, entry loading |
 | `mem-err-trap.sh` | (shared library) | Error trapping for clean hook output |
 
@@ -231,11 +237,11 @@ Two defenses:
   pure-crash case where the launcher never re-runs. An active session's proxy has a live
   parent and is always spared.
 
-## Two-way updates
+## Updating shared workflows
 
-Locally, symlinks mean edits to `~/.claude/skills/` or `~/.agents/skills/` directly modify
-this repo. When the `compound` skill updates a shared skill, the change propagates to
-agent-workflows automatically.
+Edit this repository, commit the change, then run `bin/install-agent-workflows` to atomically
+activate the new version. Installed copies are immutable deployment artifacts, not editing
+surfaces.
 
 In cloud sessions, file changes are ephemeral. Learnings persist via the memory service
 (autodev-memory) instead.

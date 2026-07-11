@@ -90,7 +90,8 @@ explicitly asks for a full replan/from-scratch run.
 5. Run cross-provider planning:
    - Determine the current runner with `agent-workflow-provider`. The current runner is the native
      planner; the other two providers are peers.
-   - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>` using the
+   - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>
+     --memory-context-file <bounded-task-packet>` using the
      peer-planning packet as the source artifact. Claude peers must use the subscription-backed
      `claude -p` path provided by `external-agent`, never a direct API call.
    - If Claude Code is the current runner, use the `external-planner` dispatcher for the non-Claude

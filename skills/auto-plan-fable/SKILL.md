@@ -116,9 +116,11 @@ Actually run them — never summarize what a provider "would" say:
 - **Claude Code runner:** spawn two `external-planner` subagents in the same parallel `Agent`
   batch as the native planner; each calls `external-agent --task plan` for one peer and
   returns the planner envelope (`{planner_key, plan{…}, assumptions, disagreements, evidence,
-  open_questions, notes}`).
-- **Codex/Grok runner:** call `external-agent --task plan` directly for both peers (Claude
-  peer via subscription-backed `claude -p`, never a direct API call). Write inputs to
+  open_questions, notes}`). Include the bounded memory-packet path; the adapter call passes it
+  via `--memory-context-file`.
+- **Codex/Grok runner:** call `external-agent --task plan` directly for both peers with one
+  explicit <=3K `--memory-context-file` (Claude peer via subscription-backed `claude -p`,
+  never a direct API call). Write inputs to
   `.context/plan/` (question, source, codebase research, prior knowledge) and pass them as
   files, `--out .context/plan/<provider>.json`.
 

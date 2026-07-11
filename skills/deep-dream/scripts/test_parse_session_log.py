@@ -187,6 +187,48 @@ class ParseSessionLogTest(unittest.TestCase):
         self.assertTrue(parsed["events"][0]["correction_candidate"])
         self.assertNotIn("repository-qualified", json.dumps(parsed))
 
+    def test_claude_agent_records_type_and_packet_mechanism_not_prompt(self) -> None:
+        records = [{
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "id": "a1", "name": "Agent",
+                "input": {"subagent_type": "reviewer", "prompt":
+                          "secret task\n<autodev-memory-task-context>rules</autodev-memory-task-context>"},
+            }]},
+        }]
+        parsed = self.parse(records, "claude")
+        event = parsed["events"][0]
+        self.assertEqual(event["agent_type"], "reviewer")
+        self.assertEqual(event["delegation_mechanism"], "claude_agent_explicit_task_packet")
+        self.assertEqual(len(event["delegated_prompt_hash"]), 12)
+        self.assertNotIn("secret task", json.dumps(parsed))
+
+    def test_codex_native_child_packet_and_direct_delegation_are_classified(self) -> None:
+        records = [
+            {"type": "response_item", "payload": {"type": "message", "role": "developer",
+             "content": [{"type": "input_text", "text":
+                          "<autodev-memory-task-context>x</autodev-memory-task-context>"}]}},
+            {"type": "response_item", "payload": {"type": "function_call",
+             "name": "spawn_agent", "call_id": "s1"}},
+        ]
+        parsed = self.parse(records, "codex")
+        self.assertEqual(parsed["events"][0]["mechanism"], "explicit_task_packet")
+        self.assertEqual(parsed["events"][1]["delegation_mechanism"], "managed_codex_direct")
+        self.assertEqual(parsed["events"][1]["delegation_certainty"], "confirmed_attempt")
+
+    def test_locators_are_omitted_by_default_and_opt_in(self) -> None:
+        records = [{"type": "session_meta", "payload": {"cwd": "/secret/path", "git": {
+            "branch": "topic", "repository_url": "ssh://secret"}}}]
+        parsed = self.parse(records, "codex")
+        self.assertNotIn("/secret/path", json.dumps(parsed))
+
+    def test_claude_sidechain_is_classified_as_child(self) -> None:
+        parsed = self.parse([{
+            "type": "user", "isSidechain": True,
+            "message": {"content": "child task"},
+        }], "claude")
+        self.assertEqual(parsed["summary"]["session_role"], "child")
+
 
 if __name__ == "__main__":
     unittest.main()

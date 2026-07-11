@@ -29,8 +29,8 @@ Model and reasoning effort are pinned here (gpt-5.5 / xhigh) so the variant does
 with the user's ~/.codex/config.toml. Override only via explicit flags.
 
 Usage:
-    external-build --task build   --todo-file F   [--context-file F] [common]
-    external-build --task resolve --findings-file F [--context-file F] [common]
+    external-build --task build   --todo-file F [--context-file F] --memory-context-file F [common]
+    external-build --task resolve --findings-file F [--context-file F] --memory-context-file F [common]
   common: [--repo DIR] [--model gpt-5.5] [--reasoning xhigh] [--timeout SECS]
           [--out FILE] [--sandbox workspace-write|danger-full-access]
 
@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -170,6 +171,18 @@ def read_file(path: str, what: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def read_memory_context(path: str | None) -> str:
+    if not path:
+        return ""
+    packet = read_file(path, "memory context file").strip()
+    if len(packet) > 3_000:
+        die("memory context exceeds the 3000-character external-task budget")
+    if packet.count("<autodev-memory-task-context>") != 1 or \
+            packet.count("</autodev-memory-task-context>") != 1:
+        die("memory context must contain exactly one bounded task-context envelope")
+    return packet
+
+
 def failed_result(task: str, reason: str):
     if task == "build":
         return {"todo_id": "unknown", "status": "failed", "files_changed": [],
@@ -191,7 +204,9 @@ def run_codex(prompt: str, schema: dict, model: str, reasoning: str, sandbox: st
                "--output-schema", str(schema_file),
                "-o", str(last_file)]
         try:
-            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout,
+            env = os.environ.copy()
+            env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
+            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout, env=env,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except subprocess.TimeoutExpired:
             print(f"external-build: codex timed out after {timeout}s", file=sys.stderr)
@@ -214,6 +229,8 @@ def main() -> None:
     ap.add_argument("--context-file",
                     help="orchestrator context: plan summary, health commands, memory "
                          "gotchas, prior-attempt error on retry")
+    ap.add_argument("--memory-context-file", required=True,
+                    help="one explicit <=3K memory task packet; suppresses ambient hooks")
     ap.add_argument("--repo", default=".", help="repo working directory (default: cwd)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--reasoning", default=DEFAULT_REASONING,
@@ -244,11 +261,15 @@ def main() -> None:
         work_header = "REVIEW FINDINGS TO FIX (already approved by the orchestrator):"
 
     context = read_file(args.context_file, "context file") if args.context_file else ""
+    memory_context = read_memory_context(args.memory_context_file)
 
     parts = [COMMON_RULES, task_rules]
     if context.strip():
         parts.append("ORCHESTRATOR CONTEXT (plan summary, health commands, known gotchas, "
                      "prior attempt if retrying):\n" + context)
+    if memory_context:
+        parts.append("EXPLICIT MEMORY TASK CONTEXT (bounded; expand/search only when needed):\n"
+                     + memory_context)
     parts.append(work_header + "\n" + work)
     prompt = "\n\n---\n\n".join(parts)
 

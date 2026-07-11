@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Prepare a managed Codex child message with exactly one bounded memory packet.
+
+This helper does not spawn Codex. The orchestrator passes its stdout as the `spawn_agent`
+message, keeping delegation ownership and provider selection explicit.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--message-file", type=Path, required=True)
+    parser.add_argument("--agent-type", required=True)
+    parser.add_argument("--session-id", required=True)
+    parser.add_argument("--cwd", type=Path, default=Path.cwd())
+    parser.add_argument("--project")
+    parser.add_argument("--repo")
+    args = parser.parse_args()
+    try:
+        message = args.message_file.read_text(encoding="utf-8")
+    except OSError:
+        return 2
+    if "<autodev-memory-task-context>" in message:
+        print(message, end="")
+        return 0
+    helper = Path(__file__).resolve().with_name("autodev-memory-task-packet")
+    command = [
+        str(helper), "--cwd", str(args.cwd), "--agent-type", args.agent_type,
+        "--session-id", args.session_id, "--provider", "codex",
+        "--mechanism", "managed_delegation",
+    ]
+    if args.project:
+        command += ["--project", args.project]
+    if args.repo:
+        command += ["--repo", args.repo]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    packet = result.stdout.strip()
+    if result.returncode or not packet or len(packet) > 3000:
+        return 2
+    print(message.rstrip() + "\n\n" + packet)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

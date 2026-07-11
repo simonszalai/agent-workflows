@@ -270,8 +270,11 @@ ticket = mcp__autodev-memory__create_ticket(
    mkdir -p .context/research
    # Write the question to a file so it survives shell quoting.
    Q="$(cat .context/research/question.txt)"
+   # Create this one <=3K task-context envelope before dispatch.
+   MEMORY_PACKET=.context/research/memory-task.md
    for provider in $(agent-workflow-provider --peers); do
      external-agent --task research --provider "$provider" --question "$Q" \
+       --memory-context-file "$MEMORY_PACKET" \
        --out ".context/research/${provider}.json" 2>".context/research/${provider}.log" &
    done
    wait

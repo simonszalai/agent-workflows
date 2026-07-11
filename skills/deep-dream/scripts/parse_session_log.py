@@ -24,7 +24,8 @@ CORRECTION_RE = re.compile(
 )
 NESTED_TOOL_RE = re.compile(r"\btools\.([A-Za-z0-9_]+)\s*\(")
 EXIT_RE = re.compile(r"Process exited with code\s+(\d+)")
-MEMORY_MARKERS = ("<autodev-memory-hook-result", "<!-- mem:")
+MEMORY_MARKERS = ("<autodev-memory-hook-result", "<autodev-memory-task-context", "<!-- mem:")
+TASK_PACKET_MARKER = "<autodev-memory-task-context>"
 SYSTEM_PREFIXES = (
     "<system_instruction>",
     "<collaboration_mode>",
@@ -109,7 +110,7 @@ def _event(line: int, timestamp: str, kind: str, **fields: object) -> dict[str, 
     return {"line": line, "timestamp": timestamp, "kind": kind, **fields}
 
 
-def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
+def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[str, object]:
     events: list[dict[str, object]] = []
     calls: dict[str, dict[str, object]] = {}
     seen_human: set[str] = set()
@@ -127,16 +128,11 @@ def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
 
         if record_type == "session_meta":
             git = _dict(payload.get("git"))
-            events.append(
-                _event(
-                    line_number,
-                    timestamp,
-                    "session",
-                    cwd=_string(payload.get("cwd")),
-                    branch=_string(git.get("branch")),
-                    repository_url=_string(git.get("repository_url")),
-                )
-            )
+            fields: dict[str, object] = {"branch_present": bool(_string(git.get("branch")))}
+            if include_locators:
+                fields.update(cwd=_string(payload.get("cwd")), branch=_string(git.get("branch")),
+                              repository_url=_string(git.get("repository_url")))
+            events.append(_event(line_number, timestamp, "session", **fields))
             continue
 
         if record_type == "event_msg" and payload_type == "user_message":
@@ -160,7 +156,11 @@ def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
             text = _content_text(payload.get("content"), {"input_text", "output_text"})
             if role == "developer" and _is_memory_context(text) and not memory_context_observed:
                 memory_context_observed = True
-                events.append(_event(line_number, timestamp, "memory_context", role=role))
+                events.append(_event(
+                    line_number, timestamp, "memory_context", role=role,
+                    mechanism=("explicit_task_packet" if TASK_PACKET_MARKER in text
+                               else "native_session_start"),
+                ))
             elif role == "user" and text and not _is_system_message(text):
                 digest = _message_hash(text)
                 if digest not in seen_human:
@@ -185,6 +185,8 @@ def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
             custom = payload_type == "custom_tool_call"
             source = _string(payload.get("input")) if custom else ""
             nested = _nested_tools(source) if name == "exec" else []
+            direct_delegation = name in {"spawn_agent", "collaboration.spawn_agent"}
+            nested_delegation = any(tool.endswith("spawn_agent") for tool in nested)
             calls[call_id] = {"tool": name, "custom": custom, "nested_tools": nested}
             events.append(
                 _event(
@@ -196,6 +198,14 @@ def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
                     encoding=payload_type,
                     nested_tool_attempts=nested,
                     nested_results="not_individually_attributed" if nested else None,
+                    delegation_mechanism=(
+                        "managed_codex_direct" if direct_delegation else
+                        "managed_codex_nested_attempt" if nested_delegation else None
+                    ),
+                    delegation_certainty=(
+                        "confirmed_attempt" if direct_delegation else
+                        "source_only" if nested_delegation else None
+                    ),
                 )
             )
             continue
@@ -263,6 +273,10 @@ def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
         if record_type == "event_msg" and payload_type == "task_complete":
             events.append(_event(line_number, timestamp, "task_complete"))
 
+    mechanisms = [event.get("delegation_mechanism") for event in events
+                  if event.get("delegation_mechanism")]
+    memory_mechanisms = [event.get("mechanism") for event in events
+                         if event.get("kind") == "memory_context"]
     return {
         "provider": "codex",
         "events": events,
@@ -270,14 +284,21 @@ def _parse_codex(lines: Iterable[str]) -> dict[str, object]:
             "memory_context_observed": memory_context_observed,
             "memory_context_absence_is_evidence": False,
             "nested_exec_results_are_individually_attributed": False,
+            "delegation_mechanisms": list(dict.fromkeys(mechanisms)),
+            "memory_delivery_mechanisms": list(dict.fromkeys(memory_mechanisms)),
+            "session_role": (
+                "explicit_context_child_or_peer"
+                if "explicit_task_packet" in memory_mechanisms else "parent_or_unclassified"
+            ),
         },
     }
 
 
-def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
+def _parse_claude(lines: Iterable[str], include_locators: bool = False) -> dict[str, object]:
     events: list[dict[str, object]] = []
     calls: dict[str, str] = {}
     memory_context_observed = False
+    sidechain_observed = False
 
     for line_number, raw in enumerate(lines, 1):
         try:
@@ -285,6 +306,7 @@ def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
         except (json.JSONDecodeError, TypeError):
             continue
         timestamp = _string(record.get("timestamp"))
+        sidechain_observed = sidechain_observed or record.get("isSidechain") is True
         record_type = _string(record.get("type"))
         message = _dict(record.get("message"))
         content = message.get("content")
@@ -297,6 +319,9 @@ def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
                 call_id = _string(block.get("id"))
                 tool = _string(block.get("name"))
                 calls[call_id] = tool
+                tool_input = _dict(block.get("input"))
+                prompt = _string(tool_input.get("prompt"))
+                agent_type = _string(tool_input.get("subagent_type"))
                 events.append(
                     _event(
                         line_number,
@@ -305,6 +330,16 @@ def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
                         call_id=call_id,
                         tool=tool,
                         encoding="tool_use",
+                        agent_type=agent_type if tool == "Agent" else None,
+                        delegated_prompt_hash=(
+                            _message_hash(prompt) if tool == "Agent" and prompt else None
+                        ),
+                        delegation_mechanism=(
+                            "claude_agent_explicit_task_packet"
+                            if tool == "Agent" and TASK_PACKET_MARKER in prompt
+                            else "claude_agent_without_observed_packet" if tool == "Agent"
+                            else None
+                        ),
                     )
                 )
             continue
@@ -315,7 +350,11 @@ def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
         text = _content_text(content, {"text"})
         if _is_memory_context(text) and not memory_context_observed:
             memory_context_observed = True
-            events.append(_event(line_number, timestamp, "memory_context", role="user"))
+            events.append(_event(
+                line_number, timestamp, "memory_context", role="user",
+                mechanism=("explicit_task_packet" if TASK_PACKET_MARKER in text
+                           else "native_session_start"),
+            ))
 
         if isinstance(content, str) and content and not _is_system_message(content):
             events.append(
@@ -364,6 +403,10 @@ def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
                 )
             )
 
+    mechanisms = [event.get("delegation_mechanism") for event in events
+                  if event.get("delegation_mechanism")]
+    memory_mechanisms = [event.get("mechanism") for event in events
+                         if event.get("kind") == "memory_context"]
     return {
         "provider": "claude",
         "events": events,
@@ -371,6 +414,9 @@ def _parse_claude(lines: Iterable[str]) -> dict[str, object]:
             "memory_context_observed": memory_context_observed,
             "memory_context_absence_is_evidence": False,
             "session_start_output_is_transcript_persisted": False,
+            "session_role": "child" if sidechain_observed else "parent_or_unclassified",
+            "delegation_mechanisms": list(dict.fromkeys(mechanisms)),
+            "memory_delivery_mechanisms": list(dict.fromkeys(memory_mechanisms)),
         },
     }
 
@@ -390,15 +436,19 @@ def detect_provider(lines: Iterable[str]) -> str:
     raise ValueError("Could not detect Claude or Codex JSONL format")
 
 
-def parse_session(path: Path, provider: str = "auto") -> dict[str, object]:
+def parse_session(
+    path: Path, provider: str = "auto", include_locators: bool = False,
+) -> dict[str, object]:
     if provider == "auto":
         with path.open(encoding="utf-8", errors="replace") as handle:
             resolved_provider = detect_provider(handle)
     else:
         resolved_provider = provider
     with path.open(encoding="utf-8", errors="replace") as handle:
-        parsed = _parse_codex(handle) if resolved_provider == "codex" else _parse_claude(handle)
-    parsed["path"] = str(path)
+        parsed = (_parse_codex(handle, include_locators) if resolved_provider == "codex"
+                  else _parse_claude(handle, include_locators))
+    if include_locators:
+        parsed["path"] = str(path)
     return parsed
 
 
@@ -406,8 +456,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=Path)
     parser.add_argument("--provider", choices=("auto", "claude", "codex"), default="auto")
+    parser.add_argument("--include-locators", action="store_true",
+                        help="include local paths/cwd/repository locators in the report")
     arguments = parser.parse_args()
-    print(json.dumps(parse_session(arguments.path, arguments.provider), indent=2))
+    print(json.dumps(parse_session(
+        arguments.path, arguments.provider, arguments.include_locators,
+    ), indent=2))
 
 
 if __name__ == "__main__":

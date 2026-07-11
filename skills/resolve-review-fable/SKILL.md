@@ -48,9 +48,13 @@ mkdir -p .context/review
 #   Severity: {p1|p2|p3}  Confidence: {c}  Decision: {accept|modify: <notes>}
 #   File: {file}:{line}
 #   Fix: {suggested fix, or the user's alternative}
+autodev-memory-task-packet --cwd "$PWD" --session-id "$SESSION_ID" \
+  --agent-type builder --provider codex --mechanism external_build \
+  > .context/review/memory.md
 external-build --task resolve \
   --findings-file .context/review/fixes.md \
   --context-file .context/review/resolve-context.md \
+  --memory-context-file .context/review/memory.md \
   --repo "$(pwd)" \
   --out .context/review/resolve-result.json
 ```

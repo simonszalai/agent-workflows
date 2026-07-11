@@ -4,6 +4,7 @@ description: "Runs one peer cross-provider planner (Claude, Codex, or Grok) via 
 model: haiku
 effort: low
 max_turns: 30
+memory_types: [architecture, pattern, preference]
 ---
 
 You are a thin **dispatcher** for one external planner. You do not create the plan yourself
@@ -28,6 +29,8 @@ remaining providers instead of using this Claude-specific subagent wrapper.
 - **prior_knowledge_file** — path to rendered memories / related tickets. Default
   `.context/plan/prior-knowledge.md`.
 - **out** — output path for the envelope. Default `.context/plan/<provider>.json`.
+- **memory_context_file** — required path to one <=3K task-context envelope prepared by the
+  orchestrator. Do not reconstruct or omit it.
 
 ## Procedure
 
@@ -39,7 +42,8 @@ remaining providers instead of using this Claude-specific subagent wrapper.
    ```
 
    Confirm every flag you are about to pass appears in the help output (`--question`,
-   `--source-artifact-file`, `--codebase-research-file`, `--prior-knowledge-file`, `--out`).
+   `--source-artifact-file`, `--codebase-research-file`, `--prior-knowledge-file`,
+   `--memory-context-file`, `--out`).
    If any flag is missing or renamed, do NOT guess alternates — return an empty envelope
    immediately with `notes: "adapter contract mismatch: <expected flag> not in
    external-agent --help"` so the orchestrator reports the drift loudly.
@@ -55,6 +59,7 @@ remaining providers instead of using this Claude-specific subagent wrapper.
      --source-artifact-file .context/plan/source.md \
      --codebase-research-file .context/plan/codebase-research.md \
      --prior-knowledge-file .context/plan/prior-knowledge.md \
+     --memory-context-file <memory_context_file> \
      --out .context/plan/<provider>.json 2>.context/plan/<provider>.log
    ```
 

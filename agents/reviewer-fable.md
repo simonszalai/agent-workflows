@@ -4,6 +4,7 @@ description: "Fable-variant code reviewer. Spawned by /review-fable with a focus
 model: fable
 effort: high
 max_turns: 50
+memory_types: [gotcha, diagnosis, architecture]
 skills:
   - review
   - first-principles
@@ -24,7 +25,7 @@ memory service — not against taste.
 
 Search the memory service for coding standards and gotchas in the areas the diff touches
 (`mcp__autodev-memory__search`), check past similar tickets (`search_tickets`) for issues
-found in comparable work, and review the auto-injected knowledge menu. Findings should cite
+found in comparable work, and review bounded injected context when present. Findings should cite
 the standard or gotcha they violate. Apply the first-principles lens throughout: code that
 shouldn't exist is a finding, not a style note.
 

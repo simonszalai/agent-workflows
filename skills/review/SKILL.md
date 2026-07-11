@@ -262,9 +262,13 @@ peer uses subscription-backed `claude -p`, never a direct Anthropic API call.
 
 ```bash
 mkdir -p .context/review
+# Prepare one <=3K `<autodev-memory-task-context>` file from the current session's child base
+# plus review-relevant summaries (use autodev-memory-task-packet when SESSION_ID is available).
+MEMORY_PACKET=.context/review/memory-task.md
 base="$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)"
 for provider in $(agent-workflow-provider --peers); do
   external-agent --task review --provider "$provider" --base "$base" \
+    --memory-context-file "$MEMORY_PACKET" \
     --out ".context/review/${provider}.json" 2>".context/review/${provider}.log" &
 done
 wait
@@ -272,7 +276,8 @@ wait
 
 Peer dispatches (and the `external-reviewer` subagent prompts) reference the shared diff
 artifact from Step 1 — `Diff at: .context/review/diff.patch`, files at
-`.context/review/files.txt` — instead of re-discovering the diff.
+`.context/review/files.txt` — and the bounded memory task file. The adapter call must pass
+`--memory-context-file`; ambient SessionStart is deliberately suppressed instead of duplicated.
 
 **Why a subagent/background process and not a serial foreground shell-out:** the providers are
 slow — Codex at xhigh reasoning takes ~9 minutes for a single review. A serial foreground

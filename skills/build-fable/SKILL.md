@@ -64,9 +64,13 @@ Order: pending todos by `sequence`, with `depends_on` prerequisites moved ahead.
 ```bash
 mkdir -p .context/build
 # write the todo artifact content to .context/build/todo-{NN}.md, then:
+autodev-memory-task-packet --cwd "$PWD" --session-id "$SESSION_ID" \
+  --agent-type builder --provider codex --mechanism external_build \
+  > .context/build/memory-{NN}.md
 external-build --task build \
   --todo-file .context/build/todo-{NN}.md \
   --context-file .context/build/context.md \
+  --memory-context-file .context/build/memory-{NN}.md \
   --repo "$(pwd)" \
   --out .context/build/result-{NN}.json
 ```

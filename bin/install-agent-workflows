@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Install an immutable agent-workflows version and atomically switch stable links."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+MANAGED = ("agents", "commands", "skills", "hooks", "workflows", "bin")
+
+
+def version_of(source: Path, explicit: str | None) -> str:
+    if explicit:
+        version = explicit
+    else:
+        result = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True,
+        )
+        version = result.stdout.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", version):
+        raise SystemExit("install-agent-workflows: invalid or unavailable version")
+    return version
+
+
+def atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_symlink(link: Path, target: Path) -> None:
+    link.parent.mkdir(parents=True, exist_ok=True)
+    temporary = link.parent / f".{link.name}.agent-workflows-{os.getpid()}"
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+    temporary.symlink_to(target)
+    os.replace(temporary, link)
+
+
+def link_children(home: Path, store: Path, version_dir: Path) -> list[tuple[Path, Path]]:
+    current = store / "current"
+    mappings: list[tuple[Path, Path]] = []
+    for destination, source_dir in (
+        (home / ".claude/agents", "agents"),
+        (home / ".claude/commands", "commands"),
+        (home / ".claude/skills", "skills"),
+        (home / ".claude/hooks", "hooks"),
+        (home / ".claude/workflows", "workflows"),
+        (home / ".agents/skills", "skills"),
+        (home / ".codex/skills", "skills"),
+        (home / ".codex/hooks", "hooks"),
+        (home / ".local/bin", "bin"),
+    ):
+        source = current / source_dir
+        resolved_source = version_dir / source_dir
+        if not resolved_source.is_dir():
+            continue
+        for child in sorted(resolved_source.iterdir()):
+            if source_dir == "bin" and not os.access(child, os.X_OK):
+                continue
+            mappings.append((destination / child.name, source / child.name))
+    return mappings
+
+
+def ensure_managed_link(link: Path, target: Path, store: Path) -> None:
+    if link.is_symlink():
+        try:
+            existing = link.resolve(strict=False)
+        except OSError:
+            existing = Path("/")
+        if store not in existing.parents:
+            raise SystemExit(f"install-agent-workflows: refusing to replace unmanaged symlink: {link}")
+    elif link.exists():
+        raise SystemExit(f"install-agent-workflows: refusing to replace unmanaged path: {link}")
+    atomic_symlink(link, target)
+
+
+def preflight_managed_link(link: Path, store: Path) -> None:
+    if link.is_symlink():
+        try:
+            existing = link.resolve(strict=False)
+        except OSError:
+            existing = Path("/")
+        if store not in existing.parents:
+            raise SystemExit(f"install-agent-workflows: refusing to replace unmanaged symlink: {link}")
+    elif link.exists():
+        raise SystemExit(f"install-agent-workflows: refusing to replace unmanaged path: {link}")
+
+
+def hook_entry(command: str) -> dict[str, object]:
+    return {"hooks": [{"type": "command", "command": command}]}
+
+
+def merge_hooks(path: Path, home: Path) -> None:
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(settings, dict):
+            raise ValueError
+    except FileNotFoundError:
+        settings = {}
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        raise SystemExit(f"install-agent-workflows: cannot safely merge {path}: {error}")
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SystemExit(f"install-agent-workflows: hooks must be an object in {path}")
+    hook_root = home / (".codex/hooks" if path.parent.name == ".codex" else ".claude/hooks")
+    desired = {
+        "SessionStart": str(hook_root / "autodev-memory-session-start.sh"),
+        "PreToolUse": str(hook_root / "autodev-memory-pre-agent.sh"),
+    }
+    for event, command in desired.items():
+        values = hooks.setdefault(event, [])
+        if not isinstance(values, list):
+            raise SystemExit(f"install-agent-workflows: hooks.{event} must be an array in {path}")
+        if not any(command in json.dumps(item) for item in values):
+            entry = hook_entry(command)
+            if event == "PreToolUse":
+                entry["matcher"] = "Agent"
+            values.append(entry)
+    atomic_json(path, settings)
+
+
+def preflight_hooks(path: Path) -> None:
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"install-agent-workflows: cannot safely merge {path}: {error}")
+    if not isinstance(settings, dict):
+        raise SystemExit(f"install-agent-workflows: settings must be an object in {path}")
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SystemExit(f"install-agent-workflows: hooks must be an object in {path}")
+    for event in ("SessionStart", "PreToolUse"):
+        if event in hooks and not isinstance(hooks[event], list):
+            raise SystemExit(f"install-agent-workflows: hooks.{event} must be an array in {path}")
+
+
+def install(source: Path, home: Path, version: str) -> None:
+    store = home / ".local/share/agent-workflows"
+    versions = store / "versions"
+    versions.mkdir(parents=True, exist_ok=True, mode=0o700)
+    final = versions / version
+    if not final.exists():
+        staging = versions / f".{version}.{os.getpid()}"
+        staging.mkdir(mode=0o700)
+        try:
+            for name in MANAGED:
+                if (source / name).is_dir():
+                    def ignore_external_links(directory: str, names: list[str]) -> set[str]:
+                        ignored: set[str] = {
+                            item for item in names
+                            if item == "__pycache__" or item == ".DS_Store" or item.endswith(".pyc")
+                        }
+                        for child_name in names:
+                            child = Path(directory) / child_name
+                            if not child.is_symlink():
+                                continue
+                            try:
+                                resolved = child.resolve(strict=True)
+                            except OSError:
+                                ignored.add(child_name)
+                                continue
+                            if source != resolved and source not in resolved.parents:
+                                ignored.add(child_name)
+                        return ignored
+
+                    shutil.copytree(
+                        source / name, staging / name, symlinks=False,
+                        ignore_dangling_symlinks=True,
+                        ignore=ignore_external_links,
+                    )
+            os.replace(staging, final)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    current = store / "current"
+    mappings = link_children(home, store, final)
+    for link, _ in mappings:
+        preflight_managed_link(link, store)
+    preflight_hooks(home / ".claude/settings.json")
+    preflight_hooks(home / ".codex/hooks.json")
+    old = os.readlink(current) if current.is_symlink() else ""
+    atomic_symlink(current, Path("versions") / version)
+    for link, target in mappings:
+        ensure_managed_link(link, target, store)
+    merge_hooks(home / ".claude/settings.json", home)
+    merge_hooks(home / ".codex/hooks.json", home)
+    if old and old != f"versions/{version}":
+        atomic_json(store / "previous.json", {"version_target": old})
+    atomic_json(store / "current.json", {"version": version, "version_target": f"versions/{version}"})
+
+
+def rollback(home: Path) -> None:
+    store = home / ".local/share/agent-workflows"
+    try:
+        previous = json.loads((store / "previous.json").read_text(encoding="utf-8"))["version_target"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        raise SystemExit("install-agent-workflows: no rollback version recorded")
+    target = store / previous
+    if not target.is_dir() or store / "versions" not in target.parents:
+        raise SystemExit("install-agent-workflows: rollback target is invalid")
+    current = store / "current"
+    old = os.readlink(current) if current.is_symlink() else ""
+    atomic_symlink(current, Path(previous))
+    atomic_json(store / "previous.json", {"version_target": old})
+    atomic_json(store / "current.json", {
+        "version": Path(previous).name, "version_target": previous,
+    })
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--home", type=Path, default=Path.home())
+    parser.add_argument("--version")
+    parser.add_argument("--rollback", action="store_true")
+    args = parser.parse_args()
+    home = args.home.resolve()
+    home.mkdir(parents=True, exist_ok=True)
+    if args.rollback:
+        rollback(home)
+    else:
+        source = args.source.resolve()
+        install(source, home, version_of(source, args.version))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

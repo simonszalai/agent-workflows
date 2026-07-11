@@ -42,7 +42,7 @@ mcp__autodev-memory__search(queries=[
 ])
 ```
 
-Also review auto-injected context from the knowledge menu for relevant testing entries.
+Also review bounded injected context for relevant testing entries when present.
 
 ### 2. Analyze What Changed
 

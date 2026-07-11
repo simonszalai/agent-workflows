@@ -269,9 +269,12 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    #   .context/investigate/bug.txt       = one-line symptom/description
    #   .context/investigate/evidence.txt  = stack trace / log lines / observed behavior
    BUG="$(cat .context/investigate/bug.txt)"
+   # Create this one <=3K task-context envelope before dispatch.
+   MEMORY_PACKET=.context/investigate/memory-task.md
    for provider in $(agent-workflow-provider --peers); do
      external-agent --task investigate --provider "$provider" --bug "$BUG" \
        --evidence-file .context/investigate/evidence.txt --environment "$ENV" \
+       --memory-context-file "$MEMORY_PACKET" \
        --out ".context/investigate/${provider}.json" 2>".context/investigate/${provider}.log" &
    done
    wait

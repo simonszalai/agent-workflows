@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Print a <=3K explicit memory packet for a managed child task."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "hooks"))
+
+from task_packet import build_task_packet  # noqa: E402
+
+
+def project_repo(cwd: Path) -> tuple[str, str]:
+    project = ""
+    try:
+        match = re.search(r"<!--\s*mem:project=([^\s]+)", (cwd / "CLAUDE.md").read_text())
+        project = match.group(1) if match else ""
+    except OSError:
+        pass
+    try:
+        remote = subprocess.run(
+            ["git", "-C", str(cwd), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        remote = ""
+    repo = re.sub(r"\.git$", "", remote.rstrip("/").split("/")[-1].split(":")[-1])
+    return project, repo
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cwd", type=Path, default=Path.cwd())
+    parser.add_argument("--agent-type", required=True)
+    parser.add_argument("--session-id", default=os.environ.get("CLAUDE_SESSION_ID")
+                        or os.environ.get("CODEX_THREAD_ID", ""))
+    parser.add_argument("--project")
+    parser.add_argument("--repo")
+    parser.add_argument("--provider", choices=["claude", "codex", "grok"], required=True)
+    parser.add_argument("--mechanism", required=True)
+    parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/autodev-memory/v2")
+    parser.add_argument("--telemetry-file", type=Path, default=Path.home() / ".cache/autodev-memory/telemetry.jsonl")
+    args = parser.parse_args()
+    detected_project, detected_repo = project_repo(args.cwd.resolve())
+    project, repo = args.project or detected_project, args.repo or detected_repo
+    if not project or not repo or not args.session_id:
+        return 2
+    try:
+        print(build_task_packet(
+            cwd=args.cwd.resolve(), agent_type=args.agent_type, session_id=args.session_id,
+            project=project, repo=repo, cache_dir=args.cache_dir,
+            telemetry_file=args.telemetry_file, provider=args.provider, mechanism=args.mechanism,
+        ))
+    except (OSError, ValueError):
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

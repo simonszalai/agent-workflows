@@ -1,0 +1,25 @@
+{
+  "context_version": "v2",
+  "project": "autodev",
+  "repo": "agent-workflows",
+  "register_status": "existing",
+  "packet": {
+    "text": "## Memory Rules\n- Use the bounded packet",
+    "chars": 40,
+    "budget_chars": 8700,
+    "delivery_budget_chars": 9000,
+    "adapter_headroom_chars": 300,
+    "headroom_chars": 8660,
+    "generation": "generation-sha256",
+    "render_hash": "render-sha256",
+    "health": "ok",
+    "child_base_text": "## Critical memory rules\n- rule",
+    "child_base_chars": 31,
+    "sections": [{"key": "rules", "label": "Memory rules", "chars": 40, "included_count": 1, "omitted_count": 0}],
+    "handles": {"always_rule_ids": ["00000000-0000-0000-0000-000000000001"], "catalog_representative_ids": ["00000002"]}
+  },
+  "corpus": {"searchable": 2},
+  "catalog": {"topics": [], "coverage_percent": 100.0, "categorized": 1, "uncategorized": 0},
+  "scope": {"repo_scoped": 1, "project_wide": 0, "global_universal": 0, "global_repo_matched": 0, "repo_mismatched_excluded": 0},
+  "warnings": []
+}

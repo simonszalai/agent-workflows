@@ -86,11 +86,13 @@ claude/codex/grok). Never simulate a provider's findings by reasoning about what
 say — the only valid peer contribution is the envelope its process returned.
 
 - **Claude Code runner:** spawn two `external-reviewer` subagents (prompt: `provider=<peer>`,
-  plus the diff base) **in the same parallel Agent batch** as the native reviewers — the
+  plus the diff base and bounded memory-packet path) **in the same parallel Agent batch** as the native reviewers — the
   adapter can take ~9 minutes at xhigh and a foreground shell-out would hit the Bash timeout
   and silently drop the provider.
 - **Codex/Grok runner:** background `external-agent --task review --provider <peer> --base
-  <merge-base> --out .context/review/<provider>.json` loops, then wait.
+  <merge-base> --memory-context-file <bounded-task-packet> --out
+  .context/review/<provider>.json` loops, then wait. Use one <=3K task envelope; never rely on
+  ambient child SessionStart.
 
 Each peer returns the same envelope shape as native reviewers
 (`{reviewer_key, findings, residual_risks, testing_gaps}` per `findings-schema.json`); a

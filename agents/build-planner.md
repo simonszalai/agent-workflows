@@ -5,6 +5,7 @@ description: "Create detailed build todos with deep research into patterns and r
 model: opus
 effort: xhigh
 max_turns: 50
+memory_types: [gotcha, pattern, architecture]
 skills:
   - first-principles
   - research
@@ -85,7 +86,8 @@ mcp__autodev-memory__search_tickets(
 )
 ```
 
-Also review auto-injected context from the knowledge menu in the system prompt.
+Also review the bounded injected context in the system/task prompt when present; it is
+representative rather than an exhaustive catalog.
 
 **What to find:**
 

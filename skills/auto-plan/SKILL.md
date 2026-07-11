@@ -343,6 +343,8 @@ printf '%s' "$SOURCE_ARTIFACT" > .context/plan/source.md
 printf '%s' "$CODEBASE_RESEARCH" > .context/plan/codebase-research.md
 printf '%s' "$PRIOR_KNOWLEDGE" > .context/plan/prior-knowledge.md
 first=1
+# Create this one <=3K task-context envelope before dispatch (child base + planning summaries).
+MEMORY_PACKET=.context/plan/memory-task.md
 for provider in $(agent-workflow-provider --peers); do
   if [ "$first" = "1" ]; then
     research_args="--codebase-research-file .context/plan/codebase-research.md"
@@ -355,6 +357,7 @@ for provider in $(agent-workflow-provider --peers); do
     --source-artifact-file .context/plan/source.md \
     $research_args \
     --prior-knowledge-file .context/plan/prior-knowledge.md \
+    --memory-context-file "$MEMORY_PACKET" \
     --out ".context/plan/${provider}.json" 2>".context/plan/${provider}.log" &
 done
 wait

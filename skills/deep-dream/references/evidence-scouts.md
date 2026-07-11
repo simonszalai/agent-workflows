@@ -46,10 +46,14 @@ find ~/.claude/projects -path "*<repo>*" -name "*.jsonl" -not -path "*/subagents
 SESSION="<path>.jsonl"
 PARSER="$HOME/.agents/skills/deep-dream/scripts/parse_session_log.py"
 [ -f "$PARSER" ] || PARSER="$HOME/.claude/skills/deep-dream/scripts/parse_session_log.py"
-python3 "$PARSER" "$SESSION" --provider claude
+python3 "$PARSER" "$SESSION" --provider claude --include-locators
 ```
 
-The parser emits compact event metadata and locators without tool or message bodies. Claude's
+The parser emits compact event metadata without tool or message bodies. Paths/repository locators
+are omitted by default; `--include-locators` is an explicit local-audit opt-in. Claude's
+`Agent` attempts include a privacy-safe `delegated_prompt_hash`; match it to the child log's first
+`human_message.message_hash` to correlate direct and nested children without copying prompts.
+Claude's
 SessionStart hook explicitly does **not** persist its additional context into the transcript, so
 `summary.memory_context_observed=false` is not evidence that no memory was delivered. Join hook
 logs/backend `session_init` by native session id when making delivery claims. A transcript marker
