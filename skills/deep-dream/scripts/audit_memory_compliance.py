@@ -48,13 +48,17 @@ REPORT_CLASSIFICATIONS = {
     "selection_attempted", "selection_confirmed", "expansion_attempted",
     "expansion_confirmed", "unavailable", "not_applicable",
 }
-CONFIRMATION_STAGES = {"pretool_output_emitted", "validated_provider_response"}
+PARENT_CONFIRMATION_STAGE = "session_start_output_emitted"
+CHILD_CONFIRMATION_STAGES = {"pretool_output_emitted", "validated_provider_response"}
 
 
 def _confirmed_packet_event(event: dict[str, Any]) -> bool:
-    return event.get("event") == "parent_packet" or (
+    return (
+        event.get("event") == "parent_packet"
+        and event.get("confirmation_stage") == PARENT_CONFIRMATION_STAGE
+    ) or (
         event.get("event") == "child_packet"
-        and event.get("confirmation_stage") in CONFIRMATION_STAGES
+        and event.get("confirmation_stage") in CHILD_CONFIRMATION_STAGES
     )
 
 
@@ -183,8 +187,13 @@ def _classifications(parsed: dict[str, Any], telemetry: list[dict[str, Any]]) ->
                 labels.append("selection_confirmed")
             if direct_expand and "expansion_confirmed" not in labels:
                 labels.append("expansion_confirmed")
+    unavailable_telemetry = [
+        event for event in telemetry
+        if _confirmed_packet_event(event) or event.get("event") == "task_selection"
+    ]
     if (any(event.get("delivery_status") in unavailable_statuses for event in delivery_events)
-            or any(event.get("status") in unavailable_statuses for event in telemetry)):
+            or any(event.get("status") in unavailable_statuses
+                   for event in unavailable_telemetry)):
         labels.append("unavailable")
     if not labels:
         labels.append("not_applicable")
@@ -257,7 +266,8 @@ def audit(
                             if event.get("kind") == "memory_context" and event.get("delivery_id")}
             children.append((child, child_parsed, first_hash, delivery_ids))
 
-        parent_events = [event for event in session_events if event.get("event") == "parent_packet"]
+        parent_events = [event for event in session_events if _confirmed_packet_event(event)
+                         and event.get("event") == "parent_packet"]
         if parent_events:
             parent_record: dict[str, Any] = {
                 "provider": "claude", "mechanism": "session",
@@ -328,8 +338,11 @@ def audit(
             "autodev" in ":".join((str(event.get("server", "")), str(event.get("tool", "")))).lower()
             for event in parsed.get("events", [])
         )
+        auditable_session_events = [event for event in session_events
+                                    if _confirmed_packet_event(event)
+                                    or event.get("event") == "task_selection"]
         if (not mechanisms and not parsed.get("summary", {}).get("memory_delivery_mechanisms")
-                and not session_events and not has_memory_tools):
+                and not auditable_session_events and not has_memory_tools):
             continue
         delivery_ids = {event.get("delivery_id") for event in parsed.get("events", [])
                         if event.get("kind") == "memory_context" and event.get("delivery_id")}

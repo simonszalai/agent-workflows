@@ -27,7 +27,9 @@ a provider: Fable remains a Claude workflow/model variant.
    pre-expanded bodies only when whole bodies fit the <=3000 budget; otherwise the packet explicitly
    says expansion/body delivery was unavailable.
 6. Local telemetry separates base delivery, selection attempt/result, expansion result, packet
-   preparation, and mechanism-owned confirmation. `packet_prepared` never proves delivery. A
+   preparation, and mechanism-owned confirmation. `parent_packet_prepared` and `packet_prepared`
+   never prove delivery. A `parent_packet` confirmation is emitted only after the exact outer
+   SessionStart JSON write succeeds (`session_start_output_emitted`). A
    `child_packet` confirmation is emitted only after Claude's PreToolUse JSON has been emitted
    (`pretool_output_emitted`) or an external provider returned a validated structured response
    (`validated_provider_response`); timeout/crash/invalid output remains unconfirmed. Telemetry

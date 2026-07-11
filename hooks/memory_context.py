@@ -31,14 +31,20 @@ SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 HEX64_TOKEN = re.compile(r"^[0-9a-fA-F]{64}$")
 SHA256_TOKEN = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
 TASK_ENVELOPE_RE = re.compile(r"<autodev-memory-task-context([^>]*)>")
+PARENT_ENVELOPE_RE = re.compile(r"<autodev-memory-hook-result([^>]*)>")
 ATTRIBUTE_RE = re.compile(r'([a-z][a-z0-9-]*)="([A-Za-z0-9._:-]{1,256})"')
 LEGACY_FALLBACK_SUNSET = date(2026, 8, 15)
 
 TELEMETRY_FIELDS: dict[str, dict[str, type | tuple[type, ...]]] = {
-    "parent_packet": {
+    "parent_packet_prepared": {
         "provider": str, "mechanism": str, "status": str, "packet_version": str,
         "corpus_generation": str, "render_hash": str, "chars": int,
         "session_key": str, "request_epoch": int,
+    },
+    "parent_packet": {
+        "provider": str, "mechanism": str, "status": str, "packet_version": str,
+        "corpus_generation": str, "render_hash": str, "chars": int,
+        "session_key": str, "request_epoch": int, "confirmation_stage": str,
     },
     "task_selection": {
         "provider": str, "mechanism": str, "status": str, "by_skill_count": int,
@@ -495,6 +501,67 @@ def confirm_packet_delivery(
     return True
 
 
+def confirm_parent_delivery(
+    output: str,
+    *,
+    provider: str,
+    mechanism: str,
+    confirmation_stage: str,
+    telemetry_file: Path | None,
+    session_id: str = "",
+    request_epoch: int = 0,
+    cache_dir: Path | None = None,
+    project: str = "",
+    repo: str = "",
+) -> bool:
+    """Confirm the exact SessionStart hook JSON written by the outer shell mechanism."""
+    try:
+        payload = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    context = _string(_dict(_dict(payload).get("hookSpecificOutput")).get("additionalContext"))
+    match = PARENT_ENVELOPE_RE.search(context)
+    if not match or context.count("<autodev-memory-hook-result") != 1 \
+            or context.count("</autodev-memory-hook-result>") != 1:
+        return False
+    attributes = {key: value for key, value in ATTRIBUTE_RE.findall(match.group(1))}
+    if attributes.get("source") != "session-start":
+        return False
+    status = attributes.get("status", "unavailable")
+    if status not in {"delivered", "unavailable"}:
+        return False
+    packet_version = attributes.get("packet-version", "unknown")
+    generation = "unavailable"
+    render_hash = "unavailable"
+    if status == "delivered":
+        if packet_version not in {"v1", "v2"}:
+            return False
+        manifest = (read_cache(cache_dir, session_id, project, repo)
+                    if cache_dir is not None and session_id and project and repo else None)
+        if manifest is not None:
+            if _string(manifest.get("context")) != context \
+                    or manifest.get("packet_version") != packet_version:
+                return False
+            generation = _string(manifest.get("corpus_generation")) or "unavailable"
+            render_hash = _string(manifest.get("render_hash")) or "unavailable"
+            status = "fallback" if packet_version == "v1" else "delivered"
+    _append_telemetry(
+        telemetry_file,
+        event="parent_packet",
+        provider=provider,
+        mechanism=mechanism,
+        status=status,
+        packet_version=packet_version,
+        corpus_generation=generation,
+        render_hash=render_hash,
+        chars=len(context),
+        confirmation_stage=confirmation_stage,
+        session_key=telemetry_session_key(telemetry_file, session_id),
+        request_epoch=request_epoch,
+    )
+    return True
+
+
 def telemetry_session_key(path: Path | None, session_id: str) -> str | None:
     """Return a local-only keyed session pseudonym usable to join audit evidence."""
     if path is None or not session_id or path.parent.is_symlink():
@@ -675,6 +742,18 @@ def _main() -> int:
     confirm.add_argument("--telemetry-file", type=Path, required=True)
     confirm.add_argument("--session-id", default="")
 
+    confirm_parent = sub.add_parser("confirm-parent")
+    confirm_parent.add_argument("--provider", choices=["claude", "codex", "grok", "unknown"],
+                                required=True)
+    confirm_parent.add_argument("--mechanism", required=True)
+    confirm_parent.add_argument("--confirmation-stage", required=True)
+    confirm_parent.add_argument("--telemetry-file", type=Path, required=True)
+    confirm_parent.add_argument("--session-id", default="")
+    confirm_parent.add_argument("--request-epoch", type=int, default=0)
+    confirm_parent.add_argument("--cache-dir", type=Path)
+    confirm_parent.add_argument("--project", default="")
+    confirm_parent.add_argument("--repo", default="")
+
     args = parser.parse_args()
     if args.command == "invalidate":
         invalidate_cache(args.cache_dir, args.session_id, args.request_epoch)
@@ -688,6 +767,20 @@ def _main() -> int:
             confirmation_stage=args.confirmation_stage,
             telemetry_file=args.telemetry_file,
             session_id=args.session_id,
+        ) else 2
+    if args.command == "confirm-parent":
+        output = os.sys.stdin.read()
+        return 0 if confirm_parent_delivery(
+            output,
+            provider=args.provider,
+            mechanism=args.mechanism,
+            confirmation_stage=args.confirmation_stage,
+            telemetry_file=args.telemetry_file,
+            session_id=args.session_id,
+            request_epoch=args.request_epoch,
+            cache_dir=args.cache_dir,
+            project=args.project,
+            repo=args.repo,
         ) else 2
 
     try:
@@ -717,10 +810,10 @@ def _main() -> int:
                         args.request_epoch)
             _append_telemetry(
                 args.telemetry_file,
-                event="parent_packet",
+                event="parent_packet_prepared",
                 provider=detect_provider(),
                 mechanism="session_start",
-                status="fallback" if packet["fallback"] else "delivered",
+                status="fallback_ready" if packet["fallback"] else "ready",
                 packet_version=packet["version"],
                 corpus_generation=packet["generation"],
                 render_hash=packet["render_hash"],
@@ -734,7 +827,7 @@ def _main() -> int:
             invalidate_cache(args.cache_dir, args.session_id, args.request_epoch)
             _append_telemetry(
                 args.telemetry_file,
-                event="parent_packet",
+                event="parent_packet_prepared",
                 provider=detect_provider(),
                 mechanism="session_start",
                 status="unavailable",

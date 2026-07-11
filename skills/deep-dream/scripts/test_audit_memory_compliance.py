@@ -96,6 +96,37 @@ class AuditMemoryComplianceTest(unittest.TestCase):
             _classifications({"summary": {}, "events": []}, telemetry),
         )
 
+    def test_parent_preparation_only_log_creates_no_delivery_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            claude, codex, cache = root / "claude", root / "codex", root / "cache"
+            claude.mkdir()
+            codex.mkdir()
+            cache.mkdir()
+            sid = "parent-session"
+            (claude / f"{sid}.jsonl").write_text("{}\n")
+            key = b"k" * 32
+            (cache / "telemetry.key").write_bytes(key)
+            session_key = hmac.new(key, sid.encode(), hashlib.sha256).hexdigest()[:24]
+            telemetry = cache / "telemetry.jsonl"
+            telemetry.write_text(json.dumps({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "parent_packet_prepared", "session_key": session_key,
+                "provider": "claude", "mechanism": "session_start", "status": "ready",
+                "packet_version": "v2", "corpus_generation": "b" * 64, "chars": 100,
+            }) + "\n")
+            report = audit(claude, codex, telemetry, 1)
+            self.assertEqual(report["record_count"], 0)
+            self.assertNotIn("packet_delivered", report["classification_counts"])
+
+        unconfirmed_legacy_parent = [{
+            "event": "parent_packet", "status": "delivered", "packet_version": "v2",
+        }]
+        self.assertNotIn(
+            "packet_delivered",
+            _classifications({"summary": {}, "events": []}, unconfirmed_legacy_parent),
+        )
+
     def test_task_telemetry_is_not_shared_across_sibling_delegations(self) -> None:
         selected = [{
             "event": "task_selection", "delegation_id": "a" * 24,

@@ -117,5 +117,18 @@ fi
 if [[ $_RENDER_RC -ne 0 ]]; then
   mem_log WARN "packet unavailable rc=$_RENDER_RC project=$MEM_PROJECT repo=$MEM_REPO"
 fi
-mem_log_output "$OUTPUT"
-echo "$OUTPUT"
+if printf '%s\n' "$OUTPUT"; then
+  mem_log_output "$OUTPUT"
+  _PROVIDER=$(python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from memory_context import detect_provider
+print(detect_provider())
+' "$HOOK_DIR" 2>/dev/null || echo unknown)
+  printf '%s' "$OUTPUT" | python3 "$_PACKET_HELPER" confirm-parent \
+    --provider "$_PROVIDER" --mechanism session_start \
+    --confirmation-stage session_start_output_emitted \
+    --telemetry-file "$_TELEMETRY_FILE" --session-id "$_SID" \
+    --request-epoch "$_REQUEST_EPOCH" --cache-dir "$_CACHE_DIR" \
+    --project "$MEM_PROJECT" --repo "$MEM_REPO" >/dev/null 2>&1 || true
+fi

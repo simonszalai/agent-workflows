@@ -57,10 +57,11 @@ print(json.dumps({"hookSpecificOutput": {
 }}, separators=(",", ":")))
 ') || emit_empty
 
-_log INFO "status=delivered provider=claude mechanism=prompt_rewrite chars=${#PACKET}"
-echo "$OUTPUT"
-printf '%s' "$PACKET" | python3 "$HOOK_DIR/memory_context.py" confirm-child \
-  --provider claude --mechanism prompt_rewrite \
-  --confirmation-stage pretool_output_emitted \
-  --telemetry-file "$_TELEMETRY_FILE" --session-id "$SESSION_ID" \
-  >/dev/null 2>&1 || true
+if printf '%s\n' "$OUTPUT"; then
+  _log INFO "status=delivered provider=claude mechanism=prompt_rewrite chars=${#PACKET}"
+  printf '%s' "$PACKET" | python3 "$HOOK_DIR/memory_context.py" confirm-child \
+    --provider claude --mechanism prompt_rewrite \
+    --confirmation-stage pretool_output_emitted \
+    --telemetry-file "$_TELEMETRY_FILE" --session-id "$SESSION_ID" \
+    >/dev/null 2>&1 || true
+fi

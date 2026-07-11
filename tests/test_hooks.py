@@ -13,6 +13,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HookContractTest(unittest.TestCase):
+    @staticmethod
+    def _run_with_broken_stdout(command: list[str], *, payload: dict[str, object],
+                                env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        """Run with a pipe whose read side is already closed, forcing the exact write to fail."""
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)
+        try:
+            return subprocess.run(
+                command, input=json.dumps(payload), stdout=write_fd, stderr=subprocess.PIPE,
+                text=True, env=env,
+            )
+        finally:
+            os.close(write_fd)
+
+    @staticmethod
+    def _session_env(directory: str) -> tuple[dict[str, str], dict[str, object]]:
+        root = Path(directory)
+        fake_bin = root / "bin"
+        fake_bin.mkdir(exist_ok=True)
+        fixture = json.loads((ROOT / "tests/fixtures/session-packet-v2.json").read_text())
+        fixture["repo"] = "agent-workflows"
+        response = root / "session-response.json"
+        response.write_text(json.dumps(fixture))
+        curl = fake_bin / "curl"
+        curl.write_text('#!/bin/sh\ncat "$FAKE_SESSION_RESPONSE"\nprintf "\\n200\\n"\n')
+        curl.chmod(0o755)
+        env = os.environ.copy()
+        env.update({
+            "HOME": directory,
+            "PATH": str(fake_bin) + os.pathsep + env["PATH"],
+            "AUTODEV_MEMORY_API_TOKEN": "test-only-token",
+            "FAKE_SESSION_RESPONSE": str(response),
+            "CLAUDE_SESSION_ID": "parent-session",
+        })
+        payload: dict[str, object] = {
+            "source": "startup", "session_id": "parent-session", "cwd": str(ROOT),
+        }
+        return env, payload
+
     def test_external_explicit_packet_suppresses_ambient_session_start(self) -> None:
         env = os.environ.copy()
         env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
@@ -93,6 +132,59 @@ class HookContractTest(unittest.TestCase):
             ).read_text().splitlines()]
             self.assertIn("packet_prepared", [event["event"] for event in events])
             self.assertNotIn("child_packet", [event["event"] for event in events])
+
+    def test_pre_agent_stdout_failure_never_confirms_prepared_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = {
+                "tool_name": "Agent", "session_id": "session", "cwd": str(ROOT),
+                "tool_input": {"subagent_type": "builder", "prompt": "private task"},
+            }
+            env = os.environ.copy()
+            env["HOME"] = directory
+            result = self._run_with_broken_stdout(
+                [str(ROOT / "hooks/autodev-memory-pre-agent.sh")], payload=payload, env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            events = [json.loads(line) for line in (
+                Path(directory) / ".cache/autodev-memory/telemetry.jsonl"
+            ).read_text().splitlines()]
+            self.assertIn("packet_prepared", [event["event"] for event in events])
+            self.assertNotIn("child_packet", [event["event"] for event in events])
+
+    def test_session_start_confirms_only_after_outer_stdout_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env, payload = self._session_env(directory)
+            result = subprocess.run(
+                [str(ROOT / "hooks/autodev-memory-session-start.sh")],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn('status="delivered"', context)
+            events = [json.loads(line) for line in (
+                Path(directory) / ".cache/autodev-memory/telemetry.jsonl"
+            ).read_text().splitlines()]
+            self.assertEqual([event["event"] for event in events],
+                             ["parent_packet_prepared", "parent_packet"])
+            self.assertEqual(events[-1]["confirmation_stage"],
+                             "session_start_output_emitted")
+            self.assertEqual(events[-1]["status"], "delivered")
+            self.assertEqual(events[-1]["corpus_generation"], "0" * 64)
+            self.assertEqual(events[-1]["chars"], len(context))
+            self.assertNotIn("Memory Rules", json.dumps(events))
+
+    def test_session_start_stdout_failure_leaves_parent_preparation_unconfirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env, payload = self._session_env(directory)
+            result = self._run_with_broken_stdout(
+                [str(ROOT / "hooks/autodev-memory-session-start.sh")], payload=payload, env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            events = [json.loads(line) for line in (
+                Path(directory) / ".cache/autodev-memory/telemetry.jsonl"
+            ).read_text().splitlines()]
+            self.assertEqual([event["event"] for event in events],
+                             ["parent_packet_prepared"])
 
     def test_managed_codex_rejects_preexisting_duplicate_or_unbalanced_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
