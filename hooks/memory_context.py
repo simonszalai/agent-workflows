@@ -9,12 +9,16 @@ packet bodies, prompts, queries, paths, entry ids, or environment values.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
+import hmac
 import json
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+import time
+from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +27,8 @@ PARENT_LIMIT = 9_000
 CHILD_LIMIT = 3_000
 V2_NAMES = {"2", "v2", "packet-v2"}
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+SHA256_TOKEN = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
+LEGACY_FALLBACK_SUNSET = date(2026, 8, 15)
 
 
 class PacketError(ValueError):
@@ -94,8 +100,10 @@ def parse_session_response(response: dict[str, Any]) -> dict[str, Any]:
             "generation",
         )
         render_hash = _safe_token(packet.get("render_hash"), "render_hash")
-        digest = render_hash.removeprefix("sha256:")
-        if re.fullmatch(r"[0-9a-fA-F]{64}", digest) and digest.lower() != _sha256(text):
+        hash_match = SHA256_TOKEN.fullmatch(render_hash)
+        if not hash_match:
+            raise PacketError("packet v2 render hash is not a SHA-256 digest")
+        if hash_match.group(1).lower() != _sha256(text):
             raise PacketError("packet v2 render hash mismatch")
 
         child = _dict(
@@ -132,6 +140,14 @@ def parse_session_response(response: dict[str, Any]) -> dict[str, Any]:
     text = _string(digest.get("text"))
     if not text:
         raise PacketError("backend returned neither packet v2 nor a bounded v1 digest")
+    disabled = os.environ.get("AUTODEV_MEMORY_DISABLE_V1") == "1"
+    until_raw = os.environ.get("AUTODEV_MEMORY_ALLOW_V1_UNTIL", "")
+    try:
+        sunset = date.fromisoformat(until_raw) if until_raw else LEGACY_FALLBACK_SUNSET
+    except ValueError as error:
+        raise PacketError("invalid AUTODEV_MEMORY_ALLOW_V1_UNTIL") from error
+    if disabled or datetime.now(timezone.utc).date() > sunset:
+        raise PacketError("legacy v1 digest fallback is disabled or past its sunset")
     declared = digest.get("chars")
     if isinstance(declared, int) and declared != len(text):
         raise PacketError("legacy digest character count mismatch")
@@ -206,6 +222,26 @@ def _cache_paths(cache_dir: Path, session_id: str, dimensions: str = "") -> tupl
     return cache_dir / f"session-{session_hash}.json", cache_dir / f"packet-{key_hash}.json"
 
 
+@contextmanager
+def _session_lock(cache_dir: Path, session_id: str):
+    """Serialize one native session without exposing its identifier on disk."""
+    if cache_dir.is_symlink():
+        raise PacketError("refusing symlinked cache directory")
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(cache_dir, 0o700)
+    session_hash = _sha256(session_id)[:20]
+    lock_path = cache_dir / f"lock-{session_hash}.lock"
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def invalidate_cache(cache_dir: Path, session_id: str) -> None:
     if not session_id or cache_dir.is_symlink():
         return
@@ -240,22 +276,14 @@ def write_cache(
     repo: str,
     packet: dict[str, Any],
     context: str,
+    request_epoch: int = 0,
 ) -> dict[str, Any] | None:
     if not session_id:
         return None
     if cache_dir.is_symlink():
         raise PacketError("refusing symlinked cache directory")
-    cleanup_cache(cache_dir)
-    dimensions = "\0".join(
-        (
-            session_id,
-            project,
-            repo,
-            packet["version"],
-            packet["generation"],
-            packet["render_hash"],
-        )
-    )
+    dimensions = "\0".join((session_id, project, repo, packet["version"],
+                              packet["generation"], packet["render_hash"]))
     index_path, packet_path = _cache_paths(cache_dir, session_id, dimensions)
     manifest = {
         "schema": 2,
@@ -270,8 +298,8 @@ def write_cache(
         "exclude_ids": packet["exclude_ids"],
         "tech_tags": packet["tech_tags"],
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "request_epoch": request_epoch,
     }
-    _atomic_write(packet_path, json.dumps(manifest, separators=(",", ":")))
     index = {
         "schema": 2,
         "cache_key": packet_path.name,
@@ -280,8 +308,19 @@ def write_cache(
         "packet_version": packet["version"],
         "corpus_generation": packet["generation"],
         "render_hash": packet["render_hash"],
+        "request_epoch": request_epoch,
     }
-    _atomic_write(index_path, json.dumps(index, separators=(",", ":")))
+    with _session_lock(cache_dir, session_id):
+        cleanup_cache(cache_dir)
+        _atomic_write(packet_path, json.dumps(manifest, separators=(",", ":")))
+        try:
+            current = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            current = {}
+        current_epoch = current.get("request_epoch", 0)
+        if isinstance(current_epoch, int) and current_epoch > request_epoch:
+            return manifest
+        _atomic_write(index_path, json.dumps(index, separators=(",", ":")))
     return manifest
 
 
@@ -330,11 +369,45 @@ def _append_telemetry(path: Path | None, **event: object) -> None:
         os.fchmod(fd, 0o600)
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            **event,
+            **{key: value for key, value in event.items() if value is not None},
         }
         os.write(fd, (json.dumps(record, separators=(",", ":")) + "\n").encode())
     finally:
         os.close(fd)
+
+
+def telemetry_session_key(path: Path | None, session_id: str) -> str | None:
+    """Return a local-only keyed session pseudonym usable to join audit evidence."""
+    if path is None or not session_id or path.parent.is_symlink():
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key_path = path.parent / "telemetry.key"
+    if key_path.is_symlink():
+        return None
+    try:
+        fd = os.open(key_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        fd = -1
+    if fd >= 0:
+        try:
+            os.write(fd, os.urandom(32))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    key = b""
+    for _ in range(5):
+        try:
+            key = key_path.read_bytes()
+            os.chmod(key_path, 0o600)
+        except OSError:
+            return None
+        if len(key) >= 32:
+            break
+        time.sleep(0.01)
+    if len(key) < 32:
+        return None
+    return hmac.new(key, session_id.encode(), hashlib.sha256).hexdigest()[:24]
 
 
 def hook_output(context: str) -> dict[str, Any]:
@@ -346,34 +419,48 @@ def hook_output(context: str) -> dict[str, Any]:
     }
 
 
+def _escape_task_envelope(text: str) -> str:
+    return (text.replace("<autodev-memory-task-context>",
+                         "&lt;autodev-memory-task-context&gt;")
+                .replace("</autodev-memory-task-context>",
+                         "&lt;/autodev-memory-task-context&gt;"))
+
+
 def render_task_packet(manifest: dict[str, Any] | None, response: dict[str, Any]) -> str:
     base = _string((manifest or {}).get("child_base_text"))
     entries = response.get("entries", [])
     if not isinstance(entries, list):
         entries = []
     lines: list[str] = []
+    detail_blocks: list[str] = []
     selected: list[str] = []
     for raw in entries:
         entry = _dict(raw)
         entry_id = _string(entry.get("id"))
-        title = _string(entry.get("title"))
-        summary = _string(entry.get("summary"))
-        kind = _string(entry.get("type")) or "memory"
+        title = _escape_task_envelope(_string(entry.get("title")))
+        summary = _escape_task_envelope(_string(entry.get("summary")))
+        kind = _escape_task_envelope(_string(entry.get("type"))) or "memory"
         if not entry_id or not title:
             continue
         selected.append(entry_id)
-        line = f"- [{kind}] {title} ({entry_id[:8]}): {summary or 'expand before relying on this entry'}"
+        line = f"- [{kind}] {title} ({entry_id}): {summary or 'full content was unavailable'}"
         lines.append(line)
+        content = _escape_task_envelope(_string(entry.get("content"))).strip()
+        if content:
+            detail_blocks.append(f"### Expanded memory {entry_id}\n{content}")
 
     base_section = (base.strip() or
                     "Critical session memory base is unavailable. Do not infer that always-apply "
                     "rules were delivered; search explicitly at task risk boundaries.")
-    sections = [x for x in (base_section, "\n".join(lines).strip()) if x]
+    generation = _string(response.get("corpus_generation"))
+    if generation:
+        lines.insert(0, f"Corpus generation: {generation}")
+    sections = [x for x in (base_section, "\n".join(lines).strip(), "\n\n".join(detail_blocks)) if x]
     if selected:
         sections.append(
-            "Selected memory handles: "
-            + ", ".join(x[:8] for x in selected)
-            + ". Expand only the entries needed for the task; do not treat a search hit as proof of use."
+            "Selected memory handles are the full IDs above. "
+            + ("Expanded content is included where it fit the task budget. " if detail_blocks else "")
+            + _string(response.get("delivery_note"))
         )
     else:
         sections.append(
@@ -382,22 +469,32 @@ def render_task_packet(manifest: dict[str, Any] | None, response: dict[str, Any]
         )
     packet = "<autodev-memory-task-context>\n" + "\n\n".join(sections) + "\n</autodev-memory-task-context>"
     if len(packet) > CHILD_LIMIT:
-        # Drop whole entry lines from the tail; never slice a rule or line.
-        while lines and len(packet) > CHILD_LIMIT:
-            lines.pop()
-            selected.pop()
-            sections = [x for x in (base_section, "\n".join(lines).strip()) if x]
+        # Drop whole expanded bodies first, then whole result lines; never slice semantic text.
+        while detail_blocks and len(packet) > CHILD_LIMIT:
+            detail_blocks.pop()
+            sections = [x for x in (base_section, "\n".join(lines).strip(),
+                                    "\n\n".join(detail_blocks)) if x]
             if selected:
                 sections.append(
-                    "Selected memory handles: "
-                    + ", ".join(x[:8] for x in selected)
-                    + ". Expand only the entries needed for the task."
+                    "Selected memory handles are the full IDs above. Expanded content that did not "
+                    "fit was omitted as a whole; do not infer it was delivered. "
+                    + _string(response.get("delivery_note"))
                 )
             packet = (
                 "<autodev-memory-task-context>\n"
                 + "\n\n".join(sections)
                 + "\n</autodev-memory-task-context>"
             )
+        while len(lines) > (1 if generation else 0) and len(packet) > CHILD_LIMIT:
+            lines.pop()
+            selected.pop()
+            sections = [x for x in (base_section, "\n".join(lines).strip()) if x]
+            sections.append(
+                "Selected memory handles are the full IDs above. Additional selections were omitted "
+                "as whole entries to preserve the task budget. " + _string(response.get("delivery_note"))
+            )
+            packet = ("<autodev-memory-task-context>\n" + "\n\n".join(sections)
+                      + "\n</autodev-memory-task-context>")
     if len(packet) > CHILD_LIMIT:
         raise PacketError("backend child base leaves no room within the 3000-character task budget")
     return packet
@@ -422,6 +519,7 @@ def _main() -> int:
     render.add_argument("--source", default="startup")
     render.add_argument("--cache-dir", type=Path, required=True)
     render.add_argument("--telemetry-file", type=Path)
+    render.add_argument("--request-epoch", type=int, default=0)
 
     task = sub.add_parser("render-task")
     task.add_argument("--project", required=True)
@@ -446,6 +544,7 @@ def _main() -> int:
     except (json.JSONDecodeError, TypeError):
         payload = {}
     if args.command == "render-session":
+        session_key = telemetry_session_key(args.telemetry_file, args.session_id)
         try:
             response_project = _string(payload.get("project"))
             response_repo = _string(payload.get("repo"))
@@ -463,7 +562,8 @@ def _main() -> int:
             if not isinstance(searchable_count, int):
                 searchable_count = 0
             context = render_parent_context(packet, args.source, searchable_count)
-            write_cache(args.cache_dir, args.session_id, args.project, args.repo, packet, context)
+            write_cache(args.cache_dir, args.session_id, args.project, args.repo, packet, context,
+                        args.request_epoch)
             _append_telemetry(
                 args.telemetry_file,
                 event="parent_packet",
@@ -471,7 +571,9 @@ def _main() -> int:
                 mechanism="session_start",
                 status="fallback" if packet["fallback"] else "delivered",
                 packet_version=packet["version"],
+                corpus_generation=packet["generation"],
                 chars=len(context),
+                session_key=session_key,
             )
             print(json.dumps(hook_output(context)))
             return 0
@@ -484,7 +586,9 @@ def _main() -> int:
                 mechanism="session_start",
                 status="unavailable",
                 packet_version="unknown",
+                corpus_generation=None,
                 chars=0,
+                session_key=session_key,
             )
             print(json.dumps(hook_output(render_unavailable_context(str(error)))))
             return 2

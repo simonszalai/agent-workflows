@@ -73,6 +73,7 @@ mem_log INFO "start source=$_SS_SOURCE project=$MEM_PROJECT repo=$MEM_REPO"
 echo "mem-session-start: project=$MEM_PROJECT repo=$MEM_REPO" >&3
 
 MEM_TRIGGER_SOURCE="$_SS_SOURCE"
+_REQUEST_EPOCH=$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || echo 0)
 mem_load_entries
 
 if [[ -n "$_LOAD_ERROR" ]]; then
@@ -100,6 +101,7 @@ OUTPUT=$(printf '%s' "$INIT_RESULT" | python3 "$_PACKET_HELPER" render-session \
   --repo "$MEM_REPO" \
   --session-id "$_SID" \
   --source "$_SS_SOURCE" \
+  --request-epoch "$_REQUEST_EPOCH" \
   --cache-dir "$_CACHE_DIR" \
   --telemetry-file "$_TELEMETRY_FILE")
 _RENDER_RC=$?

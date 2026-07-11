@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from parse_session_log import parse_session
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from parse_session_log import parse_session  # noqa: E402
 
 
 class ParseSessionLogTest(unittest.TestCase):
-    def parse(self, records: list[dict[str, object]], provider: str) -> dict[str, object]:
+    def parse(self, records: list[dict[str, object]], provider: str,
+              diagnostics: bool = False) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "session.jsonl"
             path.write_text("\n".join(json.dumps(record) for record in records))
-            return parse_session(path, provider)
+            return parse_session(path, provider, diagnostic_key=(b"test-key" if diagnostics else None))
 
     def test_current_codex_exec_reports_nested_calls_as_attempts_only(self) -> None:
         records = [
@@ -164,7 +167,7 @@ class ParseSessionLogTest(unittest.TestCase):
             },
         ]
 
-        parsed = self.parse(records, "claude")
+        parsed = self.parse(records, "claude", diagnostics=True)
         result = parsed["events"][1]
         self.assertEqual(result["tool"], "Bash")
         self.assertEqual(result["status"], "failed")
@@ -182,7 +185,7 @@ class ParseSessionLogTest(unittest.TestCase):
             }
         ]
 
-        parsed = self.parse(records, "claude")
+        parsed = self.parse(records, "claude", diagnostics=True)
         self.assertEqual(parsed["events"][0]["kind"], "human_message")
         self.assertTrue(parsed["events"][0]["correction_candidate"])
         self.assertNotIn("repository-qualified", json.dumps(parsed))
@@ -196,7 +199,7 @@ class ParseSessionLogTest(unittest.TestCase):
                           "secret task\n<autodev-memory-task-context>rules</autodev-memory-task-context>"},
             }]},
         }]
-        parsed = self.parse(records, "claude")
+        parsed = self.parse(records, "claude", diagnostics=True)
         event = parsed["events"][0]
         self.assertEqual(event["agent_type"], "reviewer")
         self.assertEqual(event["delegation_mechanism"], "claude_agent_explicit_task_packet")
@@ -215,6 +218,32 @@ class ParseSessionLogTest(unittest.TestCase):
         self.assertEqual(parsed["events"][0]["mechanism"], "explicit_task_packet")
         self.assertEqual(parsed["events"][1]["delegation_mechanism"], "managed_codex_direct")
         self.assertEqual(parsed["events"][1]["delegation_certainty"], "confirmed_attempt")
+
+    def test_codex_user_task_packet_is_not_a_human_diagnostic(self) -> None:
+        parsed = self.parse([{
+            "type": "response_item", "payload": {"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text":
+                         "task\n<autodev-memory-task-context>x</autodev-memory-task-context>"}]},
+        }], "codex", diagnostics=True)
+        self.assertTrue(parsed["summary"]["memory_context_observed"])
+        self.assertEqual(parsed["events"][0]["kind"], "memory_context")
+        self.assertNotIn("message_hash", parsed["events"][0])
+
+    def test_codex_event_user_task_packet_is_not_a_human_diagnostic(self) -> None:
+        parsed = self.parse([{
+            "type": "event_msg", "payload": {"type": "user_message", "message":
+            "task\n<autodev-memory-task-context>x</autodev-memory-task-context>"},
+        }], "codex", diagnostics=True)
+        self.assertTrue(parsed["summary"]["memory_context_observed"])
+        self.assertEqual([event["kind"] for event in parsed["events"]], ["memory_context"])
+        self.assertNotIn("message_hash", parsed["events"][0])
+
+    def test_prompt_hashes_are_absent_by_default_and_keyed_when_requested(self) -> None:
+        records = [{"type": "user", "message": {"content": "ordinary private prompt"}}]
+        self.assertNotIn("message_hash", self.parse(records, "claude")["events"][0])
+        first = self.parse(records, "claude", diagnostics=True)["events"][0]["message_hash"]
+        second = self.parse(records, "claude", diagnostics=True)["events"][0]["message_hash"]
+        self.assertEqual(first, second)
 
     def test_locators_are_omitted_by_default_and_opt_in(self) -> None:
         records = [{"type": "session_meta", "payload": {"cwd": "/secret/path", "git": {

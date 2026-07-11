@@ -7,6 +7,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,7 @@ from memory_context import (  # noqa: E402
     PacketError, _append_telemetry, parse_session_response, read_cache, render_parent_context,
     render_task_packet, write_cache,
 )
-from task_packet import selection_for_agent  # noqa: E402
+from task_packet import retrieve_task_context, selection_for_agent  # noqa: E402
 
 
 def response(text: str = "critical rule", child: str = "child rule") -> dict[str, object]:
@@ -66,13 +67,23 @@ class MemoryContextTest(unittest.TestCase):
             parse_session_response(overflow)
 
     def test_legacy_accepts_only_bounded_digest(self) -> None:
-        packet = parse_session_response({
-            "starred": {"entries": [{"content": "must not leak"}]},
-            "knowledge_menu": {"items": [{"title": "must not render"}]},
-            "digest": {"text": "legacy digest", "chars": 13},
-        })
+        with mock.patch.dict(os.environ, {"AUTODEV_MEMORY_ALLOW_V1_UNTIL": "2099-01-01"}):
+            packet = parse_session_response({
+                "starred": {"entries": [{"content": "must not leak"}]},
+                "knowledge_menu": {"items": [{"title": "must not render"}]},
+                "digest": {"text": "legacy digest", "chars": 13},
+            })
         self.assertEqual(packet["version"], "v1")
         self.assertEqual(packet["text"], "legacy digest")
+
+    def test_legacy_sunset_and_opaque_v2_hash_are_rejected(self) -> None:
+        with mock.patch.dict(os.environ, {"AUTODEV_MEMORY_DISABLE_V1": "1"}):
+            with self.assertRaises(PacketError):
+                parse_session_response({"digest": {"text": "legacy", "chars": 6}})
+        broken = response()
+        broken["packet"]["render_hash"] = "opaque-token"
+        with self.assertRaises(PacketError):
+            parse_session_response(broken)
 
     def test_cache_is_session_and_repo_scoped_atomic_0600(self) -> None:
         packet = parse_session_response(response())
@@ -99,10 +110,61 @@ class MemoryContextTest(unittest.TestCase):
         self.assertTrue(packet.endswith("</autodev-memory-task-context>"))
         self.assertNotIn("summar", packet[-10:])
 
+    def test_older_request_cannot_replace_newer_session_cache_index(self) -> None:
+        first_packet = parse_session_response(response("first"))
+        second_packet = parse_session_response(response("second"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_cache(root, "session", "p", "r", second_packet,
+                        render_parent_context(second_packet, "resume"), request_epoch=20)
+            write_cache(root, "session", "p", "r", first_packet,
+                        render_parent_context(first_packet, "startup"), request_epoch=10)
+            cached = read_cache(root, "session", "p", "r")
+            self.assertIsNotNone(cached)
+            self.assertIn("second", cached["context"])
+
     def test_agent_frontmatter_declares_bounded_selection_types(self) -> None:
         tags, types = selection_for_agent(ROOT, "builder")
         self.assertEqual(tags, [])
         self.assertEqual(types, ["gotcha", "pattern", "architecture"])
+
+    @mock.patch("task_packet._post")
+    def test_task_selection_combines_semantic_and_skill_results_then_preexpands(self, post) -> None:
+        ids = [f"0000000{i}-0000-0000-0000-000000000000" for i in range(1, 4)]
+        post.side_effect = [
+            {"entries": [{"id": ids[2], "title": "Role rule", "summary": "role",
+                           "type": "gotcha"}], "count": 1},
+            {"results": [{"entry_id": ids[0], "title": "Exact task", "summary": "task",
+                           "type": "pattern"},
+                          {"entry_id": ids[1], "title": "Second", "summary": "task two",
+                           "type": "architecture"}], "corpus_generation": "a" * 64},
+            {"corpus_generation": "a" * 64, "items": [
+                {"entry_id": entry_id, "status": "expanded",
+                 "entry": {"content": f"content {index}"}}
+                for index, entry_id in enumerate(ids)
+            ]},
+        ]
+        outcome = retrieve_task_context(
+            project="p", repo="r", prompt="actual private task", tags=[], types=["gotcha"],
+            exclude_ids=[], corpus_generation="old", external_no_mcp=True,
+        )
+        self.assertEqual(outcome.status, "selected")
+        self.assertEqual(outcome.selected_ids, ids)
+        self.assertEqual(outcome.expansion_status, "expanded")
+        self.assertEqual(outcome.expanded_ids, ids)
+        self.assertEqual(post.call_args_list[1].args[0], "/search")
+        self.assertEqual(post.call_args_list[1].args[1]["searches"][0]["text"],
+                         "actual private task")
+
+    @mock.patch("task_packet._post", side_effect=OSError("offline"))
+    def test_task_selection_failure_is_typed_and_truthful(self, _post) -> None:
+        outcome = retrieve_task_context(
+            project="p", repo="r", prompt="task", tags=[], types=["gotcha"],
+            exclude_ids=[], corpus_generation="g", external_no_mcp=False,
+        )
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.failure_stage, "selection")
+        self.assertIn("unavailable", outcome.delivery_note)
 
     def test_telemetry_fixture_contains_metadata_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

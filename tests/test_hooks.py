@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -33,6 +34,27 @@ class HookContractTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout), {})
+
+    def test_pre_agent_marker_word_alone_does_not_suppress_real_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = {
+                "tool_name": "Agent", "session_id": "session",
+                "cwd": str(ROOT),
+                "tool_input": {
+                    "subagent_type": "builder",
+                    "prompt": "Review the phrase autodev-memory-task-context safely",
+                },
+            }
+            env = os.environ.copy()
+            env["HOME"] = directory
+            result = subprocess.run(
+                [str(ROOT / "hooks/autodev-memory-pre-agent.sh")],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]["prompt"]
+            self.assertEqual(updated.count("<autodev-memory-task-context>"), 1)
+            self.assertIn("Review the phrase", updated)
 
 
 if __name__ == "__main__":

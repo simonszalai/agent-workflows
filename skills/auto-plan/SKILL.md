@@ -343,9 +343,19 @@ printf '%s' "$SOURCE_ARTIFACT" > .context/plan/source.md
 printf '%s' "$CODEBASE_RESEARCH" > .context/plan/codebase-research.md
 printf '%s' "$PRIOR_KNOWLEDGE" > .context/plan/prior-knowledge.md
 first=1
-# Create this one <=3K task-context envelope before dispatch (child base + planning summaries).
-MEMORY_PACKET=.context/plan/memory-task.md
 for provider in $(agent-workflow-provider --peers); do
+  MEMORY_PACKET=".context/plan/${provider}-memory-task.md"
+  if ! cat .context/plan/question.txt .context/plan/source.md | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type planner --provider "$provider" --mechanism external_peer \
+        --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
+    cat > "$MEMORY_PACKET" <<'EOF'
+<autodev-memory-task-context>
+Memory context is unavailable. Do not infer that critical or task-specific memories were loaded.
+This external peer has no memory tool; report this limitation in the returned envelope.
+</autodev-memory-task-context>
+EOF
+  fi
   if [ "$first" = "1" ]; then
     research_args="--codebase-research-file .context/plan/codebase-research.md"
     first=0

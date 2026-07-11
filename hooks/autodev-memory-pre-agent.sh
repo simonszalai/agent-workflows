@@ -16,9 +16,10 @@ INPUT=$(cat) || emit_empty
 
 PROMPT=$(jq -r '.tool_input.prompt // ""' <<<"$INPUT" 2>/dev/null) || emit_empty
 [[ -n "$PROMPT" ]] || emit_empty
-case "$PROMPT" in
-  *autodev-memory-task-context*) emit_empty ;;
-esac
+if [[ "$PROMPT" == *"<autodev-memory-task-context>"* \
+   && "$PROMPT" == *"</autodev-memory-task-context>"* ]]; then
+  emit_empty
+fi
 
 CWD=$(jq -r '.cwd // .session.cwd // ""' <<<"$INPUT" 2>/dev/null)
 [[ -n "$CWD" ]] || CWD="$PWD"
@@ -29,8 +30,9 @@ AGENT_TYPE=$(jq -r '.tool_input.subagent_type // "generic"' <<<"$INPUT" 2>/dev/n
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HELPER="$HOOK_DIR/../bin/autodev-memory-task-packet"
 [[ -x "$HELPER" ]] || { _log SKIP 'helper=unavailable'; emit_empty; }
-PACKET=$("$HELPER" --cwd "$CWD" --session-id "$SESSION_ID" --agent-type "$AGENT_TYPE" \
-  --provider claude --mechanism prompt_rewrite 2>/dev/null) || {
+PACKET=$(printf '%s' "$PROMPT" | "$HELPER" --cwd "$CWD" --session-id "$SESSION_ID" \
+  --agent-type "$AGENT_TYPE" --provider claude --mechanism prompt_rewrite \
+  --task-prompt-stdin 2>/dev/null) || {
   _log SKIP 'packet=unavailable'
   emit_empty
 }
@@ -39,11 +41,20 @@ PACKET=$("$HELPER" --cwd "$CWD" --session-id "$SESSION_ID" --agent-type "$AGENT_
 NEW_PROMPT="$PROMPT
 
 $PACKET"
-OUTPUT=$(jq -n \
-  --argjson ti "$(jq -c '.tool_input' <<<"$INPUT")" \
-  --arg p "$NEW_PROMPT" \
-  '{hookSpecificOutput: {hookEventName: "PreToolUse",
-    updatedInput: ($ti + {prompt: $p})}}') || emit_empty
+OUTPUT=$(
+  printf '%s\0%s' "$INPUT" "$NEW_PROMPT" | python3 -c '
+import json, sys
+raw = sys.stdin.buffer.read()
+source, prompt = raw.split(b"\0", 1)
+payload = json.loads(source)
+tool_input = payload.get("tool_input", {})
+if not isinstance(tool_input, dict):
+    raise SystemExit(2)
+tool_input = {**tool_input, "prompt": prompt.decode("utf-8")}
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PreToolUse", "updatedInput": tool_input,
+}}, separators=(",", ":")))
+') || emit_empty
 
 _log INFO "status=delivered provider=claude mechanism=prompt_rewrite chars=${#PACKET}"
 echo "$OUTPUT"

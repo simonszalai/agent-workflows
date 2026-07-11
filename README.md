@@ -32,11 +32,15 @@ git clone git@github.com:simonszalai/agent-workflows.git ~/dev/agent-workflows
 ~/.local/bin/install-agent-workflows --rollback
 ```
 
-The installer copies an immutable version under
+The installer exports the exact resolved git commit (never the dirty working tree), validates a
+checksum manifest, and stores the read-only artifact under
 `~/.local/share/agent-workflows/versions/`, atomically switches `current`, creates only
 managed per-item links (it refuses to overwrite unrelated files), and merges Claude/Codex hook
 configuration without deleting unrelated settings. CI tests use `--home <temporary-dir>` for
-fresh install, upgrade, and rollback; never test installation against the operator's real HOME.
+fresh install, legacy-root-symlink migration, upgrade, corruption rejection, and rollback; never
+test installation against the operator's real HOME. The complete previous transaction is written
+before activation so a rollback can restore either the previous commit or the documented legacy
+root-symlink layout.
 
 `external-agent` shells out to peer provider CLIs (`claude`, `codex`, and/or `grok`), so the
 providers you want as peers must be installed and authenticated. Cross-provider participation is

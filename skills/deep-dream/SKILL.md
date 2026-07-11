@@ -166,6 +166,12 @@ function calls and current Codex `custom_tool_call(name="exec")` envelopes. A ne
 result/MCP event can confirm the inner call. Open raw JSONL only at the parser's cited line when
 more context is required, and never copy secrets into the report.
 
+For provider-aware memory compliance, run
+`scripts/audit_memory_compliance.py --days <window>` before assigning delivery/retrieval labels.
+It recursively correlates Claude Agent children, preserves direct-vs-nested Codex certainty, and
+joins local hook telemetry. Its default output is coarse and hash-free; never persist or upload
+`--restricted-diagnostics` output.
+
 ### Phase 2 — Synthesis & candidate generation (ORCHESTRATOR)
 
 Merge the five scout reports into one grounded picture, then generate candidate actions across

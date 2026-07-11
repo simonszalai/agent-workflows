@@ -11,7 +11,7 @@
     "adapter_headroom_chars": 300,
     "headroom_chars": 8660,
     "generation": "generation-sha256",
-    "render_hash": "render-sha256",
+    "render_hash": "5798394f1441bba8c8a091eb5443a9ab994a2b97077d5030cbb653d6db49d455",
     "health": "ok",
     "child_base_text": "## Critical memory rules\n- rule",
     "child_base_chars": 31,

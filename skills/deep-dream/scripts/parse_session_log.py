@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
+import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -57,8 +59,14 @@ def _content_text(content: object, allowed_types: set[str]) -> str:
     return "\n".join(parts)
 
 
-def _message_hash(text: str) -> str:
+def _message_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _diagnostic_hash(text: str, key: bytes | None) -> str | None:
+    if key is None:
+        return None
+    return hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()[:12]
 
 
 def _nested_tools(source: str) -> list[str]:
@@ -110,7 +118,9 @@ def _event(line: int, timestamp: str, kind: str, **fields: object) -> dict[str, 
     return {"line": line, "timestamp": timestamp, "kind": kind, **fields}
 
 
-def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[str, object]:
+def _parse_codex(
+    lines: Iterable[str], include_locators: bool = False, diagnostic_key: bytes | None = None,
+) -> dict[str, object]:
     events: list[dict[str, object]] = []
     calls: dict[str, dict[str, object]] = {}
     seen_human: set[str] = set()
@@ -137,7 +147,16 @@ def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[s
 
         if record_type == "event_msg" and payload_type == "user_message":
             text = _string(payload.get("message"))
-            digest = _message_hash(text)
+            if _is_memory_context(text):
+                if not memory_context_observed:
+                    memory_context_observed = True
+                    events.append(_event(
+                        line_number, timestamp, "memory_context", role="user",
+                        mechanism=("explicit_task_packet" if TASK_PACKET_MARKER in text
+                                   else "native_session_start"),
+                    ))
+                continue
+            digest = _message_fingerprint(text)
             if text and digest not in seen_human and not _is_system_message(text):
                 seen_human.add(digest)
                 events.append(
@@ -145,8 +164,9 @@ def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[s
                         line_number,
                         timestamp,
                         "human_message",
-                        message_hash=digest,
                         correction_candidate=bool(CORRECTION_RE.match(text.strip())),
+                        **({"message_hash": _diagnostic_hash(text, diagnostic_key)}
+                           if diagnostic_key else {}),
                     )
                 )
             continue
@@ -154,7 +174,12 @@ def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[s
         if record_type == "response_item" and payload_type == "message":
             role = _string(payload.get("role"))
             text = _content_text(payload.get("content"), {"input_text", "output_text"})
-            if role == "developer" and _is_memory_context(text) and not memory_context_observed:
+            if role in {"developer", "user"} and _is_memory_context(text):
+                # Explicit task packets travel as user prompts in managed/external Codex. Detect
+                # markers before human-message diagnostics so packet bodies are never classified
+                # as user corrections or diagnostic prompt hashes.
+                if memory_context_observed:
+                    continue
                 memory_context_observed = True
                 events.append(_event(
                     line_number, timestamp, "memory_context", role=role,
@@ -162,7 +187,7 @@ def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[s
                                else "native_session_start"),
                 ))
             elif role == "user" and text and not _is_system_message(text):
-                digest = _message_hash(text)
+                digest = _message_fingerprint(text)
                 if digest not in seen_human:
                     seen_human.add(digest)
                     events.append(
@@ -170,8 +195,9 @@ def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[s
                             line_number,
                             timestamp,
                             "human_message",
-                            message_hash=digest,
                             correction_candidate=bool(CORRECTION_RE.match(text.strip())),
+                            **({"message_hash": _diagnostic_hash(text, diagnostic_key)}
+                               if diagnostic_key else {}),
                         )
                     )
             continue
@@ -294,7 +320,9 @@ def _parse_codex(lines: Iterable[str], include_locators: bool = False) -> dict[s
     }
 
 
-def _parse_claude(lines: Iterable[str], include_locators: bool = False) -> dict[str, object]:
+def _parse_claude(
+    lines: Iterable[str], include_locators: bool = False, diagnostic_key: bytes | None = None,
+) -> dict[str, object]:
     events: list[dict[str, object]] = []
     calls: dict[str, str] = {}
     memory_context_observed = False
@@ -331,9 +359,8 @@ def _parse_claude(lines: Iterable[str], include_locators: bool = False) -> dict[
                         tool=tool,
                         encoding="tool_use",
                         agent_type=agent_type if tool == "Agent" else None,
-                        delegated_prompt_hash=(
-                            _message_hash(prompt) if tool == "Agent" and prompt else None
-                        ),
+                        **({"delegated_prompt_hash": _diagnostic_hash(prompt, diagnostic_key)}
+                           if tool == "Agent" and prompt and diagnostic_key else {}),
                         delegation_mechanism=(
                             "claude_agent_explicit_task_packet"
                             if tool == "Agent" and TASK_PACKET_MARKER in prompt
@@ -348,7 +375,8 @@ def _parse_claude(lines: Iterable[str], include_locators: bool = False) -> dict[
             continue
 
         text = _content_text(content, {"text"})
-        if _is_memory_context(text) and not memory_context_observed:
+        memory_message = _is_memory_context(text)
+        if memory_message and not memory_context_observed:
             memory_context_observed = True
             events.append(_event(
                 line_number, timestamp, "memory_context", role="user",
@@ -356,28 +384,30 @@ def _parse_claude(lines: Iterable[str], include_locators: bool = False) -> dict[
                            else "native_session_start"),
             ))
 
-        if isinstance(content, str) and content and not _is_system_message(content):
+        if isinstance(content, str) and content and not _is_system_message(content) and not memory_message:
             events.append(
                 _event(
                     line_number,
                     timestamp,
                     "human_message",
-                    message_hash=_message_hash(content),
                     correction_candidate=bool(CORRECTION_RE.match(content.strip())),
+                    **({"message_hash": _diagnostic_hash(content, diagnostic_key)}
+                       if diagnostic_key else {}),
                 )
             )
             continue
 
         if not isinstance(content, list):
             continue
-        if text and not _is_system_message(text):
+        if text and not _is_system_message(text) and not memory_message:
             events.append(
                 _event(
                     line_number,
                     timestamp,
                     "human_message",
-                    message_hash=_message_hash(text),
                     correction_candidate=bool(CORRECTION_RE.match(text.strip())),
+                    **({"message_hash": _diagnostic_hash(text, diagnostic_key)}
+                       if diagnostic_key else {}),
                 )
             )
         for block_value in content:
@@ -438,6 +468,7 @@ def detect_provider(lines: Iterable[str]) -> str:
 
 def parse_session(
     path: Path, provider: str = "auto", include_locators: bool = False,
+    diagnostic_key: bytes | None = None,
 ) -> dict[str, object]:
     if provider == "auto":
         with path.open(encoding="utf-8", errors="replace") as handle:
@@ -445,8 +476,9 @@ def parse_session(
     else:
         resolved_provider = provider
     with path.open(encoding="utf-8", errors="replace") as handle:
-        parsed = (_parse_codex(handle, include_locators) if resolved_provider == "codex"
-                  else _parse_claude(handle, include_locators))
+        parsed = (_parse_codex(handle, include_locators, diagnostic_key)
+                  if resolved_provider == "codex"
+                  else _parse_claude(handle, include_locators, diagnostic_key))
     if include_locators:
         parsed["path"] = str(path)
     return parsed
@@ -458,10 +490,14 @@ def main() -> None:
     parser.add_argument("--provider", choices=("auto", "claude", "codex"), default="auto")
     parser.add_argument("--include-locators", action="store_true",
                         help="include local paths/cwd/repository locators in the report")
+    parser.add_argument(
+        "--restricted-diagnostics", action="store_true",
+        help="emit per-run keyed prompt hashes for local correlation; never persist/upload them",
+    )
     arguments = parser.parse_args()
-    print(json.dumps(parse_session(
-        arguments.path, arguments.provider, arguments.include_locators,
-    ), indent=2))
+    diagnostic_key = os.urandom(32) if arguments.restricted_diagnostics else None
+    print(json.dumps(parse_session(arguments.path, arguments.provider,
+                                   arguments.include_locators, diagnostic_key), indent=2))
 
 
 if __name__ == "__main__":

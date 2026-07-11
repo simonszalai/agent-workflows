@@ -64,9 +64,17 @@ Order: pending todos by `sequence`, with `depends_on` prerequisites moved ahead.
 ```bash
 mkdir -p .context/build
 # write the todo artifact content to .context/build/todo-{NN}.md, then:
-autodev-memory-task-packet --cwd "$PWD" --session-id "$SESSION_ID" \
-  --agent-type builder --provider codex --mechanism external_build \
-  > .context/build/memory-{NN}.md
+if ! cat .context/build/todo-{NN}.md | \
+    autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+      --agent-type builder --provider codex --mechanism external_build \
+      --task-prompt-stdin --allow-unavailable > .context/build/memory-{NN}.md; then
+  cat > .context/build/memory-{NN}.md <<'EOF'
+<autodev-memory-task-context>
+Memory context is unavailable. Do not infer that critical or build-specific memories were loaded.
+This external builder has no memory tool; proceed only from the approved todo and report the limitation.
+</autodev-memory-task-context>
+EOF
+fi
 external-build --task build \
   --todo-file .context/build/todo-{NN}.md \
   --context-file .context/build/context.md \

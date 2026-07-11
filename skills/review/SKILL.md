@@ -262,11 +262,20 @@ peer uses subscription-backed `claude -p`, never a direct Anthropic API call.
 
 ```bash
 mkdir -p .context/review
-# Prepare one <=3K `<autodev-memory-task-context>` file from the current session's child base
-# plus review-relevant summaries (use autodev-memory-task-packet when SESSION_ID is available).
-MEMORY_PACKET=.context/review/memory-task.md
 base="$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)"
 for provider in $(agent-workflow-provider --peers); do
+  MEMORY_PACKET=".context/review/${provider}-memory-task.md"
+  if ! { printf 'Review diff against base %s\n' "$base"; cat .context/review/diff.patch; } | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type reviewer --provider "$provider" --mechanism external_peer \
+        --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
+    cat > "$MEMORY_PACKET" <<'EOF'
+<autodev-memory-task-context>
+Memory context is unavailable. Do not infer that critical or review-specific memories were loaded.
+This external peer has no memory tool; report this limitation in the returned envelope.
+</autodev-memory-task-context>
+EOF
+  fi
   external-agent --task review --provider "$provider" --base "$base" \
     --memory-context-file "$MEMORY_PACKET" \
     --out ".context/review/${provider}.json" 2>".context/review/${provider}.log" &

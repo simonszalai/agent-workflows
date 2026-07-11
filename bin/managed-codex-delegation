@@ -26,20 +26,21 @@ def main() -> int:
         message = args.message_file.read_text(encoding="utf-8")
     except OSError:
         return 2
-    if "<autodev-memory-task-context>" in message:
+    if (message.count("<autodev-memory-task-context>") == 1
+            and message.count("</autodev-memory-task-context>") == 1):
         print(message, end="")
         return 0
     helper = Path(__file__).resolve().with_name("autodev-memory-task-packet")
     command = [
         str(helper), "--cwd", str(args.cwd), "--agent-type", args.agent_type,
         "--session-id", args.session_id, "--provider", "codex",
-        "--mechanism", "managed_delegation",
+        "--mechanism", "managed_delegation", "--task-prompt-stdin",
     ]
     if args.project:
         command += ["--project", args.project]
     if args.repo:
         command += ["--repo", args.repo]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+    result = subprocess.run(command, input=message, capture_output=True, text=True, timeout=30)
     packet = result.stdout.strip()
     if result.returncode or not packet or len(packet) > 3000:
         return 2

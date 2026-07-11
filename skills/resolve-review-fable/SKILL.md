@@ -48,9 +48,17 @@ mkdir -p .context/review
 #   Severity: {p1|p2|p3}  Confidence: {c}  Decision: {accept|modify: <notes>}
 #   File: {file}:{line}
 #   Fix: {suggested fix, or the user's alternative}
-autodev-memory-task-packet --cwd "$PWD" --session-id "$SESSION_ID" \
-  --agent-type builder --provider codex --mechanism external_build \
-  > .context/review/memory.md
+if ! cat .context/review/fixes.md | \
+    autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+      --agent-type builder --provider codex --mechanism external_build \
+      --task-prompt-stdin --allow-unavailable > .context/review/memory.md; then
+  cat > .context/review/memory.md <<'EOF'
+<autodev-memory-task-context>
+Memory context is unavailable. Do not infer that critical or review-resolution memories were loaded.
+This external builder has no memory tool; use only approved findings and report the limitation.
+</autodev-memory-task-context>
+EOF
+fi
 external-build --task resolve \
   --findings-file .context/review/fixes.md \
   --context-file .context/review/resolve-context.md \
