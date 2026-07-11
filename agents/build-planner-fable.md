@@ -4,6 +4,7 @@ description: "Fable-variant build planner. Turns an approved plan into fully sel
 model: fable
 effort: medium
 max_turns: 50
+memory_types: [gotcha, pattern, architecture]
 skills:
   - first-principles
   - research

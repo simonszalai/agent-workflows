@@ -4,6 +4,7 @@ description: "Fable-variant planner. Creates high-level architecture plans for t
 model: fable
 effort: high
 max_turns: 50
+memory_types: [architecture, pattern, preference]
 skills:
   - first-principles
   - research

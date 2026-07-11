@@ -11,46 +11,47 @@ user_invocable: false
 
 Reference for agents that need to retrieve knowledge from the memory system during their work.
 
-## What You Get Automatically (Parent Sessions Only)
+## What You Get Automatically
 
-At **session start**, hooks inject two things as `additionalContext`:
+At **session start**, supported parent runners receive one server-rendered bounded packet as
+`additionalContext`:
 
-1. **Starred entries** (full content) — critical rules, architecture, gotchas that apply to
-   every task. Treat these with the same authority as CLAUDE.md.
-2. **Knowledge menu** — a compact list of ALL entries with their `[type]`, title, and tags.
-   This is your index. Use it to decide whether a search is warranted.
+1. **Always/repo-start rules selected by the producer** — treat them with the same authority as
+   CLAUDE.md.
+2. **Representative handles and scope/fetch instructions** — use search or scoped expansion to
+   retrieve detail. The complete corpus is deliberately not injected.
 
-**Subagents do NOT receive hook injections.** `PreToolUse` hook output goes to the parent
-model, not the spawned subagent. If you are a subagent (your task came from an Agent tool
-call, not directly from the user), you must **actively search** for relevant knowledge at
-the start of your task — see "Subagent Bootstrap" below.
+Managed Claude/Codex children receive a separate <=3K task packet containing a critical base and
+skill-scoped summaries. Unmanaged or unsupported children may receive no packet; if no
+`<autodev-memory-task-context>` is visible, search explicitly rather than assuming delivery.
 
 ## When to Search
 
-Scan the knowledge menu. If any entry's title or tags look relevant to your current task,
-use `mcp__autodev-memory__search` to retrieve its full content.
+Scan the representative handles/task summaries. If one looks relevant, use search or the
+producer's scoped expansion tool to retrieve its full content.
 
 **Search is warranted when:**
 
-- An entry title in the menu matches the area you're working on
+- A representative handle or task summary matches the area you're working on
 - You're about to make a decision that past gotchas/solutions might inform
 - You're reviewing code and want to check for known recurring issues
 - You're investigating a failure and the menu has entries about that subsystem
 
 **Search is NOT warranted when:**
 
-- The starred entries already cover the topic
+- The injected always-rule cards already cover the topic
 - The task is purely mechanical (formatting, renaming)
-- No menu entry titles/tags are relevant
+- No representative handle, task summary, or risk boundary is relevant
 
-The agent decides. No need to search on every task — just when the menu suggests useful
-knowledge exists.
+The agent decides. The injected packet is deliberately incomplete, so absence from it is not
+evidence that the corpus has no relevant knowledge.
 
 
-## Subagent Bootstrap (CRITICAL for subagents)
+## Subagent Bootstrap
 
-Since subagents receive NO hook injections, you must bootstrap your own memory context
-at the very start of your task. Do this BEFORE any other work:
+Managed children should receive `<autodev-memory-task-context>`. Read it first. If that marker is
+absent, delivery is unconfirmed and you must bootstrap with an explicit compact search before
+risk-bearing work:
 
 1. **Search for relevant gotchas** — extract 2-4 keywords from your task description and
    search for known issues:
@@ -59,12 +60,25 @@ at the very start of your task. Do this BEFORE any other work:
    mcp__autodev-memory__search(
      queries=[{"keywords": ["<tech>", "<area>"], "text": "<what you're investigating/building>"}],
      project="<project>",
+     repo="<current repo>",
+     detail="compact",
      limit=5
    )
    ```
 
-2. **Read any results carefully** — gotchas and patterns from the memory system represent
-   hard-won production lessons. They override general knowledge.
+2. **Expand only selected results** — choose 2-5 result IDs and pass the exact generation from
+   the compact response:
+
+   ```
+   mcp__autodev-memory__expand_entries(
+     entry_ids=["<id-1>", "<id-2>"],
+     project="<project>", repo="<current repo>",
+     corpus_generation="<generation from search>", scope_mode="current_repo"
+   )
+   ```
+
+   Expansion revalidates generation, lifecycle, and repo scope. Do not treat a compact hit as
+   proof that its full content was read.
 
 This takes ~5 seconds and prevents re-introducing bugs that were already documented and solved.
 
@@ -82,6 +96,8 @@ queries: [
   }
 ]
 project: "ts"    # searches project + global entries
+repo: "ts-prefect"
+detail: "compact"
 limit: 5
 ```
 
@@ -91,6 +107,8 @@ limit: 5
 - `text` — use a natural language description of what you're looking for
 - Multiple queries in one call for different aspects of the same task
 - Project searches automatically include global results
+- Always pass `repo` for repo-scoped work; omit it only for intentional project-wide search
+- Keep `detail="compact"`, then expand 2-5 selected IDs with the returned generation
 
 ### `mcp__autodev-memory__get_review_patterns` — For reviewers
 
@@ -151,6 +169,6 @@ This skill is loaded by agents that benefit from knowledge retrieval:
 ## What NOT to Do
 
 - Do not use `curl` to hit the memory API — always use MCP tools
-- Do not search for things already in your starred entries
-- Do not search on every task — use the knowledge menu to decide
+- Do not search for things already covered by injected always-rule cards
+- Do not search mechanically on every task — use representative handles and task risk to decide
 - Do not persist findings during search — that's `/compound`'s job

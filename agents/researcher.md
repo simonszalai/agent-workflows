@@ -4,6 +4,7 @@ description: "Codebase researcher. Spawned with a specific research mode and foc
 model: sonnet
 effort: medium
 max_turns: 50
+memory_types: [reference, architecture, pattern]
 skills:
   - investigate
   - research
@@ -77,7 +78,7 @@ patterns and conventions that inform your research.
 
 - Known gotchas matching the problem (via `mcp__autodev-memory__search`)
 - Past solutions for similar issues
-- Auto-injected context from knowledge menu
+- Bounded parent/task packet when present (representative, not exhaustive)
 
 **Code patterns:**
 

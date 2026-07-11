@@ -270,8 +270,21 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    #   .context/investigate/evidence.txt  = stack trace / log lines / observed behavior
    BUG="$(cat .context/investigate/bug.txt)"
    for provider in $(agent-workflow-provider --peers); do
+     MEMORY_PACKET=".context/investigate/${provider}-memory-task.md"
+     if ! cat .context/investigate/bug.txt .context/investigate/evidence.txt | \
+         autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+           --agent-type investigator --provider "$provider" --mechanism external_peer \
+           --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
+       cat > "$MEMORY_PACKET" <<'EOF'
+<autodev-memory-task-context>
+Memory context is unavailable. Do not infer that critical or investigation memories were loaded.
+This external peer has no memory tool; report this limitation in the returned envelope.
+</autodev-memory-task-context>
+EOF
+     fi
      external-agent --task investigate --provider "$provider" --bug "$BUG" \
        --evidence-file .context/investigate/evidence.txt --environment "$ENV" \
+       --memory-context-file "$MEMORY_PACKET" \
        --out ".context/investigate/${provider}.json" 2>".context/investigate/${provider}.log" &
    done
    wait

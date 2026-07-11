@@ -1,6 +1,6 @@
 // research-fanout — heavyweight orchestrator for /research when the question is broad.
 //
-// Research's failure mode is INCOMPLETENESS, not false positives. So unlike review-fanout,
+// Research's failure mode is INCOMPLETENESS, not false positives. So unlike review-synthesize,
 // the orchestration concentrates on coverage:
 //   - Multi-modal sweep: parallel searchers using DIFFERENT angles, not just zones
 //   - Loop-until-dry: completeness critic identifies gaps; gap-fillers run; repeat

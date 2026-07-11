@@ -90,7 +90,8 @@ explicitly asks for a full replan/from-scratch run.
 5. Run cross-provider planning:
    - Determine the current runner with `agent-workflow-provider`. The current runner is the native
      planner; the other two providers are peers.
-   - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>` using the
+   - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>
+     --memory-context-file <bounded-task-packet>` using the
      peer-planning packet as the source artifact. Claude peers must use the subscription-backed
      `claude -p` path provided by `external-agent`, never a direct API call.
    - If Claude Code is the current runner, use the `external-planner` dispatcher for the non-Claude
@@ -100,6 +101,27 @@ explicitly asks for a full replan/from-scratch run.
      provider "would" say; actually run the providers and consume their JSON.
    - Stop instead of accepting a one-provider plan if fewer than two providers return usable
      plans.
+
+   Build each peer's required bounded packet before dispatch (the peer bundle contains the actual
+   epic-planning task and therefore drives semantic selection):
+
+   ```bash
+   mkdir -p .context/epic-plan
+   for provider in $(agent-workflow-provider --peers); do
+     memory_packet=".context/epic-plan/${provider}-memory-task.md"
+     if ! cat .context/epic-plan/peer-source.md | \
+         autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+           --agent-type planner --provider "$provider" --mechanism external_peer \
+           --task-prompt-stdin --allow-unavailable > "$memory_packet"; then
+       cat > "$memory_packet" <<'EOF'
+   <autodev-memory-task-context status="unavailable">
+   Memory context is unavailable. Do not infer that epic-planning memories were loaded.
+   </autodev-memory-task-context>
+   EOF
+     fi
+     # external-agent --task plan ... --memory-context-file "$memory_packet"
+   done
+   ```
 6. Run cross-review and convergence:
    - Create `.context/epic-plan/plan-bundle.md` containing the native draft plus every usable peer
      draft, assumptions, evidence, disagreements, proposed milestones, and proposed pass criteria.

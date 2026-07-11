@@ -13,7 +13,7 @@
 //   3. Test (parallel): for each surviving hypothesis, an evidence-gatherer agent
 //      runs the testable prediction and returns confirmed/refuted/inconclusive
 //   4. Adversarial refute (parallel): for each CONFIRMED hypothesis, 2 skeptics
-//      try to falsify. Same pattern as review-fanout's verify.
+//      try to falsify. Same pattern as review-synthesize's verify.
 //   5. Synthesize: opus agent picks the root cause (if any survives), builds the
 //      causal chain, drafts short remediation. HONEST about partial findings —
 //      "we ruled out X and Y, still don't know" is a valid output.

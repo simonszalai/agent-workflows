@@ -3,6 +3,7 @@ name: builder
 description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, /ticket-flow, and /lfg with task-specific prompts."
 model: inherit
 max_turns: 100
+memory_types: [gotcha, pattern, architecture]
 skills:
   - autodev-search
 ---
@@ -64,11 +65,9 @@ mcp__autodev-memory__search(queries=[
 ])
 ```
 
-Also review auto-injected context from the knowledge menu.
-
-Note: as a subagent you do NOT receive the session-start memory hook output — this search
-is your only memory access. The `queries` parameter is a LIST of objects exactly as shown
-above; there is no single `query` string parameter.
+Also review the bounded task packet when present. It is a shortlist, not proof that no other
+memory applies, so still search at risk boundaries. The `queries` parameter is a LIST of objects
+exactly as shown above; there is no single `query` string parameter.
 
 ## Tool Protocol (hard preconditions — violations waste turns)
 

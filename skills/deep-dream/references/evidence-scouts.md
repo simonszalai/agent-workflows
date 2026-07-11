@@ -41,34 +41,37 @@ find ~/.claude/projects -path "*<repo>*" -name "*.jsonl" -not -path "*/subagents
   -newermt "<window-start>" -exec ls -lt {} + | head -40
 ```
 
-**Per-session timeline (user msgs + tools + hook injections)**
+**Per-session timeline**
 ```bash
 SESSION="<path>.jsonl"
-python3 -c "
-import json
-for i,line in enumerate(open('$SESSION')):
-    o=json.loads(line); t=o.get('type'); blob=json.dumps(o)
-    if t=='user':
-        m=o.get('message',{})
-        if isinstance(m,dict):
-            for c in m.get('content',[]):
-                if isinstance(c,dict) and c.get('type')=='text':
-                    tx=c['text'][:160].replace('\n',' ')
-                    if '<system-reminder>' not in tx and len(tx.strip())>5: print(f'{i:4d} USER: {tx}')
-        if 'autodev-memory-hook-result' in blob: print(f'{i:4d} HOOK: memory injected')
-    elif t=='assistant':
-        tu=[c['name'] for c in o.get('message',{}).get('content',[]) if isinstance(c,dict) and c.get('type')=='tool_use']
-        if tu: print(f'{i:4d} TOOL: '+', '.join(tu))
-"
+PARSER="$HOME/.agents/skills/deep-dream/scripts/parse_session_log.py"
+[ -f "$PARSER" ] || PARSER="$HOME/.claude/skills/deep-dream/scripts/parse_session_log.py"
+python3 "$PARSER" "$SESSION" --provider claude --include-locators
 ```
+
+The parser emits compact event metadata without tool or message bodies. Paths/repository locators
+are omitted by default; `--include-locators` is an explicit local-audit opt-in. Prompt hashes are
+also omitted by default. For a live restricted local investigation only,
+`--restricted-diagnostics` emits per-run keyed `delegated_prompt_hash`/`message_hash` values for
+correlation. Never persist or upload that output. Prefer the recursive compliance report, which
+uses those hashes internally and strips them from its default output:
+
+```bash
+python3 "$HOME/.agents/skills/deep-dream/scripts/audit_memory_compliance.py" --days 7
+```
+Claude's
+SessionStart hook explicitly does **not** persist its additional context into the transcript, so
+`summary.memory_context_observed=false` is not evidence that no memory was delivered. Join hook
+logs/backend `session_init` by native session id when making delivery claims. A transcript marker
+can prove observed context; absence cannot disprove delivery.
 
 **Signals to extract**
 - **correction** — user reverses Claude's approach (explicit "no/that's wrong/actually", or
   implicit: redoes it differently, contradicts an assumption). Capture wrong-vs-right.
 - **rehit** — the session rediscovered the hard way something an existing memory entry already
   covers (cross-check against the memory-inventory scout's list if available).
-- **ignored** — a memory was injected in a `<system-reminder>` but Claude acted against it (e.g.
-  injected "never suppress flow failures" yet recommended suppressing).
+- **ignored** — delivery is confirmed by an explicit transcript marker or hook/backend event,
+  yet Claude acted against that exact rule. Never infer this from transcript absence.
 - **missed-search** — long/complex task with zero `mcp__autodev-memory__search` calls.
 - **fail-loop** — repeated failing tool calls / retries on the same thing before it worked.
 Aggregate across sessions: a signal appearing in **≥2 sessions** is a pattern — say so and list
@@ -98,7 +101,8 @@ Each rollout's **first line** is `type:"session_meta"` carrying the project:
 `payload.cwd`, `payload.git.branch`, `payload.git.repository_url`. Keep only rollouts whose
 `cwd`/repo matches the target.
 
-**Line shape:** every line is `{"timestamp","type","payload"}`. Relevant types:
+**Line shape:** every line is `{"timestamp","type","payload"}`. Both generations below are
+live and must be parsed:
 
 | `type` | `payload.type` / role | Carries |
 |---|---|---|
@@ -108,56 +112,36 @@ Each rollout's **first line** is `type:"session_meta"` carrying the project:
 | `response_item` | `message` role `assistant` | assistant text (`payload.content[].type=="output_text"`) |
 | `response_item` | `function_call` | tool call: `payload.name`, `payload.arguments` (JSON string). MCP calls use the tool name directly (e.g. `get_ticket`). |
 | `response_item` | `function_call_output` | shell/tool result. For `exec_command`, output contains `"Process exited with code N"`. |
+| `response_item` | `custom_tool_call` | current Codex outer tool call. `name="exec"` carries JavaScript in `payload.input`; nested calls appear only as `tools.<name>(...)` source. |
+| `response_item` | `custom_tool_call_output` | outer result. Current `exec` output is rendered text blocks; it does not identify which nested call produced each block. |
+| `response_item` | `message`, role `developer` | current hook/developer context. Detect the memory marker, but never copy its body into a report. |
 | `event_msg` | `patch_apply_end` | `payload.success` (bool), `payload.stderr` — **patch failures** |
 | `event_msg` | `mcp_tool_call_end` | `payload.result` has `"Err"` vs `"Ok"` — **MCP errors** |
 | `event_msg` | `task_complete` | `payload.last_agent_message` (final summary) |
 
-**Timeline parser (verified to run on real rollouts)**
-```python
-#!/usr/bin/env python3
-import json, sys, textwrap, re
-def short_args(s, n=120):
-    try:
-        d=json.loads(s); return ', '.join(f'{k}={str(v)[:50]}' for k,v in list(d.items())[:3])[:n]
-    except Exception: return str(s)[:n]
-for raw in open(sys.argv[1]):
-    raw=raw.strip()
-    if not raw: continue
-    try: o=json.loads(raw)
-    except Exception: continue
-    ts=o.get('timestamp','')[11:19]; t=o.get('type'); p=o.get('payload',{})
-    if not isinstance(p,dict): continue
-    pt=p.get('type')
-    if t=='session_meta':
-        print(f'[{ts}] SESSION cwd={p.get("cwd")} branch={p.get("git",{}).get("branch")}')
-    elif t=='event_msg' and pt=='user_message':
-        m=p.get('message','')
-        if any(m.lstrip().startswith(x) for x in ('<system_instruction>','<collaboration_mode>','<environment_context>')): continue
-        print(f'[{ts}] USER: {textwrap.shorten(m,200,placeholder="...")}')
-    elif t=='event_msg' and pt=='agent_message':
-        print(f'[{ts}] ASST: {textwrap.shorten(p.get("message",""),180,placeholder="...")}')
-    elif t=='response_item' and pt=='function_call':
-        print(f'[{ts}] TOOL: {p.get("name","")}({short_args(p.get("arguments","{}"))})')
-    elif t=='response_item' and pt=='function_call_output':
-        out=str(p.get('output','')); m=re.search(r'Process exited with code (\d+)',out)
-        code=m.group(1) if m else '?'; fail=' ***FAIL***' if code not in ('0','?') else ''
-        print(f'[{ts}] RSLT: exit={code}{fail}')
-    elif t=='event_msg' and pt=='patch_apply_end' and not p.get('success',True):
-        print(f'[{ts}] PATCH-FAIL: {str(p.get("stderr",""))[:120]}')
-    elif t=='event_msg' and pt=='mcp_tool_call_end' and 'Err' in (p.get('result') or {}):
-        inv=p.get('invocation',{}); print(f'[{ts}] MCP-ERR: {inv.get("server")}.{inv.get("tool")}')
-    elif t=='event_msg' and pt=='task_complete':
-        print(f'[{ts}] DONE: {textwrap.shorten(p.get("last_agent_message",""),120,placeholder="...")}')
+**Timeline parser (fixtures cover both generations)**
+```bash
+PARSER="$HOME/.agents/skills/deep-dream/scripts/parse_session_log.py"
+[ -f "$PARSER" ] || PARSER="$HOME/.claude/skills/deep-dream/scripts/parse_session_log.py"
+python3 "$PARSER" "$SESSION" --provider codex
 ```
+
+For current `custom_tool_call(name="exec")`, the parser reports nested `tools.*` names as
+`nested_tool_attempts` and marks their results `not_individually_attributed`. The outer script's
+`completed` status proves only that the JavaScript wrapper completed; it does **not** prove every
+nested call succeeded. Confirm an inner MCP call with `mcp_tool_call_end`/operation logs, or an
+inner shell call with structured executor telemetry. Do not turn JavaScript source matches into
+success counts.
 
 **"What went wrong" signals:** non-zero `exit` in `function_call_output`; `Traceback` /
 `ImportError` / `Error:` in output text; `patch_apply_end.success == false`; `mcp_tool_call_end`
 with `Err`; short real `user_message`s that read as corrections/retries ("no", "that's wrong",
 "again", "stop"); a session with `task_started` but no `task_complete` (abandoned).
 
-**Note:** Codex has **no memory-hook injection** the way Claude does, so the "ignored memory"
-signal is weaker here — focus Codex findings on failures, corrections, and recurring mistakes
-(those still inform skill/CLAUDE.md improvements that apply to both tools).
+**Memory context:** current Codex sessions do receive the autodev memory hook in developer
+context, and the marker is transcript-visible. Count delivery once per native session, not once
+per repeated developer message. As with Claude, a confirmed marker shows delivery—not reading,
+agreement, or application.
 
 **Return:** the common envelope. Locator form: `codex:<short-session-id>:<HH:MM:SS>`.
 
@@ -205,13 +189,18 @@ delegated to a cheap model because it's heavy mechanical reading).
 3. For each entry record: `id` (short), `title`, `entry_type`, `summary`, `tags`, `repos`,
    `scope`, `created_at`, `updated_at`, `token_estimate`.
 
+`updated_at` is not content freshness: retrieval counters currently trigger it. Record it for
+diagnostics only; verify staleness against source provenance, current code/config, and newer
+superseding guidance.
+
 **Flag (per the dimensions in `dream/references/audit-checklist.md`)** — but do **not** decide;
 just flag with evidence for the orchestrator to turn into M candidates:
 - stale (references symbols/files/APIs — give the grep the orchestrator should run to confirm),
 - duplicate / overlapping pairs, merge clusters, split candidates,
 - mis-scoped (project entry that's actually general, or vice-versa),
 - contradictions, tag synonyms/casing issues, mistyped entries,
-- **low-utility** (accurate but no realistic future task would miss it),
+- **low-utility review** (accurate but with no identified audience after a counterfactual test;
+  never infer this from zero returns or search-hit counters alone),
 - **reusable-methodology** entries that read like a portable HOW (flag as P-migration candidates
   for the orchestrator).
 

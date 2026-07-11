@@ -7,7 +7,7 @@ Standards for high-quality Python code. Apply these when reviewing Python change
 **Before applying generic rules below, check memory service for project coding standards:**
 
 Search `mcp__autodev-memory__search` for coding standards relevant to this project.
-Also review auto-injected context from the knowledge menu.
+Also review bounded injected context when present; it is representative, not exhaustive.
 
 Project-specific conventions override generic best practices. For example, a project may allow
 patterns (like assertions for data completeness) that generic rules would flag.

@@ -100,7 +100,7 @@ new API integrations, changes to alert/notification logic
      {"keywords": ["<technology>"], "text": "<technology> gotchas pitfalls"}
    ])
    ```
-   Also review auto-injected context from the knowledge menu.
+   Also review bounded injected context when present; it is representative, not exhaustive.
 3. **First-principles analysis** - State fundamental goal, classify constraints, eliminate
    fake ones
 4. **Research codebase** - Spawn `researcher` to find patterns, integration points
