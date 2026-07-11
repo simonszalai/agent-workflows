@@ -42,8 +42,7 @@ $PACKET"
 OUTPUT=$(jq -n \
   --argjson ti "$(jq -c '.tool_input' <<<"$INPUT")" \
   --arg p "$NEW_PROMPT" \
-  '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "allow",
-    permissionDecisionReason: "autodev-memory: bounded task context injected",
+  '{hookSpecificOutput: {hookEventName: "PreToolUse",
     updatedInput: ($ti + {prompt: $p})}}') || emit_empty
 
 _log INFO "status=delivered provider=claude mechanism=prompt_rewrite chars=${#PACKET}"
