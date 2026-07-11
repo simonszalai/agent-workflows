@@ -48,6 +48,14 @@ REPORT_CLASSIFICATIONS = {
     "selection_attempted", "selection_confirmed", "expansion_attempted",
     "expansion_confirmed", "unavailable", "not_applicable",
 }
+CONFIRMATION_STAGES = {"pretool_output_emitted", "validated_provider_response"}
+
+
+def _confirmed_packet_event(event: dict[str, Any]) -> bool:
+    return event.get("event") == "parent_packet" or (
+        event.get("event") == "child_packet"
+        and event.get("confirmation_stage") in CONFIRMATION_STAGES
+    )
 
 
 def _append_record(records: list[dict[str, Any]], record: dict[str, Any]) -> None:
@@ -130,7 +138,7 @@ def _classifications(parsed: dict[str, Any], telemetry: list[dict[str, Any]]) ->
     delivered_statuses = {"delivered", "fallback", "partial"}
     unavailable_statuses = {"unavailable", "failed", "base_unavailable"}
     if (any(event.get("delivery_status") in delivered_statuses for event in delivery_events)
-            or any(event.get("event") in {"parent_packet", "child_packet"}
+            or any(_confirmed_packet_event(event)
                    and event.get("status") in delivered_statuses for event in telemetry)):
         labels.append("packet_delivered")
     if (any(event.get("mechanism") == "native_session_start"
@@ -187,8 +195,7 @@ def _typed_delivery_metadata(
     parsed: dict[str, Any], telemetry: list[dict[str, Any]], restricted: bool,
 ) -> dict[str, Any]:
     """Project evidence into the report's metadata-only, allowlisted schema."""
-    packet_events = [event for event in telemetry
-                     if event.get("event") in {"parent_packet", "child_packet"}]
+    packet_events = [event for event in telemetry if _confirmed_packet_event(event)]
     selection_events = [event for event in telemetry if event.get("event") == "task_selection"]
     parsed_packets = [event for event in parsed.get("events", [])
                       if event.get("kind") == "memory_context"]
@@ -358,7 +365,7 @@ def audit(
         if not any(str(event.get("mechanism", "")).startswith("external") for event in matching):
             continue
         for event in matching:
-            if event.get("event") != "child_packet":
+            if event.get("event") != "child_packet" or not _confirmed_packet_event(event):
                 continue
             record = {
                 "provider": event.get("provider", "unknown"),

@@ -52,6 +52,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from memory_context import confirm_packet_delivery  # noqa: E402
+
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_REASONING = "xhigh"
 DEFAULT_TIMEOUT = 3600  # xhigh reasoning on a real todo can take tens of minutes
@@ -231,6 +234,10 @@ def main() -> None:
                          "gotchas, prior-attempt error on retry")
     ap.add_argument("--memory-context-file", required=True,
                     help="one explicit <=3K memory task packet; suppresses ambient hooks")
+    ap.add_argument(
+        "--telemetry-file", type=Path,
+        default=Path.home() / ".cache/autodev-memory/telemetry.jsonl",
+    )
     ap.add_argument("--repo", default=".", help="repo working directory (default: cwd)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--reasoning", default=DEFAULT_REASONING,
@@ -283,12 +290,30 @@ def main() -> None:
             result = json.loads(raw)
         except json.JSONDecodeError as e:
             print(f"external-build: codex output was not valid JSON: {e}", file=sys.stderr)
+    if result is not None:
+        valid_shape = (
+            isinstance(result, dict)
+            and (
+                args.task == "build" and result.get("status") in {"complete", "failed", "needs_replan"}
+                or args.task == "resolve" and isinstance(result.get("results"), list)
+            )
+        )
+        if not valid_shape:
+            result = None
     if result is None:
         result = failed_result(args.task, "codex produced no valid structured output "
                                           "(timeout, crash, or schema violation)")
         exit_code = 2
-    elif args.task == "resolve":
-        result = result.get("results", [])
+    else:
+        confirm_packet_delivery(
+            memory_context,
+            provider="codex",
+            mechanism="external_build",
+            confirmation_stage="validated_provider_response",
+            telemetry_file=args.telemetry_file,
+        )
+        if args.task == "resolve":
+            result = result.get("results", [])
 
     out_text = json.dumps(result, indent=2)
     if args.out:

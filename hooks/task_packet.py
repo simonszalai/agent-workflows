@@ -316,10 +316,11 @@ def build_task_packet(
     )
     _append_telemetry(
         telemetry_file,
-        event="child_packet",
+        event="packet_prepared",
         provider=provider,
         mechanism=mechanism,
-        status=packet_status,
+        status=("ready" if packet_status == "delivered"
+                else "partial_ready" if packet_status == "partial" else packet_status),
         packet_version=(manifest or {}).get("packet_version", "unavailable"),
         corpus_generation=outcome.corpus_generation or "unavailable",
         render_hash=(manifest or {}).get("render_hash", "unavailable"),

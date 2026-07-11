@@ -30,6 +30,8 @@ V2_NAMES = {"2", "v2", "packet-v2"}
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 HEX64_TOKEN = re.compile(r"^[0-9a-fA-F]{64}$")
 SHA256_TOKEN = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
+TASK_ENVELOPE_RE = re.compile(r"<autodev-memory-task-context([^>]*)>")
+ATTRIBUTE_RE = re.compile(r'([a-z][a-z0-9-]*)="([A-Za-z0-9._:-]{1,256})"')
 LEGACY_FALLBACK_SUNSET = date(2026, 8, 15)
 
 TELEMETRY_FIELDS: dict[str, dict[str, type | tuple[type, ...]]] = {
@@ -44,14 +46,19 @@ TELEMETRY_FIELDS: dict[str, dict[str, type | tuple[type, ...]]] = {
         "expansion_status": str, "expanded_ids": list, "failure_stage": str,
         "session_key": str, "delegation_id": str, "corpus_generation": str,
     },
-    "child_packet": {
+    "packet_prepared": {
         "provider": str, "mechanism": str, "status": str, "packet_version": str,
         "corpus_generation": str, "render_hash": str, "chars": int,
         "session_key": str, "delegation_id": str,
     },
+    "child_packet": {
+        "provider": str, "mechanism": str, "status": str, "packet_version": str,
+        "corpus_generation": str, "render_hash": str, "chars": int,
+        "session_key": str, "delegation_id": str, "confirmation_stage": str,
+    },
 }
 TELEMETRY_TOKEN_FIELDS = {
-    "provider", "mechanism", "status", "packet_version", "failure_stage",
+    "provider", "mechanism", "status", "packet_version", "failure_stage", "confirmation_stage",
 }
 TELEMETRY_TOKEN = re.compile(r"^[A-Za-z0-9._:+-]{1,128}$")
 
@@ -451,6 +458,43 @@ def _append_telemetry(path: Path | None, **event: object) -> None:
         os.close(fd)
 
 
+def confirm_packet_delivery(
+    packet: str,
+    *,
+    provider: str,
+    mechanism: str,
+    confirmation_stage: str,
+    telemetry_file: Path | None,
+    session_id: str = "",
+) -> bool:
+    """Confirm a mechanism-owned delivery milestone without recording packet content."""
+    match = TASK_ENVELOPE_RE.search(packet)
+    if not match or packet.count("<autodev-memory-task-context") != 1 \
+            or packet.count("</autodev-memory-task-context>") != 1:
+        return False
+    attributes = {key: value for key, value in ATTRIBUTE_RE.findall(match.group(1))}
+    delegation_id = attributes.get("delivery-id", "")
+    if not re.fullmatch(r"[0-9a-f]{24}", delegation_id):
+        return False
+    status = attributes.get("status", "unavailable")
+    packet_version = attributes.get("packet-version", "unavailable")
+    generation = attributes.get("corpus-generation", "unavailable")
+    _append_telemetry(
+        telemetry_file,
+        event="child_packet",
+        provider=provider,
+        mechanism=mechanism,
+        status=status,
+        packet_version=packet_version,
+        corpus_generation=generation,
+        chars=len(packet),
+        delegation_id=delegation_id,
+        confirmation_stage=confirmation_stage,
+        session_key=telemetry_session_key(telemetry_file, session_id),
+    )
+    return True
+
+
 def telemetry_session_key(path: Path | None, session_id: str) -> str | None:
     """Return a local-only keyed session pseudonym usable to join audit evidence."""
     if path is None or not session_id or path.parent.is_symlink():
@@ -624,10 +668,27 @@ def _main() -> int:
     invalidate.add_argument("--cache-dir", type=Path, required=True)
     invalidate.add_argument("--request-epoch", type=int)
 
+    confirm = sub.add_parser("confirm-child")
+    confirm.add_argument("--provider", choices=["claude", "codex", "grok"], required=True)
+    confirm.add_argument("--mechanism", required=True)
+    confirm.add_argument("--confirmation-stage", required=True)
+    confirm.add_argument("--telemetry-file", type=Path, required=True)
+    confirm.add_argument("--session-id", default="")
+
     args = parser.parse_args()
     if args.command == "invalidate":
         invalidate_cache(args.cache_dir, args.session_id, args.request_epoch)
         return 0
+    if args.command == "confirm-child":
+        packet = os.sys.stdin.read()
+        return 0 if confirm_packet_delivery(
+            packet,
+            provider=args.provider,
+            mechanism=args.mechanism,
+            confirmation_stage=args.confirmation_stage,
+            telemetry_file=args.telemetry_file,
+            session_id=args.session_id,
+        ) else 2
 
     try:
         payload = _dict(json.load(os.sys.stdin))

@@ -74,7 +74,7 @@ def main() -> int:
                 "limitation.\n</autodev-memory-task-context>"
             )
             _append_telemetry(
-                args.telemetry_file, event="child_packet", provider=args.provider,
+                args.telemetry_file, event="packet_prepared", provider=args.provider,
                 mechanism=args.mechanism, status="unavailable", packet_version="unavailable",
                 corpus_generation="unavailable", render_hash="unavailable",
                 chars=len(unavailable), delegation_id=delegation_id,

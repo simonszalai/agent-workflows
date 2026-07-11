@@ -26,8 +26,12 @@ a provider: Fable remains a Claude workflow/model variant.
    2–5 full IDs plus corpus generation internally. External agents that have no memory tool receive
    pre-expanded bodies only when whole bodies fit the <=3000 budget; otherwise the packet explicitly
    says expansion/body delivery was unavailable.
-6. Local telemetry separates base delivery, selection attempt/result, expansion result, and final
-   delivery. It stores counts/status and memory entry IDs but never packet bodies, prompts, queries,
+6. Local telemetry separates base delivery, selection attempt/result, expansion result, packet
+   preparation, and mechanism-owned confirmation. `packet_prepared` never proves delivery. A
+   `child_packet` confirmation is emitted only after Claude's PreToolUse JSON has been emitted
+   (`pretool_output_emitted`) or an external provider returned a validated structured response
+   (`validated_provider_response`); timeout/crash/invalid output remains unconfirmed. Telemetry
+   stores counts/status and memory entry IDs but never packet bodies, prompts, queries,
    paths, tokens, or environment values. A keyed local-only session pseudonym joins the compliance
    audit; the default report never emits that pseudonym or prompt hashes.
 7. The bounded v1 digest fallback sunsets on **2026-08-15** (earlier with

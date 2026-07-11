@@ -4,6 +4,7 @@
 set -uo pipefail
 
 _LOG_FILE="$HOME/.config/autodev-memory/hooks.log"
+_TELEMETRY_FILE="$HOME/.cache/autodev-memory/telemetry.jsonl"
 _log() {
   printf '%s [pre-agent] %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" \
     >> "$_LOG_FILE" 2>/dev/null || true
@@ -58,3 +59,8 @@ print(json.dumps({"hookSpecificOutput": {
 
 _log INFO "status=delivered provider=claude mechanism=prompt_rewrite chars=${#PACKET}"
 echo "$OUTPUT"
+printf '%s' "$PACKET" | python3 "$HOOK_DIR/memory_context.py" confirm-child \
+  --provider claude --mechanism prompt_rewrite \
+  --confirmation-stage pretool_output_emitted \
+  --telemetry-file "$_TELEMETRY_FILE" --session-id "$SESSION_ID" \
+  >/dev/null 2>&1 || true

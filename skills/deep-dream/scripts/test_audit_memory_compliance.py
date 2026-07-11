@@ -59,6 +59,7 @@ class AuditMemoryComplianceTest(unittest.TestCase):
                 "provider": "claude", "mechanism": "prompt_rewrite", "status": "delivered",
                 "packet_version": "v2", "corpus_generation": "b" * 64,
                 "delegation_id": delivery_id, "chars": 100,
+                "confirmation_stage": "pretool_output_emitted",
             }) + "\n")
             report = audit(claude, codex, cache / "telemetry.jsonl", 1)
             self.assertEqual(report["record_count"], 1)
@@ -84,6 +85,16 @@ class AuditMemoryComplianceTest(unittest.TestCase):
         self.assertIn("explicit_task_packet", labels)
         self.assertIn("unavailable", labels)
         self.assertNotIn("packet_delivered", labels)
+
+    def test_packet_preparation_is_never_delivery_evidence(self) -> None:
+        telemetry = [{
+            "event": "packet_prepared", "status": "delivered",
+            "delegation_id": "a" * 24,
+        }]
+        self.assertNotIn(
+            "packet_delivered",
+            _classifications({"summary": {}, "events": []}, telemetry),
+        )
 
     def test_task_telemetry_is_not_shared_across_sibling_delegations(self) -> None:
         selected = [{
@@ -117,7 +128,8 @@ class AuditMemoryComplianceTest(unittest.TestCase):
                      "expansion_status": "not_applicable", "corpus_generation": "c" * 64},
                     {"timestamp": now, "event": "child_packet", "delegation_id": delivery_id,
                      "provider": "codex", "mechanism": "external_build", "status": "delivered",
-                     "packet_version": "v2", "corpus_generation": "c" * 64, "chars": 100},
+                     "packet_version": "v2", "corpus_generation": "c" * 64, "chars": 100,
+                     "confirmation_stage": "validated_provider_response"},
                 ])
             telemetry = cache / "telemetry.jsonl"
             telemetry.write_text("\n".join(json.dumps(row) for row in rows) + "\n")

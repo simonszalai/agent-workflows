@@ -67,6 +67,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from memory_context import confirm_packet_delivery  # noqa: E402
+
 # Review reference selection. Always-on pair mirrors skills/review SKILL.md Step 2,
 # plus core simplicity/patterns. Language/domain refs added by select_review_references().
 REVIEW_CORE_REFS = ["simplicity.md", "patterns.md", "architecture.md",
@@ -1101,6 +1104,10 @@ def main() -> None:
     ap.add_argument("--skill-dir", default=None)
     ap.add_argument("--memory-context-file", required=True,
                     help="one explicit <=3K task packet; suppresses ambient SessionStart")
+    ap.add_argument(
+        "--telemetry-file", type=Path,
+        default=Path.home() / ".cache/autodev-memory/telemetry.jsonl",
+    )
     # review-only
     ap.add_argument("--base", default=os.environ.get("EXTERNAL_REVIEW_BASE", "origin/main"))
     # investigate-only
@@ -1197,6 +1204,13 @@ def main() -> None:
         raw = runner(p, schema, args.model, repo, args.timeout)
         env, err = task["validate"](extract_json_object(raw), args.provider)
         if env is not None:
+            confirm_packet_delivery(
+                memory_context,
+                provider=args.provider,
+                mechanism=f"external_{args.task}",
+                confirmation_stage="validated_provider_response",
+                telemetry_file=args.telemetry_file,
+            )
             n = len(env.get("findings", env.get("hypotheses", env.get("occurrences", []))))
             print(f"external-agent: {args.provider} returned {n} item(s) "
                   f"(attempt {attempt})", file=sys.stderr)
