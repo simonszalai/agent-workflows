@@ -311,7 +311,9 @@ args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/shared/postgres_autode
 Before the hard-reject flip, run `mcp-protected-route-inventory` over consuming repository
 roots and `/tmp/mcp-gateway.log`. Its JSON maps every protected-route requester to an owning
 configuration ticket and reports remaining unrestricted requesters/clamp events. The installer
-also treats `bin/.protected-route-security-floor` as a forward-only floor: on first activation
+supports `--root-owner ROOT=TICKET` for repositories whose client ticket differs from the
+route's default owner and ignores disposable `.context` trees. It also treats
+`bin/.protected-route-security-floor` as a forward-only floor: on first activation
 it removes pre-floor immutable version trees so their direct `project-mcp` launchers cannot
 bypass the gateway ceiling. Later floor-aware versions remain rollback-capable.
 

@@ -40,12 +40,28 @@ class GatewaySecurityTest(unittest.TestCase):
             result = subprocess.run([
                 str(ROOT / "bin/mcp-protected-route-inventory"),
                 "--root", str(root), "--gateway-log", str(gateway_log),
+                "--root-owner", f"{root}=autodev-dashboard/F0017",
             ], capture_output=True, text=True, check=True)
             report = json.loads(result.stdout)
             self.assertEqual(report["summary"]["client_count"], 1)
             self.assertEqual(report["summary"]["unrestricted_requester_count"], 0)
             self.assertEqual(report["summary"]["clamp_event_count"], 1)
-            self.assertEqual(report["clients"][0]["owner_ticket"], "ts-prefect/F0268")
+            self.assertEqual(report["clients"][0]["owner_ticket"],
+                             "autodev-dashboard/F0017")
+
+    def test_inventory_ignores_context_scratch_configs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".context").mkdir()
+            value = '{"url":"http://127.0.0.1/ts/postgres_prod/sse?access_mode=unrestricted"}'
+            (root / ".context/.mcp.json").write_text(value)
+            (root / ".mcp.json").write_text(value.replace("unrestricted", "restricted"))
+            result = subprocess.run([
+                str(ROOT / "bin/mcp-protected-route-inventory"), "--root", str(root),
+            ], capture_output=True, text=True, check=True)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["summary"]["client_count"], 1)
+            self.assertEqual(report["summary"]["unrestricted_requester_count"], 0)
 
 
 if __name__ == "__main__":
