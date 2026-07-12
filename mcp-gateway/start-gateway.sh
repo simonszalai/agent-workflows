@@ -90,10 +90,6 @@ summarize_error_file() {
 # that op run (op can't transform values in an env file). Nothing is read from
 # the 1Password mount here anymore.
 
-# postgres-mcp launcher the daemon spawns (one SSE server per DB). Absolute path to the
-# ts-prefect dev venv binary by default; override POSTGRES_MCP_BIN for another env.
-export POSTGRES_MCP_BIN="${POSTGRES_MCP_BIN:-/Users/simon/dev/ts-prefect/.venv/bin/postgres-mcp}"
-
 export MCP_GATEWAY_HOST="${MCP_GATEWAY_HOST:-127.0.0.1}"
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
 
