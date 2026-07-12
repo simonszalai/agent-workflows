@@ -7,6 +7,8 @@ description: Postgres MCP tool reference for database investigation. Portable to
 
 How to use Postgres MCP tools for database investigation.
 
+Also follow `../references/execution-economy.md` for run-local caching and bounded output.
+
 **Important:** Production Postgres MCP is read-only. Use it for investigation and querying
 only. Data modifications must go through application code (flows, scripts) and the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos may still use Alembic/Prisma migrations).
 
@@ -21,13 +23,13 @@ tool name carries the environment as a suffix:
 | Production | `mcp__postgres__execute_sql_prod` | Read-only (writes rejected) |
 | Staging | `mcp__postgres__execute_sql_staging` | Read-write |
 | Dev (local) | `mcp__postgres__execute_sql_dev` | Read-write |
-| Prefect prod (ts only) | `mcp__postgres__execute_sql_prod_prefect` | Read-write |
-| autodev-memory ts (ts only) | `mcp__postgres__execute_sql_autodev_ts` | Read-write |
+| Prefect prod (ts only) | `mcp__postgres__execute_sql_prod_prefect` | Read-only |
+| autodev-memory ts (ts only) | `mcp__postgres__execute_sql_autodev_ts` | Read-only |
 
 Each source also has a schema-exploration tool: `mcp__postgres__search_objects_<env>`.
 
-The shared autodev-memory global database is its own single-source server, so its tools
-keep plain names: `mcp__postgres_autodev_global__execute_sql` / `__search_objects`.
+The shared autodev-memory global database is its own read-only single-source server, so
+its tools keep plain names: `mcp__postgres_autodev_global__execute_sql` / `__search_objects`.
 
 **Examples:**
 
@@ -83,7 +85,11 @@ old dedicated tools used to do.
 **Recent records:**
 
 ```sql
-SELECT * FROM schema.table ORDER BY created_at DESC LIMIT 10;
+SELECT id, status, created_at
+FROM schema.table
+WHERE created_at >= NOW() - INTERVAL '24 hours'
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
 ```
 
 **Count in time range:**
@@ -98,7 +104,9 @@ WHERE created_at > NOW() - INTERVAL '1 hour';
 ```sql
 SELECT status, COUNT(*) FROM schema.table
 WHERE created_at > NOW() - INTERVAL '24 hours'
-GROUP BY status;
+GROUP BY status
+ORDER BY COUNT(*) DESC
+LIMIT 100;
 ```
 
 **Find gaps in data:**
@@ -107,7 +115,9 @@ GROUP BY status;
 SELECT date_trunc('hour', created_at) as hour, COUNT(*)
 FROM schema.table
 WHERE created_at > NOW() - INTERVAL '24 hours'
-GROUP BY hour ORDER BY hour;
+GROUP BY hour
+ORDER BY hour
+LIMIT 100;
 ```
 
 ## Performance Investigation (SQL recipes)

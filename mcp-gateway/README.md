@@ -117,8 +117,10 @@ the interactive desktop-app/Touch ID path.
   isn't up. Check `/tmp/mcp-gateway.log` for its startup/DB error and `/healthz` for
   `alive`. Common causes: TOML `${ENV_VAR}` unset (run `--validate`), `spawn.bin` not
   executable, or the DB itself down.
-- **`AUTH_FAILED` / `SSL/TLS required` from a Render DB** — node-postgres does NOT
-  auto-upgrade to TLS like psycopg; hosted DSNs need `?sslmode=require` in the TOML.
+- **`AUTH_FAILED` / `SSL/TLS required` from a Render DB** — the supervisor adds
+  `sslmode=require` exactly once to remote Postgres DSNs before spawning dbhub. Check
+  that the configured value is a valid Postgres URL and inspect the child environment
+  setup; do not append a second query string in the TOML.
 - **`env: node: No such file or directory` (exit 127)** — dbhub's npm launcher shebang
   needs node on PATH; the supervisor prepends the daemon's own node dir, and
   `~/.nvm/.../bin/dbhub` is a self-contained wrapper as a belt-and-braces.
