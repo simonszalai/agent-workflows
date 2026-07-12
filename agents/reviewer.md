@@ -18,6 +18,11 @@ single pass.
 **You return structured JSON** matching the findings schema at `review/references/findings-schema.json`.
 Every finding includes a confidence score (0.0-1.0) and an autofix classification.
 
+**You judge the diff; you do not re-validate the tree.** Never run test suites, the type
+checker, or lint — the build health gate already ran them and owns that evidence. Run a
+command only to confirm a specific suspected finding (e.g. one targeted test that should
+fail if your p1 is real), and say so in the finding's evidence.
+
 ## CRITICAL: Discover Framework Skills and Search Memory First
 
 **Before reviewing ANY code, you MUST discover relevant skills and search the memory service.**

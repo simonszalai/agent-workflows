@@ -140,8 +140,11 @@ bun run test:e2e
 
 All tests must pass. If a test is flaky on first run, fix it - don't retry and hope.
 
-**Verify parallelism:** Run the full test suite to confirm new tests don't interfere with
-existing tests.
+Run the new test files plus the suites covering the touched modules — NOT the whole
+repository suite. The single full-suite run is owned by the orchestrator's final health
+gate after the last code/test change; adding another one here duplicates it. Only run the
+full suite yourself when no orchestrator gate will follow (standalone invocation) or the
+new tests touch shared fixtures/config that could interfere beyond their modules.
 
 ### 6. Validate Test Quality
 
@@ -212,7 +215,8 @@ If the MCP tool is unavailable, skip this step silently.
 This skill is invoked by orchestrators **after** the `/build` loop completes, scoped to the
 **whole change set** from the build phase — not per-todo. Classify all changed code and write
 tests at the appropriate level. Don't test unrelated code; match test scope to change scope.
-Run the full test suite to verify no regressions.
+Run the new tests plus affected suites; the orchestrator's single final health gate owns
+the full-suite regression run.
 
 **Ticketless note (lfg):** when running under `/lfg` there is no ticket — make no MCP writes
 (no ticket or artifact updates). Report results back to the orchestrator only.

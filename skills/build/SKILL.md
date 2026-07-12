@@ -250,7 +250,10 @@ self-repair (≤2 retries), and the final health gate.
      migration-bearing work.
 
 8. **After the loop converges:**
-   - Run the full test suite once more to confirm no regressions (final health-gate run)
+   - Do NOT re-run the full suite here — the health gate in step 7 already ran it against
+     the final tree. Re-run only the affected checks if anything changed the tree after
+     that gate (a parity fix, a late edit); never repeat an identical command against an
+     unchanged tree.
    - Record the Completion Summary: ticketed runs update the plan **artifact** via
      `update_artifact`; ticketless runs append it to `.context/plan.md`
    - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow`, `/lfg`) owns
