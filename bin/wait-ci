@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Wait for GitHub checks with one bounded, backoff-controlled invocation."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import time
+
+
+TERMINAL_FAILURE = {"fail", "cancel"}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="wait-ci")
+    parser.add_argument("ref", nargs="?", default="")
+    parser.add_argument("--timeout", type=float, default=900)
+    parser.add_argument("--initial-delay", type=float, default=5)
+    parser.add_argument("--max-delay", type=float, default=30)
+    parser.add_argument("--gh", default="gh", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.timeout < 0 or args.initial_delay < 0 or args.max_delay < 0:
+        parser.error("timeouts and delays must be non-negative")
+
+    started = time.monotonic()
+    deadline = started + args.timeout
+    delay = args.initial_delay
+    polls = 0
+    checks: list[dict] = []
+    status = "timeout"
+    error = None
+    while True:
+        command = [args.gh, "pr", "checks"]
+        if args.ref:
+            command.append(args.ref)
+        command += ["--json", "name,state,link,bucket"]
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, check=False,
+                                    timeout=min(30, remaining))
+        except subprocess.TimeoutExpired:
+            status, error = "timeout", "gh poll exceeded the remaining deadline"
+            break
+        except OSError as exception:
+            status, error = "error", str(exception)[-1000:]
+            break
+        polls += 1
+        if result.returncode not in (0, 8):
+            status = "error"
+            error = (result.stderr or "gh pr checks failed").strip()[-1000:]
+            break
+        try:
+            parsed = json.loads(result.stdout or "[]")
+            checks = parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            status, error = "error", "gh emitted invalid JSON"
+            break
+        buckets = {str(item.get("bucket", "pending")).lower() for item in checks
+                   if isinstance(item, dict)}
+        if buckets & TERMINAL_FAILURE:
+            status = "failure"
+            break
+        if checks and buckets <= {"pass", "skipping"}:
+            status = "success"
+            break
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        time.sleep(min(delay, max(0, deadline - now)))
+        delay = min(args.max_delay, max(delay * 1.7, 0.1))
+
+    summary = {
+        "status": status,
+        "polls": polls,
+        "duration_ms": round((time.monotonic() - started) * 1000),
+        "checks_total": len(checks),
+        "checks": [{key: item.get(key) for key in ("name", "state", "bucket", "link")}
+                   for item in checks[:100] if isinstance(item, dict)],
+        "checks_truncated": len(checks) > 100,
+        "error": error,
+    }
+    print(json.dumps(summary, separators=(",", ":")))
+    raise SystemExit({"success": 0, "failure": 1, "error": 2, "timeout": 124}[status])
+
+
+if __name__ == "__main__":
+    main()

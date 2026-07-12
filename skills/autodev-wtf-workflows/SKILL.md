@@ -64,9 +64,12 @@ Gather evidence, analyze gaps, propose fixes. Do NOT edit any files.
 
 1. **Load ticket** (if ID given):
    ```
-   mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+   mcp__autodev-memory__get_ticket(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     detail="full", artifact_types=null, include_events=true
+   )
    ```
-   Or search: `mcp__autodev-memory__search_tickets(project=PROJECT, query="<desc>")`
+   Or search with `search_tickets(project=PROJECT, query="<desc>", detail="compact")`.
 
 2. **Get git history** for related commits
 3. **Read the bug report**, incident description, or feature source document

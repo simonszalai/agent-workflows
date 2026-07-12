@@ -8,6 +8,22 @@ description: Investigate bugs and incidents to find root causes. NOT for new fea
 Spawn investigator agents to diagnose bugs and incidents. Focused on finding **root causes**
 of problems, not designing solutions.
 
+Follow `../references/execution-economy.md`; economy never permits an unconfirmed root cause.
+
+Before any conditional external peer call, create its bounded memory packet (once per provider):
+
+```bash
+if ! cat .context/investigate/bug.txt .context/investigate/evidence.txt | \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+    --agent-type investigator --provider "$provider" --mechanism external_peer \
+    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
+  printf '%s\n' '<autodev-memory-task-context>Memory context is unavailable.</autodev-memory-task-context>' \
+    > "$MEMORY_PACKET"
+fi
+```
+
+Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investigate`.
+
 **For new features:** Skip this command and use `/auto-plan` directly.
 
 ## Usage
@@ -42,7 +58,11 @@ of problems, not designing solutions.
 **If ticket ID given** (e.g., `B0003`):
 
 ```
-mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=["source", "investigation", "verification_evidence"],
+  include_events=false
+)
 ```
 
 - Read the source artifact for context
@@ -114,7 +134,8 @@ Choose agents based on problem symptoms (the dispatch table lists the available 
 | connection, query, data, records, missing | `investigator`           | Database state        |
 | code, bug, why, pattern, history          | `researcher`             | Codebase & knowledge  |
 
-**Spawn only what's needed.** Most bugs need 2-3 agents, not all available agents.
+**Spawn only what's needed.** Routine bounded bugs use the single light-path agent. Heavy-path
+incidents use only the 2–3 distinct evidence roles justified by their symptoms, never every role.
 
 ## Process: Root-Cause-First Methodology
 
@@ -139,198 +160,94 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
      )
      ```
 
-3. **Decide the execution path — complexity gate:**
+3. **Decide the execution path and provider escalation:**
 
-   The heavy path runs the `investigate-fanout` workflow: parallel hypothesis generators
-   from different angles (stack-trace, recent-commits, code-pattern, data-state), dedup
-   with cross-angle confidence boost, parallel evidence gathering, and adversarial
-   skeptics on confirmed hypotheses. Premature convergence on the wrong root cause causes
-   regressions, so for ambiguous or high-stakes bugs the skeptic pass is the load-bearing
-   step.
+   Light means genuinely light: one native investigator, one bounded task packet, no workflow
+   fanout, no peer provider, and no skeptic panel. Heavy means native multi-angle hypotheses and
+   skeptic/testing loops. Peer providers are a separate escalation, not a default tax.
 
-   Use this gate (top-to-bottom, first match wins):
+   Use this path gate (top-to-bottom, first match wins):
 
-   | Condition                                                              | Path  |
-   | ---------------------------------------------------------------------- | ----- |
-   | User passed `--deep`                                                    | Heavy |
-   | User passed `--light`                                                   | Light |
-   | Bug description contains "intermittent", "flaky", "race", "only in"     | Heavy |
-   | Bug already had a prior /investigate that didn't find the root cause    | Heavy |
-   | Production incident (environment: prod)                                 | Heavy |
-   | Clear stack trace pointing to a specific line + single-component scope  | Light |
-   | Otherwise                                                               | Light |
+   | Condition | Path |
+   | --- | --- |
+   | User passed `--deep` | Heavy |
+   | User passed `--light` | Light |
+   | Intermittent/race/flaky behavior or a prior inconclusive investigation | Heavy |
+   | Safety-critical incident: security, auth, billing, destructive data risk, or broad production outage | Heavy |
+   | Clear stack trace + one component, or otherwise bounded routine defect | Light |
+   | Material uncertainty remains after the native prediction tests | Heavy |
+   | Otherwise | Light |
 
-   Announce the chosen path:
+   Escalate to peer providers only when one of these is recorded in the run:
 
-   ```
-   Path: heavy (production incident — investigate-fanout workflow with skeptics)
-   ```
+   - the user explicitly requested cross-provider analysis;
+   - the safety-critical condition above applies;
+   - native evidence leaves two plausible root causes or a material causal-chain gap; or
+   - native agents/skeptics materially disagree about a prediction or verdict.
 
-4. **Fan out — light path (inline):**
+   `--solo` disables peer escalation but never removes native skeptic/testing coverage required
+   for safety-critical incidents. Announce path and escalation separately, for example:
 
-   When the gate selects "Light", pick 2-3 relevant agents from the dispatch table below
-   and spawn them in parallel (single message, multiple `Agent` tool-use blocks). Brief
-   each with the symptom and the backward trace so far. Each agent returns hypotheses
-   matching `hypothesisSchema` in `workflows/investigate-fanout.js` — validate against
-   the required fields (`statement`, `evidence`, `testable_prediction`, `category`,
-   `initial_confidence`).
-
-   No dedup phase, no separate skeptic pass — but you should still apply the methodology
-   in step 5+ below (test predictions, attempt to refute the strongest hypothesis, gate
-   the causal chain). Assemble the same return shape as the heavy path with empty
-   `skeptic_verdicts` arrays and zero-filled stats for the heavy-only fields.
-
-   Skip steps 4a-4b below — those are for the heavy path only.
-
-4a. **Fan out — heavy path (workflow):**
-
-   When the gate selects "Heavy", invoke the workflow by name:
-
-   If the current host tool does not expose Claude's `Workflow` tool (for example a
-   Codex/Grok-orchestrated run), execute the equivalent heavy-path investigation inline: fan out
-   the hypothesis angles the host supports, run the two peer providers in step 4c, dedup
-   hypotheses, run skeptic/testing loops where available, and assemble the same result shape. Do
-   **not** downgrade to a one-provider investigation just because the Claude `Workflow` primitive
-   is absent.
-
-   ```
-   result = Workflow({
-     name: "investigate-fanout",
-     args: {
-       bug: "<bug description from source artifact + user input>",
-       environment: "prod" | "staging" | "local",
-       errorEvidence: "<stack trace / log lines / observed behavior, if collected>",
-       angles: [
-         { key: "stack-trace", description: "..." },
-         { key: "recent-commits", description: "..." },
-         { key: "code-pattern", description: "..." },
-         { key: "data-state", description: "..." },
-         // Workflow defaults to these four if angles omitted.
-       ],
-       repoRoot: "<absolute path>",
-       mode: "interactive" | "headless",
-       testTopN: 6
-     }
-   })
+   ```text
+   Path: light (bounded single-component defect); peers: no trigger
+   Path: heavy (security-sensitive incident); peers: escalated for safety-critical risk
    ```
 
-4b. **Result shape (both paths produce this object):**
+4. **Run the selected investigation:**
 
-   ```
+   **Light:** spawn exactly ONE relevant native agent from the dispatch table with
+   `fork_turns: "none"` and a self-contained packet containing symptom, environment, collected
+   evidence, exact paths/systems to inspect, prediction schema, output cap, and expected return
+   shape. The agent may use multiple tools, but it must not recruit more roles. Test and attempt
+   to refute its leading hypothesis inline. A null root cause is valid.
+
+   **Heavy:** run `investigate-fanout` with bounded native angles, or its inline equivalent when
+   the Workflow primitive is unavailable. Deduplicate hypotheses, test predictions, and run
+   skeptics on the strongest confirmed candidates. Do not downgrade safety coverage because a
+   host lacks the Workflow primitive.
+
+   Both paths return the same object:
+
+   ```text
    {
-     bug: "...",
-     environment: "...",
-     root_cause: {
-       statement, confidence, evidence_summary, survived_skeptics
-     } | null,                              // null is HONEST — do not invent
-     causal_chain: ["trigger", ..., "symptom"],   // no gaps allowed
-     recommended_remediation: "short paragraph; this is /investigate not /auto-plan",
+     bug, environment,
+     root_cause: { statement, confidence, evidence_summary, survived_skeptics } | null,
+     causal_chain: ["trigger", ..., "symptom"],
+     recommended_remediation,
      hypotheses: [
        { id, statement, category, source_angles, initial_confidence,
          verdict, final_confidence, evidence_gathered, skeptic_verdicts }
      ],
-     refuted_hypotheses: [{ statement, why_refuted }],
-     inconclusive_hypotheses: [{ statement, what_still_needs_checking }],
-     residual_unknowns: [...],
+     refuted_hypotheses, inconclusive_hypotheses, residual_unknowns,
      stats: { angles_attempted, raw_hypotheses, after_dedup, tested,
               confirmed, refuted_in_test, inconclusive_in_test,
               skeptic_attempts, root_cause_found }
    }
    ```
 
-   The light path must zero-fill heavy-only stats fields. Downstream steps 5+ must not
-   branch on path. Specifically: if `result.root_cause` is null, downstream MUST honor
-   that — do not draft a fix in the artifact based on an unconfirmed hypothesis.
+   Light zero-fills heavy-only stats and uses empty `skeptic_verdicts`. Downstream logic must
+   honor `root_cause: null`; never draft a fix from an unconfirmed hypothesis.
 
-4c. **Cross-provider hypothesis generators (on by default — both paths):**
+4a. **Peer-provider escalation (conditional only):**
 
-   After the chosen path produces its hypotheses (light: inline agents; heavy: the
-   `investigate-fanout` workflow), add the two providers that are not the current main workflow
-   runner as additional, independent hypothesis generators **unless** the user passed `--solo`.
-   If Claude runs the workflow, run Codex + Grok; if Codex runs it, run Claude + Grok; if Grok
-   runs it, run Claude + Codex. A root cause that a peer provider surfaces independently is a
-   strong signal; one that only the main runner proposed deserves more skeptical testing. This
-   is a required step, not optional — you MUST actually run the commands below and read the
-   files they write. Do NOT simulate what another provider "would" say.
+   When the escalation gate fires and `--solo` was not passed, run the other two providers in
+   parallel as independent hypothesis generators through `external-agent --task investigate`.
+   Use `fork_turns: "none"` for provider subagents, pass bounded self-contained packets, write
+   full output/logs under `.context/investigate/<run-id>/`, and read only their compact envelopes.
+   Merge by normalized statement/category, record agreement, and test new predictions exactly like
+   native ones. A failed peer is surfaced; it is not silently simulated or replaced. If the gate
+   does not fire, do not create provider packets or calls.
 
-   Peer providers run through the `external-agent` adapter (`bin/external-agent` in
-   agent-workflows, symlinked onto `PATH`). Claude peers use subscription-backed `claude -p`,
-   never direct Anthropic API calls. Codex and Grok peers run read-only with repo access. Each
-   returns a generator envelope
-   `{generator_key, angle, hypotheses, notes}` whose hypothesis items match `hypothesisSchema`
-   in `workflows/investigate-fanout.js` — the same shape your inline/workflow generators
-   produce, so they merge with no special-casing.
+   Cross-provider agreement is corroboration, not confirmation. The honest-null and causal-chain
+   gates still apply. For a safety-critical investigation, peer unavailability must appear as
+   residual risk; native skeptic coverage remains mandatory and the workflow must not claim the
+   missing independent review occurred.
 
-   Dispatch both in parallel (1–3 min each — never serialize):
+   Before any evidence-gathering MCP call, apply **Tool-Skill Bootstrap** above. If the first MCP
+   call returns a known bootstrap/setup error (for example Render says "no workspace set"), do not
+   treat it as a blocker until you have checked the matching `tool-*` skill.
 
-   ```bash
-   mkdir -p .context/investigate
-   # Write the bug symptom + collected error evidence to a file so it survives shell quoting.
-   #   .context/investigate/bug.txt       = one-line symptom/description
-   #   .context/investigate/evidence.txt  = stack trace / log lines / observed behavior
-   BUG="$(cat .context/investigate/bug.txt)"
-   for provider in $(agent-workflow-provider --peers); do
-     MEMORY_PACKET=".context/investigate/${provider}-memory-task.md"
-     if ! cat .context/investigate/bug.txt .context/investigate/evidence.txt | \
-         autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
-           --agent-type investigator --provider "$provider" --mechanism external_peer \
-           --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
-       cat > "$MEMORY_PACKET" <<'EOF'
-<autodev-memory-task-context>
-Memory context is unavailable. Do not infer that critical or investigation memories were loaded.
-This external peer has no memory tool; report this limitation in the returned envelope.
-</autodev-memory-task-context>
-EOF
-     fi
-     external-agent --task investigate --provider "$provider" --bug "$BUG" \
-       --evidence-file .context/investigate/evidence.txt --environment "$ENV" \
-       --memory-context-file "$MEMORY_PACKET" \
-       --out ".context/investigate/${provider}.json" 2>".context/investigate/${provider}.log" &
-   done
-   wait
-   ```
-
-   Then fold both envelopes into the hypothesis set:
-
-   1. Read the two `.context/investigate/<provider>.json` files for the peer providers. A
-      provider that failed still returns a valid envelope with empty `hypotheses` and a note —
-      surface the note but do not block.
-   2. Merge each external hypothesis into the path's hypothesis list. Dedup against existing
-      hypotheses by `(normalized statement, category)`; when an external hypothesis matches a
-      main-runner one, record the agreement (add the provider to its `source_angles`) and bump
-      confidence modestly — independent cross-provider agreement is corroborating evidence.
-   3. Tag genuinely new external hypotheses with `source_angles: ["external:<provider>"]` so
-      step 5+ tests them like any other. The honest-null rule still holds: an unconfirmed
-      external hypothesis is NOT a root cause until its testable_prediction is verified.
-
-   `.context/investigate/*.json` are ephemeral inter-agent scratch consumed immediately by the
-   testing phase — correct use of `.context/` per the File Storage Rules.
-
-**Reference: Agent Dispatch Table** (for the light path)
-
-Choose agents based on problem symptoms (the dispatch table lists the available investigator agents).
-
-Before any evidence-gathering MCP call in steps 1-3, apply **Tool-Skill
-Bootstrap** above. If the first MCP call returns a known bootstrap/setup error
-(for example Render says "no workspace set"), do not treat it as a blocker until
-you have checked the matching `tool-*` skill.
-
-4. **Collect and synthesize** - Wait for all agents, build the causal chain
-
-5. **Form hypotheses with testable predictions**
-   - For each hypothesis, define: "If this is the root cause, then we
-     expect to see X when we check Y"
-   - **Every hypothesis needs a prediction that can be confirmed or refuted**
-   - Predictions must be specific and falsifiable, not vague
-
-6. **Test predictions before concluding**
-   - Execute the verification for each hypothesis
-   - For high-confidence hypotheses: run the primary check
-   - For medium-confidence: run primary + corroborating checks
-   - For low-confidence: only pursue if higher-confidence hypotheses fail
-   - **Do not conclude root cause without at least one confirmed prediction**
-
-7. **Boundary-contract minimization** — For timeouts, provider/API failures,
+5. **Boundary-contract minimization** — For timeouts, provider/API failures,
    integration failures, or "only fails in env X" bugs, isolate the exact
    artifact crossing the failing boundary before blaming runtime infrastructure:
    - Capture what is actually sent after framework serialization/transforms
@@ -347,7 +264,7 @@ you have checked the matching `tool-*` skill.
    - Treat "direct minimized repro has the same symptom" as evidence against the
      removed infrastructure being causal.
 
-8. **Causal chain gate** — Do NOT proceed to writing the artifact until you can
+6. **Causal chain gate** — Do NOT proceed to writing the artifact until you can
    explain the full causal chain from trigger to symptom with **no gaps**:
    - Trigger → [each intermediate step] → Observed symptom
    - "Somehow X leads to Y" is a gap — fill it or flag it
@@ -358,7 +275,7 @@ you have checked the matching `tool-*` skill.
    - **If a prediction was wrong but a fix appears to work, you found a symptom,
      not the root cause** — the real cause is still active
 
-9. **Smart escalation** — If 2-3 hypotheses are exhausted without confirmation:
+7. **Smart escalation** — If 2–3 hypotheses are exhausted without confirmation:
 
    | Pattern | Diagnosis | Next move |
    | ------- | --------- | --------- |
@@ -369,11 +286,11 @@ you have checked the matching `tool-*` skill.
 
    Present the diagnosis before proceeding. Do not keep trying blindly.
 
-10. **Write investigation artifact** with confirmed root causes and evidence
+8. **Write investigation artifact** with confirmed root causes and evidence
 
-11. **Capture knowledge** - Store non-obvious findings in memory service
+9. **Capture knowledge** - Store non-obvious findings in memory service
 
-12. **Report to the user** — end with a short summary: a 1-3 sentence statement of the
+10. **Report to the user** — end with a short summary: a 1–3 sentence statement of the
     problem (and confirmed root cause), followed by **one or more proposed fixes**. See
     the Output section for the required shape. Keep it concise — the detail lives in the
     artifact, not the final message.
@@ -389,7 +306,7 @@ mcp__autodev-memory__create_artifact(
 )
 ```
 
-## Knowledge Capture (Step 6)
+## Knowledge Capture
 
 After writing the investigation artifact, persist non-obvious findings:
 
@@ -435,7 +352,7 @@ after synthesizing findings.
 
 ## Hypothesis Generation
 
-After collecting evidence from all agents, generate testable hypotheses:
+After collecting the selected path's evidence, generate testable hypotheses:
 
 ### When to Generate Hypotheses
 

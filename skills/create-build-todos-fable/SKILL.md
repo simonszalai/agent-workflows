@@ -36,7 +36,9 @@ Ticketless mode (lfg): no MCP — read the plan from `.context/plan.md`, write t
 
 ## Prerequisites (validate first, STOP on failure)
 
-`get_ticket(project, ticket_id, repo)` — ticket must exist and carry a `plan` artifact
+`get_ticket(project, ticket_id, repo, detail="full",
+artifact_types=["source", "plan", "investigation", "deployment_guide"],
+include_events=false)` — ticket must exist and carry a `plan` artifact
 (otherwise: run `/auto-plan-fable` first). Warn if the plan was never reviewed.
 
 ## Process

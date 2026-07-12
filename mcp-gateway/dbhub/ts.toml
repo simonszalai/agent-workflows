@@ -62,6 +62,7 @@ source = "prod"
 [[tools]]
 name = "execute_sql"
 source = "prod_prefect"
+readonly = true
 
 [[tools]]
 name = "search_objects"
@@ -70,6 +71,7 @@ source = "prod_prefect"
 [[tools]]
 name = "execute_sql"
 source = "autodev_ts"
+readonly = true
 
 [[tools]]
 name = "search_objects"

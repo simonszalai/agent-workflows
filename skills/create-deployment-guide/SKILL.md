@@ -64,7 +64,12 @@ exists (e.g. ticket skipped `/auto-plan`), create one.
 ### 1. Load the ticket and existing artifacts
 
 ```
-ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full",
+  artifact_types=["plan", "build_todo", "review_todo", "deployment_guide"],
+  include_events=false
+)
 ```
 
 Read: `plan`, all `build_todo`s, `review_todo`s (deployment-relevant findings), and the existing

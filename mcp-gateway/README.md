@@ -32,6 +32,7 @@ workspace's sessions.
 | `dbhub/*.toml` | per-project dbhub configs: DB tiers as sources, prod readonly |
 | `start-gateway.sh` | launchd entrypoint: one `op run` resolves `gateway.env`, execs node |
 | `gateway.env` | `ENV_VAR=op://vault/item/field` refs resolved by that `op run` |
+| `gateway.local.env` | optional gitignored replacement containing only this machine's accessible refs |
 | `com.simon.mcp-gateway.plist` | launchd job |
 
 Zero runtime dependencies; plain Node ≥ 20.
@@ -99,6 +100,16 @@ grep -oE 'op://[^ ]+' gateway.env | sort -u | while read r; do
 A failed daemon start exits **cleanly by design** (no KeepAlive retry — each retry would
 be another Touch ID prompt); it posts one macOS notification and stays down until
 manually kickstarted.
+
+`start-gateway.sh` uses `gateway.local.env` instead of `gateway.env` when the local
+file exists. This supports machines whose 1Password account intentionally lacks some
+project vaults; unavailable routes fail explicitly instead of preventing every route
+from starting.
+
+For a deliberately headless host, `op run` may authenticate with a narrowly scoped
+1Password service-account token supplied from the OS keychain. Keep the token out of
+the repository, plist, shell history, and env files. Daily-driver Macs should retain
+the interactive desktop-app/Touch ID path.
 
 ## Troubleshooting
 

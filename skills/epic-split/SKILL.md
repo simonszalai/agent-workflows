@@ -93,7 +93,8 @@ Read before planning or reconciling cross-repo steps:
 ```
 get_epic(project, epic_id)        # sources, existing steps, artifacts, involved_repos, warnings
 list_repos(project)               # canonical repo set; resolve paths via Conductor linked dirs/workspaces
-get_ticket(project, id, repo)      # full body of each absorbed SOURCE ticket
+get_ticket(project, id, repo, detail="full", artifact_types=["source"], include_events=false)
+                                      # full body of each absorbed SOURCE ticket only
 ```
 
 `get_epic` is often large (tens of KB) and gets spilled to a file — read it with `jq` /

@@ -6,6 +6,9 @@ max_turns: 200
 
 # Ticket Verify
 
+Follow `../references/execution-economy.md`; coalescing execution never coalesces lifecycle truth
+or waives an evidence row.
+
 Verify tickets, or an explicit epic/milestone gate, after code has landed and deployment has
 completed. Use this instead of legacy `/auto-verify`.
 
@@ -107,18 +110,32 @@ in §3.
 
 ### 1a. Parallel verifier dispatch
 
-Verification of independent scopes is parallel, not sequential:
+Build one queue-wide evidence execution plan before dispatch. Normalize every contract row by
+environment, authoritative surface, activation boundary, query/command, parameters, and expected
+interpretation. Coalesce rows only when one execution can validly prove all mapped rows; differences
+in tenant, ticket-specific identifier, time boundary, expected value, or permissions keep checks
+separate.
 
-- **Queue mode (multiple tickets):** spawn one `verifier` agent per selected ticket as a
-  single foreground parallel batch (multiple Agent calls in one message; never
-  `run_in_background`). Each agent gets its ticket's context, evidence contract, and
-  activation boundary, and returns its evidence rows and per-row results.
-- **Large epic/milestone gates:** split the gate's evidence rows by surface — database
-  queries, service logs, flow/deployment health, browser/UI — and spawn one verifier per
-  surface in parallel. The orchestrator merges the rows into the single gate verdict (§7–§8).
+- Group compatible checks by surface/query across tickets and epic steps: database aggregates,
+  service logs, flow/deployment health, browser/UI state, or external provider state.
+- Spawn one bounded `verifier` per independent group, not mechanically one per ticket. Each agent
+  receives `fork_turns: "none"`, the exact shared command/query, row/payload cap, activation
+  boundary, and a mapping of `scope -> evidence row IDs -> expected interpretation`.
+- Execute a shared query/command once and return the compact result plus that mapping. Store verbose
+  output in run-local scratch. The orchestrator fans the result back into every applicable row.
+- If tickets share a surface but require different predicates, prefer one bounded query that
+  returns a ticket/scope key and aggregate per key; never broaden the time window or payload beyond
+  the union actually required.
+- Large epic/milestone gates use the same surface grouping. Independent groups run in one
+  foreground parallel batch; never `run_in_background` when synthesis depends on their output.
 - The orchestrator consolidates all agent output, computes verdicts, writes artifacts, and
   performs status changes. Verifier agents never write artifacts or change statuses, and never
   execute the canary/cleanup mutations (see Boundaries).
+
+Coalescing saves execution, not evidence obligations. Every ticket/gate retains its own verdict and
+`verification_evidence` artifact with the relevant row results and a pointer to the canonical shared
+execution. A shared PASS cannot satisfy an unmapped ticket-specific row, and one scope's FAIL must
+not contaminate unrelated mapped scopes.
 
 ### 2. Load context
 

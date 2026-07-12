@@ -89,6 +89,10 @@ summarize_error_file() {
 # prod postgres URLs are composed from the canonicals in finish-start.zsh INSIDE
 # that op run (op can't transform values in an env file). Nothing is read from
 # the 1Password mount here anymore.
+# A machine-local gateway.local.env (gitignored) may replace the shared file when
+# this host intentionally has access to only a subset of the configured vaults.
+GATEWAY_ENV_FILE="$HERE/gateway.env"
+[[ -f "$HERE/gateway.local.env" ]] && GATEWAY_ENV_FILE="$HERE/gateway.local.env"
 
 export MCP_GATEWAY_HOST="${MCP_GATEWAY_HOST:-127.0.0.1}"
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
@@ -100,14 +104,14 @@ export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
 # Audit line (the gateway bypasses the bin/op shim via absolute OP_BIN):
 # gateway restarts are the one KNOWN biometric event — log them so op-audit
 # attributes every prompt, including this one.
-print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=gateway.env (daemon restart, one-per-lifetime)" \
+print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=${GATEWAY_ENV_FILE:t} (daemon restart, one-per-lifetime)" \
   >> "$AUDIT_DIR/op-audit.log" 2>/dev/null || true
 
 START_ERR_FILE="$(mktemp -t mcp-gateway-op-run.XXXXXX.err)"
 trap 'rm -f "${START_ERR_FILE:-}"' EXIT
 
 set +e
-"$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$HERE/gateway.env" --no-masking -- \
+"$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
   /bin/zsh "$HERE/finish-start.zsh" 2> >(tee "$START_ERR_FILE" >&2)
 op_status=$?
 set -e

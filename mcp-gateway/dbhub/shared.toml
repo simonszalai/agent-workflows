@@ -11,6 +11,7 @@ lazy = true
 [[tools]]
 name = "execute_sql"
 source = "autodev_global"
+readonly = true
 
 [[tools]]
 name = "search_objects"

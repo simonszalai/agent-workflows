@@ -48,6 +48,26 @@ suffix. Never default to `_prod` when staging or dev was requested.
 Older sessions may still expose the legacy per-environment servers
 (`mcp__postgres_prod__execute_sql` etc.) — same rules apply, prefix instead of suffix.
 
+## Mandatory query and payload bounds
+
+Every SQL call must be bounded before execution. Read-only access does not make an
+unbounded read safe or token-efficient.
+
+- Select named columns; do not start with `SELECT *`.
+- Add a justified time/key predicate unless the table is provably tiny.
+- Multi-row queries need deterministic `ORDER BY` and `LIMIT`. Start at 20 rows;
+  the first-pass hard maximum is 100.
+- Keep returned payload at or below 64 KiB. Omit large JSON/text/blob columns or
+  return a bounded preview plus the original byte length.
+- Start with counts, existence checks, grouped aggregates, or min/max boundaries;
+  fetch the smallest sample that can decide the question afterward.
+- Bound JSON/array aggregates through a limited subquery; one aggregate cell must
+  not hide an unbounded result.
+- Save verbose results to run-local scratch and return only a compact summary.
+
+If an exact full export is required, use a project-approved file/object-store export
+path rather than routing it through MCP or model context.
+
 ## Available Tools (per source)
 
 | Tool (replace `{env}` with prod/staging/dev/...) | Purpose |

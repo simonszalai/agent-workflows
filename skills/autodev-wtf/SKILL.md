@@ -41,12 +41,15 @@ a unified verdict.
 
 If a ticket ID is given, load it:
 ```
-mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=null, include_events=true
+)
 ```
 
 If only a description, search for related tickets:
 ```
-mcp__autodev-memory__search_tickets(project=PROJECT, query="<description>")
+mcp__autodev-memory__search_tickets(project=PROJECT, query="<description>", detail="compact")
 ```
 
 Gather enough context to brief both investigations: bug description, affected code area,

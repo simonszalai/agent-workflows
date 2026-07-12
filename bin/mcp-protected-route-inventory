@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Inventory protected-route client configuration and clamp audit events."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from pathlib import Path
+
+
+PROTECTED_ROUTES = (
+    "ts/postgres_prod",
+    "ts/postgres_prod_prefect",
+    "ts/postgres_autodev_ts",
+    "shared/postgres_autodev_global",
+)
+DEFAULT_OWNERS = {
+    "ts/postgres_prod": "ts-prefect/F0268",
+    "ts/postgres_prod_prefect": "ts-prefect/F0268",
+    "ts/postgres_autodev_ts": "autodev-memory/F0021",
+    "shared/postgres_autodev_global": "autodev-memory/F0021",
+}
+CONFIG_NAMES = {".mcp.json", "config.toml", ".claude.json"}
+
+
+def access_mode(text: str, route: str) -> str:
+    match = re.search(rf"{re.escape(route)}[^\n\r\"']*[?&](?:access_mode|accessMode|postgres_access_mode|postgresAccessMode)=([a-z]+)", text)
+    return match.group(1) if match else "default"
+
+
+def config_inventory(
+    roots: list[Path],
+    owners: dict[str, str],
+    root_owners: dict[Path, str],
+) -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        candidates = [root] if root.is_file() else root.rglob("*")
+        for path in candidates:
+            if not path.is_file() or path.name not in CONFIG_NAMES \
+                    or {".git", ".context"}.intersection(path.parts):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for route in PROTECTED_ROUTES:
+                route_reference = re.search(rf"{re.escape(route)}(?=[/?\s\"'\]])", text)
+                if not route_reference or (str(path.resolve()), route) in seen:
+                    continue
+                seen.add((str(path.resolve()), route))
+                resolved = path.resolve()
+                matching_roots = [candidate for candidate in root_owners
+                                  if resolved == candidate or candidate in resolved.parents]
+                owner = root_owners[max(matching_roots, key=lambda item: len(item.parts))] \
+                    if matching_roots else owners[route]
+                found.append({
+                    "path": str(resolved),
+                    "route": route,
+                    "requested_mode": access_mode(text, route),
+                    "owner_ticket": owner,
+                })
+    return sorted(found, key=lambda item: (item["route"], item["path"]))
+
+
+def audit_inventory(logs: list[Path]) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for path in logs:
+        if not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            marker = line.find('{"event":"protected_access_mode_ceiling"')
+            if marker < 0:
+                continue
+            try:
+                event = json.loads(line[marker:])
+            except json.JSONDecodeError:
+                continue
+            # Audit payloads intentionally contain no credential or request-body values.
+            events.append({"log": str(path.resolve()), "line": number, **event})
+    return events
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", action="append", type=Path, default=[])
+    parser.add_argument("--gateway-log", action="append", type=Path, default=[])
+    parser.add_argument("--owner", action="append", default=[], metavar="ROUTE=TICKET")
+    parser.add_argument("--root-owner", action="append", default=[], metavar="ROOT=TICKET")
+    args = parser.parse_args()
+    owners = dict(DEFAULT_OWNERS)
+    for value in args.owner:
+        route, separator, ticket = value.partition("=")
+        if not separator or route not in owners or not ticket:
+            parser.error(f"invalid owner mapping: {value}")
+        owners[route] = ticket
+    root_owners: dict[Path, str] = {}
+    for value in args.root_owner:
+        raw_root, separator, ticket = value.partition("=")
+        if not separator or not raw_root or not ticket:
+            parser.error(f"invalid root owner mapping: {value}")
+        root_owners[Path(raw_root).expanduser().resolve()] = ticket
+    roots = args.root or [Path.cwd()]
+    configs = config_inventory(roots, owners, root_owners)
+    audits = audit_inventory(args.gateway_log)
+    unrestricted = [item for item in configs if item["requested_mode"] == "unrestricted"]
+    print(json.dumps({
+        "schema": 1,
+        "protected_routes": list(PROTECTED_ROUTES),
+        "clients": configs,
+        "clamp_events": audits,
+        "summary": {
+            "client_count": len(configs),
+            "unrestricted_requester_count": len(unrestricted),
+            "clamp_event_count": len(audits),
+            "ready_for_hard_reject": bool(configs) and not unrestricted and not audits,
+        },
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

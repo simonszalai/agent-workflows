@@ -95,7 +95,8 @@ directory is used.
 1. **Read the source ticket:**
    ```
    source = mcp__autodev-memory__get_ticket(
-     project=SOURCE_PROJECT, ticket_id=SOURCE_ID, repo=SOURCE_REPO
+     project=SOURCE_PROJECT, ticket_id=SOURCE_ID, repo=SOURCE_REPO,
+     detail="full", artifact_types=["source"], include_events=false
    )
    ```
 
@@ -121,7 +122,10 @@ directory is used.
 
 1. **Load the ticket:**
    ```
-   ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+   ticket = mcp__autodev-memory__get_ticket(
+     project=PROJECT, ticket_id=ID, repo=REPO,
+     detail="full", artifact_types=["source"], include_events=false
+   )
    ```
 2. **Update the source artifact** with additional context:
    ```
@@ -238,10 +242,13 @@ mcp__autodev-memory__update_ticket(
 
 ```
 # By ID
-ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id="F0003", repo=REPO)
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id="F0003", repo=REPO,
+  detail="light", include_events=false
+)
 
 # By keyword
-results = mcp__autodev-memory__search_tickets(project=PROJECT, query="keyword")
+results = mcp__autodev-memory__search_tickets(project=PROJECT, query="keyword", detail="compact")
 
 # List by status
 tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="in_progress", repo=REPO)

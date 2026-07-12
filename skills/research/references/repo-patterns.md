@@ -43,7 +43,7 @@ Standards for conducting thorough research on a repository's structure, document
 Search the ticket system for context and decisions:
 
 ```
-mcp__autodev-memory__search_tickets(project="ts", query="relevant search terms")
+mcp__autodev-memory__search_tickets(project="ts", query="relevant search terms", detail="compact")
 mcp__autodev-memory__list_tickets(project="ts", status="completed")
 ```
 

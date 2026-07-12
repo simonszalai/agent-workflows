@@ -65,7 +65,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from memory_context import confirm_packet_delivery  # noqa: E402
@@ -80,6 +83,8 @@ RESEARCH_CORE_REFS = ["best-practices.md", "exhaustive.md", "repo-patterns.md"]
 DIFF_CHAR_CAP = 180_000   # keep the prompt well under provider context limits
 GIT_TIMEOUT = 60          # seconds; git prep must not hang the whole run
 GROK_DEFAULT_MODEL = "grok-build"   # most capable agentic/reasoning grok; overridable
+USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
+              "reasoning_output_tokens", "total_tokens")
 
 # review finding enums
 VALID_SEVERITY = {"p1", "p2", "p3"}
@@ -93,6 +98,57 @@ VALID_CATEGORY = {"code", "data", "infrastructure", "config",
 def die(msg: str, code: int = 1) -> None:
     print(f"external-agent: {msg}", file=sys.stderr)
     sys.exit(code)
+
+
+class ProviderRun(NamedTuple):
+    output: str
+    usage: dict[str, int] | None
+    status: str
+
+
+def normalize_usage(value: object) -> dict[str, int] | None:
+    """Extract only numeric usage fields; never persist provider response content."""
+    if not isinstance(value, dict):
+        return None
+    aliases = {
+        "input_tokens": ("input_tokens", "inputTokens"),
+        "cached_input_tokens": ("cached_input_tokens", "cachedInputTokens",
+                                "cache_read_input_tokens"),
+        "output_tokens": ("output_tokens", "outputTokens"),
+        "reasoning_output_tokens": ("reasoning_output_tokens", "reasoningOutputTokens"),
+        "total_tokens": ("total_tokens", "totalTokens"),
+    }
+    result: dict[str, int] = {}
+    found = False
+    for target, names in aliases.items():
+        raw = next((value[name] for name in names if name in value), 0)
+        try:
+            result[target] = max(0, int(raw or 0))
+            found = found or any(name in value for name in names)
+        except (TypeError, ValueError):
+            result[target] = 0
+    if found:
+        if not result["total_tokens"]:
+            result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
+        return result
+    for key in ("usage", "token_usage", "tokenUsage", "total_token_usage"):
+        nested = normalize_usage(value.get(key))
+        if nested is not None:
+            return nested
+    return None
+
+
+def usage_from_json_lines(text: str) -> dict[str, int] | None:
+    latest = None
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        usage = normalize_usage(record)
+        if usage is not None:
+            latest = usage
+    return latest
 
 
 # ---------------------------------------------------------------- skill discovery
@@ -941,7 +997,7 @@ TASKS = {
 
 # ---------------------------------------------------------------- provider runners
 def run_claude(prompt: str, schema: dict, model: str | None,
-               repo: Path, timeout: int) -> str:
+               repo: Path, timeout: int) -> ProviderRun:
     """Returns Claude's final-message text (expected to be the JSON object).
 
     Use Claude Code's subscription-backed print mode, not direct Anthropic API calls. The
@@ -966,36 +1022,38 @@ def run_claude(prompt: str, schema: dict, model: str | None,
                              capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         print("external-agent: claude timed out", file=sys.stderr)
-        return ""
+        return ProviderRun("", None, "timeout")
     out = (res.stdout or "").strip()
     if not out:
         err = (res.stderr or "").strip()
         if err:
             print("external-agent: claude produced no output; stderr tail:\n"
                   + err[-800:], file=sys.stderr)
-        return ""
+        return ProviderRun("", None, f"exit_{res.returncode}")
     try:
         env = json.loads(out)
     except json.JSONDecodeError:
-        return out
+        return ProviderRun(out, None, "ok" if res.returncode == 0 else f"exit_{res.returncode}")
+    usage = normalize_usage(env)
+    status = "ok" if res.returncode == 0 else f"exit_{res.returncode}"
     if isinstance(env, dict):
         structured = env.get("structured_output") or env.get("structuredOutput")
         if isinstance(structured, dict):
-            return json.dumps(structured)
+            return ProviderRun(json.dumps(structured), usage, status)
         # Claude Code --output-format json wraps the assistant text in `result`.
         result = env.get("result")
         if isinstance(result, str):
-            return result
+            return ProviderRun(result, usage, status)
         if isinstance(result, dict):
-            return json.dumps(result)
+            return ProviderRun(json.dumps(result), usage, status)
         # If --json-schema returned the object directly in this version, accept it.
         if any(k in env for k in ("planner_key", "reviewer_key", "generator_key", "key")):
-            return json.dumps(env)
-    return out
+            return ProviderRun(json.dumps(env), usage, status)
+    return ProviderRun(out, usage, status)
 
 
 def run_codex(prompt: str, schema: dict, model: str | None,
-              repo: Path, timeout: int) -> str:
+              repo: Path, timeout: int) -> ProviderRun:
     """Returns the raw final-message text (expected to be the JSON object)."""
     with tempfile.TemporaryDirectory() as td:
         schema_file = Path(td) / "schema.json"
@@ -1003,6 +1061,7 @@ def run_codex(prompt: str, schema: dict, model: str | None,
         schema_file.write_text(json.dumps(schema), encoding="utf-8")
         cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo),
                "-s", "read-only",
+               "--json",
                "--output-schema", str(schema_file),
                "-o", str(last_file)]
         if model:
@@ -1011,21 +1070,23 @@ def run_codex(prompt: str, schema: dict, model: str | None,
             env = os.environ.copy()
             env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
             res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout, env=env,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except subprocess.TimeoutExpired:
             print("external-agent: codex timed out", file=sys.stderr)
-            return ""
+            return ProviderRun("", None, "timeout")
+        usage = usage_from_json_lines(res.stdout or "")
         if last_file.is_file() and last_file.read_text(encoding="utf-8").strip():
-            return last_file.read_text(encoding="utf-8")
+            status = "ok" if res.returncode == 0 else f"exit_{res.returncode}"
+            return ProviderRun(last_file.read_text(encoding="utf-8"), usage, status)
         err = (res.stderr or "").strip()
         if err:
             print("external-agent: codex produced no output; stderr tail:\n"
                   + err[-800:], file=sys.stderr)
-        return ""
+        return ProviderRun("", usage, f"exit_{res.returncode}")
 
 
 def run_grok(prompt: str, schema: dict, model: str | None,
-             repo: Path, timeout: int) -> str:
+             repo: Path, timeout: int) -> ProviderRun:
     """Returns the model's answer text (expected to be the JSON object).
 
     schema is accepted for signature parity with run_codex but Grok has no strict-schema
@@ -1054,15 +1115,19 @@ def run_grok(prompt: str, schema: dict, model: str | None,
             env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
-            return ""
+            return ProviderRun("", None, "timeout")
         out = res.stdout.strip()
         if not out:
-            return ""
+            return ProviderRun("", None, f"exit_{res.returncode}")
         try:
             env = json.loads(out)
         except json.JSONDecodeError:
-            return out   # maybe grok already printed raw text
-        return env.get("text", "") if isinstance(env, dict) else ""
+            status = "ok" if res.returncode == 0 else f"exit_{res.returncode}"
+            return ProviderRun(out, None, status)  # maybe grok already printed raw text
+        usage = normalize_usage(env)
+        text = env.get("text", "") if isinstance(env, dict) else ""
+        status = "ok" if res.returncode == 0 else f"exit_{res.returncode}"
+        return ProviderRun(text, usage, status)
 
 
 # ---------------------------------------------------------------- parse helpers
@@ -1107,6 +1172,11 @@ def main() -> None:
     ap.add_argument(
         "--telemetry-file", type=Path,
         default=Path.home() / ".cache/autodev-memory/telemetry.jsonl",
+    )
+    ap.add_argument(
+        "--usage-dir", type=Path,
+        default=Path.home() / ".cache/agent-workflows/external-agent-usage",
+        help="directory for content-free per-run provider usage sidecars",
     )
     # review-only
     ap.add_argument("--base", default=os.environ.get("EXTERNAL_REVIEW_BASE", "origin/main"))
@@ -1196,32 +1266,83 @@ def main() -> None:
     print(f"external-agent: task={args.task} provider={args.provider} {meta} "
           f"model={args.model or '(default)'}", file=sys.stderr)
 
-    last_err = ""
-    for attempt in (1, 2):
-        p = prompt if attempt == 1 else (
-            prompt + f"\n\nYOUR PREVIOUS OUTPUT WAS REJECTED: {last_err}. "
-            "Re-emit ONLY one valid JSON object matching the contract — no other text.")
-        raw = runner(p, schema, args.model, repo, args.timeout)
-        env, err = task["validate"](extract_json_object(raw), args.provider)
-        if env is not None:
-            confirm_packet_delivery(
-                memory_context,
-                provider=args.provider,
-                mechanism=f"external_{args.task}",
-                confirmation_stage="validated_provider_response",
-                telemetry_file=args.telemetry_file,
-            )
-            n = len(env.get("findings", env.get("hypotheses", env.get("occurrences", []))))
-            print(f"external-agent: {args.provider} returned {n} item(s) "
-                  f"(attempt {attempt})", file=sys.stderr)
-            emit(env, 0)
-        last_err = err or "empty output"
-        print(f"external-agent: attempt {attempt} invalid ({last_err})", file=sys.stderr)
+    run_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:12]}"
+    run_started = time.monotonic()
+    provider_runs: list[ProviderRun] = []
+    adapter_outcome = "adapter_exception_or_exit"
 
-    emit(task["empty"](
-        args.provider,
-        f"external-agent: {args.provider} failed to produce valid output for "
-        f"{args.task} after 2 attempts ({last_err})"), 2)
+    def persist_usage() -> None:
+        orchestrator_id_source = next(
+            (name for name in ("CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "SESSION_ID")
+             if os.environ.get(name)),
+            None,
+        )
+        total = {key: 0 for key in USAGE_KEYS}
+        available = False
+        for provider_run in provider_runs:
+            if provider_run.usage is None:
+                continue
+            available = True
+            for key in USAGE_KEYS:
+                total[key] += provider_run.usage.get(key, 0)
+        record = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "provider": args.provider,
+            "task": args.task,
+            "model": args.model or "provider_default",
+            "repo": str(repo.resolve()),
+            "duration_ms": round((time.monotonic() - run_started) * 1000),
+            "orchestrator_thread_id": os.environ.get(orchestrator_id_source)
+            if orchestrator_id_source else None,
+            "orchestrator_id_source": orchestrator_id_source,
+            "attempts": len(provider_runs),
+            "attempt_statuses": [provider_run.status for provider_run in provider_runs],
+            "usage_available": available,
+            "usage": total if available else None,
+            "unavailable_reason": None if available else "provider_json_exposed_no_usage",
+            "adapter_outcome": adapter_outcome,
+        }
+        try:
+            args.usage_dir.mkdir(parents=True, mode=0o700)
+            path = args.usage_dir / f"{run_id}-{args.provider}.json"
+            path.write_text(json.dumps(record, separators=(",", ":")), encoding="utf-8")
+            path.chmod(0o600)
+        except OSError as error:
+            print(f"external-agent: could not persist usage sidecar: {error}", file=sys.stderr)
+
+    last_err = ""
+    try:
+        for attempt in (1, 2):
+            p = prompt if attempt == 1 else (
+                prompt + f"\n\nYOUR PREVIOUS OUTPUT WAS REJECTED: {last_err}. "
+                "Re-emit ONLY one valid JSON object matching the contract — no other text.")
+            provider_run = runner(p, schema, args.model, repo, args.timeout)
+            provider_runs.append(provider_run)
+            env, err = task["validate"](extract_json_object(provider_run.output), args.provider)
+            if env is not None:
+                confirm_packet_delivery(
+                    memory_context,
+                    provider=args.provider,
+                    mechanism=f"external_{args.task}",
+                    confirmation_stage="validated_provider_response",
+                    telemetry_file=args.telemetry_file,
+                )
+                n = len(env.get("findings", env.get("hypotheses", env.get("occurrences", []))))
+                print(f"external-agent: {args.provider} returned {n} item(s) "
+                      f"(attempt {attempt})", file=sys.stderr)
+                adapter_outcome = "validated_provider_response"
+                emit(env, 0)
+            last_err = err or "empty output"
+            print(f"external-agent: attempt {attempt} invalid ({last_err})", file=sys.stderr)
+
+        adapter_outcome = "invalid_provider_output"
+        emit(task["empty"](
+            args.provider,
+            f"external-agent: {args.provider} failed to produce valid output for "
+            f"{args.task} after 2 attempts ({last_err})"), 2)
+    finally:
+        persist_usage()
 
 
 if __name__ == "__main__":

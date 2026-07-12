@@ -1,11 +1,29 @@
 ---
 name: review
-description: Review implementation against the plan. Spawns review agents in parallel, collects findings into review_todo artifacts.
+description: Review implementation with light native or escalated safety coverage and persist findings.
 ---
 
 # Review
 
-Review implementation by spawning specialized review agents in parallel. Supports multiple
+Follow `../references/execution-economy.md`; economy never suppresses a safety-critical reviewer,
+test, finding, or fail-loud gate.
+
+Before any conditional external peer call, create its bounded memory packet (once per provider):
+
+```bash
+if ! printf 'Review bounded diff against %s\n' "$base" | \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+    --agent-type reviewer --provider "$provider" --mechanism external_peer \
+    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
+  printf '%s\n' '<autodev-memory-task-context>Memory context is unavailable.</autodev-memory-task-context>' \
+    > "$MEMORY_PACKET"
+fi
+```
+
+Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task review`.
+
+Review implementation with a genuinely light native path and conditional specialized fanout.
+Supports multiple
 modes for different contexts (interactive, autonomous, read-only, programmatic).
 
 ## Usage
@@ -17,8 +35,8 @@ modes for different contexts (interactive, autonomous, read-only, programmatic).
 /review F001 mode:autofix                # Autonomous — apply safe fixes only
 /review F001 mode:report-only            # Read-only — no mutations
 /review F001 mode:headless               # Programmatic — structured output for callers
-/review F001 mode:cross                  # Explicit alias for the default (runner + other two providers)
-/review F001 mode:solo                   # Opt OUT of peer reviewers — current runner only (fast/cheap)
+/review F001 mode:cross                  # Explicit runner + two-peer escalation
+/review F001 mode:solo                   # Disable conditional peers; keep native safety gates
 /review F001 --deep                      # Force heavyweight workflow path (overrides gate)
 /review F001 --light                     # Force inline path (overrides gate, skips verify)
 ```
@@ -28,25 +46,18 @@ modes for different contexts (interactive, autonomous, read-only, programmatic).
 Two orthogonal axes:
 
 1. **Synthesis style** — parse the `mode:` token. Default is interactive.
-2. **Reviewer set** — external cross-provider reviewers are **ON by default** in every
-   synthesis style. The main workflow runner is one provider (`claude`, `codex`, or `grok`);
-   the peer reviewers are the other two. `mode:solo` turns peers off (current runner only).
-   `mode:cross` is an explicit alias for the default and exists only so callers can be
-   explicit; it is identical to passing no reviewer-set token.
-
-So a plain `/review` runs the current agent's native/self-review **plus** the other two
-providers, merged through one synthesis path. See **Cross-Provider Reviewers** below for the
-mechanics. Use `mode:solo` when you want a fast, cheap, single-provider pass (e.g. a quick
-manual sanity check).
+2. **Reviewer escalation** — a plain review starts native-only. `mode:cross` explicitly requests
+   both peer providers; `mode:solo` forbids conditional peer escalation. Without either token,
+   peers run only when the risk/uncertainty/disagreement gate below fires.
 
 | Mode | When | Behavior |
-| ---- | ---- | -------- |
-| **Interactive** (default) | No mode token | Review, apply safe_auto fixes, present findings, ask about gated/manual |
-| **Autofix** | `mode:autofix` | No user interaction. Apply safe_auto only, write artifacts, never commit/push |
-| **Report-only** | `mode:report-only` | Read-only. Review and report, no edits or artifacts |
-| **Headless** | `mode:headless` | Programmatic. Structured text output for skill-to-skill composition |
-| **Cross** (default reviewer set) | `mode:cross` or no token | Extend the reviewer set with the other two providers. See Cross-Provider Reviewers below. **On by default.** |
-| **Solo** | `mode:solo` | Opt OUT of peer reviewers — current runner only. Fast/cheap. |
+| --- | --- | --- |
+| **Interactive** | No synthesis token | Review, apply safe fixes, present gated/manual findings |
+| **Autofix** | `mode:autofix` | Apply safe fixes, write unresolved artifacts, never commit/push |
+| **Report-only** | `mode:report-only` | Read-only; no edits or artifacts |
+| **Headless** | `mode:headless` | Structured skill-to-skill result |
+| **Cross** | `mode:cross` | Explicitly add the other two providers |
+| **Solo** | `mode:solo` | Native-only; required native safety critics still run |
 
 ### Autofix mode rules
 
@@ -105,7 +116,7 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 
 ### Step 2: Select Reviewers
 
-**Always-on reviewers** (spawn for every review):
+**Heavy-path core reviewers** (spawn together when the path gate selects heavy review):
 
 | Agent    | Model    | Review References                                                                    | Focus                                |
 | -------- | -------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
@@ -114,11 +125,12 @@ git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs on
 | reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md        | Architecture, security, performance  |
 | reviewer | `sonnet` | (context injected — see Plan-Conformance Reviewer below)                              | Plan/scope conformance, deviations   |
 
-**Light-diff model downgrade:** when the total diff is < 50 LOC (added + removed via
-`git diff --shortstat`), spawn BOTH code-focused always-on reviewers on `sonnet` (the
-plan-conformance reviewer is already `sonnet`).
+**Small heavy-diff model downgrade:** when a safety/domain trigger selects the heavy path but the
+total diff is < 50 LOC (added + removed via `git diff --shortstat`), run both code-focused core
+reviewers on `sonnet` (the plan-conformance reviewer is already `sonnet`). Routine small diffs use
+the single-reviewer light path in Process step 5 instead.
 
-**Plan-conformance reviewer (always-on).** The code-focused reviewers deliberately see only
+**Plan-conformance reviewer (heavy path).** The code-focused reviewers deliberately see only
 the diff — fresh eyes, no plan anchoring. This reviewer exists to close the gap that leaves:
 it is the ONE agent that reviews the implementation *against the contract*. Its prompt gets
 context the others don't (pass it via `extraContext` on the heavy path, or inline on the
@@ -208,13 +220,14 @@ additional reviewer. These are project-specific personas with domain heuristics
 
 ### Step 3: Announce the Review Team
 
-Before spawning, announce which reviewers were selected and why:
+After applying the path gate in Process step 4, announce which reviewers were selected and why.
+For light review, announce the single general reviewer. For example, a heavy review might say:
 
 ```
 Review team:
-- code-quality (always) [sonnet]
-- architecture-security-performance (always) [opus]
-- plan-conformance (always) [sonnet]
+- code-quality (heavy core) [sonnet]
+- architecture-security-performance (heavy core) [opus]
+- plan-conformance (heavy core) [sonnet]
 - data-integrity — model/schema/Atlas/migration files changed [opus]
 - react — components changed in app/components/ [sonnet]
 - pipeline-reviewer — DAG node declarations modified [project persona]
@@ -222,192 +235,51 @@ Review team:
 
 This is progress reporting, not a blocking confirmation.
 
-**All reviewer instances** include the `research` skill (references/past-work.md) to find and
-reference issues caught in similar past implementations.
+Heavy-path reviewer instances include the `research` skill (references/past-work.md) when past
+work is material to the changed surface. The light reviewer receives only a bounded relevant
+memory/context packet; it does not launch a separate broad history search.
 
 **All reviewer instances** return structured JSON per `references/findings-schema.json`.
 
-### Cross-Provider Reviewers (default; opt out with `mode:solo`)
+### Conditional cross-provider reviewers
 
-External peer reviewers are **on by default**. Unless the caller passed `mode:solo`, you MUST
-run the two providers that are not the current main workflow runner — it is a required step of
-the review, not an optional enhancement. Do not skip it, summarize it, or simulate its output
-by reasoning about what another provider "would" say; the only valid way to add peer findings
-is to actually run the providers and read the envelopes they return. Skipping the dispatch is
-the one failure mode that silently drops cross-provider coverage.
+External peers are not a default reviewer set. Escalate to the other two providers only when:
 
-The provider roles are symmetric:
+- the caller passed `mode:cross` or explicitly requested independent/cross-provider review;
+- the diff is safety-critical: security, auth, billing, destructive data/schema migration,
+  secrets, deploy configuration, or another project-declared high-blast-radius surface;
+- native reviewers expose a material uncertainty that repository/test evidence cannot settle; or
+- native reviewer/skeptic verdicts materially disagree on an actionable finding.
 
-| Main workflow runner | Peer reviewers to run |
-| -------------------- | --------------------- |
-| `claude`             | `codex`, `grok`       |
-| `codex`              | `claude`, `grok`      |
-| `grok`               | `claude`, `codex`     |
+`mode:solo` disables peers but never removes native safety-critical personas, adversarial checks,
+or project-required review. Announce the trigger. If none fires, do not create provider packets or
+calls.
 
-Determine the current runner with `agent-workflow-provider`; it autodetects Claude/Codex/Grok
-from environment and process ancestry, with `AGENT_WORKFLOW_PROVIDER` as an escape-hatch
-override. This catches model-specific blind spots: a finding all three providers independently
-surface is far more likely real, and the cross-reviewer confidence boost rewards that agreement
-automatically.
+When escalation fires, run both peer providers in parallel. Provider subagents use
+`fork_turns: "none"` and a bounded self-contained packet referencing the shared diff/file artifacts,
+plan/deviation summary, required output schema, and output cap. Store full envelopes/logs under
+`.context/review/<run-id>/`; consume compact reviewer-output envelopes only. Wait for all required
+native and peer results before one synthesis. Never simulate a failed peer. For safety-critical
+scope, peer failure is explicit residual risk and the report cannot claim independent agreement.
 
-**Claude Code dispatch:** when Claude Code is the main runner, use `external-reviewer`
-subagents for `codex` and `grok`. On the heavy path, issue those two calls in the same assistant
-message as the `review-collect` Workflow call; on the light path, issue them with the native
-reviewer Agent calls. This keeps slow peers out of the foreground shell timeout while preserving
-one collection barrier.
+Merge native and peer findings semantically, then apply cross-reviewer confidence boost only to
+actual independent agreement. Peer dispatch changes coverage, not finding truth: evidence,
+confidence gates, skeptic checks, ownership, and fail-loud behavior still apply.
 
-**Codex/Grok dispatch:** when Codex or Grok is the main runner, call `external-agent` directly
-for the two peer providers (including `--provider claude` when Claude is a peer). The Claude
-peer uses subscription-backed `claude -p`, never a direct Anthropic API call.
+### Review iteration loop
 
-```bash
-mkdir -p .context/review
-base="$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)"
-for provider in $(agent-workflow-provider --peers); do
-  MEMORY_PACKET=".context/review/${provider}-memory-task.md"
-  if ! { printf 'Review diff against base %s\n' "$base"; cat .context/review/diff.patch; } | \
-      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
-        --agent-type reviewer --provider "$provider" --mechanism external_peer \
-        --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
-    cat > "$MEMORY_PACKET" <<'EOF'
-<autodev-memory-task-context>
-Memory context is unavailable. Do not infer that critical or review-specific memories were loaded.
-This external peer has no memory tool; report this limitation in the returned envelope.
-</autodev-memory-task-context>
-EOF
-  fi
-  external-agent --task review --provider "$provider" --base "$base" \
-    --memory-context-file "$MEMORY_PACKET" \
-    --out ".context/review/${provider}.json" 2>".context/review/${provider}.log" &
-done
-wait
-```
-
-Peer dispatches (and the `external-reviewer` subagent prompts) reference the shared diff
-artifact from Step 1 — `Diff at: .context/review/diff.patch`, files at
-`.context/review/files.txt` — and the bounded memory task file. The adapter call must pass
-`--memory-context-file`; ambient SessionStart is deliberately suppressed instead of duplicated.
-
-**Why a subagent/background process and not a serial foreground shell-out:** the providers are
-slow — Codex at xhigh reasoning takes ~9 minutes for a single review. A serial foreground
-`external-agent` call can exceed the shell tool's hard timeout cap and get SIGKILLed mid-run,
-silently dropping the provider's findings (this was the original "Codex/Grok never produce
-output" bug). Spawning each provider
-inside a dedicated `external-reviewer` **subagent** sidesteps that cap entirely — an `Agent`
-call is not bound by the Bash timeout, so the subagent can launch the adapter in the background
-and wait the full ~9 minutes. When the orchestrator does not have Claude's `Agent` tool, use
-the direct shell loop above and ensure the harness timeout is long enough for both peers.
-
-Each `external-reviewer` subagent runs the `external-agent` adapter (`bin/external-agent` in
-agent-workflows, symlinked onto `PATH`; the legacy `external-review` name still works as a
-`--task review` shim). The adapter feeds the provider this skill (`SKILL.md` + the relevant
-`references/`) and the diff, and the subagent returns a **reviewer-output envelope**
-(`{reviewer_key, findings, residual_risks, testing_gaps}`) whose finding items match
-`references/findings-schema.json` — the exact shape the native reviewers return, so external
-findings flow through the *same* synthesis path with no special-casing.
-
-**Claude Code dispatch details:** in one assistant message, spawn two `external-reviewer`
-subagents plus the heavy-path `review-collect` Workflow call (or the light-path native reviewer
-Agent calls). Never serialize independent collection:
-
-- `external-reviewer` with prompt `provider=<first peer>` (plus the diff `base` if you already
-  computed it; otherwise the agent computes `git merge-base HEAD origin/main`).
-- `external-reviewer` with prompt `provider=<second peer>`.
-
-Each subagent launches the adapter in the background, waits for it to finish (~1–9 min), and
-returns the envelope JSON as its final message. Read each subagent's returned envelope directly
-(it also writes `.context/review/<provider>.json` as a side effect).
-
-Then fold the two envelopes into the reviewer set:
-
-1. Take the envelope returned by each peer (`reviewer_key` = provider key). A provider that
-   failed still returns a valid envelope with empty `findings` and a
-   `residual_risks` note — it simply contributes no findings; surface its note but do not block.
-2. Finish collection before any gate: heavy mode runs native `review-collect` concurrently with
-   the two peer dispatches; light mode runs all native and peer calls in one parallel batch.
-3. Concatenate the raw native and peer envelopes, then run exactly one synthesis (light inline
-   or heavy `review-synthesize`): exact dedup by
-   `(file, normalized title, |line diff| ≤ 3)` **plus the semantic same-issue merge** —
-   providers never word the same defect identically, so without the semantic pass
-   cross-provider agreement is invisible. The cross-reviewer boost
-   `confidence += 0.10 * (reviewers.length - 1)` then counts both peer providers as reviewers,
-   so a finding reported by all three providers is boosted by +0.20. Gate, partition, route as
-   usual.
-
-Finding handling follows the **autofix** rules (apply `safe_auto`, write artifacts for the
-rest, never commit). `mode:cross` is the per-round review used by the Cross-Review Iteration
-Loop below.
-
-`.context/review/*.json` are ephemeral inter-agent scratch consumed immediately by synthesis —
-correct use of `.context/` per the File Storage Rules. The merged findings are persisted as
-review artifacts exactly as in any other mode.
-
-### Cross-Review Iteration Loop
-
-The loop autonomous orchestrators use to drive build → review → fix → re-review with external
-providers. **This is the canonical definition** — provider-neutral; consumers are `ticket-flow`
-(via `../references/execution-phases.md`) and `lfg`.
-
-**Round budget follows the complexity gate:** the light path (small diffs) runs a **single
-round** — still cross-provider; the heavy path allows up to 3, but **a second round only
-runs when the adversarial verify actually disagreed this round.** Extra rounds that merely
-re-confirm already-agreed fixes cost two external CLI agents and, in practice, converge
-without changing the actionable set — so they are spent only to resolve genuine disagreement,
-never as a routine confirmation pass.
-
-```
-round = 1
-max_rounds = 1 if light path else 3
-carried = []                        # contested + unresolved advisory findings from prior rounds
-while round <= max_rounds:
-    run /review mode:cross          # runner self-review ∥ two peer providers, merged + deduped + boosted
-                                    # include `carried` in each reviewer's prompt context
-    actionable = partitions.inSkillFixer + partitions.residualActionable
-                 # i.e. findings routed to review-fixer (safe_auto) or
-                 #      downstream-resolver (gated_auto | manual)
-    contested  = findings where the 2-skeptic adversarial verify DISAGREED —
-                 requires_verification: true after verify (mixed or missing skeptic verdicts),
-                 or reviewers split on the same finding. (Light path never verifies, so
-                 contested is always empty there — it stays single-round.)
-    if actionable is empty:
-        break                       # converged — only advisory / gate-suppressed nits remain
-    current runner resolves actionable findings (apply safe_auto inline; resolve gated_auto/manual)
-    re-run affected tests + type check
-    if contested is empty:
-        break                       # verify agreed — fixes are trusted; do NOT spend a confirmation round
-    carried = contested + unresolved advisory + residual_risks from this round's coverage
-    round += 1                       # another round ONLY because the adversarial reviews disagreed
-```
-
-**Carry-forward:** unresolved `advisory` findings, contested (`requires_verification: true`)
-findings, AND the round's `residual_risks` coverage entries MUST be passed into the next
-round's reviewer context, so skeptic outputs, advisory notes, and unconfirmed risks are not
-dropped between rounds. On the heavy path, pass them as the workflow's `args.carried`
-(review-collect renders them into every native reviewer prompt); on the light path, include them in
-the inline reviewer prompts. Render a residual-risk entry as a pseudo-finding
-(`title` = the risk text, `severity`/`file`/`line` unknown is fine).
-
-**Termination — break when ANY holds:**
-
-- the merged result has **no actionable findings** — actionable means at or above the
-  autofix/gated tiers (`safe_auto`, `gated_auto`, `manual`). `advisory` findings and
-  confidence-gate-suppressed (<0.60) nits do **not** keep the loop alive; or
-- the actionable findings were resolved and **the adversarial verify produced no contested
-  findings** (every finding was unanimously upheld or refuted) — the fixes are trusted, so a
-  confirmation round is not spent; or
-- **max_rounds** have run (1 on the light path, 3 on the heavy path). Do not loop forever
-  chasing literal agreement — after the final round, stop and surface any remaining
-  `gated_auto`/`manual` findings for a human.
-
-**Cost note:** each round spawns 2 external CLI agents (run in parallel). The loop is the
-expensive part of the workflow, which is why termination is aggressive — a round is re-spent
-**only** to resolve genuine adversarial disagreement (contested findings), never to
-re-confirm fixes the verify already agreed on.
+Autonomous callers run one review/fix round by default. A second (maximum third on heavy scope) is
+allowed only when an adversarial verdict or independent peer materially disagreed, not merely to
+re-confirm fixes. Re-run affected tests after every fix. Carry only contested findings, unresolved
+advisories, and residual risks into the next bounded packet. Use a blocking bounded wait or a
+single resume command; never model-drive provider polling.
 
 ## Process
 
 1. **Gather context:**
-   - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
+   - Load ticket once with `detail="full"`,
+     `artifact_types=["source", "plan", "build_todo", "review_todo"]`, and
+     `include_events=false`; cache and reuse that response throughout the review.
    - Read plan artifact for intended approach
    - Run `git diff --name-only` to identify changed files
    - Read build_todo artifact completion notes — collect every **Deviations** entry; the
@@ -420,148 +292,48 @@ re-confirm fixes the verify already agreed on.
 
 3. **Select reviewers** based on diff analysis (see Agent Dispatch above).
 
-4. **Decide the execution path — complexity gate:**
+4. **Decide execution path and peer escalation:**
 
-   The mechanical fan-out, dedup, cross-reviewer boost, adversarial verify, and partition
-   logic lives in the `review-synthesize` workflow at `workflows/review-synthesize.js`; native
-   raw-envelope collection lives separately in `workflows/review-collect.js`. Workflows
-   have non-trivial token overhead (spawning many subagents, structured-output enforcement,
-   2-skeptic verification per borderline finding). They pay off only when there is enough
-   material to dedup and verify across. For small diffs the orchestration cost dwarfs the work.
+   Light is one native general reviewer, inline synthesis, no workflow, no skeptics, and no peers.
+   Heavy uses native specialized personas, structured collection/synthesis, and adversarial
+   verification. Peer escalation remains conditional and is not implied by diff size alone.
 
-   Use this gate (evaluated top-to-bottom — first match wins):
+   | Condition | Path |
+   | --- | --- |
+   | User passed `--deep` | Heavy |
+   | User passed `--light` and no safety-critical surface is present | Light |
+   | Safety-critical surface or project persona requirement | Heavy |
+   | ≥5 files, ≥200 changed LOC, or conditional domain reviewer fires | Heavy |
+   | Otherwise | Light |
 
-   | Condition                                                        | Path    |
-   | ---------------------------------------------------------------- | ------- |
-   | User passed `--deep`                                             | Heavy   |
-   | User passed `--light`                                            | Light   |
-   | ≥1 conditional or project-persona reviewer fires                 | Heavy   |
-   | ≥5 files changed                                                 | Heavy   |
-   | ≥200 LOC changed (added + removed via `git diff --shortstat`)    | Heavy   |
-   | Otherwise (only the always-on set fires on a small diff)         | Light   |
+   A safety-critical signal overrides `--light` for native coverage. Apply the peer gate from
+   **Conditional cross-provider reviewers** separately and announce both decisions.
 
-   The "conditional or persona reviewer fires" signal means a reviewer beyond the
-   always-on set (code-quality, arch-sec-perf, plan-conformance) qualified from the
-   diff analysis.
+5. **Light path:**
 
-   Announce the chosen path alongside the review team:
+   Spawn exactly ONE native general reviewer with `fork_turns: "none"`. Its bounded packet points
+   to `.context/review/diff.patch` and `.context/review/files.txt`, includes intent, plan
+   conformance/deviations, required schema, relevant project rules, and exact test evidence. It
+   reviews correctness, plan conformance, security, and testing within that bounded diff; it does
+   not recruit specialists or peers.
 
-   ```
-   Review team: code-quality [sonnet], architecture-security-performance [opus], plan-conformance [sonnet]
-   Path: light (3 reviewers, 1 file, 18 LOC) — inline parallel Agent calls, no verify
-   ```
+   Validate findings, exact/semantic deduplicate within the single envelope, confidence-gate,
+   segregate pre-existing findings, normalize ownership, and partition. Zero-fill skeptic/peer
+   stats. If the reviewer surfaces a safety-critical concern, material uncertainty, or internal
+   contradiction, upgrade to heavy and apply the peer escalation gate rather than improvising a
+   second light reviewer.
 
-   or:
+5a. **Heavy path:**
 
-   ```
-   Review team: code-quality, arch-sec-perf, data-integrity, react, pipeline-reviewer
-   Path: heavy (5 reviewers, 12 files, 340 LOC) — collect all providers, then one synthesis with verify
-   ```
+   Run native `review-collect` with only the specialized personas selected by the diff, then one
+   `review-synthesize` pass with adversarial verification. If Workflow is unavailable, execute the
+   same bounded algorithm inline. Add peer reviewer envelopes only when the escalation gate fires;
+   otherwise `raw` contains native envelopes only. Finish every required collection call before
+   synthesis. Use `fork_turns: "none"`, shared diff artifacts, output caps, and full logs on disk.
 
-5. **Fan out — light path (inline):**
-
-   When the gate selects "Light", issue the reviewer `Agent` calls in parallel (one assistant
-   message, multiple tool-use blocks). No workflow, no skeptics. Every reviewer prompt includes
-   `Diff at: .context/review/diff.patch` (the shared artifact from Step 1) so reviewers read
-   the diff instead of re-computing it. Each reviewer returns the
-   reviewer-output JSON shape documented in `workflows/review-collect.js`
-   (`reviewerOutputSchema`). **Unless `mode:solo`, include the two peer providers in this same
-   parallel batch** — see Cross-Provider Reviewers above. In Claude Code that means
-   `external-reviewer` subagents; in Codex/Grok that means direct `external-agent` peer calls.
-   They return the identical envelope shape and merge with no special-casing.
-
-   The light path does **not** get schema enforcement at the tool layer (the `Agent` tool
-   has no `schema:` parameter). Validate manually: for each reviewer's findings, drop any
-   that don't have all of `title`, `severity`, `file`, `line`, `confidence`, `autofix_class`,
-   `owner`, `requires_verification`, `pre_existing`, `evidence` (non-empty array),
-   `why_it_matters`. Count dropped findings into `suppressed`. Mirror the `validFinding`
-   function in `workflows/review-synthesize.js`.
-
-   Then do minimal synthesis inline:
-   1. Dedupe in two passes. First exact: `(file, normalized title, |line diff| ≤ 3)`
-      pairwise comparison — match against any existing group member, not just the first
-      (keep highest severity and confidence, union evidence, AND-merge `pre_existing`).
-      Then **semantic**: for same-file findings within ±5 lines whose titles differ (and
-      for any pair of `absence: true` findings regardless of file), judge whether they
-      describe the same underlying defect and merge if so. Do NOT rely on title-string
-      equality to detect cross-reviewer/cross-provider agreement — providers never word
-      the same defect identically, and the confidence boost in step 2 depends on these
-      merges.
-   2. Apply cross-reviewer boost: for each merged finding, `confidence += 0.10 *
-      (reviewers.length - 1)`, capped at 1.0. With 2 reviewers this only fires on
-      consensus findings (rare in light path) but preserves the same-shape contract
-      with the heavy path.
-   3. Apply the confidence gate (suppress <0.60, rescue p1 at ≥0.50).
-   4. Separate `pre_existing: true`.
-   5. Sort by severity → confidence → file → line.
-   6. Normalize routing: `safe_auto` → owner=review-fixer; `gated_auto|manual` →
-      owner=downstream-resolver; `advisory` → owner=human.
-   7. Partition into `{inSkillFixer, residualActionable, reportOnly}`.
-
-   Skip steps 5a-5c below — they are for the heavy path only.
-
-5a. **Collect, then synthesize — heavy path (two workflows):**
-
-   When the gate selects "Heavy", collection and synthesis are separate barriers. The runtime
-   resolves `name:` against `~/.claude/workflows/`, where agent-workflows is symlinked in every
-   environment (local, NanoClaw, cloud SessionStart copy).
-
-   If the current host tool does not expose Claude's `Workflow` tool (for example a
-   Codex/Grok-orchestrated run), execute the equivalent heavy-path algorithm inline but preserve
-   the same barrier: finish all native/self-review + peer provider calls first, then validate,
-   dedup, boost, gate, verify, and partition once. Do **not** downgrade a heavy review to a
-   one-provider review because the Claude `Workflow` primitive is absent.
-
-   ```
-   native = Workflow({
-     name: "review-collect",
-     args: {
-       reviewers: [
-         { key: "code-quality", model: "sonnet", focus: "...",
-           references: ["references/python-standards.md", ...] },
-         // stay on opus — fable is not available on the subscription plan after 2026-07-07
-         { key: "architecture-security-performance", model: "opus", focus: "...",
-           references: ["references/architecture.md", ...] },
-         { key: "plan-conformance", model: "sonnet",
-           focus: "implementation vs source deliverables, plan scope/elimination, builder deviations",
-           extraContext: "<raw source deliverable list + plan what/how/elimination/assumptions + builder Deviations entries>" },
-         // ...plus conditional + project-persona reviewers from step 3
-       ],
-       intent: "<2-3 line intent from plan/commits>",
-       files: ["<changed files from .context/review/files.txt>"],
-       diffSummary: "<git diff --stat output or short narrative>",
-       diffPath: ".context/review/diff.patch",
-       mode: "interactive" | "autofix" | "report-only" | "headless",
-       carried: [ /* rounds ≥2 only: unresolved advisory + contested + residual-risk
-                     carry-overs from the previous round (see Carry-forward below) */ ]
-     }
-   })
-   // Unless mode:solo, run this Workflow call and the two external-reviewer dispatches
-   // concurrently. Wait for all three operations to finish.
-   raw = [
-     ...native.reviewer_results,
-     peerCodexEnvelope,
-     peerGrokEnvelope,
-   ]
-
-   result = Workflow({
-     name: "review-synthesize",
-     args: {
-       reviewerResults: raw,
-       intent: "<same intent>",
-       diffSummary: "<same summary>",
-       diffPath: ".context/review/diff.patch"
-     }
-   })
-   ```
-
-   Under `mode:solo`, `raw` contains only `native.reviewer_results`; synthesis is otherwise
-   identical. A failed provider contributes its valid empty envelope plus `residual_risks` note.
-   Never call `review-synthesize` while a peer is still running, and never synthesize native
-   findings first and append peers afterward.
-
-   **Pass `args` as actual JSON objects, never stringified blobs.** Both workflows parse a
-   stringified blob defensively only to return a clear error; callers must use real objects.
+   Safety-critical scope always retains the relevant native persona and adversarial checks even
+   under `mode:solo` or peer failure. Do not downgrade a heavy review merely because provider or
+   Workflow tooling is unavailable; surface missing independent coverage as residual risk.
 
 5b. **Result shape (both paths must produce this object):**
 
@@ -594,7 +366,8 @@ re-confirm fixes the verify already agreed on.
 
 5c. **What the heavy path adds over the light path:**
 
-   - A hard all-provider collection barrier before any synthesis decision
+   - A hard barrier across every required native and conditionally escalated peer result before
+     synthesis
    - Structured native output enforced at the tool layer (schema retry on mismatch)
    - Semantic same-issue dedup (one cheap judge call) so cross-provider agreement is
      detected even when titles differ, before the boost

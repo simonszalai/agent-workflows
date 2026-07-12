@@ -156,10 +156,13 @@ so it stops recurring.
 **Tools** (all `mcp__autodev-memory__*`, project + repo required):
 - `list_tickets(project, repo, status=...)` — pull bugs (`B*`) and recently-completed tickets in
   window.
-- `search_tickets(project, query)` — semantic+BM25 over ticket artifacts; probe recurring themes
+- `search_tickets(project, query, detail="compact")` — semantic+BM25 over ticket artifacts;
+  probe recurring themes
   (e.g. "Atlas default removed", "DataDome block", "schema NOT NULL", "selector changed").
 - `get_review_patterns(project, ...)` — review findings that recur across tickets (gold for K).
-- `get_similar_tickets(...)` / `get_ticket(...)` — confirm clusters; read `investigation` and
+- `get_similar_tickets(..., detail="compact")` then selected
+  `get_ticket(..., detail="full", artifact_types=["investigation", "retrospective"],
+  include_events=false)` — confirm clusters; read `investigation` and
   `retrospective` artifacts where the real root cause is written down.
 
 **Signals to extract**

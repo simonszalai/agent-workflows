@@ -147,17 +147,22 @@ When in past work mode, use these MCP tools:
 ```
 # Find similar completed tickets
 similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed",
+  detail="compact"
 )
 
 # Search across all ticket artifacts by keyword
 results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<keywords>"
+  project=PROJECT, query="<keywords>",
+  detail="compact"
 )
 
-# Get full ticket with all artifacts
+# Load only the high-signal historical artifacts from a selected ticket
 ticket = mcp__autodev-memory__get_ticket(
-  project=PROJECT, ticket_id=ID, repo=REPO
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full",
+  artifact_types=["investigation", "retrospective", "review_todo", "verification_evidence"],
+  include_events=false
 )
 ```
 

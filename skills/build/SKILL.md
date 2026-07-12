@@ -31,7 +31,10 @@ git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
 git worktree list | grep "$(pwd)" | grep -v "bare"  # Must match current dir
 
 # 2. Load ticket and check artifacts exist
-mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=["plan", "build_todo"], include_events=false
+)
 # Check for build_todo artifacts — if none: STOP - run /create-build-todos first
 # Check for plan artifact — if missing: STOP - run /auto-plan first
 ```
@@ -46,7 +49,10 @@ git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
 # If on main: Create branch first
 
 # 2. Load ticket and check artifacts exist
-mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=["plan", "build_todo"], include_events=false
+)
 # Check for build_todo artifacts — if none: STOP - run /create-build-todos first
 # Check for plan artifact — if missing: STOP - run /auto-plan first
 ```

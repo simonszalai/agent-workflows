@@ -20,6 +20,21 @@ export const PORT = Number(process.env.MCP_GATEWAY_PORT || 8765)
 // clients must send x-mcp-gateway-token. Empty = no local auth.
 export const LOCAL_TOKEN = process.env.MCP_GATEWAY_TOKEN || ""
 
+const READONLY_SOURCES = {
+	"dbhub/ts.toml": ["prod", "prod_prefect", "autodev_ts"],
+	"dbhub/amaru.toml": ["prod"],
+	"dbhub/workflow.toml": ["prod"],
+	"dbhub/shared.toml": ["autodev_global"],
+}
+
+function readonlyExecuteSql(toml, source) {
+	return toml.split("[[tools]]").slice(1).some((block) =>
+		/^\s*name\s*=\s*["']execute_sql["']/m.test(block) &&
+		new RegExp(`^\\s*source\\s*=\\s*["']${source}["']`, "m").test(block) &&
+		/^\s*readonly\s*=\s*true\s*$/m.test(block),
+	)
+}
+
 export function loadRoutes() {
 	const raw = JSON.parse(readFileSync(join(BASE_DIR, "routes.json"), "utf8"))
 	// Sort prefixes longest-first so the most specific route wins.
@@ -70,6 +85,11 @@ export function validate() {
 					const toml = readFileSync(cfg, "utf8")
 					for (const [, v] of toml.matchAll(/\$\{([A-Z0-9_]+)\}/g)) {
 						if (!process.env[v]) problems.push(`${r.prefix}: env ${v} (used by ${s.config}) is unset`)
+					}
+					for (const source of READONLY_SOURCES[s.config] || []) {
+						if (!readonlyExecuteSql(toml, source)) {
+							problems.push(`${r.prefix}: execute_sql source '${source}' must set readonly=true`)
+						}
 					}
 				}
 			}
