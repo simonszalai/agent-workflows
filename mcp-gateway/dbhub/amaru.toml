@@ -9,13 +9,13 @@ lazy = true
 
 [[sources]]
 id = "staging"
-dsn = "${AMARU_POSTGRES_STAGING_URL}?sslmode=require"
+dsn = "${AMARU_POSTGRES_STAGING_URL}"
 description = "amaru staging database"
 lazy = true
 
 [[sources]]
 id = "prod"
-dsn = "${AMARU_POSTGRES_PROD_URL}?sslmode=require"
+dsn = "${AMARU_POSTGRES_PROD_URL}"
 description = "amaru PRODUCTION database (read-only)"
 lazy = true
 

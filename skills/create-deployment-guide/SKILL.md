@@ -153,6 +153,13 @@ verification expects rows/logs from a flow that the diff did not add or an exist
 cannot produce. Either add the producing flow/YAML/supervisor/CLI step, or revise the evidence
 contract to a different proof mechanism before deploy.
 
+If the named producer is a **canary/shadow run triggered solely to generate evidence** (a bounded
+on-demand flow, a temporary deployment/schedule, throwaway records) rather than the feature's real
+production path, the guide must also carry its **cleanup**: record a `deferred_cleanup` (or an
+inline reversible teardown) that removes the canary flow run, any temporary deployment/schedule
+registered for it, and any rows it wrote purely as evidence. A canary is not FINALIZED-ready until
+its teardown is specified — leaving one registered/running after `/ticket-verify` is a defect.
+
 ### 5. Write/update the artifact
 
 Find the existing draft in the `get_ticket` response (the artifact with

@@ -48,6 +48,28 @@ function reapStrays(ports) {
 	}
 }
 
+// dbhub interpolates ${VAR} DSNs from the child env, and Render's Postgres rejects any
+// non-SSL connection ("SSL/TLS required"). Rather than make every TOML source and every
+// stored 1Password DSN carry ?sslmode=require (fragile — a re-edited secret silently
+// dropped it, and a TOML that also appended produced a doubled ?sslmode=require...?sslmode=require),
+// the gateway guarantees it centrally: any remote Postgres DSN gets exactly one
+// sslmode=require, added only when absent. localhost dev DSNs are left plain (no SSL there).
+function ensureSslmode(dsn) {
+	if (!/^postgres(?:ql)?:\/\//i.test(dsn)) return dsn
+	const host = dsn.match(/^postgres(?:ql)?:\/\/(?:[^@/]*@)?([^:/?#]+)/i)?.[1] || ""
+	if (host === "localhost" || host === "127.0.0.1" || host === "::1") return dsn
+	if (/[?&]sslmode=/i.test(dsn)) return dsn
+	return dsn + (dsn.includes("?") ? "&" : "?") + "sslmode=require"
+}
+
+// Guarantee SSL on every Postgres DSN the child will interpolate, in place, before spawn.
+function normalizeDbEnv(env) {
+	for (const [k, v] of Object.entries(env)) {
+		if (typeof v === "string" && /^postgres(?:ql)?:\/\//i.test(v)) env[k] = ensureSslmode(v)
+	}
+	return env
+}
+
 function start(route) {
 	const s = route.spawn
 	const key = route.prefix
@@ -59,7 +81,7 @@ function start(route) {
 	// so prepend the directory of the node running this daemon.
 	const bin = s.bin || process.env.DBHUB_BIN || "dbhub"
 	const args = ["--transport", "http", "--host", "127.0.0.1", "--port", String(s.port), "--config", join(BASE_DIR, s.config)]
-	const env = { ...process.env, PATH: `${join(process.execPath, "..")}:${process.env.PATH || ""}` }
+	const env = normalizeDbEnv({ ...process.env, PATH: `${join(process.execPath, "..")}:${process.env.PATH || ""}` })
 	const proc = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] })
 
 	const entry = children.get(key) || { restarts: 0 }

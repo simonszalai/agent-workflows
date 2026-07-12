@@ -12,25 +12,25 @@ lazy = true
 
 [[sources]]
 id = "staging"
-dsn = "${TS_POSTGRES_STAGING_URL}?sslmode=require"
+dsn = "${TS_POSTGRES_STAGING_URL}"
 description = "ts staging database"
 lazy = true
 
 [[sources]]
 id = "prod"
-dsn = "${TS_POSTGRES_PROD_URL}?sslmode=require"
+dsn = "${TS_POSTGRES_PROD_URL}"
 description = "ts PRODUCTION database (read-only)"
 lazy = true
 
 [[sources]]
 id = "prod_prefect"
-dsn = "${TS_POSTGRES_PROD_PREFECT_URL}?sslmode=require"
+dsn = "${TS_POSTGRES_PROD_PREFECT_URL}"
 description = "ts prod Prefect database"
 lazy = true
 
 [[sources]]
 id = "autodev_ts"
-dsn = "${TS_POSTGRES_AUTODEV_TS_URL}?sslmode=require"
+dsn = "${TS_POSTGRES_AUTODEV_TS_URL}"
 description = "autodev-memory ts database"
 lazy = true
 

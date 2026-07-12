@@ -9,13 +9,13 @@ lazy = true
 
 [[sources]]
 id = "staging"
-dsn = "${WORKFLOW_POSTGRES_STAGING_URL}?sslmode=require"
+dsn = "${WORKFLOW_POSTGRES_STAGING_URL}"
 description = "workflow staging database"
 lazy = true
 
 [[sources]]
 id = "prod"
-dsn = "${WORKFLOW_POSTGRES_PROD_URL}?sslmode=require"
+dsn = "${WORKFLOW_POSTGRES_PROD_URL}"
 description = "workflow PRODUCTION database (read-only)"
 lazy = true
 

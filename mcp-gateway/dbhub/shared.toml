@@ -4,7 +4,7 @@
 
 [[sources]]
 id = "autodev_global"
-dsn = "${AUTODEV_GLOBAL_POSTGRES_URL}?sslmode=require"
+dsn = "${AUTODEV_GLOBAL_POSTGRES_URL}"
 description = "autodev-memory global database"
 lazy = true
 
