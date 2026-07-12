@@ -63,6 +63,19 @@ def usage_dict(value: object) -> dict[str, int]:
     return result
 
 
+def efficiency_summary(usage: dict[str, int]) -> dict[str, int | float]:
+    uncached_input = max(0, usage["input_tokens"] - usage["cached_input_tokens"])
+    input_tokens = usage["input_tokens"]
+    return {
+        "raw_total_tokens": usage["total_tokens"],
+        "cached_input_tokens": usage["cached_input_tokens"],
+        "uncached_input_tokens": uncached_input,
+        "effective_non_cached_tokens": uncached_input + usage["output_tokens"],
+        "cached_input_ratio": round(usage["cached_input_tokens"] / input_tokens, 4)
+        if input_tokens else 0.0,
+    }
+
+
 def output_text(value: object) -> str:
     if isinstance(value, str):
         return value
@@ -132,6 +145,7 @@ def summarize(path: Path, is_descendant: bool) -> dict:
     baseline = usage_dict({})
     baseline_known = not is_descendant
     baseline_method = "not_applicable_root"
+    unique = gross.copy()
     if is_descendant:
         baseline_method = "unavailable_no_pre_task_total_usage"
         if task_started_at is not None and task_started_index is not None:
@@ -142,9 +156,21 @@ def summarize(path: Path, is_descendant: bool) -> dict:
                 baseline = usage_dict(eligible[-1]["total_token_usage"])
                 baseline_known = True
                 baseline_method = "last_total_usage_at_or_before_task_started"
+                unique = {key: max(0, gross[key] - baseline[key]) for key in USAGE_KEYS}
+            else:
+                active_infos = [info for index, _, info in token_events
+                                if index >= task_started_index]
+                last_usages = [info.get("last_token_usage") for info in active_infos]
+                if active_infos and all(isinstance(item, dict) for item in last_usages):
+                    unique = usage_dict({})
+                    for item in last_usages:
+                        for key, value in usage_dict(item).items():
+                            unique[key] += value
+                    baseline = {key: max(0, gross[key] - unique[key]) for key in USAGE_KEYS}
+                    baseline_known = True
+                    baseline_method = "sum_post_task_last_token_usage"
         else:
             baseline_method = "unavailable_no_task_started_timestamp"
-    unique = {key: max(0, gross[key] - baseline[key]) for key in USAGE_KEYS}
     return {
         "session_id": meta.get("id") or meta.get("session_id"),
         "parent_thread_id": meta.get("parent_thread_id"),
@@ -291,7 +317,9 @@ def main() -> None:
         "descendants_reported": len(selected),
         "descendants_truncated": len(descendants) > len(selected),
         "whole_tree_usage": whole_tree_usage,
+        "whole_tree_efficiency": efficiency_summary(whole_tree_usage),
         "codex_tree_usage_unique": tree_usage,
+        "codex_tree_efficiency": efficiency_summary(tree_usage),
         **totals,
         "fork_turns_modes": dict(sorted(fork_modes.items())),
         "sessions": sessions,
@@ -301,7 +329,7 @@ def main() -> None:
             else "partial",
             "descendants": "truncated" if len(descendants) > len(selected) else "complete",
             "fork_baselines": "complete" if baselines_complete else "uncertain",
-            "fork_baseline_method": "last_total_usage_at_or_before_task_started",
+            "fork_baseline_method": "per_session",
             "activity_boundaries": "complete" if activity_complete else "uncertain",
             "external_usage": external["status"],
         },

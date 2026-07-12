@@ -152,6 +152,8 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(report["descendants_discovered"], 2)
             self.assertEqual(report["codex_tree_usage_unique"]["total_tokens"], 1840)
             self.assertEqual(report["whole_tree_usage"]["total_tokens"], 1855)
+            self.assertEqual(report["codex_tree_efficiency"]["uncached_input_tokens"], 850)
+            self.assertEqual(report["codex_tree_efficiency"]["effective_non_cached_tokens"], 1090)
             self.assertEqual(report["sessions"][1]["inherited_fork_baseline"], baseline)
             self.assertEqual(report["sessions"][1]["usage_unique"]["output_tokens"], 100)
             self.assertEqual(report["tool_calls"], 2)
@@ -189,6 +191,36 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(report["coverage"]["fork_baselines"], "uncertain")
             self.assertFalse(report["sessions"][1]["fork_baseline_known"])
             self.assertEqual(report["sessions"][1]["usage_unique"], usage)
+
+    def test_report_sums_post_task_last_usage_when_no_replayed_baseline_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_session(root / "root.jsonl", {"id": "root"}, [])
+            first = {"input_tokens": 20, "cached_input_tokens": 10,
+                     "output_tokens": 2, "reasoning_output_tokens": 1, "total_tokens": 22}
+            second = {"input_tokens": 30, "cached_input_tokens": 20,
+                      "output_tokens": 3, "reasoning_output_tokens": 1, "total_tokens": 33}
+            total = {key: first[key] + second[key] for key in first}
+            self.write_session(root / "child.jsonl", {"id": "child",
+                                                       "parent_thread_id": "root"}, [
+                {"timestamp": "2026-01-01T00:00:01Z", "type": "event_msg",
+                 "payload": {"type": "task_started"}},
+                {"timestamp": "2026-01-01T00:00:02Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": first, "last_token_usage": first}}},
+                {"timestamp": "2026-01-01T00:00:03Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": total, "last_token_usage": second}}},
+            ])
+            result = run_script("workflow-efficiency-report", str(root / "root.jsonl"),
+                                "--sessions-root", str(root),
+                                "--external-usage-dir", str(root / "missing"))
+            report = json.loads(result.stdout)
+            child = report["sessions"][1]
+            self.assertTrue(child["fork_baseline_known"])
+            self.assertEqual(child["fork_baseline_method"], "sum_post_task_last_token_usage")
+            self.assertEqual(child["usage_unique"], total)
+            self.assertEqual(report["coverage"]["fork_baselines"], "complete")
 
     def test_external_agent_sidecar_records_provider_usage_without_changing_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
