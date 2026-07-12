@@ -29,6 +29,7 @@ DESTINATIONS = (
     (".codex/skills", "skills"), (".codex/hooks", "hooks"), (".local/bin", "bin"),
 )
 COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
+SECURITY_FLOOR_MARKER = Path("bin/.protected-route-security-floor")
 
 
 @contextmanager
@@ -200,6 +201,36 @@ def _make_immutable(root: Path) -> None:
         elif path.is_dir():
             os.chmod(path, 0o555)
     os.chmod(root, 0o555)
+
+
+def _remove_immutable_tree(root: Path) -> None:
+    """Remove an installer-owned immutable tree without following links."""
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit(f"install-agent-workflows: unsafe version tree: {root}")
+    for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+        if path.is_symlink() or path.is_file():
+            os.chmod(path, 0o700)
+        elif path.is_dir():
+            os.chmod(path, 0o700)
+    os.chmod(root, 0o700)
+    shutil.rmtree(root)
+
+
+def prune_pre_security_floor_versions(versions: Path, active: Path) -> list[str]:
+    """Delete pre-ceiling trees so their direct project-mcp launchers cannot bypass policy."""
+    if not (active / SECURITY_FLOOR_MARKER).is_file():
+        return []
+    removed: list[str] = []
+    for version in sorted(versions.iterdir()):
+        if version == active or version.name.startswith(".") or not version.is_dir():
+            continue
+        if (version / SECURITY_FLOOR_MARKER).is_file():
+            continue
+        if not COMMIT_RE.fullmatch(version.name):
+            raise SystemExit(f"install-agent-workflows: refusing unknown version tree: {version}")
+        _remove_immutable_tree(version)
+        removed.append(version.name)
+    return removed
 
 
 def _verify_existing(final: Path, commit: str) -> None:
@@ -464,8 +495,13 @@ def install(source: Path, home: Path, commit: str) -> None:
     old = os.readlink(current) if current.is_symlink() else ""
     previous_path = store / "previous.json"
     previous_snapshot = _snapshot(previous_path)
+    old_path = store / old if old else None
+    security_floor_active = (final / SECURITY_FLOOR_MARKER).is_file()
+    old_is_at_security_floor = bool(old_path and (old_path / SECURITY_FLOOR_MARKER).is_file())
     previous = {
-        "version_target": old or None,
+        # A pre-ceiling launcher is not a safe rollback target. The compatibility
+        # rollback for this boundary is the active clamp build itself, never old code.
+        "version_target": old if old and (not security_floor_active or old_is_at_security_floor) else None,
         "legacy_roots": [
             {"relative_path": str(path.relative_to(home)), "target": target}
             for path, target in migrated_roots
@@ -529,6 +565,14 @@ def install(source: Path, home: Path, commit: str) -> None:
             raise RuntimeError("install-agent-workflows: failed to restore legacy roots") \
                 from restore_error
         raise install_error
+    removed = prune_pre_security_floor_versions(versions, final)
+    if security_floor_active:
+        atomic_json(store / "security-floor.json", {
+            "schema": 1,
+            "active_version": commit,
+            "marker": str(SECURITY_FLOOR_MARKER),
+            "removed_pre_floor_versions": removed,
+        })
 
 
 def rollback(home: Path) -> None:

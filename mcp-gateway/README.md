@@ -244,17 +244,23 @@ every Conductor workspace of that repo). Example for a ts repo:
 
 **Postgres (Phase 2)** — `type: sse`, one entry per DB. Note the trailing `/sse`
 (the SSE stream endpoint); the daemon rewrites the server's `endpoint` event so the
-client's message POSTs come back through the same prefix. The default
-`restricted`/`unrestricted` access mode still lives on the daemon (`routes.json`), but a
-client config can override it per server by adding an access-mode string to the URL:
-`?access_mode=restricted` or `?access_mode=unrestricted`.
+client's message POSTs come back through the same prefix. The default access mode lives on
+the daemon (`routes.json`). Unprotected development/staging routes let a client select a
+mode with `?access_mode=restricted` or `?access_mode=unrestricted`.
+
+Protected routes (`ts/postgres_prod`, `ts/postgres_prod_prefect`,
+`ts/postgres_autodev_ts`, and `shared/postgres_autodev_global`) have
+`maxAccessMode: "restricted"`. An unrestricted request can never start an unrestricted
+child. During the compatibility window the daemon clamps it to restricted and emits a
+structured `protected_access_mode_ceiling` audit event. The separately controlled hard-reject
+flip is `MCP_GATEWAY_PROTECTED_ACCESS_MODE_POLICY=reject`; the safe default is `clamp`.
 
 ```json
 "postgres_dev":          { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_dev/sse?access_mode=unrestricted" },
 "postgres_staging":      { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_staging/sse?access_mode=unrestricted" },
 "postgres_prod":         { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod/sse?access_mode=restricted" },
-"postgres_prod_prefect": { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod_prefect/sse?access_mode=unrestricted" },
-"postgres_autodev_ts":   { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_autodev_ts/sse?access_mode=unrestricted" }
+"postgres_prod_prefect": { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_prod_prefect/sse?access_mode=restricted" },
+"postgres_autodev_ts":   { "type": "sse", "url": "http://127.0.0.1:8765/ts/postgres_autodev_ts/sse?access_mode=restricted" }
 ```
 
 Accepted parameter names are `access_mode`, `accessMode`, `postgres_access_mode`, and
@@ -262,6 +268,9 @@ Accepted parameter names are `access_mode`, `accessMode`, `postgres_access_mode`
 this selector before proxying to `postgres-mcp` and lazily starts a sibling child when a
 client asks for the non-default mode (alternate port = configured route port +
 `MCP_GATEWAY_ALT_ACCESS_MODE_PORT_OFFSET`, default `1000`).
+Startup and SIGHUP reconciliation also reap the current and historical offset ports. Add
+old offsets as a comma-separated list in
+`MCP_GATEWAY_HISTORICAL_ALT_ACCESS_MODE_PORT_OFFSETS` before changing the current offset.
 (Add `"headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" }` to each only if you
 turn on `MCP_GATEWAY_REQUIRE_TOKEN=1`; default is off / localhost-only, matching `render`.)
 
@@ -296,8 +305,15 @@ url = "http://127.0.0.1:8765/shared/autodev-memory"
 
 [mcp_servers.postgres_autodev_global]
 command = "/Users/simon/.nvm/versions/node/v24.14.1/bin/npx"
-args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/shared/postgres_autodev_global/sse?access_mode=unrestricted", "--transport", "sse-only", "--silent"]
+args = ["-y", "mcp-remote@0.1.38", "http://127.0.0.1:8765/shared/postgres_autodev_global/sse?access_mode=restricted", "--transport", "sse-only", "--silent"]
 ```
+
+Before the hard-reject flip, run `mcp-protected-route-inventory` over consuming repository
+roots and `/tmp/mcp-gateway.log`. Its JSON maps every protected-route requester to an owning
+configuration ticket and reports remaining unrestricted requesters/clamp events. The installer
+also treats `bin/.protected-route-security-floor` as a forward-only floor: on first activation
+it removes pre-floor immutable version trees so their direct `project-mcp` launchers cannot
+bypass the gateway ceiling. Later floor-aware versions remain rollback-capable.
 
 Old before (for reference / rollback):
 ```json
