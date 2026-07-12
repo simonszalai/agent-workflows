@@ -29,6 +29,10 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   environment config, prior-memory packet, deploy guide, and query results. Record the source and
   freshness boundary; invalidate only when the underlying branch, artifact, deploy, or time window
   changes.
+- The orchestrator retrieves shared ticket context once. Use lightweight artifact manifests for
+  routing, selected full artifact types for execution, and event history only for explicit audit
+  work. Pass cached file paths or bounded extracts to children; never make each child reload the
+  same ticket or embed the same large artifact body in every delegated prompt.
 
 ## Waiting and polling
 

@@ -45,7 +45,10 @@ findings as a ticket artifact.
 **If ticket ID given** (e.g., `/research F0014 "question"`):
 
 ```
-ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=["source"], include_events=false
+)
 ```
 - If not found: error - "Ticket {ID} not found"
 - Read source artifact for context
@@ -117,10 +120,12 @@ ticket = mcp__autodev-memory__create_ticket(
 
    # Related past work — by similarity to this ticket and by keyword
    similar = mcp__autodev-memory__get_similar_tickets(
-     project=PROJECT, ticket_id=ID, repo=REPO, status="completed"
+     project=PROJECT, ticket_id=ID, repo=REPO, status="completed",
+     detail="compact"
    )
    ticket_hits = mcp__autodev-memory__search_tickets(
-     project=PROJECT, query="<keywords from the question>"
+     project=PROJECT, query="<keywords from the question>",
+     detail="compact"
    )
    ```
 

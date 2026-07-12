@@ -109,7 +109,8 @@ it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand 
 - set the step ticket to `merged` after a successful epic-step landing;
 - never run staging/production verification and never advance the milestone gate itself.
 
-**Per-step audit gate (before §5).** After each wave, confirm via `get_ticket` that every landed
+**Per-step audit gate (before §5).** After each wave, confirm via `get_ticket(detail="light",
+artifact_types=["build_todo", "review_todo"], include_events=false)` that every landed
 step ticket actually carries its `build_todo` and `review_todo` artifacts. A delegated
 `/ticket-flow` — especially a cross-provider (Codex/Grok) run whose MCP `create_artifact` calls
 silently no-op'd — can build, review, and land entirely in-session yet leave none of them on the

@@ -97,7 +97,8 @@ Also search past tickets for similar work:
 
 ```
 mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<step area keywords>"
+  project=PROJECT, query="<step area keywords>",
+  detail="compact"
 )
 ```
 

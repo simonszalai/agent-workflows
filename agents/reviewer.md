@@ -69,7 +69,9 @@ assuming a fixed stack.
 
    ```bash
    # Find review findings in same codebase area
-   mcp__autodev-memory__search_tickets(project=PROJECT, query="<relevant keywords>")
+   mcp__autodev-memory__search_tickets(
+     project=PROJECT, query="<relevant keywords>", detail="compact"
+   )
    ```
 
    Extract patterns of issues found in similar implementations.

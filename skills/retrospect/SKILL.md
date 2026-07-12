@@ -83,7 +83,8 @@ pipeline **without leaving artifacts on the ticket**. Confirm from primary evide
    `git log --all --diff-filter=A -- <path>` for the introducing commit. Read the trailer: a
    `Co-Authored-By: Claude …` line ⇒ Claude Code built it; its absence (especially with a Codex
    session present for that date) ⇒ another provider or ad-hoc.
-2. **The ticket events** (if a ticket exists): `get_ticket`, then read each event's
+2. **The ticket events** (if a ticket exists):
+   `get_ticket(detail="full", artifact_types=null, include_events=true)`, then read each event's
    `actor.command` / `actor.agent` / `actor.session_id` / `actor.machine`. These are the
    authoritative record of which workflow commands actually ran (`/auto-plan`, `/build`, `/review`,
    `/milestone-flow`, …) and by which agent. **The command is nested under `actor`, not

@@ -66,7 +66,8 @@ explicitly asked for direct production.
 
 **0. Resolve.** Project from `<!-- mem:project=X -->`, repo from git remote. If the ticket's
 repo isn't the current repo, switch only to a verified linked Conductor directory for it —
-never implement one repo's ticket inside another. Load via `get_ticket`, or search-then-create
+never implement one repo's ticket inside another. Load via `get_ticket(detail="full",
+artifact_types=["source", "investigation", "plan"], include_events=false)`, or search-then-create
 for issue/conversation input (no new ticket when a matching non-terminal one exists). Detect
 epic-step context (epic membership, `related`, `tags.related_epic`, source text) and load
 `get_epic` + milestone contracts when found. Record the delivery target.
@@ -94,7 +95,8 @@ a separate commit → `/write-tests` → the cross-review iteration loop by invo
 round) with `/resolve-review-fable` resolving actionable findings. Stop for unresolved
 design decisions.
 
-**Persistence gate (before landing):** confirm via `get_ticket` that the ticket now carries
+**Persistence gate (before landing):** confirm via `get_ticket(detail="light",
+artifact_types=["build_todo", "review_todo"], include_events=false)` that the ticket now carries
 its `build_todo` and `review_todo` artifacts — in-session work is not the record. Re-issue
 any `create_artifact` that silently no-op'd. A ticket must not land with only a `source`
 artifact.

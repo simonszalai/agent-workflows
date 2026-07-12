@@ -28,10 +28,15 @@ epic DAG.
 
 ### 1. Gather Context
 
-Load the ticket with all artifacts:
+Load only the artifacts used to construct the PR summary:
 
 ```
-ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full",
+  artifact_types=["plan", "build_todo", "review_todo", "verification_evidence"],
+  include_events=false
+)
 ```
 
 **Read these artifacts from the ticket response:**

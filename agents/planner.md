@@ -97,22 +97,26 @@ Before creating a plan, search for similar past tickets using MCP:
 ```
 # Find similar completed tickets
 similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed",
+  detail="compact"
 )
 
 # Also find similar FAILED tickets — completed-only search is survivorship-biased.
 # verify_*_failed tickets are where a confident plan met reality and lost; read their
 # verification_evidence artifacts for what actually broke, don't guess from titles.
 failed_staging = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_staging_failed"
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_staging_failed",
+  detail="compact"
 )
 failed_prod = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_prod_failed"
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_prod_failed",
+  detail="compact"
 )
 
 # Search by keyword
 results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<relevant keywords>"
+  project=PROJECT, query="<relevant keywords>",
+  detail="compact"
 )
 ```
 
@@ -209,8 +213,9 @@ Before creating a plan, verify:
    - Feature (FNNNN): Expect source artifact + codebase research
    - Bug (BNNNN): Expect source artifact + investigation artifact
 
-2. **Read all available inputs** (provided in your prompt, or via
-   `mcp__autodev-memory__get_ticket`):
+2. **Read all available inputs** from the bounded packet/file paths provided by the orchestrator.
+   If direct retrieval is genuinely required, call `mcp__autodev-memory__get_ticket` with
+   `detail="full"`, `artifact_types=["source", "investigation"]`, and `include_events=false`:
    - `source` artifact - Problem/feature description (required)
    - `investigation` artifact - Root cause analysis (required for bugs)
 
