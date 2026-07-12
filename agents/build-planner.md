@@ -82,7 +82,8 @@ Also search past tickets for patches and solutions in the same area:
 
 ```
 mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<step area keywords>"
+  project=PROJECT, query="<step area keywords>",
+  detail="compact"
 )
 ```
 
@@ -192,12 +193,14 @@ Search for similar past tickets using MCP:
 ```
 # Find similar completed tickets
 similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed",
+  detail="compact"
 )
 
 # Search by keyword across all ticket artifacts
 results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<relevant keywords>"
+  project=PROJECT, query="<relevant keywords>",
+  detail="compact"
 )
 ```
 

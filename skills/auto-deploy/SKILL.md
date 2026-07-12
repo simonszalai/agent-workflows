@@ -105,7 +105,13 @@ so the PR reflects the final state of the branch at deploy time.
 
 ```
 ticket = mcp__autodev-memory__get_ticket(
-  project=PROJECT, ticket_id=ID, repo=REPO
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full",
+  artifact_types=[
+    "plan", "build_todo", "review_todo", "deployment_guide",
+    "verification_evidence", "deferred_cleanup"
+  ],
+  include_events=false
 )
 ```
 

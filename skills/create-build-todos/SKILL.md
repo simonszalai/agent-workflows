@@ -37,7 +37,12 @@ Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
 
 ```
 # 1. Load ticket
-ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full",
+  artifact_types=["source", "plan", "investigation", "deployment_guide"],
+  include_events=false
+)
 # If not found: STOP - ticket not found
 
 # 2. Check plan artifact exists

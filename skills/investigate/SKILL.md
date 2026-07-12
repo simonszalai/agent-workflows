@@ -58,7 +58,11 @@ Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investig
 **If ticket ID given** (e.g., `B0003`):
 
 ```
-mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=["source", "investigation", "verification_evidence"],
+  include_events=false
+)
 ```
 
 - Read the source artifact for context

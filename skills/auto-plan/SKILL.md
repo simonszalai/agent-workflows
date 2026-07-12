@@ -122,7 +122,11 @@ Determine whether the input is an existing ticket ID or something that needs a t
 **If input is a ticket ID (F/B prefix):**
 
 ```
-ticket = mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)
+ticket = mcp__autodev-memory__get_ticket(
+  project=PROJECT, ticket_id=ID, repo=REPO,
+  detail="full", artifact_types=["source", "investigation", "plan", "deployment_guide"],
+  include_events=false
+)
 ```
 
 - If not found: STOP - "Ticket not found"
@@ -143,7 +147,8 @@ First, search for an existing ticket that already tracks this work:
 
 ```
 results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<issue title or key terms from context>"
+  project=PROJECT, query="<issue title or key terms from context>",
+  detail="compact"
 )
 ```
 
@@ -218,29 +223,32 @@ memories = mcp__autodev-memory__search(
 
 # Similar past work — proven approaches, tradeoffs, risks that materialized
 similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=ID, repo=REPO, status="completed"
+  project=PROJECT, ticket_id=ID, repo=REPO, status="completed",
+  detail="compact"
 )
 ticket_hits = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<keywords>"
+  project=PROJECT, query="<keywords>",
+  detail="compact"
 )
 
 # Similar past FAILURES — completed-only priors are survivorship-biased. Tickets that
 # failed verification are exactly the ones where plan/build/review confidently produced
 # something reality rejected; their verification_evidence artifacts carry the lesson.
 failed_staging = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_staging_failed"
+  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_staging_failed",
+  detail="compact"
 )
 failed_prod = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_prod_failed"
+  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_prod_failed",
+  detail="compact"
 )
 ```
 
 Render the hits into a compact markdown blob (omit a section if it is empty), pass it to the
 native planner and any conditionally escalated peer prompt, and pass it as
-`args.priorKnowledge` on the heavy path, where it is
-injected into the drafter, synthesizer, critic, reviser, and disagreement-convergence prompts so
-the plan reuses proven approaches and avoids documented gotchas. Pass `null` if nothing relevant
-turns up — never fabricate entries.
+the shared prior-knowledge file on the heavy path. Every delegated planner reads that same file so
+the plan reuses proven approaches and avoids documented gotchas. Omit the file when nothing
+relevant turns up — never fabricate entries.
 
 ```markdown
 ## Related memories
@@ -291,6 +299,15 @@ review. Announce both decisions: `Plan path: light; peers: no trigger` or
 All delegated planners/critics use `fork_turns: "none"` and bounded self-contained packets per
 `../references/execution-economy.md`. Reuse the source, research, prior-knowledge, and diff files
 from the run-local cache rather than embedding or rediscovering them for every call.
+
+Before dispatch, write the stable inputs once under `.context/plan/<run-id>/`:
+
+- `source.md` — selected `source` artifact body;
+- `research.md` — codebase research or investigation findings;
+- `prior-knowledge.md` — compact rendered memory and past-ticket shortlist, when non-empty.
+
+Pass only `sourceArtifactFile`, `codebaseResearchFile`, and `priorKnowledgeFile` paths to
+`plan-fanout`. Do not pass their contents in workflow arguments or repeat them in each agent prompt.
 
 #### Light path
 
@@ -367,7 +384,7 @@ on path.
 ### Phase 6d: Handle Additional Research Needs (both paths)
 
 - If the returned plan has `open_questions` that need codebase patterns: spawn `researcher`
-  (or invoke `/research`) and re-run the path with the new findings as `codebaseResearch`.
+  (or invoke `/research`), update `research.md`, and re-run the path with the same file path.
 - If the plan has `open_questions` requiring production state for a bug: spawn investigator
   agents and re-run.
 - For the heavy path, prefer to satisfy open questions BEFORE re-running rather than running

@@ -67,7 +67,8 @@ explicitly asks for a full replan/from-scratch run.
 1. Resolve project and load `get_epic(project, epic_id)`. `get_epic` is often large (tens of
    KB) and gets spilled to a file — read it with `jq` / offsets, don't try to swallow it whole.
 2. Load context in **one parallel batch** — these streams are independent, never serialize them:
-   - load all absorbed source tickets with `get_ticket` and read all epic artifacts in
+   - load all absorbed source tickets with `get_ticket(detail="full",
+     artifact_types=["source"], include_events=false)` and read all epic artifacts in
      chronological order;
    - run broad codebase and memory research across involved repos.
 3. Determine the planning mode:

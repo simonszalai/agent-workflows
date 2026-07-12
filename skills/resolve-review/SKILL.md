@@ -48,7 +48,8 @@ pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-u
 
 ## Process
 
-1. **Load ticket** via `get_ticket` — identify pending review_todo artifacts
+1. **Load ticket** via `get_ticket(detail="full", artifact_types=["review_todo"],
+   include_events=false)` — identify pending review_todo artifacts
 
 2. **Partition findings by autofix_class:**
 

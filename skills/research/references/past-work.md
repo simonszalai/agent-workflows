@@ -21,12 +21,14 @@ Search for tickets with similar characteristics using MCP:
 ```
 # Find similar completed tickets (primary method)
 similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed"
+  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed",
+  detail="compact"
 )
 
 # Search across all ticket artifacts by keyword
 results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<relevant keywords>"
+  project=PROJECT, query="<relevant keywords>",
+  detail="compact"
 )
 
 # List tickets by type/status for browsing

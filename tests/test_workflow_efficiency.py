@@ -29,6 +29,22 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("plain review starts native-only", review)
         self.assertNotIn("/review mode:cross", lfg)
 
+    def test_ticket_context_and_plan_fanout_inputs_are_bounded(self) -> None:
+        conventions = (ROOT / "CLAUDE.md").read_text()
+        auto_plan = (ROOT / "skills/auto-plan/SKILL.md").read_text()
+        fanout = (ROOT / "workflows/plan-fanout.js").read_text()
+
+        self.assertIn('detail="light", include_events=false', conventions)
+        self.assertIn("sourceArtifactFile", auto_plan)
+        self.assertIn("codebaseResearchFile", auto_plan)
+        self.assertIn("priorKnowledgeFile", auto_plan)
+        self.assertIn("sourceArtifactFile", fanout)
+        self.assertIn("codebaseResearchFile", fanout)
+        self.assertIn("priorKnowledgeFile", fanout)
+        self.assertNotIn("${sourceArtifact}", fanout)
+        self.assertNotIn("${codebaseResearch}", fanout)
+        self.assertNotIn("${priorKnowledge}", fanout)
+
     def test_compact_exec_keeps_full_output_and_returns_bounded_tail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = run_script("compact-exec", "--run-dir", directory, "--tail-bytes", "5",

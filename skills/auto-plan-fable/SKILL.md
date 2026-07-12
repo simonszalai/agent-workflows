@@ -51,7 +51,9 @@ Pass `command="/auto-plan-fable"` on every ticket/artifact mutation.
 
 ## Ticket resolution (contract)
 
-**Ticket ID input:** `get_ticket`. Not found → STOP. Status `backlog`/`up_next` → fresh plan.
+**Ticket ID input:** `get_ticket(detail="full",
+artifact_types=["source", "investigation", "plan", "deployment_guide"],
+include_events=false)`. Not found → STOP. Status `backlog`/`up_next` → fresh plan.
 Status `planned` with `open_comment_count > 0` → **revise mode** (leave status as `planned`,
 revise the existing plan — see Persist below). Anything else → STOP, "Ticket status is
 {status}, nothing to plan".
@@ -82,8 +84,8 @@ Then set `status="in_progress"` (skip in revise mode).
   feature/bug area and its technologies, `get_similar_tickets(status="completed")`,
   `search_tickets`. Render hits into a compact markdown blob (`## Related memories`,
   `## Related past work`); pass the same blob to every provider planner and as
-  `args.priorKnowledge` on the heavy path. Pass `null` when nothing relevant turns up —
-  never fabricate entries.
+  a shared `.context/plan/<run-id>/prior-knowledge.md` file on the heavy path. Omit the file
+  when nothing relevant turns up — never fabricate entries.
 
 ## Complexity gate
 
@@ -170,8 +172,10 @@ path.
 ### Heavy path
 
 Invoke the shared `plan-fanout` workflow by name (resolved via `~/.claude/workflows/`) with
-`{question, sourceArtifact, codebaseResearch, priorKnowledge, providerDrafts, framings,
-repoRoot, mode}` — peer envelopes go in as `providerDrafts`. Its internal drafter/critic
+`{question, sourceArtifactFile, codebaseResearchFile, priorKnowledgeFile, providerDrafts,
+framings, repoRoot, mode}` — write the three stable context inputs once under
+`.context/plan/<run-id>/` and pass paths, never repeated contents. Peer envelopes go in as
+`providerDrafts`. Its internal drafter/critic
 stages are tuned for the base system; that is fine — the converged output shape is identical.
 If the host tool has no `Workflow` primitive, run the equivalent loop inline (multiple
 framings, completeness/correctness/YAGNI critics, bounded revision) — do not silently skip

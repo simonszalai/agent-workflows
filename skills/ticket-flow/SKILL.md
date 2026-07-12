@@ -82,7 +82,9 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 - If the ticket's `repo` does not match the current repo, switch only to an available linked
   Conductor directory for that repo after checking its git remote; otherwise stop and report the
   missing repo workspace. Do not implement a ticket for one repo inside another repo.
-- If input is a ticket ID, load it via `get_ticket`.
+- If input is a ticket ID, load it once via `get_ticket(detail="full",
+  artifact_types=["source", "investigation", "plan"], include_events=false)` and cache the
+  response until the workflow changes one of those artifacts.
 - If input is an issue/conversation, search existing tickets first; create a new ticket only
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
@@ -118,8 +120,10 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 - Store the final plan as an MCP `plan` artifact.
 - Set `summary_bullets` on the ticket (compact what/why/approach) so the dashboard header is not blank.
 - There is no `approved` status; leaving `planned` means setting `in_progress`.
-- **Honor dashboard review comments.** Before moving to build, check `open_comment_count` from
-  `get_ticket` (also surfaced per-artifact). If the user left open review comments on the plan/source,
+- **Honor dashboard review comments.** Before moving to build, refresh only the changed planning
+  context with `get_ticket(detail="full", artifact_types=["source", "plan"],
+  include_events=false)` and check `open_comment_count` (also surfaced per-artifact). If the user
+  left open review comments on the plan/source,
   fetch them with `list_artifact_comments`, revise the plan via `update_artifact`, and close each with
   `resolve_artifact_comment` (or `reply_artifact_comment` if out of scope). Do not build past
   unresolved feedback.
@@ -138,7 +142,8 @@ Follow `execution-phases.md`:
   `execution-phases.md` only when peer escalation fired;
 - stop for unresolved design decisions.
 
-**Persistence gate (before landing).** Confirm via `get_ticket` that this step now carries its
+**Persistence gate (before landing).** Confirm via `get_ticket(detail="light",
+artifact_types=["build_todo", "review_todo"], include_events=false)` that this step now carries its
 `build_todo` artifacts and the `review_todo` artifacts the adaptive review wrote — building and
 reviewing in-session is **not** enough; those artifacts are the durable, auditable record and must
 be on the ticket. If a `create_artifact` call silently no-op'd (common on cross-provider/Codex MCP

@@ -277,7 +277,9 @@ single resume command; never model-drive provider polling.
 ## Process
 
 1. **Gather context:**
-   - Load ticket: `mcp__autodev-memory__get_ticket(project=PROJECT, ticket_id=ID, repo=REPO)`
+   - Load ticket once with `detail="full"`,
+     `artifact_types=["source", "plan", "build_todo", "review_todo"]`, and
+     `include_events=false`; cache and reuse that response throughout the review.
    - Read plan artifact for intended approach
    - Run `git diff --name-only` to identify changed files
    - Read build_todo artifact completion notes — collect every **Deviations** entry; the

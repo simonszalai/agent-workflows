@@ -29,7 +29,8 @@ Resolve from the user’s request:
 Fetch:
 
 - Epic: `get_epic(project, epic_id)` and inspect `artifacts`
-- Ticket: `get_ticket(project, ticket_id, repo)` and inspect `artifacts`
+- Ticket: `get_ticket(project, ticket_id, repo, detail="full",
+  artifact_types=["source", "plan", "html"], include_events=false)` and inspect `artifacts`
 
 Plan selection:
 
