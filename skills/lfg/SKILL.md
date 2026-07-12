@@ -111,8 +111,8 @@ LFG detects its input source automatically:
 4.  Build Todos         -> /create-build-todos (deep research into implementation steps)
 5.  Build               -> /build (implement each step)
 6.  Write Tests         -> /write-tests (test coverage for new code)
-7.  Review              -> /review mode:cross (runner + two peers, merged)     ┐ cross-review
-8.  Resolve             -> runner fixes actionable findings; re-review         ┘ loop, ≤3 rounds
+7.  Review              -> /review (adaptive native path; peers only on escalation)
+8.  Resolve             -> runner fixes actionable findings; bounded re-review, ≤3 rounds
 9.  Compound            -> /compound (learn from review, apply improvements)
 10. Deploy Guide        -> /create-deployment-guide
 11. Final commit        -> Commit the LFG work on the current branch (no push, no PR)
@@ -314,20 +314,15 @@ Run `/write-tests` internally:
 
 **On failure:** Log details, continue to review phase (non-blocking).
 
-### Phase 7–8: Cross-Review Iteration Loop (review + resolve)
+### Phase 7–8: Adaptive Review Iteration Loop (review + resolve)
 
-Run the **Cross-Review Iteration Loop** from the `review` skill. Each round:
+Run the adaptive iteration loop from the `review` skill. Each round:
 
-1. Run `/review mode:cross` — the current runner's native/self-review **plus** the other two
-   providers via `external-agent`, all merged through one synthesis with a cross-provider
-   confidence boost. Store findings in `.context/review_todos/`.
-
-   **Cross-coverage gate — a round where only one provider ran is a failed round.** Before
-   treating the round as done, confirm the two `.context/review/<provider>.json` files for peer
-   providers exist (a failed provider still writes a valid empty envelope with a `residual_risks`
-   note — that counts; a *missing* file means peer dispatch was never spawned). If either is
-   absent, spawn the missing peer provider(s) and fold its envelope into synthesis before
-   continuing — do not skip peer providers and proceed.
+1. Run `/review` using its light/heavy path and peer-escalation gates. Routine diffs get one bounded
+   native reviewer. Safety-critical scope, a material unresolved uncertainty, or reviewer
+   disagreement escalates coverage; when the peer gate fires, both peer envelopes must be present
+   (or their failure recorded as residual risk) before synthesis. Store findings in
+   `.context/review_todos/`.
 2. Resolve the actionable findings (runner fixes — `safe_auto` inline, `gated_auto`/`manual`
    via the `resolve-review` skill's **finding-routing logic only** — do NOT run its
    commit/push or deployment-guide steps; lfg owns its own commits in Phase 11 and never

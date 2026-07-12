@@ -6,6 +6,9 @@ max_turns: 250
 
 # Ticket Promote
 
+Follow `../references/execution-economy.md` for bounded output, run-local caching, batching, and
+non-model-driven waits. Its economy rules never relax production, ordering, or fail-loud gates.
+
 Promote work that passed staging verification from `staging` to `main`, then execute the
 project's **production deploy steps** for what landed. This skill owns the entire
 post-staging production path except behavior verification: land + deploy, then hand off to

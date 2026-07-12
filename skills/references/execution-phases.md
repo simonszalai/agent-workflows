@@ -11,7 +11,7 @@ its existing ticketless `.context` behavior and is not changed by this reference
    gate) to create/update the plan artifact.
 4. **Critic loop (heavy path only)** — adversarially review the plan for complex/cross-cutting
    work and stop if open questions require user decisions. The light path skips the critic
-   panel and relies on single-round cross-provider convergence.
+   panel and uses one bounded native planner unless a peer-escalation trigger fires.
 5. **Build todos** — create detailed implementation steps with discovered patterns/gotchas.
 6. **Build** — invoke the `build` skill: one builder per todo in dependency order, checkpoint
    each to MCP on success, bounded self-repair (≤2 retries) on a failed todo, and finish only
@@ -19,15 +19,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
    passes. A builder that finds the plan wrong returns `needs_replan` → stop and revise the plan.
    Keep unrelated fixes in a separate commit.
 7. **Write tests** — add focused tests for the changed behavior.
-8. **Review + resolve (cross-review loop)** — run the Cross-Review Iteration Loop by **invoking
-   the `review` skill in `mode:cross`** each round. Do not hand-roll the review here and do not
-   reason about what the providers "would" say — actually enter the skill. The `review` skill is
-   the single orchestrator that owns the whole fan-out **and** the distillation: in one round the
-   main runner performs native/self-review and runs the other two providers through
-   `external-agent`, then distills all three providers into one synthesized set (exact dedup
-   by `(file, normalized title, |line diff| ≤ 3)` plus a semantic same-issue merge for
-   differently-worded duplicates, cross-provider confidence boost, gate, partition). The
-   main runner then resolves the actionable findings.
+8. **Review + resolve** — invoke the `review` skill rather than hand-rolling review. It chooses a
+   genuinely light one-reviewer path or a heavy native specialist path and conditionally adds peer
+   providers only for explicit risk, uncertainty, or disagreement. When peers are required, wait
+   for their envelopes before the single synthesis; never simulate them. The main runner resolves
+   actionable findings.
 
    **Autonomous gated_auto rule.** In an autonomous run there is no user to answer
    `resolve-review`'s "Apply?" question for `gated_auto` findings. The runner may
@@ -37,14 +33,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
    never self-approved: defer them to the follow-up report. (Interactive runs keep
    `resolve-review`'s ask-first behavior.)
 
-   **Cross-coverage gate — the review round is NOT complete until all three providers contributed.**
-   After each round, confirm the two `.context/review/<provider>.json` files for the peer
-   providers exist and were folded into synthesis (a provider that failed still writes a valid
-   envelope with empty `findings` and a `residual_risks` note — that counts as contributing; a
-   *missing* file means peer dispatch was never spawned). If either file is absent, the
-   cross-provider dispatch was silently skipped — go back and spawn the missing peer provider(s)
-   before treating the round as done. A round where only one provider ran is a **failed** review
-   round, not a passing one.
+   **Conditional coverage gate.** A routine light round is complete with its one native envelope.
+   When the review skill records a peer-escalation trigger, the round is not complete until both
+   peer envelopes were folded into synthesis or their failure is explicitly recorded as residual
+   risk. Safety-critical native personas and adversarial checks remain mandatory even if peers fail
+   or `mode:solo` was explicitly requested.
 
    The canonical loop definition lives in the `review` skill. Rounds: heavy path ≤3, light
    path exactly 1. Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)

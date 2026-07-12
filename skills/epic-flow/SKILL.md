@@ -39,6 +39,7 @@ Never advance to a later milestone until the current milestone's staging gate ha
 
 Read before acting:
 
+- `../references/execution-economy.md`
 - `../references/epic-lifecycle.md`
 - `../references/conductor-multi-repo.md`
 - `../references/ticket-lifecycle.md`
