@@ -18,7 +18,14 @@ fixes need approval, manual findings are handed off.
 /resolve-review 009                              # Bug/incident #009 (NNN format)
 /resolve-review F001                             # Feature F001 (FNNN format)
 /resolve-review B0009                            # Bug ticket B0009
+/resolve-review F001 --builder codex             # Fixes via bin/external-build --task resolve
 ```
+
+With `--builder codex`, approved fixes are dispatched through `bin/external-build --task
+resolve` (gpt-5.6 / `medium` by default) with a self-contained findings file and context
+blob — the Codex side has no MCP access. Validate the returned JSON array against the
+resolve-mode contract before setting artifact statuses; the orchestrator still owns all
+statuses and commits.
 
 ## Prerequisites
 

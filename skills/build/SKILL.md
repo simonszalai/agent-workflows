@@ -17,7 +17,24 @@ For any multi-repo or linked-workspace context, read `../references/conductor-mu
 /build F001                 # Execute feature F001 (FNNN format)
 /build F001 --step 2        # Execute specific step
 /build B0009                  # Bug ticket B0009
+/build F001 --builder codex # Build with the external Codex builder (see below)
 ```
+
+### External builder (`--builder codex`)
+
+Same loop, different engine: each todo is dispatched through `bin/external-build --task
+build` (defaults gpt-5.6 / `medium` reasoning) instead of a native builder agent. Pass
+`--reasoning high` for a cross-cutting or migration-heavy todo, and `xhigh` only when
+retrying a todo that failed at lower effort. Requirements specific to this mode:
+
+- The Codex side has **no MCP or memory access**: todos must be self-contained
+  (`/create-build-todos` enforces this when told the builder is external) and the
+  orchestrator writes a context blob (plan summary, health commands, relevant gotchas,
+  prior-attempt errors on retry) to a file passed via `--context-file`.
+- Validate the returned JSON against the build-mode contract before checkpointing;
+  a run with no valid JSON counts as `failed` for the self-repair loop.
+- Everything the orchestrator owns stays identical: MCP artifact statuses, the health
+  gate, and every commit.
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 
