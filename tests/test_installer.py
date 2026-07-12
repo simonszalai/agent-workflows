@@ -22,6 +22,7 @@ class InstallerTest(unittest.TestCase):
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
             "hooks/memory_context.py", "hooks/task_packet.py", "bin/autodev-memory-task-packet",
             "bin/install-agent-workflows",
+            "bin/.protected-route-security-floor",
         ):
             shutil.copy2(ROOT / relative, source / relative)
         (source / "agents/builder.md").write_text("builder v1")
@@ -80,6 +81,30 @@ class InstallerTest(unittest.TestCase):
             self.assertTrue((home / ".claude/agents/builder.md").is_symlink())
             self.assertFalse((home / ".claude/agents/reviewer.md").exists())
             self.assertFalse((home / ".claude/agents/reviewer.md").is_symlink())
+
+    def test_security_floor_removes_pre_floor_version_and_blocks_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            marker = source / "bin/.protected-route-security-floor"
+            marker.unlink()
+            pre_floor = self.commit(source, "pre-floor")
+            home = root / "home"
+            first = self.run_install(source, home, "--version", pre_floor)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            shutil.copy2(ROOT / "bin/.protected-route-security-floor", marker)
+            floor = self.commit(source, "security floor")
+            second = self.run_install(source, home, "--version", floor)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            versions = home / ".local/share/agent-workflows/versions"
+            self.assertFalse((versions / pre_floor).exists())
+            self.assertTrue((versions / floor).is_dir())
+            self.assertIsNone(json.loads((home / ".local/share/agent-workflows/previous.json")
+                                         .read_text())["version_target"])
+            rollback = self.run_install(source, home, "--rollback")
+            self.assertNotEqual(rollback.returncode, 0)
+            self.assertIn("no target", rollback.stderr)
 
     def test_legacy_root_symlink_is_migrated_and_first_rollback_restores_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

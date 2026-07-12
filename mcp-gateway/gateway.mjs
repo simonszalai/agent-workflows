@@ -32,6 +32,16 @@ import { dirname, join } from "node:path"
 import { spawn, execFileSync } from "node:child_process"
 import { Transform } from "node:stream"
 import { encodeAutodevWriteBody } from "./waf-encode.mjs"
+import {
+	ACCESS_MODES,
+	AccessModePolicyError,
+	PROTECTED_POLICY_MODES,
+	allSpawnPorts,
+	defaultAccessMode,
+	exceedsAccessModeCeiling,
+	parseHistoricalOffsets,
+	resolveAccessMode,
+} from "./spawn-policy.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -72,6 +82,20 @@ function loadRoutes() {
 			// `spawn` routes are local children we supervise; their proxy target is the
 			// loopback port the child binds. Derive it so the proxy path is uniform.
 			if (r.spawn && !r.target) r.target = `http://127.0.0.1:${r.spawn.port}`
+			if (r.spawn) {
+				if (!ACCESS_MODES.has(defaultAccessMode(r))) {
+					throw new Error(`invalid default access mode for route ${r.prefix}`)
+				}
+				if (r.spawn.maxAccessMode && !ACCESS_MODES.has(r.spawn.maxAccessMode)) {
+					throw new Error(`invalid maximum access mode for route ${r.prefix}`)
+				}
+				if (r.spawn.protected && r.spawn.maxAccessMode !== "restricted") {
+					throw new Error(`protected route ${r.prefix} must set maxAccessMode=restricted`)
+				}
+				if (exceedsAccessModeCeiling(r, defaultAccessMode(r))) {
+					throw new Error(`default access mode exceeds ceiling for route ${r.prefix}`)
+				}
+			}
 			return r
 		})
 		.sort((a, b) => b.prefix.length - a.prefix.length)
@@ -89,18 +113,25 @@ function log(...args) {
 // `project-mcp ts postgres_*` stdio spawns — secrets are resolved ONCE (start-gateway.sh
 // exports DATABASE_URIs), children are daemon-owned (so they die with the daemon instead
 // of orphaning), and the DB connection pool is shared across every workspace's sessions.
-const ACCESS_MODES = new Set(["restricted", "unrestricted"])
 const ALT_ACCESS_MODE_PORT_OFFSET = Number(process.env.MCP_GATEWAY_ALT_ACCESS_MODE_PORT_OFFSET || 1000)
+const HISTORICAL_ALT_ACCESS_MODE_PORT_OFFSETS = parseHistoricalOffsets(
+	ALT_ACCESS_MODE_PORT_OFFSET,
+	process.env.MCP_GATEWAY_HISTORICAL_ALT_ACCESS_MODE_PORT_OFFSETS || "1000",
+)
+const PROTECTED_ACCESS_MODE_POLICY = (
+	process.env.MCP_GATEWAY_PROTECTED_ACCESS_MODE_POLICY || "clamp"
+).trim().toLowerCase()
+if (!PROTECTED_POLICY_MODES.has(PROTECTED_ACCESS_MODE_POLICY)) {
+	throw new Error(
+		`invalid MCP_GATEWAY_PROTECTED_ACCESS_MODE_POLICY=${PROTECTED_ACCESS_MODE_POLICY}; expected clamp or reject`,
+	)
+}
 
 // key -> { proc, port, restarts, aliveTimer, prefix, accessMode }
 // Default children keep the historical key (`prefix`) for log/readability; dynamic
 // client-selected access-mode children use `${prefix}::${accessMode}`.
 const children = new Map()
 let shuttingDown = false
-
-function defaultAccessMode(route) {
-	return route.spawn?.accessMode || "restricted"
-}
 
 function childKey(route, accessMode = defaultAccessMode(route)) {
 	return accessMode === defaultAccessMode(route) ? route.prefix : `${route.prefix}::${accessMode}`
@@ -113,36 +144,13 @@ function portForAccessMode(route, accessMode = defaultAccessMode(route)) {
 	return s.port + ALT_ACCESS_MODE_PORT_OFFSET
 }
 
-function parseAccessMode(url) {
-	return (
-		url.searchParams.get("access_mode") ||
-		url.searchParams.get("accessMode") ||
-		url.searchParams.get("postgres_access_mode") ||
-		url.searchParams.get("postgresAccessMode") ||
-		""
-	).trim().toLowerCase()
-}
-
-function removeAccessModeParams(url) {
-	for (const key of ["access_mode", "accessMode", "postgres_access_mode", "postgresAccessMode"]) {
-		url.searchParams.delete(key)
-	}
-}
-
-function accessModeForRequest(route, url) {
-	if (!route.spawn) return null
-	const requested = parseAccessMode(url)
-	if (!requested) return defaultAccessMode(route)
-	if (!ACCESS_MODES.has(requested)) {
-		throw new Error(`invalid access_mode=${requested}; expected restricted or unrestricted`)
-	}
-	return requested
-}
-
 // Reap stray children from a previously-crashed daemon so their ports are free. We match
 // the exact `--sse-port <port>` we are about to bind, so we never touch another project's
 // or another tool's processes. (The daemon itself has no `--sse-port` in its argv.)
 function reapStrayChildren(ports) {
+	const ownedPids = new Set(
+		[...children.values()].map((entry) => entry.proc?.pid).filter(Boolean).map(String),
+	)
 	for (const port of ports) {
 		let out = ""
 		try {
@@ -155,6 +163,7 @@ function reapStrayChildren(ports) {
 			continue // pgrep exits non-zero when nothing matches
 		}
 		for (const pid of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
+			if (ownedPids.has(pid)) continue
 			try {
 				process.kill(Number(pid), "SIGTERM")
 				log(`reaped stray postgres-mcp pid=${pid} (:${port})`)
@@ -166,6 +175,10 @@ function reapStrayChildren(ports) {
 function startSpawnRoute(route, requestedAccessMode = defaultAccessMode(route)) {
 	const s = route.spawn
 	const accessMode = requestedAccessMode || defaultAccessMode(route)
+	if (!ACCESS_MODES.has(accessMode) || exceedsAccessModeCeiling(route, accessMode)) {
+		log(`blocked spawn above access-mode ceiling route=${route.prefix} requested=${accessMode}`)
+		return null
+	}
 	const key = childKey(route, accessMode)
 	const port = portForAccessMode(route, accessMode)
 	const url = process.env[s.urlEnv]
@@ -216,6 +229,7 @@ function startSpawnRoute(route, requestedAccessMode = defaultAccessMode(route)) 
 }
 
 function ensureSpawnRoute(route, accessMode) {
+	if (!ACCESS_MODES.has(accessMode) || exceedsAccessModeCeiling(route, accessMode)) return null
 	const key = childKey(route, accessMode)
 	const existing = children.get(key)
 	if (existing?.proc && existing.proc.exitCode === null) return existing
@@ -225,8 +239,24 @@ function ensureSpawnRoute(route, accessMode) {
 function startAllSpawnRoutes() {
 	const spawnRoutes = ROUTES.filter((r) => r.spawn)
 	if (!spawnRoutes.length) return
-	reapStrayChildren(spawnRoutes.map((r) => r.spawn.port))
+	reapStrayChildren(allSpawnPorts(spawnRoutes, HISTORICAL_ALT_ACCESS_MODE_PORT_OFFSETS))
 	for (const r of spawnRoutes) startSpawnRoute(r)
+}
+
+function reconcileSpawnRoutes() {
+	const spawnRoutes = ROUTES.filter((route) => route.spawn)
+	reapStrayChildren(allSpawnPorts(spawnRoutes, HISTORICAL_ALT_ACCESS_MODE_PORT_OFFSETS))
+	for (const [key, entry] of children) {
+		const route = spawnRoutes.find((candidate) => candidate.prefix === entry.prefix)
+		if (!route || exceedsAccessModeCeiling(route, entry.accessMode)) {
+			log(`stopping disallowed spawn key=${key} mode=${entry.accessMode}`)
+			try { entry.proc?.kill("SIGTERM") } catch {}
+			children.delete(key)
+		}
+	}
+	for (const route of spawnRoutes) {
+		if (!children.has(childKey(route))) startSpawnRoute(route)
+	}
 }
 
 function shutdown(sig) {
@@ -443,9 +473,30 @@ const server = http.createServer((req, res) => {
 	}
 	let accessMode = null
 	try {
-		accessMode = accessModeForRequest(route, url)
+		const decision = resolveAccessMode(route, url, PROTECTED_ACCESS_MODE_POLICY)
+		accessMode = decision.accessMode
+		if (decision.audit) {
+			log("AUDIT", JSON.stringify({
+				...decision.audit,
+				client: {
+					address: req.socket.remoteAddress || null,
+					sessionSuffix: String(req.headers["mcp-session-id"] || "").slice(-12) || null,
+					userAgent: req.headers["user-agent"] || null,
+				},
+			}))
+		}
 	} catch (e) {
-		res.writeHead(400, { "content-type": "application/json" })
+		if (e instanceof AccessModePolicyError && e.audit) {
+			log("AUDIT", JSON.stringify({
+				...e.audit,
+				client: {
+					address: req.socket.remoteAddress || null,
+					sessionSuffix: String(req.headers["mcp-session-id"] || "").slice(-12) || null,
+					userAgent: req.headers["user-agent"] || null,
+				},
+			}))
+		}
+		res.writeHead(e.statusCode || 400, { "content-type": "application/json" })
 		res.end(JSON.stringify({ error: String(e.message || e) }))
 		return
 	}
@@ -607,11 +658,7 @@ server.listen(PORT, HOST, () => {
 process.on("SIGHUP", () => {
 	try {
 		ROUTES = loadRoutes()
-		const fresh = ROUTES.filter((r) => r.spawn && !children.has(r.prefix))
-		if (fresh.length) {
-			reapStrayChildren(fresh.map((r) => r.spawn.port))
-			for (const r of fresh) startSpawnRoute(r)
-		}
+		reconcileSpawnRoutes()
 		log("reloaded routes:", ROUTES.map((r) => r.prefix).join(", "))
 	} catch (e) {
 		log("route reload failed:", String(e.message || e))

@@ -327,6 +327,13 @@ run_postgres_uri() {
   exec "$UV_BIN" --project "$POSTGRES_MCP_PROJECT_DIR" run postgres-mcp --access-mode="$access_mode"
 }
 
+run_protected_postgres_uri() {
+  local uri="$1"
+  local access_mode="${2:-restricted}"
+  [[ "$access_mode" == "restricted" ]] || fail "protected route $project/$server cannot launch access mode: $access_mode"
+  run_postgres_uri "$uri" restricted
+}
+
 # Like run_postgres_uri but launches postgres-mcp via `uvx` (no synced project venv) — used
 # by the read-only analyst entries on machines without the ts-prefect dev environment.
 run_postgres_uvx() {
@@ -390,16 +397,16 @@ case "$project:$server" in
     ;;
   shared:postgres_autodev_global)
     mount_value shared AUTODEV_GLOBAL_DATABASE_URL_EXTERNAL
-    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    run_protected_postgres_uri "$RESOLVED_VALUE" restricted
     ;;
 
   ts:postgres_prod)
     ts_prod_postgres_value TS_PROD_DATABASE_NAME
-    run_postgres_uri "$RESOLVED_VALUE" restricted
+    run_protected_postgres_uri "$RESOLVED_VALUE" restricted
     ;;
   ts:postgres_prod_prefect)
     ts_prod_postgres_value TS_PROD_PREFECT_DATABASE_NAME
-    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    run_protected_postgres_uri "$RESOLVED_VALUE" restricted
     ;;
   ts:postgres_staging)
     mount_value ts TS_STAGING_DATABASE_URL_EXTERNAL
@@ -415,7 +422,7 @@ case "$project:$server" in
     ;;
   ts:postgres_autodev_ts)
     mount_value ts TS_PROD_MEM_TS_DATABASE_URL_EXTERNAL
-    run_postgres_uri "$RESOLVED_VALUE" unrestricted
+    run_protected_postgres_uri "$RESOLVED_VALUE" restricted
     ;;
   ts:render)
     token="$(ts_op_read TS_RENDER_API_KEY)"

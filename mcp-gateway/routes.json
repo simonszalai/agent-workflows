@@ -32,13 +32,13 @@
       "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_STAGING_URL", "accessMode": "unrestricted", "port": 8812 }
     },
     "ts/postgres_prod": {
-      "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_PROD_URL", "accessMode": "restricted", "port": 8813 }
+      "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_PROD_URL", "accessMode": "restricted", "maxAccessMode": "restricted", "protected": true, "port": 8813 }
     },
     "ts/postgres_prod_prefect": {
-      "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_PROD_PREFECT_URL", "accessMode": "unrestricted", "port": 8814 }
+      "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_PROD_PREFECT_URL", "accessMode": "restricted", "maxAccessMode": "restricted", "protected": true, "port": 8814 }
     },
     "ts/postgres_autodev_ts": {
-      "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_AUTODEV_TS_URL", "accessMode": "unrestricted", "port": 8815 }
+      "spawn": { "kind": "postgres-mcp", "urlEnv": "TS_POSTGRES_AUTODEV_TS_URL", "accessMode": "restricted", "maxAccessMode": "restricted", "protected": true, "port": 8815 }
     },
 
     "amaru/postgres_dev": {
@@ -62,7 +62,7 @@
     },
 
     "shared/postgres_autodev_global": {
-      "spawn": { "kind": "postgres-mcp", "urlEnv": "AUTODEV_GLOBAL_POSTGRES_URL", "accessMode": "unrestricted", "port": 8841 }
+      "spawn": { "kind": "postgres-mcp", "urlEnv": "AUTODEV_GLOBAL_POSTGRES_URL", "accessMode": "restricted", "maxAccessMode": "restricted", "protected": true, "port": 8841 }
     }
   }
 }
