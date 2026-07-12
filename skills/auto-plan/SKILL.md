@@ -311,10 +311,13 @@ Pass only `sourceArtifactFile`, `codebaseResearchFile`, and `priorKnowledgeFile`
 
 #### Light path
 
-Spawn exactly ONE native/current-runner `planner`. Validate that its plan covers the required
-sections (`title`, `the_ask`, `feasibility/domain fit`, `what`, `why`, `how`, `tradeoffs`,
-`alternatives_considered`, `risks`, `verification_strategy`, `side_effects`, `elimination`,
-`open_questions`, and `assumptions`). Re-prompt once with the missing sections if validation fails.
+Spawn exactly ONE native/current-runner `planner`. Validate that its plan covers the
+**routine tier** of the template (`title`, `the_ask`, `what`, `why`, `how`, `risks`,
+`verification_strategy`, and `assumptions`); the deep sections (first-principles analysis,
+`tradeoffs`, `alternatives_considered`, `side_effects`, `elimination`, `open_questions`,
+feasibility/domain fit) are required only when the planner's judgment says the mechanism
+or scope is genuinely uncertain — absence on a routine plan is not a validation failure.
+Re-prompt once with the missing routine sections if validation fails.
 There is no peer dispatch, fanout workflow, critic panel, or convergence round unless the planner
 surfaces a peer-escalation trigger. Zero-fill heavy-only/provider-only stats.
 
@@ -444,7 +447,7 @@ existing one:
    If a comment is out of scope or you disagree, use `reply_artifact_comment` and leave it open
    for the user rather than resolving it.
 
-### Phase 8: Write a DRAFT Deployment Guide (MANDATORY)
+### Phase 8: Write a DRAFT Deployment Guide (conditional)
 
 Write a DRAFT deployment guide as a separate `deployment_guide` artifact. The plan knows the
 architecture, so it can already commit the *shape* of deploy and verification even though exact
@@ -482,9 +485,15 @@ mcp__autodev-memory__create_artifact(
 )
 ```
 
-Use the template in the `create-deployment-guide` skill. Bugs and trivial single-file changes
-still get a draft — the Verification Evidence section is the whole point, and even a one-line
-fix needs a stated way to prove it in staging and prod.
+Use the template in the `create-deployment-guide` skill. The draft is conditional:
+
+- **Skip it** (state the skip + reason in the plan) when the change is docs/tests/local
+  tooling only, or ships through an unchanged canonical deploy path with no migration,
+  config, or infra impact — the plan's `verification_strategy` already says how to prove
+  the fix.
+- **Write it** whenever deployment has any shape of its own: migrations, deploy ordering,
+  config/env changes, new services, or anything whose staging/prod evidence differs from
+  the plan's verification strategy.
 
 ### Phase 9: Set Status to Planned
 
