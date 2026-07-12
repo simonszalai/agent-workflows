@@ -6,6 +6,9 @@ max_turns: 100
 
 # Auto-Deploy Command
 
+Follow `../references/execution-economy.md` for bounded output, run-local caching, batching, and
+non-model-driven waits. Its economy rules never relax deployment or fail-loud gates below.
+
 Autonomous deployment that picks up a unit ready to deploy, deploys its PR to the target
 environment, and advances its status. **Both standalone tickets and epics can use the staging
 segment** (per-ticket staging statuses were added in migration 025): a unit at

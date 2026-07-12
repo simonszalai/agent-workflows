@@ -12,7 +12,9 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   `review-synthesize`, etc.) for
   heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
   equivalent logic inline on Codex/Grok
-- **bin/** - Shared executables: `project-mcp` (legacy/fallback MCP launcher; new configs should prefer `mcp-gateway`) and `external-agent` (cross-provider adapter — runs Claude, Codex, or Grok as a peer reviewer, investigation hypothesis generator, or research searcher, each emitting the same schema for that task; `external-review` is a back-compat shim for `external-agent --task review`)
+- **bin/** - Shared executables including `project-mcp` (legacy/fallback MCP launcher),
+  `external-agent` (cross-provider adapter), `compact-exec` (bounded command output), `wait-ci`
+  (single-call CI waiting), and `workflow-efficiency-report` (whole-agent-tree usage accounting)
 
 ## Distribution
 
@@ -43,9 +45,10 @@ before activation so a rollback can restore either the previous commit or the do
 root-symlink layout.
 
 `external-agent` shells out to peer provider CLIs (`claude`, `codex`, and/or `grok`), so the
-providers you want as peers must be installed and authenticated. Cross-provider participation is
-**on by default** in `/review`, `/investigate`, and `/research` (opt out per-run with
-`mode:solo` / `--solo`). The intended model is symmetric:
+providers you want as peers must be installed and authenticated. `/review` and `/investigate`
+start with bounded native analysis and add peer providers only for explicit high-risk scope,
+material uncertainty, or unresolved disagreement. `/research` retains cross-provider fan-out by
+default (opt out per-run with `mode:solo` / `--solo`). When peers are used, the model is symmetric:
 
 - if Claude runs the main workflow, external peers are Codex + Grok;
 - if Codex runs the main workflow, external peers are Claude + Grok;

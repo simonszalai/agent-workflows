@@ -16,9 +16,26 @@ memory:
 
 # Auto-Plan Command
 
+Follow `../references/execution-economy.md`; economy never permits unresolved material plan risk
+to be hidden or a required critic/safety gate to be skipped.
+
+Before any conditional external peer call, create its bounded memory packet (once per provider):
+
+```bash
+if ! cat .context/plan/question.txt .context/plan/source.md | \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+    --agent-type planner --provider "$provider" --mechanism external_peer \
+    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
+  printf '%s\n' '<autodev-memory-task-context>Memory context is unavailable.</autodev-memory-task-context>' \
+    > "$MEMORY_PACKET"
+fi
+```
+
+Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task plan`.
+
 The planning workflow. Picks up a `backlog` or `up_next` ticket (or creates one), researches the
-codebase, runs cross-provider planning with disagreement convergence, writes a plan artifact and
-a DRAFT deployment guide, and marks the ticket `planned` for user approval.
+codebase, selects a light or heavy native planning path, conditionally escalates peers for risk or
+uncertainty, writes a plan artifact and a DRAFT deployment guide, and marks the ticket `planned`.
 
 This is the **only** planning skill — there is no separate manual plan command. Methodology
 standards (audits, checklists, synthesis guidelines) live in
@@ -33,10 +50,8 @@ standards (audits, checklists, synthesis guidelines) live in
 /auto-plan                          # Create ticket from conversation context
 /auto-plan F0009 additional context # Ticket with extra context
 /auto-plan F0009 --deep             # Force heavy path (plan-fanout workflow)
-/auto-plan F0009 --light            # Force light path (still cross-provider)
-/auto-plan F0009 --solo             # Emergency opt-out: current provider only —
-                                    #   skips peer providers AND cross-provider convergence.
-                                    #   Use only when the external-agent adapter is broken.
+/auto-plan F0009 --light            # Force one-planner light path
+/auto-plan F0009 --solo             # Disable conditional peer-provider escalation
 /auto-plan F0009                    # Re-run on a planned ticket: revise the plan to address
                                     #   the user's open dashboard review comments, then resolve them
 ```
@@ -93,7 +108,7 @@ standards (audits, checklists, synthesis guidelines) live in
 4.  Research         -> /research for features, /investigate for bugs
 5.  Prior Knowledge  -> Memory + past-ticket search, rendered into a shared blob
 6.  Complexity Gate  -> Choose light (inline) or heavy (plan-fanout) path
-7.  Plan             -> Cross-provider planning, converge disagreements
+7.  Plan             -> Native planning; escalate peers for risk/uncertainty/disagreement
 8.  Persist          -> Orchestrator writes plan artifact + DRAFT deployment_guide
 9.  Set Status       -> Update to "planned" with summary_bullets
 ```
@@ -189,8 +204,8 @@ The heavy-path workflow spawns generic subagents — they receive NO knowledge-m
 do NOT load the `autodev-search` skill, unlike the inline `planner` agent used on the light
 path, which searches the memory system and past tickets itself. So gather prior knowledge here
 in the skill and pass it into whichever path runs. For both paths, pass the same prior-knowledge
-blob to every peer provider planner so all three providers reason from the same known gotchas
-and past decisions:
+blob to the native planner and any conditionally escalated peers so they reason from the same
+known gotchas and past decisions:
 
 ```
 # Related memories (gotchas, patterns, architecture)
@@ -220,8 +235,9 @@ failed_prod = mcp__autodev-memory__get_similar_tickets(
 )
 ```
 
-Render the hits into a compact markdown blob (omit a section if it is empty), pass it to every
-peer planner prompt, and pass it as `args.priorKnowledge` on the heavy path, where it is
+Render the hits into a compact markdown blob (omit a section if it is empty), pass it to the
+native planner and any conditionally escalated peer prompt, and pass it as
+`args.priorKnowledge` on the heavy path, where it is
 injected into the drafter, synthesizer, critic, reviser, and disagreement-convergence prompts so
 the plan reuses proven approaches and avoids documented gotchas. Pass `null` if nothing relevant
 turns up — never fabricate entries.
@@ -239,250 +255,75 @@ turns up — never fabricate entries.
   verification_evidence artifact for the failed rows, don't guess from the title>
 ```
 
-### Phase 5: Complexity Gate — Light vs Heavy
+### Phase 5: Complexity and peer-escalation gates
 
-The heavy path runs the `plan-fanout` workflow: 2+ parallel plan drafts with different framings
-(MVP-first, risk-first), peer-provider drafts merged in, synthesis, 3 parallel critics
-(completeness, correctness, YAGNI — the YAGNI critic exists specifically to counter the natural
-pressure of completeness critics), then bounded disagreement convergence. The light path runs
-one inline planner plus the peer providers with a single convergence round.
+The light path is one native inline planner with no critic panel and no peer providers. The heavy
+path adds multiple native framings and completeness/correctness/YAGNI critics. Peer providers are
+an independent escalation used only for explicit high risk, material uncertainty, or disagreement.
+Prompt length alone is never a complexity signal.
 
-**Complexity is about the work, not the words. Prompt/source LENGTH is not a signal** — "build
-me an app that does X" is short but heavy; a 900-word bug report with a complete investigation
-is long but light.
+Use this path gate (top-to-bottom, first match wins):
 
-Use this gate (top-to-bottom, first match wins):
+| Condition | Path |
+| --- | --- |
+| User passed `--deep` | Heavy |
+| User passed `--light` | Light |
+| New system/app, multi-component/cross-repo work, schema/data migration, or epic step | Heavy |
+| Shared infra, auth, billing, destructive data, or other high blast radius | Heavy |
+| Conflicting requirements or no established implementation pattern | Heavy |
+| Bounded change following an existing pattern or investigated bug fix | Light |
+| Otherwise | Light |
 
-| Condition                                                              | Path  |
-| ---------------------------------------------------------------------- | ----- |
-| User passed `--deep`                                                    | Heavy |
-| User passed `--light`                                                   | Light |
-| New system/app built from scratch                                       | Heavy |
-| Multi-component or cross-repo work                                      | Heavy |
-| Schema change or data migration involved                                | Heavy |
-| Research found no existing pattern to follow                            | Heavy |
-| Ticket is an epic step                                                  | Heavy |
-| High blast radius (touches shared infra, auth, billing, data pipelines) | Heavy |
-| Requirements are conflicting or ambiguous                               | Heavy |
-| Single component following an existing named pattern                    | Light |
-| Clear bug fix with investigation artifact present                       | Light |
-| Otherwise                                                               | Light |
+Escalate peer providers only when at least one trigger is recorded:
 
-Announce the chosen path:
+1. the user explicitly requested cross-provider planning or independent opinions;
+2. the work affects security, auth, billing, destructive/schema migration, or a cross-repo
+   compatibility contract with material blast radius;
+3. native research/critics leave a material factual or architectural uncertainty; or
+4. two native framings/critics materially disagree and repository evidence does not settle it.
 
-```
-Plan path: heavy (schema migration + cross-repo contract) — plan-fanout workflow
-```
+`--solo` disables peers, but not the heavy native critic panel or any project-required safety
+review. Announce both decisions: `Plan path: light; peers: no trigger` or
+`Plan path: heavy; peers: escalated for schema safety`.
 
-or:
+### Phase 6: Plan, critique, and conditionally converge
 
-```
-Plan path: light (bug fix with investigation in place) — inline planner
-```
+All delegated planners/critics use `fork_turns: "none"` and bounded self-contained packets per
+`../references/execution-economy.md`. Reuse the source, research, prior-knowledge, and diff files
+from the run-local cache rather than embedding or rediscovering them for every call.
 
-### Phase 6: Cross-Provider Planning and Convergence (core, both paths)
+#### Light path
 
-A plan artifact is not valid until **all three providers** have contributed independent planning
-judgment and material disagreements have been driven to evidence-backed convergence. The main
-workflow runner is one provider (`claude`, `codex`, or `grok`); the other two providers are
-peers. Unless the caller explicitly passed `--solo`, run the two peer providers with
-`external-agent --task plan`, read their envelopes, and merge them into the same synthesis path
-as the native/current-runner plan. Do not summarize what a provider "would" say; actually run
-the providers and consume their JSON.
+Spawn exactly ONE native/current-runner `planner`. Validate that its plan covers the required
+sections (`title`, `the_ask`, `feasibility/domain fit`, `what`, `why`, `how`, `tradeoffs`,
+`alternatives_considered`, `risks`, `verification_strategy`, `side_effects`, `elimination`,
+`open_questions`, and `assumptions`). Re-prompt once with the missing sections if validation fails.
+There is no peer dispatch, fanout workflow, critic panel, or convergence round unless the planner
+surfaces a peer-escalation trigger. Zero-fill heavy-only/provider-only stats.
 
-Provider roles are symmetric:
+#### Heavy path
 
-| Main workflow runner | Peer planners to run |
-| -------------------- | -------------------- |
-| `claude`             | `codex`, `grok`      |
-| `codex`              | `claude`, `grok`     |
-| `grok`               | `claude`, `codex`    |
+Run `plan-fanout` with bounded native MVP-first and risk-first framings plus the three native critic
+lenses. If Workflow is unavailable, execute the equivalent native loop inline. Stop when all
+must-address findings are incorporated/rejected with evidence or a user decision is required.
+Do not add peer providers merely because the path is heavy.
 
-Determine the current runner with `agent-workflow-provider`. Claude peers use
-subscription-backed `claude -p`, never a direct Anthropic API call.
+#### Conditional peer-provider convergence
 
-**Dispatch shape must match `/review`:**
+Only when the peer-escalation gate fires and `--solo` is absent, run the two providers that are not
+the current runner in parallel through `external-agent --task plan`. Provider subagents use
+`fork_turns: "none"`; full logs/envelopes go under `.context/plan/<run-id>/`. One peer remains
+research-blind so shared research errors can be detected. Preflight the adapter flags before
+calling it; a mismatch is a loud failure, never an improvised re-pairing.
 
-- **Claude Code dispatch:** when Claude Code is the main runner, spawn two `external-planner`
-  subagents in the same parallel `Agent` batch as the native/current planner. Each subagent
-  calls `external-agent --task plan` for one peer provider (`codex` or `grok`) and returns the
-  planner envelope JSON. This avoids foreground shell timeout caps and keeps provider dispatch
-  as thin data collection, not hidden reasoning.
-- **Codex/Grok dispatch:** when Codex or Grok is the main runner, call `external-agent` directly
-  for the two peer providers (including `--provider claude` when Claude is a peer).
-- **Synthesis/convergence:** always happens in the auto-plan orchestrator, not inside the
-  provider dispatcher. External providers contribute envelopes; the deterministic skill logic
-  validates, synthesizes, audits disagreements, and revises.
+Merge usable peer envelopes with the native plan and audit material disagreements. Run at most one
+convergence round for an escalated light plan and three for heavy. Resolve each disagreement by
+code/artifact evidence, make it an explicit blocking `open_questions` item, or reject it as a
+preference/YAGNI issue with rationale. Do not simulate failed peers. For safety-critical triggers,
+peer unavailability is explicit residual risk and the plan may not claim independent agreement.
 
-`external-planner` is the planning analogue of `/review`'s `external-reviewer` subagent.
-It must not draft or critique the plan itself; it only runs the adapter and returns JSON.
-
-**One peer runs research-blind.** The codebase-research blob is fresh, single-agent,
-unverified output — feeding it to every planner with equal authority converts any research
-error into a *shared unquestioned prior*: all providers agree because all were told the same
-thing, and the disagreement audit only fires on disagreements. So the **second** peer in
-`agent-workflow-provider --peers` order gets the source + prior knowledge but NOT the
-research file — it must read the code itself. Where the blind peer's assumptions contradict
-the research-informed plans, that divergence IS the signal: the convergence audit settles it
-against the code. (The memory/past-ticket prior blob is verified, hard-won knowledge and is
-still shared with everyone.)
-
-**Pre-flight the adapter contract before dispatching.** Audits caught a peer planner failing
-at runtime on a CLI flag mismatch (`--research-file` vs the current flag name), which the
-orchestrator papered over by silently reassigning which peer ran research-blind — degrading
-the design without telling anyone. Before the dispatch below, run
-`external-agent --task plan --help` (or `--help`) and confirm every flag you are about to
-pass exists (`--question`, `--source-artifact-file`, `--codebase-research-file`,
-`--prior-knowledge-file`, `--out`). On a mismatch, STOP and report the adapter contract
-drift — do not improvise alternate flags or quietly re-pair peers.
-
-```bash
-mkdir -p .context/plan
-printf '%s' "$QUESTION" > .context/plan/question.txt
-printf '%s' "$SOURCE_ARTIFACT" > .context/plan/source.md
-printf '%s' "$CODEBASE_RESEARCH" > .context/plan/codebase-research.md
-printf '%s' "$PRIOR_KNOWLEDGE" > .context/plan/prior-knowledge.md
-first=1
-for provider in $(agent-workflow-provider --peers); do
-  MEMORY_PACKET=".context/plan/${provider}-memory-task.md"
-  if ! cat .context/plan/question.txt .context/plan/source.md | \
-      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
-        --agent-type planner --provider "$provider" --mechanism external_peer \
-        --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
-    cat > "$MEMORY_PACKET" <<'EOF'
-<autodev-memory-task-context>
-Memory context is unavailable. Do not infer that critical or task-specific memories were loaded.
-This external peer has no memory tool; report this limitation in the returned envelope.
-</autodev-memory-task-context>
-EOF
-  fi
-  if [ "$first" = "1" ]; then
-    research_args="--codebase-research-file .context/plan/codebase-research.md"
-    first=0
-  else
-    research_args=""   # second peer is research-blind (see above)
-  fi
-  external-agent --task plan --provider "$provider" \
-    --question "$(cat .context/plan/question.txt)" \
-    --source-artifact-file .context/plan/source.md \
-    $research_args \
-    --prior-knowledge-file .context/plan/prior-knowledge.md \
-    --memory-context-file "$MEMORY_PACKET" \
-    --out ".context/plan/${provider}.json" 2>".context/plan/${provider}.log" &
-done
-wait
-```
-
-Each peer returns:
-
-```
-{
-  "planner_key": "claude|codex|grok",
-  "plan": { title, what, why, how, tradeoffs, alternatives_considered,
-            risks, verification_strategy, side_effects, elimination,
-            open_questions },
-  "assumptions": [...],
-  "disagreements": [
-    { area, claim, why_it_might_be_wrong, evidence_needed }
-  ],
-  "evidence": [...],
-  "open_questions": [...],
-  "notes": "..."
-}
-```
-
-A provider failure contributes an empty envelope with a note; surface it but do not block if the
-other two providers plus the current runner can still converge. If fewer than two providers
-return usable plans, stop and report the provider failure instead of accepting a one-provider
-plan. **Treat an empty/near-empty envelope (plan null, zero assumptions/disagreements) as a
-failure, not a quiet no-op** — a peer returning 0 items silently has happened and it removes a
-whole provider's judgment from convergence without anyone noticing. The final plan report MUST
-include a per-provider status line: `providers: claude=<ok|failed: reason>, codex=<...>,
-grok=<...>; research-blind peer=<provider> (as designed | re-paired because <reason>)`. Any
-runtime deviation from the planned blind/informed pairing must appear there, never be absorbed
-silently. `.context/plan/*.json` is scratch only; the converged artifact is the persisted plan.
-
-**Convergence rule:** Planning has subjective tradeoffs, but it also contains factual claims
-about code, data, infra, sequencing, migrations, verification, and elimination. Iterate on
-provider disagreements until every material factual/architectural disagreement is either:
-
-1. resolved by evidence from code, existing artifacts, memory, or production/staging facts;
-2. converted into an explicit `open_questions` item that blocks build planning; or
-3. deliberately rejected as preference/YAGNI with a recorded reason.
-
-**Round budget: light path runs exactly 1 convergence round; heavy path runs at most 3** (the
-plan-fanout workflow owns the heavy loop). In each round:
-
-```
-synthesize current provider plans
-identify disagreements across provider assumptions, risks, alternatives, and open questions
-gather missing evidence with researcher/investigator only if evidence would settle the issue
-revise the plan toward the evidence-backed answer
-send the revised answer back through provider disagreement audit
-```
-
-Stop early only when there are no material unresolved disagreements. Do not let "convergence"
-mean gold-plating: completeness claims must beat YAGNI only with concrete evidence. Do not bury
-unresolved factual uncertainty in prose; if it matters, it must be an `open_questions` blocker.
-
-### Phase 6a: Light Path (inline)
-
-When the gate selects "Light", spawn ONE native/current-runner `planner` agent with all inputs
-(source, codebase research findings if features, investigation findings if bugs, prior
-knowledge) **and** run the two peer provider planners from Phase 6 unless `--solo` was passed.
-The native planner returns the markdown plan (per `templates/plan.md`) as its final message;
-peer planners return the envelope shown above. Validate the native plan covers the required
-sections (`title`, `the_ask` (restated request + scope split), `feasibility/domain fit`,
-`what`, `why`, `how`, `tradeoffs`, `alternatives_considered`, `risks`,
-`verification_strategy`, `side_effects`, `elimination`, `open_questions`, `assumptions`). If
-validation fails, re-prompt the planner with the template rather than accepting a partial plan.
-
-Then synthesize the native plan + peer plans and run **one** disagreement-convergence round
-inline. The light path skips the completeness/correctness/YAGNI critic panel, but it does
-**not** skip cross-provider planning or convergence. Assemble the same result shape as the
-heavy path with empty `critic_findings` and zero-filled critic-only stats
-(`critics_succeeded: 0`, `total_findings: 0`, etc.). Populate provider/convergence stats.
-
-Skip Phase 6b — that is the heavy path only.
-
-### Phase 6b: Heavy Path (plan-fanout workflow)
-
-When the gate selects "Heavy", invoke the workflow by name. The runtime resolves `name:`
-against `~/.claude/workflows/`, where agent-workflows is symlinked in every environment.
-
-If the current host tool does not expose Claude's `Workflow` tool (for example a
-Codex/Grok-orchestrated run), execute the equivalent heavy-path planning loop inline: generate
-multiple framings, run critics, revise until critical findings are resolved or a user decision
-is needed, then assemble the same result shape. Do **not** silently skip the critic loop or
-cross-provider convergence loop just because the Claude `Workflow` primitive is absent.
-
-```
-result = Workflow({
-  name: "plan-fanout",
-  args: {
-    question: "<the planning question/spec from source artifact + user input>",
-    sourceArtifact: "<source artifact content>",
-    codebaseResearch: "<research artifact content if /research ran first; null otherwise>",
-    priorKnowledge: "<rendered blob from Phase 4, or null>",
-    providerDrafts: [
-      // peer envelopes from .context/plan/*.json
-    ],
-    framings: [
-      { key: "mvp-first", description: "..." },
-      { key: "risk-first", description: "..." },
-      // Optionally add { key: "integration-first", ... } for cross-system features.
-      // Workflow defaults to mvp-first + risk-first if framings omitted.
-    ],
-    repoRoot: "<absolute path>",
-    mode: "interactive" | "headless"
-  }
-})
-```
-
-**Pass `args` as an actual JSON object, never a stringified blob.** If `args` reaches the
-`Workflow` tool as a JSON string, the script receives a string and every field
-(`question`, `framings`, …) is `undefined`. (plan-fanout now parses a stringified blob
-defensively and throws a clear error, but the caller must still pass an object.)
+A routine non-escalated plan is valid with one native planner. An escalated plan reports per-provider
+status and why escalation occurred. Empty envelopes count as failures, not contributions.
 
 ### Phase 6c: Result Shape (both paths produce this object)
 
@@ -668,7 +509,7 @@ searches past tickets automatically as part of its research phase.
 | Past work learnings      | (built into planner) | Automatic via research (references/past-work.md) |
 | Production state (bugs)  | Investigator agents  | If investigation incomplete                      |
 | Additional code context  | `researcher`         | If planner requests                              |
-| Peer provider planning   | `external-planner`   | Always (unless `--solo`)                         |
+| Peer provider planning   | `external-planner`   | Explicit risk/uncertainty/disagreement trigger   |
 
 ## Output
 
@@ -719,7 +560,7 @@ mcp__autodev-memory__update_ticket(
 | Resolve   | Already tracked (not plannable) | STOP, report existing ID + status        |
 | Validate  | Wrong status                   | STOP, report                             |
 | Research  | Agent failure                  | Log, attempt plan with less context      |
-| Plan      | <2 usable provider plans       | STOP, revert to STARTING_STATUS, report  |
+| Plan      | Required peer escalation unavailable | Surface residual risk; safety-critical work cannot claim independent agreement |
 | Plan      | Planner failure                | STOP, revert to STARTING_STATUS          |
 
 ## Relation to Other Commands
