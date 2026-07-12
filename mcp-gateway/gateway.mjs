@@ -131,6 +131,9 @@ function removeAccessModeParams(url) {
 
 function accessModeForRequest(route, url) {
 	if (!route.spawn) return null
+	// dbhub children bake read-only policy per-source in their TOML config; there is
+	// no runtime access-mode switch, so any ?access_mode param is ignored.
+	if (route.spawn.kind === "dbhub") return defaultAccessMode(route)
 	const requested = parseAccessMode(url)
 	if (!requested) return defaultAccessMode(route)
 	if (!ACCESS_MODES.has(requested)) {
@@ -142,22 +145,24 @@ function accessModeForRequest(route, url) {
 // Reap stray children from a previously-crashed daemon so their ports are free. We match
 // the exact `--sse-port <port>` we are about to bind, so we never touch another project's
 // or another tool's processes. (The daemon itself has no `--sse-port` in its argv.)
-function reapStrayChildren(ports) {
-	for (const port of ports) {
+function reapStrayChildren(entries) {
+	for (const entry of entries) {
+		const { port, kind } = typeof entry === "number" ? { port: entry, kind: "postgres-mcp" } : entry
+		// NOTE: macOS pgrep uses BSD extended regex — no `\b`. Anchor the port with a
+		// TRAILING SPACE instead (our children always pass the port followed by another
+		// flag, so it is always followed by a space). This both works on BSD ERE and
+		// stops `8811` from matching `88110`.
+		const pattern = kind === "dbhub" ? `dbhub.*--port ${port} ` : `postgres-mcp.*--sse-port ${port} `
 		let out = ""
 		try {
-			// NOTE: macOS pgrep uses BSD extended regex — no `\b`. Anchor the port with a
-			// TRAILING SPACE instead (our children always pass `--sse-port <port> --access-mode…`,
-			// so the port is always followed by a space). This both works on BSD ERE and stops
-			// `8811` from matching `88110`.
-			out = execFileSync("pgrep", ["-f", `postgres-mcp.*--sse-port ${port} `], { encoding: "utf8" })
+			out = execFileSync("pgrep", ["-f", pattern], { encoding: "utf8" })
 		} catch {
 			continue // pgrep exits non-zero when nothing matches
 		}
 		for (const pid of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
 			try {
 				process.kill(Number(pid), "SIGTERM")
-				log(`reaped stray postgres-mcp pid=${pid} (:${port})`)
+				log(`reaped stray ${kind} pid=${pid} (:${port})`)
 			} catch {}
 		}
 	}
@@ -168,18 +173,32 @@ function startSpawnRoute(route, requestedAccessMode = defaultAccessMode(route)) 
 	const accessMode = requestedAccessMode || defaultAccessMode(route)
 	const key = childKey(route, accessMode)
 	const port = portForAccessMode(route, accessMode)
-	const url = process.env[s.urlEnv]
-	if (!url) {
+	const isDbhub = s.kind === "dbhub"
+	const url = isDbhub ? null : process.env[s.urlEnv]
+	if (!isDbhub && !url) {
 		log(`spawn ${route.prefix} (${accessMode}): env ${s.urlEnv} is unset — route will 502 until the daemon is restarted with it set`)
 		return null
 	}
 	const existing = children.get(key)
-	if (existing?.proc && existing.proc.exitCode === null) return existing
-	reapStrayChildren([port])
-	const bin = s.bin || process.env.POSTGRES_MCP_BIN || "postgres-mcp"
-	const args = ["--transport", "sse", "--sse-host", "127.0.0.1", "--sse-port", String(port), "--access-mode", accessMode]
-	// DATABASE_URI goes in the env, never argv, so the connection string stays out of `ps`.
-	const proc = spawn(bin, args, { env: { ...process.env, DATABASE_URI: url }, stdio: ["ignore", "pipe", "pipe"] })
+	if (procLooksAlive(existing)) return existing
+	reapStrayChildren([{ port, kind: isDbhub ? "dbhub" : "postgres-mcp" }])
+	let bin, args, env
+	if (isDbhub) {
+		// dbhub: one Streamable-HTTP child per project serving multiple sources from a
+		// TOML config. DSNs stay out of argv — the TOML interpolates ${ENV_VAR}s that
+		// the child inherits from our environment. Read-only policy lives in the TOML.
+		bin = s.bin || process.env.DBHUB_BIN || "dbhub"
+		args = ["--transport", "http", "--host", "127.0.0.1", "--port", String(port), "--config", join(__dirname, s.config)]
+		// dbhub is an npm bin script (`#!/usr/bin/env node`); the launchd PATH has no
+		// node, so prepend the directory of the node running THIS daemon.
+		env = { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH || ""}` }
+	} else {
+		bin = s.bin || process.env.POSTGRES_MCP_BIN || "postgres-mcp"
+		args = ["--transport", "sse", "--sse-host", "127.0.0.1", "--sse-port", String(port), "--access-mode", accessMode]
+		// DATABASE_URI goes in the env, never argv, so the connection string stays out of `ps`.
+		env = { ...process.env, DATABASE_URI: url }
+	}
+	const proc = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] })
 
 	const entry = children.get(key) || { restarts: 0 }
 	entry.proc = proc
@@ -211,21 +230,35 @@ function startSpawnRoute(route, requestedAccessMode = defaultAccessMode(route)) 
 		if (children.get(key) === entry) children.delete(key)
 		log(`spawn ${key} failed: ${String(err.message || err)}`)
 	})
-	log(`spawned ${key} -> postgres-mcp sse 127.0.0.1:${port} (${accessMode})`)
+	log(`spawned ${key} -> ${isDbhub ? "dbhub http" : "postgres-mcp sse"} 127.0.0.1:${port}${isDbhub ? "" : ` (${accessMode})`}`)
 	return entry
+}
+
+// A child can die without its 'exit' event ever reaching us (observed 2026-07-12 with
+// dbhub children after a pkill bounce: exitCode stayed null, pid gone). Trust the map
+// only if the OS confirms the pid is still alive (signal 0 probes without killing).
+function procLooksAlive(entry) {
+	if (!entry?.proc || entry.proc.exitCode !== null) return false
+	try {
+		process.kill(entry.proc.pid, 0)
+		return true
+	} catch {
+		return false
+	}
 }
 
 function ensureSpawnRoute(route, accessMode) {
 	const key = childKey(route, accessMode)
 	const existing = children.get(key)
-	if (existing?.proc && existing.proc.exitCode === null) return existing
+	if (procLooksAlive(existing)) return existing
+	if (existing) children.delete(key)
 	return startSpawnRoute(route, accessMode)
 }
 
 function startAllSpawnRoutes() {
 	const spawnRoutes = ROUTES.filter((r) => r.spawn)
 	if (!spawnRoutes.length) return
-	reapStrayChildren(spawnRoutes.map((r) => r.spawn.port))
+	reapStrayChildren(spawnRoutes.map((r) => ({ port: r.spawn.port, kind: r.spawn.kind === "dbhub" ? "dbhub" : "postgres-mcp" })))
 	for (const r of spawnRoutes) startSpawnRoute(r)
 }
 
@@ -541,8 +574,10 @@ const server = http.createServer((req, res) => {
 				res.writeHead(ures.statusCode || 502, ures.headers)
 				// For spawned SSE children, rewrite the `endpoint` event so the client's
 				// POST comes back through this prefixed route (see sseEndpointRewriter).
+				// dbhub speaks Streamable HTTP (no legacy `endpoint` event), so its SSE-framed
+				// responses must stream through untouched — the rewriter would buffer them.
 				const ct = ures.headers["content-type"] || ""
-				if (route.spawn && /text\/event-stream/i.test(ct)) {
+				if (route.spawn && route.spawn.kind !== "dbhub" && /text\/event-stream/i.test(ct)) {
 					ures.pipe(sseEndpointRewriter("/" + route.prefix, accessMode)).pipe(res)
 				} else {
 					ures.pipe(res)
@@ -609,7 +644,7 @@ process.on("SIGHUP", () => {
 		ROUTES = loadRoutes()
 		const fresh = ROUTES.filter((r) => r.spawn && !children.has(r.prefix))
 		if (fresh.length) {
-			reapStrayChildren(fresh.map((r) => r.spawn.port))
+			reapStrayChildren(fresh.map((r) => ({ port: r.spawn.port, kind: r.spawn.kind === "dbhub" ? "dbhub" : "postgres-mcp" })))
 			for (const r of fresh) startSpawnRoute(r)
 		}
 		log("reloaded routes:", ROUTES.map((r) => r.prefix).join(", "))

@@ -37,13 +37,18 @@ Your Task prompt will specify the target environment. Use the matching tool pref
 
 ### Database Tools
 
-| Environment | Tool Prefix               |
-| ----------- | ------------------------- |
-| Production  | `mcp__postgres_prod__`    |
-| Staging     | `mcp__postgres_staging__` |
-| Dev (local) | `mcp__postgres_dev__`     |
+One `postgres` MCP server carries all environments as tool-name suffixes (DBHub):
 
-**If the prompt says "Environment: staging", use `mcp__postgres_staging__` tools exclusively.**
+| Environment | Tool                                  |
+| ----------- | ------------------------------------- |
+| Production  | `mcp__postgres__execute_sql_prod`     |
+| Staging     | `mcp__postgres__execute_sql_staging`  |
+| Dev (local) | `mcp__postgres__execute_sql_dev`      |
+
+Schema exploration: `mcp__postgres__search_objects_<env>`. (Older sessions may still expose
+the legacy per-environment servers `mcp__postgres_<env>__execute_sql` — same rule applies.)
+
+**If the prompt says "Environment: staging", use the `_staging` tools exclusively.**
 Never fall back to production tools when a different environment is specified.
 
 ### Infrastructure Tools (Render)

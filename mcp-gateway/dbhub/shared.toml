@@ -1,0 +1,17 @@
+# DBHub config for the shared autodev-global database — replaces the crystaldba
+# child on port 8841. Single source, so tools keep the plain names
+# execute_sql / search_objects.
+
+[[sources]]
+id = "autodev_global"
+dsn = "${AUTODEV_GLOBAL_POSTGRES_URL}?sslmode=require"
+description = "autodev-memory global database"
+lazy = true
+
+[[tools]]
+name = "execute_sql"
+source = "autodev_global"
+
+[[tools]]
+name = "search_objects"
+source = "autodev_global"

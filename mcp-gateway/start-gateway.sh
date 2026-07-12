@@ -113,12 +113,12 @@ trap 'rm -f "${START_ERR_FILE:-}"' EXIT
 set +e
 "$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$HERE/gateway.env" --no-masking -- \
   /bin/zsh "$HERE/finish-start.zsh" 2> >(tee "$START_ERR_FILE" >&2)
-status=$?
+op_status=$?
 set -e
 
-if (( status != 0 )); then
+if (( op_status != 0 )); then
   summary="$(summarize_error_file "$START_ERR_FILE")"
-  gateway_fail_once "op/gateway exited status $status: $summary"
+  gateway_fail_once "op/gateway exited status $op_status: $summary"
 fi
 
 exit 0

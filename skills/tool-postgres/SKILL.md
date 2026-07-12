@@ -10,46 +10,53 @@ How to use Postgres MCP tools for database investigation.
 **Important:** Production Postgres MCP is read-only. Use it for investigation and querying
 only. Data modifications must go through application code (flows, scripts) and the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos may still use Alembic/Prisma migrations).
 
-## Environment-Specific Tool Names (CRITICAL)
+## Server & Tool Layout (DBHub, since 2026-07-12)
 
-Postgres MCP tools are namespaced by environment. **Always use the correct prefix** for the
-environment you are investigating:
+Postgres access goes through one `postgres` MCP server per project (DBHub behind the
+mcp-gateway). All of the project's environments are **sources on that one server**, and the
+tool name carries the environment as a suffix:
 
-| Environment | Tool Prefix               | Access     |
-| ----------- | ------------------------- | ---------- |
-| Production  | `mcp__postgres_prod__`    | Read-only  |
-| Staging     | `mcp__postgres_staging__` | Read-only  |
-| Dev (local) | `mcp__postgres_dev__`     | Read-write |
+| Environment | Tool | Access |
+| ----------- | ---- | ------ |
+| Production | `mcp__postgres__execute_sql_prod` | Read-only (writes rejected) |
+| Staging | `mcp__postgres__execute_sql_staging` | Read-write |
+| Dev (local) | `mcp__postgres__execute_sql_dev` | Read-write |
+| Prefect prod (ts only) | `mcp__postgres__execute_sql_prod_prefect` | Read-write |
+| autodev-memory ts (ts only) | `mcp__postgres__execute_sql_autodev_ts` | Read-write |
+
+Each source also has a schema-exploration tool: `mcp__postgres__search_objects_<env>`.
+
+The shared autodev-memory global database is its own single-source server, so its tools
+keep plain names: `mcp__postgres_autodev_global__execute_sql` / `__search_objects`.
 
 **Examples:**
 
 ```
 # Production
-mcp__postgres_prod__execute_sql(sql="SELECT ...")
+mcp__postgres__execute_sql_prod(sql="SELECT ...")
 
 # Staging
-mcp__postgres_staging__execute_sql(sql="SELECT ...")
+mcp__postgres__execute_sql_staging(sql="SELECT ...")
 
 # Dev
-mcp__postgres_dev__execute_sql(sql="SELECT ...")
+mcp__postgres__execute_sql_dev(sql="SELECT ...")
 ```
 
 **CRITICAL:** When told to investigate a specific environment, use that environment's tool
-prefix. Never default to `mcp__postgres_prod__` when staging or dev was requested.
+suffix. Never default to `_prod` when staging or dev was requested.
 
-## Available Tools (per environment)
+Older sessions may still expose the legacy per-environment servers
+(`mcp__postgres_prod__execute_sql` etc.) — same rules apply, prefix instead of suffix.
 
-Each environment has the same set of tools, just with a different prefix:
+## Available Tools (per source)
 
-| Tool (replace `{env}` with prod/staging/dev) | Purpose                                |
-| --------------------------------------------- | -------------------------------------- |
-| `mcp__postgres_{env}__execute_sql`             | Run SQL queries                        |
-| `mcp__postgres_{env}__analyze_db_health`       | Check index, vacuum, connection health |
-| `mcp__postgres_{env}__get_top_queries`         | Find slow/resource-intensive queries   |
-| `mcp__postgres_{env}__explain_query`           | Analyze query execution plans          |
-| `mcp__postgres_{env}__list_schemas`            | List all schemas                       |
-| `mcp__postgres_{env}__list_objects`            | List tables/views in schema            |
-| `mcp__postgres_{env}__get_object_details`      | Get table/view structure               |
+| Tool (replace `{env}` with prod/staging/dev/...) | Purpose |
+| ------------------------------------------------ | ------- |
+| `mcp__postgres__execute_sql_{env}` | Run SQL (multiple statements allowed, `;`-separated) |
+| `mcp__postgres__search_objects_{env}` | Search/explore schemas, tables, columns, indexes, procedures |
+
+Everything else is plain SQL via `execute_sql_{env}` — see the recipes below for what the
+old dedicated tools used to do.
 
 ## Data Investigation Patterns
 
@@ -83,69 +90,77 @@ WHERE created_at > NOW() - INTERVAL '24 hours'
 GROUP BY hour ORDER BY hour;
 ```
 
-## Performance Investigation
+## Performance Investigation (SQL recipes)
 
-**Find slow queries:**
+**Find slow queries** (needs `pg_stat_statements`; note it omits queries that error every
+time — "0 calls" can mean always-failing, not never-ran):
 
-```
-get_top_queries(sort_by="mean_time", limit=10)
-```
-
-**Find resource-intensive queries:**
-
-```
-get_top_queries(sort_by="resources", limit=10)
+```sql
+SELECT queryid, calls, mean_exec_time, total_exec_time, rows, query
+FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 10;
+-- resource-intensive: ORDER BY total_exec_time DESC (or shared_blks_read DESC)
 ```
 
-**Analyze specific query:**
+**Analyze a specific query:**
 
-```
-explain_query(sql="SELECT ...", analyze=true)
-```
-
-## Health Investigation
-
-**Comprehensive health check:**
-
-```
-analyze_db_health(health_type="all")
+```sql
+EXPLAIN (ANALYZE, BUFFERS) SELECT ...;
+-- read-only sources allow EXPLAIN; use plain EXPLAIN (no ANALYZE) for write statements
 ```
 
-**Specific checks:**
+## Health Investigation (SQL recipes)
 
+**Cache hit rate (want >95%):**
+
+```sql
+SELECT sum(heap_blks_hit) / NULLIF(sum(heap_blks_hit) + sum(heap_blks_read), 0) AS heap_hit_rate
+FROM pg_statio_user_tables;
 ```
-analyze_db_health(health_type="index")      # Invalid, duplicate, bloated indexes
-analyze_db_health(health_type="connection") # Connection utilization
-analyze_db_health(health_type="vacuum")     # Transaction wraparound risk
-analyze_db_health(health_type="buffer")     # Cache hit rates
+
+**Connection utilization:**
+
+```sql
+SELECT count(*) AS conns, (SELECT setting::int FROM pg_settings WHERE name='max_connections') AS max
+FROM pg_stat_activity;
+-- long-running holders: SELECT pid, state, now()-query_start AS age, left(query,80)
+-- FROM pg_stat_activity WHERE state <> 'idle' ORDER BY age DESC;
+```
+
+**Vacuum / wraparound risk:**
+
+```sql
+SELECT relname, last_autovacuum, n_dead_tup
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+```
+
+**Unused / duplicate indexes:**
+
+```sql
+SELECT schemaname, relname, indexrelname, idx_scan, pg_size_pretty(pg_relation_size(indexrelid)) AS size
+FROM pg_stat_user_indexes ORDER BY idx_scan ASC, pg_relation_size(indexrelid) DESC LIMIT 15;
 ```
 
 ## Schema Exploration
 
-**List schemas:**
+Prefer `search_objects_{env}` for interactive exploration. SQL equivalents:
 
-```
-list_schemas()
-```
+```sql
+-- list schemas
+SELECT schema_name FROM information_schema.schemata;
 
-**List tables in schema:**
+-- list tables in a schema
+SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
 
-```
-list_objects(schema_name="public", object_type="table")
-```
-
-**Get table structure:**
-
-```
-get_object_details(schema_name="public", object_name="users", object_type="table")
+-- table structure
+SELECT column_name, data_type, is_nullable FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'users' ORDER BY ordinal_position;
 ```
 
 ## Common Patterns
 
 **Connection Issues:**
 
-- Check `analyze_db_health(health_type="connection")` for utilization
-- High utilization + connection errors = pool exhaustion
+- Check connection utilization (SQL above); high utilization + connection errors = pool exhaustion
 - Look for long-running queries holding connections
 
 **Data Integrity:**
@@ -158,4 +173,4 @@ get_object_details(schema_name="public", object_name="users", object_type="table
 
 - Check buffer hit rates (should be >95%)
 - Look for sequential scans on large tables
-- Identify missing indexes via explain_query
+- Identify missing indexes via `EXPLAIN (ANALYZE, BUFFERS)`
