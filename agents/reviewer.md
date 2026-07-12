@@ -5,9 +5,7 @@ model: inherit
 max_turns: 50
 memory_types: [gotcha, diagnosis, architecture]
 skills:
-  - review
   - first-principles
-  - research
   - autodev-search
 ---
 

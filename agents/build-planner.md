@@ -8,7 +8,6 @@ max_turns: 50
 memory_types: [gotcha, pattern, architecture]
 skills:
   - first-principles
-  - research
   - autodev-search
 ---
 
