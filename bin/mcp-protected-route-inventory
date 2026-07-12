@@ -29,7 +29,11 @@ def access_mode(text: str, route: str) -> str:
     return match.group(1) if match else "default"
 
 
-def config_inventory(roots: list[Path], owners: dict[str, str]) -> list[dict[str, str]]:
+def config_inventory(
+    roots: list[Path],
+    owners: dict[str, str],
+    root_owners: dict[Path, str],
+) -> list[dict[str, str]]:
     found: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for root in roots:
@@ -37,7 +41,8 @@ def config_inventory(roots: list[Path], owners: dict[str, str]) -> list[dict[str
             continue
         candidates = [root] if root.is_file() else root.rglob("*")
         for path in candidates:
-            if not path.is_file() or path.name not in CONFIG_NAMES or ".git" in path.parts:
+            if not path.is_file() or path.name not in CONFIG_NAMES \
+                    or {".git", ".context"}.intersection(path.parts):
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
@@ -48,11 +53,16 @@ def config_inventory(roots: list[Path], owners: dict[str, str]) -> list[dict[str
                 if not route_reference or (str(path.resolve()), route) in seen:
                     continue
                 seen.add((str(path.resolve()), route))
+                resolved = path.resolve()
+                matching_roots = [candidate for candidate in root_owners
+                                  if resolved == candidate or candidate in resolved.parents]
+                owner = root_owners[max(matching_roots, key=lambda item: len(item.parts))] \
+                    if matching_roots else owners[route]
                 found.append({
-                    "path": str(path.resolve()),
+                    "path": str(resolved),
                     "route": route,
                     "requested_mode": access_mode(text, route),
-                    "owner_ticket": owners[route],
+                    "owner_ticket": owner,
                 })
     return sorted(found, key=lambda item: (item["route"], item["path"]))
 
@@ -80,6 +90,7 @@ def main() -> int:
     parser.add_argument("--root", action="append", type=Path, default=[])
     parser.add_argument("--gateway-log", action="append", type=Path, default=[])
     parser.add_argument("--owner", action="append", default=[], metavar="ROUTE=TICKET")
+    parser.add_argument("--root-owner", action="append", default=[], metavar="ROOT=TICKET")
     args = parser.parse_args()
     owners = dict(DEFAULT_OWNERS)
     for value in args.owner:
@@ -87,8 +98,14 @@ def main() -> int:
         if not separator or route not in owners or not ticket:
             parser.error(f"invalid owner mapping: {value}")
         owners[route] = ticket
+    root_owners: dict[Path, str] = {}
+    for value in args.root_owner:
+        raw_root, separator, ticket = value.partition("=")
+        if not separator or not raw_root or not ticket:
+            parser.error(f"invalid root owner mapping: {value}")
+        root_owners[Path(raw_root).expanduser().resolve()] = ticket
     roots = args.root or [Path.cwd()]
-    configs = config_inventory(roots, owners)
+    configs = config_inventory(roots, owners, root_owners)
     audits = audit_inventory(args.gateway_log)
     unrestricted = [item for item in configs if item["requested_mode"] == "unrestricted"]
     print(json.dumps({
