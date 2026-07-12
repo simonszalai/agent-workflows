@@ -29,8 +29,35 @@ retrying a todo that failed at lower effort. Requirements specific to this mode:
 
 - The Codex side has **no MCP or memory access**: todos must be self-contained
   (`/create-build-todos` enforces this when told the builder is external) and the
-  orchestrator writes a context blob (plan summary, health commands, relevant gotchas,
-  prior-attempt errors on retry) to a file passed via `--context-file`.
+  orchestrator writes a context blob (plan summary, health commands, relevant
+  memory-service gotchas, prior-attempt errors on retry) to a file passed via
+  `--context-file` — what isn't in the todo or that file does not exist for the builder.
+- Create the bounded memory packet before each dispatch:
+
+  ```bash
+  mkdir -p .context/build
+  # write the todo artifact content to .context/build/todo-{NN}.md, then:
+  if ! cat .context/build/todo-{NN}.md | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type builder --provider codex --mechanism external_build \
+        --task-prompt-stdin --allow-unavailable > .context/build/memory-{NN}.md; then
+    cat > .context/build/memory-{NN}.md <<'EOF'
+  <autodev-memory-task-context>
+  Memory context is unavailable. Do not infer that critical or build-specific memories were loaded.
+  This external builder has no memory tool; proceed only from the approved todo and report the limitation.
+  </autodev-memory-task-context>
+  EOF
+  fi
+  external-build --task build \
+    --todo-file .context/build/todo-{NN}.md \
+    --context-file .context/build/context.md \
+    --memory-context-file .context/build/memory-{NN}.md \
+    --repo "$(pwd)" \
+    --out .context/build/result-{NN}.json
+  ```
+
+  Run it in the background (Bash `run_in_background`, then wait and read the `--out`
+  file) — an escalated-reasoning todo can exceed the foreground shell timeout.
 - Validate the returned JSON against the build-mode contract before checkpointing;
   a run with no valid JSON counts as `failed` for the self-repair loop.
 - Everything the orchestrator owns stays identical: MCP artifact statuses, the health

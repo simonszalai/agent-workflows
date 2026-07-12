@@ -23,9 +23,29 @@ fixes need approval, manual findings are handed off.
 
 With `--builder codex`, approved fixes are dispatched through `bin/external-build --task
 resolve` (gpt-5.6 / `medium` by default) with a self-contained findings file and context
-blob — the Codex side has no MCP access. Validate the returned JSON array against the
-resolve-mode contract before setting artifact statuses; the orchestrator still owns all
-statuses and commits.
+blob — the Codex side has no MCP access. Create the bounded memory packet first:
+
+```bash
+mkdir -p .context/resolve
+if ! cat .context/resolve/findings.md | \
+    autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+      --agent-type builder --provider codex --mechanism external_build \
+      --task-prompt-stdin --allow-unavailable > .context/resolve/memory.md; then
+  cat > .context/resolve/memory.md <<'EOF'
+<autodev-memory-task-context>
+Memory context is unavailable. Do not infer that critical memories were loaded.
+This external builder has no memory tool; proceed only from the findings file and report the limitation.
+</autodev-memory-task-context>
+EOF
+fi
+external-build --task resolve --findings-file .context/resolve/findings.md \
+  --context-file .context/resolve/context.md \
+  --memory-context-file .context/resolve/memory.md \
+  --repo "$(pwd)" --out .context/resolve/result.json
+```
+
+Validate the returned JSON array against the resolve-mode contract before setting
+artifact statuses; the orchestrator still owns all statuses and commits.
 
 ## Prerequisites
 

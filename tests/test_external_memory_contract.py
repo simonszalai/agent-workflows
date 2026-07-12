@@ -75,8 +75,7 @@ class ExternalMemoryContractTest(unittest.TestCase):
         recipes = [
             "skills/auto-plan/SKILL.md", "skills/review/SKILL.md",
             "skills/investigate/SKILL.md", "skills/research/SKILL.md",
-            "skills/build-fable/SKILL.md", "skills/resolve-review-fable/SKILL.md",
-            "skills/auto-plan-fable/SKILL.md", "skills/review-fable/SKILL.md",
+            "skills/build/SKILL.md", "skills/resolve-review/SKILL.md",
             "skills/epic-plan/SKILL.md",
         ]
         for relative in recipes:
