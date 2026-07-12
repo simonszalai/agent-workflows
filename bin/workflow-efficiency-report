@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""Report bounded whole-tree workflow efficiency from Codex rollout logs."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections import Counter, defaultdict, deque
+from pathlib import Path
+
+
+USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
+              "reasoning_output_tokens", "total_tokens")
+CALL_TYPES = {"function_call", "custom_tool_call"}
+OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output"}
+COMPACTION_TYPES = {"compacted", "context_compacted"}
+
+
+def read_records(path: Path) -> list[dict]:
+    records = []
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+    return records
+
+
+def metadata(records: list[dict]) -> dict:
+    for record in records:
+        if record.get("type") == "session_meta" and isinstance(record.get("payload"), dict):
+            return record["payload"]
+    return {}
+
+
+def metadata_from_file(path: Path) -> dict:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            for _, line in zip(range(20), stream):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") == "session_meta" \
+                        and isinstance(record.get("payload"), dict):
+                    return record["payload"]
+    except OSError:
+        pass
+    return {}
+
+
+def usage_dict(value: object) -> dict[str, int]:
+    source = value if isinstance(value, dict) else {}
+    result = {}
+    for key in USAGE_KEYS:
+        try:
+            result[key] = max(0, int(source.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            result[key] = 0
+    return result
+
+
+def efficiency_summary(usage: dict[str, int]) -> dict[str, int | float]:
+    uncached_input = max(0, usage["input_tokens"] - usage["cached_input_tokens"])
+    input_tokens = usage["input_tokens"]
+    return {
+        "raw_total_tokens": usage["total_tokens"],
+        "cached_input_tokens": usage["cached_input_tokens"],
+        "uncached_input_tokens": uncached_input,
+        "effective_non_cached_tokens": uncached_input + usage["output_tokens"],
+        "cached_input_ratio": round(usage["cached_input_tokens"] / input_tokens, 4)
+        if input_tokens else 0.0,
+    }
+
+
+def output_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(str(part.get("text", "")) for part in value if isinstance(part, dict))
+    return ""
+
+
+def call_arguments(payload: dict) -> dict:
+    value = payload.get("input", payload.get("arguments", {}))
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def summarize(path: Path, is_descendant: bool) -> dict:
+    records = read_records(path)
+    meta = metadata(records)
+    token_events: list[tuple[int, str | None, dict]] = []
+    task_started_at = None
+    task_started_index = None
+    for index, record in enumerate(records):
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if record.get("type") == "event_msg" and payload.get("type") == "task_started":
+            task_started_index = index
+            task_started_at = record.get("timestamp") \
+                if isinstance(record.get("timestamp"), str) else None
+            break
+    tool_calls = forks = all_forks = compactions = truncations = output_bytes = 0
+    fork_modes: Counter[str] = Counter()
+    for index, record in enumerate(records):
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        payload_type = payload.get("type")
+        if record.get("type") == "event_msg" and payload_type == "token_count":
+            info = payload.get("info")
+            if isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict):
+                timestamp = record.get("timestamp") if isinstance(record.get("timestamp"), str) \
+                    else None
+                token_events.append((index, timestamp, info))
+        active = not is_descendant or task_started_index is None or index >= task_started_index
+        if not active:
+            continue
+        if record.get("type") in COMPACTION_TYPES or payload_type in COMPACTION_TYPES:
+            compactions += 1
+        if record.get("type") == "response_item" and payload_type in CALL_TYPES:
+            tool_calls += 1
+            if str(payload.get("name", "")).split(".")[-1] == "spawn_agent":
+                forks += 1
+                mode = str(call_arguments(payload).get("fork_turns", "unspecified"))
+                fork_modes[mode] += 1
+                if mode == "all":
+                    all_forks += 1
+        if record.get("type") == "response_item" and payload_type in OUTPUT_TYPES:
+            text = output_text(payload.get("output"))
+            output_bytes += len(text.encode("utf-8"))
+            if "Warning: truncated output" in text or "tokens truncated" in text:
+                truncations += 1
+
+    gross = usage_dict(token_events[-1][2]["total_token_usage"]) \
+        if token_events else usage_dict({})
+    baseline = usage_dict({})
+    baseline_known = not is_descendant
+    baseline_method = "not_applicable_root"
+    unique = gross.copy()
+    if is_descendant:
+        baseline_method = "unavailable_no_pre_task_total_usage"
+        if task_started_at is not None and task_started_index is not None:
+            eligible = [info for index, timestamp, info in token_events
+                        if index <= task_started_index and timestamp is not None
+                        and timestamp <= task_started_at]
+            if eligible:
+                baseline = usage_dict(eligible[-1]["total_token_usage"])
+                baseline_known = True
+                baseline_method = "last_total_usage_at_or_before_task_started"
+                unique = {key: max(0, gross[key] - baseline[key]) for key in USAGE_KEYS}
+            else:
+                active_infos = [info for index, _, info in token_events
+                                if index >= task_started_index]
+                last_usages = [info.get("last_token_usage") for info in active_infos]
+                if active_infos and all(isinstance(item, dict) for item in last_usages):
+                    unique = usage_dict({})
+                    for item in last_usages:
+                        for key, value in usage_dict(item).items():
+                            unique[key] += value
+                    baseline = {key: max(0, gross[key] - unique[key]) for key in USAGE_KEYS}
+                    baseline_known = True
+                    baseline_method = "sum_post_task_last_token_usage"
+        else:
+            baseline_method = "unavailable_no_task_started_timestamp"
+    return {
+        "session_id": meta.get("id") or meta.get("session_id"),
+        "parent_thread_id": meta.get("parent_thread_id"),
+        "agent_path": meta.get("agent_path"),
+        "file": str(path.resolve()),
+        "usage_available": bool(token_events),
+        "usage_gross": gross,
+        "inherited_fork_baseline": baseline,
+        "inherited_fork_baseline_tokens": baseline["total_tokens"],
+        "fork_baseline_known": baseline_known,
+        "fork_baseline_method": baseline_method,
+        "activity_boundary_known": not is_descendant or task_started_index is not None,
+        "usage_unique": unique,
+        "tool_calls": tool_calls,
+        "forks": forks,
+        "fork_turns_modes": dict(sorted(fork_modes.items())),
+        "all_forks": all_forks,
+        "truncations": truncations,
+        "compactions": compactions,
+        "tool_output_bytes": output_bytes,
+        "session_log_bytes": path.stat().st_size,
+    }
+
+
+def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
+    empty = {"sidecars": 0, "available_runs": 0, "unavailable_runs": 0,
+             "unattributed_sidecars": 0, "usage": usage_dict({}), "duration_ms": 0,
+             "models": {}, "repos": {}, "providers": {}, "status": "unavailable"}
+    if directory is None or not directory.exists():
+        return empty
+    sidecars = available = unavailable = unattributed = duration_ms = 0
+    total = usage_dict({})
+    models: Counter[str] = Counter()
+    repos: Counter[str] = Counter()
+    providers: Counter[str] = Counter()
+    for path in sorted(directory.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            unattributed += 1
+            continue
+        thread_id = record.get("orchestrator_thread_id") if isinstance(record, dict) else None
+        if not thread_id or str(thread_id) not in session_ids:
+            unattributed += 1
+            continue
+        sidecars += 1
+        try:
+            duration_ms += max(0, int(record.get("duration_ms", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+        models[str(record.get("model") or "provider_default")] += 1
+        repos[str(record.get("repo") or "unavailable")] += 1
+        providers[str(record.get("provider") or "unavailable")] += 1
+        usage = record.get("usage")
+        if isinstance(usage, dict) and record.get("usage_available") is True:
+            available += 1
+            for key, value in usage_dict(usage).items():
+                total[key] += value
+        else:
+            unavailable += 1
+    status = "unavailable" if sidecars == 0 else ("complete" if unavailable == 0 else "partial")
+    return {"sidecars": sidecars, "available_runs": available,
+            "unavailable_runs": unavailable, "unattributed_sidecars": unattributed,
+            "usage": total, "duration_ms": duration_ms, "models": dict(sorted(models.items())),
+            "repos": dict(sorted(repos.items())), "providers": dict(sorted(providers.items())),
+            "status": status}
+
+
+def discover_descendants(search_root: Path, root_path: Path, root_ids: set[str]) \
+        -> tuple[list[Path], int]:
+    by_parent: dict[str, list[tuple[Path, set[str]]]] = defaultdict(list)
+    for path in search_root.rglob("*.jsonl"):
+        if path.resolve() == root_path.resolve():
+            continue
+        meta = metadata_from_file(path)
+        parent = meta.get("parent_thread_id")
+        ids = {str(value) for value in (meta.get("id"), meta.get("session_id")) if value}
+        if parent and ids:
+            by_parent[str(parent)].append((path, ids))
+    queue = deque((root_id, 0) for root_id in root_ids)
+    visited_ids = set(root_ids)
+    visited_paths: set[Path] = set()
+    descendants: list[Path] = []
+    direct_paths: set[Path] = set()
+    while queue:
+        parent_id, depth = queue.popleft()
+        for path, ids in sorted(by_parent.get(parent_id, []), key=lambda item: str(item[0])):
+            resolved = path.resolve()
+            if resolved in visited_paths:
+                continue
+            visited_paths.add(resolved)
+            descendants.append(path)
+            if depth == 0:
+                direct_paths.add(resolved)
+            for session_id in ids:
+                if session_id not in visited_ids:
+                    visited_ids.add(session_id)
+                    queue.append((session_id, depth + 1))
+    return descendants, len(direct_paths)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="workflow-efficiency-report")
+    parser.add_argument("root_session", type=Path)
+    parser.add_argument("--sessions-root", type=Path,
+                        help="directory searched recursively for descendant rollouts")
+    parser.add_argument("--external-usage-dir", type=Path,
+                        default=Path.home() / ".cache/agent-workflows/external-agent-usage")
+    parser.add_argument("--max-descendants", type=int, default=100)
+    args = parser.parse_args()
+    root_records = read_records(args.root_session)
+    root_meta = metadata(root_records)
+    root_ids = {str(value) for value in (root_meta.get("id"), root_meta.get("session_id")) if value}
+    search_root = args.sessions_root or args.root_session.parent
+    if args.sessions_root is None:
+        for ancestor in args.root_session.parents:
+            if ancestor.name == "sessions":
+                search_root = ancestor
+                break
+    descendants, direct_children = discover_descendants(search_root, args.root_session, root_ids)
+    selected = descendants[:max(0, args.max_descendants)]
+    sessions = [summarize(args.root_session, False)] \
+        + [summarize(path, True) for path in selected]
+    tree_usage = usage_dict({})
+    totals = {key: 0 for key in ("tool_calls", "forks", "all_forks", "truncations",
+                                  "compactions", "tool_output_bytes", "session_log_bytes")}
+    fork_modes: Counter[str] = Counter()
+    for session in sessions:
+        for key, value in session["usage_unique"].items():
+            tree_usage[key] += value
+        for key in totals:
+            totals[key] += session[key]
+        fork_modes.update(session["fork_turns_modes"])
+    session_ids = {str(session["session_id"]) for session in sessions if session["session_id"]}
+    external = external_usage(args.external_usage_dir, session_ids)
+    whole_tree_usage = {key: tree_usage[key] + external["usage"][key] for key in USAGE_KEYS}
+    baselines_complete = all(session["fork_baseline_known"] for session in sessions)
+    activity_complete = all(session["activity_boundary_known"] for session in sessions)
+    report = {
+        "root_session_id": root_meta.get("id") or root_meta.get("session_id"),
+        "agents": len(sessions),
+        "direct_children": direct_children,
+        "descendants_discovered": len(descendants),
+        "descendants_reported": len(selected),
+        "descendants_truncated": len(descendants) > len(selected),
+        "whole_tree_usage": whole_tree_usage,
+        "whole_tree_efficiency": efficiency_summary(whole_tree_usage),
+        "codex_tree_usage_unique": tree_usage,
+        "codex_tree_efficiency": efficiency_summary(tree_usage),
+        **totals,
+        "fork_turns_modes": dict(sorted(fork_modes.items())),
+        "sessions": sessions,
+        "external_provider_usage": external,
+        "coverage": {
+            "codex_usage": "complete" if all(s["usage_available"] for s in sessions)
+            else "partial",
+            "descendants": "truncated" if len(descendants) > len(selected) else "complete",
+            "fork_baselines": "complete" if baselines_complete else "uncertain",
+            "fork_baseline_method": "per_session",
+            "activity_boundaries": "complete" if activity_complete else "uncertain",
+            "external_usage": external["status"],
+        },
+    }
+    print(json.dumps(report, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

@@ -41,6 +41,7 @@ and the verifier. The deploy is idempotent, so re-entering after a partial run i
 
 Read before acting on any cross-repo milestone or linked Conductor workspace:
 
+- `../references/execution-economy.md`
 - `../references/conductor-multi-repo.md`
 
 ## Process

@@ -31,6 +31,7 @@ step it must load the parent epic context and honor the milestone contracts.
 
 Read before acting:
 
+- `../references/execution-economy.md`
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
 - `../references/execution-phases.md`
@@ -111,9 +112,9 @@ ticket to staging automatically** unless the user explicitly requested direct pr
   for standalone tickets.
 - Force deep planning when the ticket is an epic step, cross-repo contract consumer/provider,
   schema/data change, or otherwise high risk.
-- Heavy path only: run adversarial plan critique until no critical unresolved findings
-  remain. The light path skips the critic panel and relies on single-round cross-provider
-  convergence.
+- Heavy path only: run adversarial plan critique until no critical unresolved findings remain.
+  The light path uses one native planner; peer planning follows `/auto-plan`'s explicit
+  risk/uncertainty/disagreement escalation gate.
 - Store the final plan as an MCP `plan` artifact.
 - Set `summary_bullets` on the ticket (compact what/why/approach) so the dashboard header is not blank.
 - There is no `approved` status; leaving `planned` means setting `in_progress`.
@@ -131,17 +132,14 @@ Follow `execution-phases.md`:
 - implement each step;
 - keep unrelated lint/type/review fixes in a separate commit;
 - write focused tests;
-- run the cross-review iteration loop by **invoking the `review` skill in `mode:cross`** (do not
-  hand-roll review here): the skill orchestrates native/self-review by the main runner plus the
-  other two providers via `external-agent`, distills them into one set, then the main runner
-  resolves actionable findings, up to 3 rounds or until none remain. A round is only complete
-  when all three providers contributed — confirm the two `.context/review/<provider>.json` peer
-  files exist per the cross-coverage gate in `execution-phases.md`; a one-provider-only round is
-  a failed round;
+- invoke the `review` skill (do not hand-roll it): the skill chooses the light/heavy native path,
+  conditionally escalates peers for explicit risk/uncertainty/disagreement, performs one
+  synthesis, and resolves actionable findings. Apply the conditional coverage gate in
+  `execution-phases.md` only when peer escalation fired;
 - stop for unresolved design decisions.
 
 **Persistence gate (before landing).** Confirm via `get_ticket` that this step now carries its
-`build_todo` artifacts and the `review_todo` artifacts the cross-review wrote — building and
+`build_todo` artifacts and the `review_todo` artifacts the adaptive review wrote — building and
 reviewing in-session is **not** enough; those artifacts are the durable, auditable record and must
 be on the ticket. If a `create_artifact` call silently no-op'd (common on cross-provider/Codex MCP
 paths), re-issue it now. A step must not land or merge with only a `source` artifact — that leaves

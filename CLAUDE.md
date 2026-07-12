@@ -189,6 +189,7 @@ When the user mentions these activities, proactively use the corresponding skill
 | --------------------------------------- | ----------------- |
 | "auto-build", "build this ticket end to end" | Run `/ticket-flow` |
 | "auto-flow", "ticket flow"              | Run `/ticket-flow` |
+| "/goal", "multi-ticket", "batch these related tickets", "hands-off" with multiple tickets | Run `/goal-flow` |
 | "milestone flow", "run this milestone"  | Run `/milestone-flow` |
 | "epic flow", "run this epic"            | Run `/epic-flow` |
 | "auto-fix", "fix this bug autonomously" | Run `/lfg`         |
@@ -352,6 +353,8 @@ create_ticket(
 ### Autonomous Workflows
 
 - `/ticket-flow`: Autonomous single-ticket execution — context -> route staging vs production -> plan/critique -> build -> review -> local verify -> deploy via `/auto-deploy`; no behavior verification
+- `/goal-flow`: Autonomous related-ticket execution — shared context/plan, clustered write scopes,
+  integrated review/test/deploy, and coalesced verification with per-ticket lifecycle truth
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
 - `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production
