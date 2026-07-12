@@ -18,9 +18,11 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 
 ## Output and retrieval bounds
 
-- Set explicit output caps on commands and tools. Write verbose stdout/stderr to a run-local file
-  under `.context/<workflow>/<run-id>/`; return only the exit status, compact summary, and path.
-  Inspect targeted excerpts on demand instead of repeatedly returning the full log.
+- Set explicit output caps on commands and tools. For long-output commands (test suites,
+  builds, migrations), run them through `bin/compact-exec -- <command>` — it writes full
+  stdout/stderr to a run-local log and returns only the exit status plus a bounded tail.
+  Inspect targeted excerpts from the log path on demand instead of repeatedly returning
+  the full output.
 - Bound code search by paths/globs and byte or result caps. Narrow broad searches after the first
   capped sample; never dump an entire repository or generated artifact into model context.
 - Bound every SQL/data query by time window, selected columns, row limit, and payload size. Start
@@ -37,7 +39,8 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 ## Waiting and polling
 
 - Prefer a blocking tool with a bounded timeout or one timer-friendly resume command. Do not spend
-  model turns repeatedly asking whether a job is finished.
+  model turns repeatedly asking whether a job is finished. For GitHub checks, use
+  `bin/wait-ci` — one bounded, backoff-controlled invocation that returns on terminal state.
 - If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,
   and full log on disk. Return once on completion or once at the cap with the exact resume command.
 - Never trade away a required test, review, deployment check, or verification row to save tokens.
