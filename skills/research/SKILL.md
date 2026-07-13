@@ -53,18 +53,9 @@ ticket = mcp__autodev-memory__get_ticket(
 - If not found: error - "Ticket {ID} not found"
 - Read source artifact for context
 
-**If only a question given** (e.g., `/research "how does X work"`):
-
-```
-ticket = mcp__autodev-memory__create_ticket(
-  project=PROJECT, repo=REPO,
-  title="Research: <slug from question>",
-  type="refactor",
-  description="Research question: <user's question>",
-  status="in_progress",
-  command="/research"
-)
-```
+**If only a question given** (e.g., `/research "how does X work"`): do NOT create a
+ticket. The answer goes to the conversation (step 5). Create a ticket only when a parent
+workflow requires one or the user asks to retain the research.
 
 ## Process
 
@@ -86,14 +77,14 @@ ticket = mcp__autodev-memory__create_ticket(
    | User passed `--light`                                                  | Light |
    | Question contains "across", "all", "every", "entire", "everywhere"     | Heavy |
    | Question names a specific file or symbol (e.g. "X in path/to/Y.ts")    | Light |
-   | Question word count ≥ 12                                               | Heavy |
    | Otherwise                                                              | Light |
 
-   Announce the chosen path before fanning out:
+   Question length is not a signal — a long question can still be narrow. Announce the
+   chosen path before fanning out:
 
    ```
-   Question: how is authentication implemented
-   Path: heavy (broad-scope keyword "implemented" + word count) — research-fanout workflow
+   Question: how is authentication implemented across services
+   Path: heavy (broad-scope keyword "across") — research-fanout workflow
    ```
 
 3. **Discover zones (heavy path only — optional):**
@@ -253,16 +244,23 @@ ticket = mcp__autodev-memory__create_ticket(
    `gaps_identified: 0`, `gaps_filled: 0`) and report `loop_iterations: 0`. Downstream
    step 5 must not branch on path.
 
-4c. **Cross-provider searchers (on by default — both paths):**
+4c. **Cross-provider searchers (conditional escalation only):**
 
-   After the chosen path produces its occurrences, add the two providers that are not the current
-   main workflow runner as searchers that answer the same question over the same repo **unless**
-   the user passed `--solo`. If Claude runs the workflow, run Codex + Grok; if Codex runs it,
-   run Claude + Grok; if Grok runs it, run Claude + Codex. Peer providers run read-only with real
-   repo access, so they grep and read files independently — an occurrence multiple searchers find
-   is the dominant pattern; one only a peer provider finds is a coverage gap the main runner's
-   sweep missed. This is a required step, not optional: you MUST run the commands below and read
-   the files they write. Do NOT simulate their output.
+   Peer providers are not a default searcher set. Escalate to them only when one of these
+   is recorded before dispatch (announce the gate decision either way):
+
+   - the user passed `--cross` or explicitly asked for cross-provider coverage;
+   - the research feeds a safety-critical decision (auth, destructive migration,
+     cross-repo contract) where a missed occurrence is expensive;
+   - the native sweep's own coverage stats or residual gaps leave a material completeness
+     doubt the main runner cannot close itself.
+
+   If the gate does not fire, skip this step entirely. When it fires, add the two
+   providers that are not the current main workflow runner as searchers over the same
+   repo (Claude runs → Codex + Grok, etc.). Peers run read-only with real repo access —
+   an occurrence multiple searchers find is the dominant pattern; one only a peer finds
+   is a coverage gap. Run the commands below and read the files they write; do not
+   simulate their output.
 
    Peer providers run through the `external-agent` adapter (`bin/external-agent` in
    agent-workflows, symlinked onto `PATH`) and each returns a searcher envelope
@@ -310,10 +308,13 @@ EOF
    `.context/research/*.json` are ephemeral inter-agent scratch consumed immediately by
    synthesis — correct use of `.context/` per the File Storage Rules.
 
-5. **Render and store the artifact:**
+5. **Render the result — persist only when there is a ticket:**
 
    Format `result` into the Research Output Template below (replace the markdown placeholders
-   with values from `result`). Store via MCP:
+   with values from `result`).
+
+   - **Ticket-bound run** (ticket ID supplied, parent workflow requires it, or the user
+     asked to retain the research): store via MCP:
 
    ```
    mcp__autodev-memory__create_artifact(
@@ -324,6 +325,9 @@ EOF
      command="/research"
    )
    ```
+
+   - **Question-only run:** the rendered answer IS the deliverable — return it in the
+     conversation and create nothing.
 
 ## Research Output Template (MANDATORY)
 
@@ -385,7 +389,9 @@ EOF
 
 ## Quality Standards
 
-- **No sampling** — every relevant file must be checked by some searcher
+- **Breadth matches the ask** — heavy-path or explicitly exhaustive requests check every
+  relevant file; otherwise stop when the answer is supported by sufficient evidence and
+  record what was not swept in `residual_gaps`
 - **Code evidence** — every pattern's canonical_example must point to a real occurrence
 - **Exact locations** — file paths and line numbers throughout
 - **Quantified results** — counts of patterns, files, variations come from `stats`

@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Report bounded token/tool usage for a Claude Code session tree (main + subagents).
+
+Companion to bin/workflow-efficiency-report (which covers Codex rollouts). Streams
+JSONL session logs and prints a bounded report: per-agent totals, prompt-bundle cost
+of each spawn, tool histogram, repeated identical commands and MCP reads, and
+external provider legs. Never prints raw transcript content beyond short labels.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
+
+SPAWN_TOOLS = {"Task", "Agent"}
+TEST_CMD_RE = re.compile(
+    r"\b(pytest|vitest|jest|tsc\b|ruff|eslint|mypy|pyright|go test|cargo test|"
+    r"npm (run )?test|pnpm (run )?test|alembic|atlas)\b"
+)
+EXTERNAL_RE = re.compile(r"(external-agent|external-build|codex exec|grok)")
+CHILD_MATCH_CHARS = 120
+LABEL_CHARS = 72
+
+
+def parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def norm(text: str) -> str:
+    return " ".join(text.split())
+
+
+@dataclass
+class Spawn:
+    agent_type: str
+    description: str
+    prompt_prefix: str
+
+
+@dataclass
+class SessionStats:
+    path: Path
+    label: str = ""
+    assistant_msgs: int = 0
+    output_tokens: int = 0
+    input_uncached: int = 0
+    cache_creation: int = 0
+    cache_read_max: int = 0
+    first_msg_context: int = 0
+    first_msg_uncached: int = 0
+    first_user_prefix: str = ""
+    start: datetime | None = None
+    end: datetime | None = None
+    tool_counts: dict[str, int] = field(default_factory=dict)
+    bash_commands: list[str] = field(default_factory=list)
+    mcp_calls: list[tuple[str, str]] = field(default_factory=list)
+    spawns: list[Spawn] = field(default_factory=list)
+
+
+def iter_records(path: Path):
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield record
+
+
+def scan_session(path: Path) -> SessionStats:
+    stats = SessionStats(path=path)
+    for record in iter_records(path):
+        ts = parse_ts(record.get("timestamp"))
+        if ts:
+            stats.start = min(stats.start, ts) if stats.start else ts
+            stats.end = max(stats.end, ts) if stats.end else ts
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+        if role == "user" and not stats.first_user_prefix:
+            text = ""
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            if norm(text):
+                stats.first_user_prefix = norm(text)[:CHILD_MATCH_CHARS]
+        if role != "assistant":
+            continue
+        stats.assistant_msgs += 1
+        usage = message.get("usage") or {}
+        inp = int(usage.get("input_tokens") or 0)
+        create = int(usage.get("cache_creation_input_tokens") or 0)
+        read = int(usage.get("cache_read_input_tokens") or 0)
+        stats.output_tokens += int(usage.get("output_tokens") or 0)
+        stats.input_uncached += inp
+        stats.cache_creation += create
+        stats.cache_read_max = max(stats.cache_read_max, read)
+        if stats.assistant_msgs == 1:
+            stats.first_msg_context = inp + create + read
+            stats.first_msg_uncached = inp + create
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "?")
+            stats.tool_counts[name] = stats.tool_counts.get(name, 0) + 1
+            tool_input = block.get("input")
+            tool_input = tool_input if isinstance(tool_input, dict) else {}
+            if name == "Bash":
+                command = norm(str(tool_input.get("command") or ""))
+                if command:
+                    stats.bash_commands.append(command)
+            elif name.startswith("mcp__"):
+                try:
+                    args = json.dumps(tool_input, sort_keys=True, default=str)
+                except (TypeError, ValueError):
+                    args = "?"
+                stats.mcp_calls.append((name, args))
+            elif name in SPAWN_TOOLS:
+                stats.spawns.append(
+                    Spawn(
+                        agent_type=str(tool_input.get("subagent_type") or "general-purpose"),
+                        description=norm(str(tool_input.get("description") or "")),
+                        prompt_prefix=norm(str(tool_input.get("prompt") or ""))[:CHILD_MATCH_CHARS],
+                    )
+                )
+    return stats
+
+
+def label_child(child: SessionStats, spawns: list[Spawn], fallback: str) -> None:
+    child.label = fallback
+    for spawn in spawns:
+        if spawn.prompt_prefix and child.first_user_prefix.startswith(
+            spawn.prompt_prefix[: len(child.first_user_prefix)] or "\0"
+        ):
+            child.label = f"{spawn.agent_type}: {spawn.description}"[:LABEL_CHARS]
+            break
+
+
+def discover_children(main: SessionStats, slack: timedelta) -> list[SessionStats]:
+    children: list[SessionStats] = []
+    # Primary source: subagent transcripts stored under <session-id>/subagents/.
+    subagent_dir = main.path.parent / main.path.stem / "subagents"
+    for candidate in sorted(subagent_dir.glob("*.jsonl")):
+        child = scan_session(candidate)
+        if child.assistant_msgs:
+            label_child(child, main.spawns, f"subagent {candidate.stem}")
+            children.append(child)
+    # Fallback: sibling sessions inside the main window (externally spawned runs).
+    if not (main.start and main.end):
+        return children
+    for candidate in sorted(main.path.parent.glob("*.jsonl")):
+        if candidate == main.path:
+            continue
+        mtime = datetime.fromtimestamp(candidate.stat().st_mtime).astimezone()
+        if not (main.start - slack <= mtime <= main.end + slack):
+            continue
+        child = scan_session(candidate)
+        if not child.assistant_msgs:
+            continue
+        if child.start and child.end:
+            if child.end < main.start - slack or child.start > main.end + slack:
+                continue
+        label_child(child, main.spawns, "sibling-in-window")
+        children.append(child)
+    return children
+
+
+def fmt(num: int) -> str:
+    return f"{num:,}"
+
+
+def duplicates(items: list[str]) -> list[tuple[str, int]]:
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+    return sorted(((k, v) for k, v in counts.items() if v >= 2), key=lambda kv: -kv[1])
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("session", nargs="?", help="main session .jsonl path")
+    parser.add_argument("--project-dir", help="~/.claude/projects/<slug> to pick from")
+    parser.add_argument(
+        "--pick", choices=("newest", "largest"), default="newest",
+        help="how to pick the main session from --project-dir",
+    )
+    parser.add_argument("--top", type=int, default=12, help="rows per list section")
+    parser.add_argument(
+        "--window-slack", type=int, default=120,
+        help="seconds of slack when matching child sessions to the main window",
+    )
+    args = parser.parse_args()
+
+    if args.session:
+        main_path = Path(args.session).expanduser()
+    elif args.project_dir:
+        files = sorted(
+            Path(args.project_dir).expanduser().glob("*.jsonl"),
+            key=(lambda p: p.stat().st_size) if args.pick == "largest"
+            else (lambda p: p.stat().st_mtime),
+        )
+        if not files:
+            raise SystemExit("no .jsonl sessions found in project dir")
+        main_path = files[-1]
+    else:
+        raise SystemExit("pass a session path or --project-dir")
+
+    main_stats = scan_session(main_path)
+    children = discover_children(main_stats, timedelta(seconds=args.window_slack))
+    tree = [main_stats, *children]
+
+    print(f"# Session usage report — {main_path}")
+    if main_stats.start and main_stats.end:
+        print(f"window: {main_stats.start} → {main_stats.end} "
+              f"({main_stats.end - main_stats.start})")
+    print(f"tree: main + {len(children)} child session files\n")
+
+    print("## Per-session totals")
+    print("| session | assistant msgs | output | uncached in | cache create | "
+          "first-msg ctx (uncached) |")
+    print("|---|---|---|---|---|---|")
+    for stats in tree:
+        label = stats.label or "MAIN"
+        print(f"| {label} | {stats.assistant_msgs} | {fmt(stats.output_tokens)} | "
+              f"{fmt(stats.input_uncached)} | {fmt(stats.cache_creation)} | "
+              f"{fmt(stats.first_msg_context)} ({fmt(stats.first_msg_uncached)}) |")
+    total_out = sum(s.output_tokens for s in tree)
+    total_in = sum(s.input_uncached for s in tree)
+    total_create = sum(s.cache_creation for s in tree)
+    print(f"| **TOTAL** | — | {fmt(total_out)} | {fmt(total_in)} | {fmt(total_create)} | — |\n")
+
+    tools: dict[str, int] = {}
+    for stats in tree:
+        for name, count in stats.tool_counts.items():
+            tools[name] = tools.get(name, 0) + count
+    print(f"## Tool calls (top {args.top}, whole tree)")
+    for name, count in sorted(tools.items(), key=lambda kv: -kv[1])[: args.top]:
+        print(f"- {count:4d}  {name}")
+    print()
+
+    all_bash = [cmd for stats in tree for cmd in stats.bash_commands]
+    dup_cmds = duplicates(all_bash)
+    print(f"## Repeated identical commands (≥2×, top {args.top})")
+    for command, count in dup_cmds[: args.top]:
+        flag = " [TEST/BUILD]" if TEST_CMD_RE.search(command) else ""
+        print(f"- {count}× {command[:110]}{flag}")
+    if not dup_cmds:
+        print("- none")
+    print()
+
+    all_mcp = [call for stats in tree for call in stats.mcp_calls]
+    dup_mcp = duplicates([f"{name} {args_json}" for name, args_json in all_mcp])
+    print(f"## Repeated identical MCP calls (≥2×, top {args.top})")
+    for call, count in dup_mcp[: args.top]:
+        name, _, args_json = call.partition(" ")
+        digest = hashlib.sha256(args_json.encode()).hexdigest()[:8]
+        print(f"- {count}× {name} args#{digest} {args_json[:90]}")
+    if not dup_mcp:
+        print("- none")
+    print()
+
+    external = [cmd for cmd in all_bash if EXTERNAL_RE.search(cmd)]
+    print("## External provider legs")
+    for command in external[: args.top]:
+        print(f"- {command[:120]}")
+    if external:
+        print("(cross-check Codex cost: bin/workflow-efficiency-report on "
+              "~/.codex/sessions rollouts in this window; Grok legs need usage sidecars)")
+    else:
+        print("- none")
+    print()
+
+    print("## Waste signals")
+    signals = 0
+    for stats in children:
+        if stats.first_msg_context > 25_000 and stats.output_tokens < 5_000:
+            signals += 1
+            print(f"- high-overhead spawn: {stats.label} — "
+                  f"{fmt(stats.first_msg_context)} first-msg ctx for "
+                  f"{fmt(stats.output_tokens)} output")
+    test_dupes = [(c, n) for c, n in dup_cmds if TEST_CMD_RE.search(c)]
+    if test_dupes:
+        signals += 1
+        reruns = sum(n - 1 for _, n in test_dupes)
+        print(f"- {reruns} repeat test/build executions across "
+              f"{len(test_dupes)} identical commands")
+    if dup_mcp:
+        signals += 1
+        print(f"- {len(dup_mcp)} MCP calls repeated with identical args "
+              "(ticket/context reads should be cached per run)")
+    if not signals:
+        print("- none detected by heuristics")
+
+
+if __name__ == "__main__":
+    main()

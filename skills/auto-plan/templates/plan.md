@@ -1,5 +1,11 @@
 # Plan: [Title]
 
+<!-- Plan depth is proportional to the work. ROUTINE tier (bounded change, known mechanism,
+canonical deploy path): The Ask, Summary, What/Why/How, Risks, Assumptions, Verification
+Strategy — omit the other sections entirely rather than filling them with boilerplate.
+FULL tier (uncertain mechanism or scope, schema/auth/destructive changes, cross-repo
+contracts, heavy path): every section below. -->
+
 ## The Ask
 
 [The user's request restated in one or two plain sentences, in their vocabulary. If this

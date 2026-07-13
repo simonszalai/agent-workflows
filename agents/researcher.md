@@ -6,8 +6,6 @@ effort: medium
 max_turns: 50
 memory_types: [reference, architecture, pattern]
 skills:
-  - investigate
-  - research
   - autodev-search
 ---
 

@@ -23,7 +23,7 @@ tools:
     mcp__autodev-memory__search,
     mcp__autodev-memory__expand_entries,
   ]
-skills: [tool-postgres, tool-render, investigate, autodev-search]
+skills: [tool-postgres, tool-render, autodev-search]
 ---
 
 # Verifier Agent
