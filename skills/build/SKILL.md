@@ -17,7 +17,51 @@ For any multi-repo or linked-workspace context, read `../references/conductor-mu
 /build F001                 # Execute feature F001 (FNNN format)
 /build F001 --step 2        # Execute specific step
 /build B0009                  # Bug ticket B0009
+/build F001 --builder codex # Build with the external Codex builder (see below)
 ```
+
+### External builder (`--builder codex`)
+
+Same loop, different engine: each todo is dispatched through `bin/external-build --task
+build` (defaults gpt-5.6 / `medium` reasoning) instead of a native builder agent. Pass
+`--reasoning high` for a cross-cutting or migration-heavy todo, and `xhigh` only when
+retrying a todo that failed at lower effort. Requirements specific to this mode:
+
+- The Codex side has **no MCP or memory access**: todos must be self-contained
+  (`/create-build-todos` enforces this when told the builder is external) and the
+  orchestrator writes a context blob (plan summary, health commands, relevant
+  memory-service gotchas, prior-attempt errors on retry) to a file passed via
+  `--context-file` — what isn't in the todo or that file does not exist for the builder.
+- Create the bounded memory packet before each dispatch:
+
+  ```bash
+  mkdir -p .context/build
+  # write the todo artifact content to .context/build/todo-{NN}.md, then:
+  if ! cat .context/build/todo-{NN}.md | \
+      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+        --agent-type builder --provider codex --mechanism external_build \
+        --task-prompt-stdin --allow-unavailable > .context/build/memory-{NN}.md; then
+    cat > .context/build/memory-{NN}.md <<'EOF'
+  <autodev-memory-task-context>
+  Memory context is unavailable. Do not infer that critical or build-specific memories were loaded.
+  This external builder has no memory tool; proceed only from the approved todo and report the limitation.
+  </autodev-memory-task-context>
+  EOF
+  fi
+  external-build --task build \
+    --todo-file .context/build/todo-{NN}.md \
+    --context-file .context/build/context.md \
+    --memory-context-file .context/build/memory-{NN}.md \
+    --repo "$(pwd)" \
+    --out .context/build/result-{NN}.json
+  ```
+
+  Run it in the background (Bash `run_in_background`, then wait and read the `--out`
+  file) — an escalated-reasoning todo can exceed the foreground shell timeout.
+- Validate the returned JSON against the build-mode contract before checkpointing;
+  a run with no valid JSON counts as `failed` for the self-repair loop.
+- Everything the orchestrator owns stays identical: MCP artifact statuses, the health
+  gate, and every commit.
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 
@@ -233,7 +277,10 @@ self-repair (≤2 retries), and the final health gate.
      migration-bearing work.
 
 8. **After the loop converges:**
-   - Run the full test suite once more to confirm no regressions (final health-gate run)
+   - Do NOT re-run the full suite here — the health gate in step 7 already ran it against
+     the final tree. Re-run only the affected checks if anything changed the tree after
+     that gate (a parity fix, a late edit); never repeat an identical command against an
+     unchanged tree.
    - Record the Completion Summary: ticketed runs update the plan **artifact** via
      `update_artifact`; ticketless runs append it to `.context/plan.md`
    - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow`, `/lfg`) owns

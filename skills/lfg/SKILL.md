@@ -309,8 +309,9 @@ Run `/write-tests` internally:
 
 1. Analyze all code changes from the build phase
 2. Write tests at the appropriate level (unit, integration, e2e)
-3. Run all new tests to verify they pass
-4. Run full test suite to verify no regressions
+3. Run all new tests to verify they pass, plus the suites covering touched modules
+4. Do not run the whole repository suite here — the single full-suite health gate runs
+   once, after the last change of the run (post-review-fixes)
 
 **On failure:** Log details, continue to review phase (non-blocking).
 
@@ -330,7 +331,9 @@ Run the adaptive iteration loop from the `review` skill. Each round:
 
 Repeat up to **3 rounds**, or stop earlier when no actionable
 (`safe_auto`/`gated_auto`/`manual`) findings remain. `advisory` and gate-suppressed nits do
-not re-trigger a round. After round 3, record any remaining `gated_auto`/`manual` findings in
+not re-trigger a round. When the loop ends AND review fixes changed the tree since the
+build health gate, run the full health gate (test + typecheck + lint) once — this is the
+run's single final full-suite pass. After round 3, record any remaining `gated_auto`/`manual` findings in
 the follow-up report.
 
 Reviewers may also flag problems that are **unrelated** to this work (pre-existing

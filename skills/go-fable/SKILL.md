@@ -8,7 +8,7 @@ max_turns: 100
 
 Take a task from the conversation and deliver it as changes in the working tree of the
 current branch, spending Fable tokens **only** on orchestration, judgment, and review
-(style: `skills/references/fable-prompting.md`). Everything token-heavy — reading code,
+(style: `skills/references/model-prompting.md`). Everything token-heavy — reading code,
 pulling logs, writing code — happens in cheaper subagents. This is the "just do it" tier
 below `/lfg-fable`: no tickets, no `.context/` artifacts, no commits, no deployment guide,
 no multi-round review machinery. For work that deserves a paper trail, use `/lfg-fable` or

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""external-build — run the Codex CLI (GPT 5.5) as a WRITE-ENABLED builder for one unit of
+"""external-build — run the Codex CLI (GPT 5.6) as a WRITE-ENABLED builder for one unit of
 implementation work, and return the structured JSON the build/resolve orchestrators expect.
 
 This is the builder counterpart of `external-agent`. It is deliberately a SEPARATE binary:
@@ -7,10 +7,10 @@ This is the builder counterpart of `external-agent`. It is deliberately a SEPARA
 contract is load-bearing for review safety. external-build is the one sanctioned write path
 to a peer provider.
 
-Used by the Fable-variant skills (`build-fable`, `resolve-review-fable`, and the `-fable`
-orchestrators). The dispatching orchestrator — not this builder — owns all MCP artifact
-status updates, the health gate, and every commit. The Codex side gets no MCP access and is
-forbidden from committing.
+Used by `/build --builder codex` and `/resolve-review --builder codex`. The dispatching
+orchestrator — not this builder — owns all MCP artifact status updates, the health gate,
+and every commit. The Codex side gets no MCP access and is forbidden from committing, so
+dispatched todos must be self-contained (see skills/create-build-todos).
 
 Tasks (--task):
 
@@ -25,13 +25,15 @@ Tasks (--task):
                [ { "finding_id", "status": "resolved|skipped|deferred",
                    "files_changed":[...], "verification_output", "regression_test" } ]
 
-Model and reasoning effort are pinned here (gpt-5.5 / xhigh) so the variant does not drift
-with the user's ~/.codex/config.toml. Override only via explicit flags.
+Model and reasoning effort default here (gpt-5.6 / medium) so runs do not drift with the
+user's ~/.codex/config.toml. Escalate per dispatch via --reasoning: `high` for
+cross-cutting logic, concurrency, or migration work; `xhigh` only when retrying after a
+measured lower-effort failure (see skills/references/model-prompting.md).
 
 Usage:
     external-build --task build   --todo-file F [--context-file F] --memory-context-file F [common]
     external-build --task resolve --findings-file F [--context-file F] --memory-context-file F [common]
-  common: [--repo DIR] [--model gpt-5.5] [--reasoning xhigh] [--timeout SECS]
+  common: [--repo DIR] [--model gpt-5.6] [--reasoning medium|high|xhigh] [--timeout SECS]
           [--out FILE] [--sandbox workspace-write|danger-full-access]
 
 --context-file carries orchestrator-supplied context: plan summary, project health commands,
@@ -55,9 +57,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from memory_context import confirm_packet_delivery  # noqa: E402
 
-DEFAULT_MODEL = "gpt-5.5"
-DEFAULT_REASONING = "xhigh"
-DEFAULT_TIMEOUT = 3600  # xhigh reasoning on a real todo can take tens of minutes
+DEFAULT_MODEL = "gpt-5.6"
+DEFAULT_REASONING = "medium"
+DEFAULT_TIMEOUT = 3600  # escalated reasoning on a real todo can take tens of minutes
 
 BUILD_SCHEMA = {
     "type": "object",
@@ -97,9 +99,10 @@ RESOLVE_SCHEMA = {
     "additionalProperties": False,
 }
 
-# The Codex builder methodology. Deliberately prescriptive — GPT 5.5 responds well to
-# explicit procedural instructions; do NOT restyle this the way -fable skill files are
-# styled (see skills/references/fable-prompting.md rule 5).
+# The Codex builder contract: hard invariants, validation requirements, and honest-output
+# rules only. Keep it lean per skills/references/model-prompting.md — GPT-5.6 performs
+# better without step-by-step scaffolding; add prescriptive checklists only in a legacy
+# (gpt-5.5) dispatch, not here.
 COMMON_RULES = """\
 You are a code builder working inside this repository's working tree.
 

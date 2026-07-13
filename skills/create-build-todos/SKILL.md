@@ -240,6 +240,20 @@ The build-planner agent performs thorough research. See
 | Past work items | Similar build_todos, review findings           | Reuse patterns, avoid past review issues   |
 | CLAUDE.md       | Project rules and critical requirements        | Ensure compliance with project rules       |
 
+## Todo depth by builder engine
+
+Todo depth follows who executes it, not a fixed rule:
+
+- **Native builder (default):** the builder has MCP and memory access and can read the
+  repository. Give it objective, acceptance criteria, likely files plus one relevant
+  analogue, risk-specific gotchas, required validation, and hard boundaries. Pass paths
+  to longer artifacts instead of copying their contents.
+- **External builder (`/build --builder codex`):** the Codex side has NO MCP or memory
+  access and sees only the todo text plus a short context blob. Everything it needs must
+  be IN the todo — discovered patterns with `file:line` references, the closest analogous
+  module, the exact verification commands, applicable CLAUDE.md rules. "None applicable"
+  is a valid entry; silence is not.
+
 ## Output Template
 
 Use the template at `templates/build-todo.md` for each build step.
