@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import subprocess
+import sys
 import time
 
 
@@ -15,7 +18,9 @@ TERMINAL_FAILURE = {"fail", "cancel"}
 def main() -> None:
     parser = argparse.ArgumentParser(prog="wait-ci")
     parser.add_argument("ref", nargs="?", default="")
-    parser.add_argument("--timeout", type=float, default=900)
+    # Default caps at 540s so a foreground run stays under the ~9-minute Bash harness cap;
+    # background runs that expect longer CI must pass a higher --timeout explicitly.
+    parser.add_argument("--timeout", type=float, default=540)
     parser.add_argument("--initial-delay", type=float, default=5)
     parser.add_argument("--max-delay", type=float, default=30)
     parser.add_argument("--gh", default="gh", help=argparse.SUPPRESS)
@@ -30,6 +35,40 @@ def main() -> None:
     checks: list[dict] = []
     status = "timeout"
     error = None
+
+    def resume_command() -> str:
+        elapsed = time.monotonic() - started
+        remaining = max(1, round(args.timeout - elapsed))
+        command = "bin/wait-ci"
+        if args.ref:
+            command += f" {args.ref}"
+        return command + f" --timeout {remaining}"
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        # Best-effort: the Bash harness (or an operator) is tearing us down before a
+        # terminal state. Emit the same summary shape with a resume command so the caller
+        # can pick the wait back up, then exit 124 like a natural timeout.
+        summary = {
+            "status": "timeout",
+            "polls": polls,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "checks_total": len(checks),
+            "checks": [{key: item.get(key) for key in ("name", "state", "bucket", "link")}
+                       for item in checks[:100] if isinstance(item, dict)],
+            "checks_truncated": len(checks) > 100,
+            "error": f"interrupted by signal {signum} before a terminal CI state",
+            "resume_command": resume_command(),
+        }
+        try:
+            print(json.dumps(summary, separators=(",", ":")))
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(124)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
     while True:
         command = [args.gh, "pr", "checks"]
         if args.ref:

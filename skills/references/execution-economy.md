@@ -41,6 +41,11 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 - Prefer a blocking tool with a bounded timeout or one timer-friendly resume command. Do not spend
   model turns repeatedly asking whether a job is finished. For GitHub checks, use
   `bin/wait-ci` — one bounded, backoff-controlled invocation that returns on terminal state.
+  Invoke it in the foreground with Bash `timeout=600000` (its 540s default returns just under
+  the ~9-minute Bash harness cap). For CI expected to exceed ~9 minutes, invoke it with
+  `run_in_background` and an explicit higher `--timeout` — the 540s default caps background runs
+  too unless overridden. On interruption or timeout it prints a summary with `status="timeout"`
+  and a `resume_command` you re-run to continue waiting.
 - If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,
   and full log on disk. Return once on completion or once at the cap with the exact resume command.
 - Never trade away a required test, review, deployment check, or verification row to save tokens.

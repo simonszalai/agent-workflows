@@ -372,7 +372,7 @@ phase('Generate')
 const generatorResults = await parallel(
   angles.map(a => () => agent(
     generatePrompt(a, bug, environment, errorEvidence, repoRoot),
-    { label: `generate:${a.key}`, phase: 'Generate', schema: generatorOutputSchema }
+    { label: `generate:${a.key}`, phase: 'Generate', model: 'sonnet', effort: 'medium', schema: generatorOutputSchema }
   ))
 )
 
@@ -467,7 +467,7 @@ for (const id of confirmedIds) {
   for (let i = 1; i <= 2; i++) {
     skepticCalls.push(() => agent(
       refutePrompt(id, m.hypothesis, i, bug, environment, v.evidence_gathered),
-      { label: `refute:${id}:${i}`, phase: 'Refute', schema: refuteOutputSchema }
+      { label: `refute:${id}:${i}`, phase: 'Refute', model: 'sonnet', schema: refuteOutputSchema }
     ))
   }
 }

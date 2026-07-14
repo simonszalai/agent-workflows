@@ -197,28 +197,138 @@ def failed_result(task: str, reason: str):
     return []  # resolve: empty array — every finding stays pending, caller re-dispatches
 
 
-def run_codex(prompt: str, schema: dict, model: str, reasoning: str, sandbox: str,
-              repo: Path, timeout: int) -> str:
+# Codex --json emits a JSONL event stream; the session id appears under one of these keys
+# (name varies by CLI version), which we recover to resume the session for the next todo.
+_SESSION_ID_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId",
+                    "thread_id", "threadId")
+
+
+def _find_session_id(obj: object) -> str | None:
+    if isinstance(obj, dict):
+        for key in _SESSION_ID_KEYS:
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        for value in obj.values():
+            found = _find_session_id(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_session_id(value)
+            if found:
+                return found
+    return None
+
+
+def session_id_from_json_lines(text: str) -> str | None:
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        found = _find_session_id(record)
+        if found:
+            return found
+    return None
+
+
+def read_session_id(session_file: str | None, repo: Path) -> str | None:
+    """Return a valid session id recorded for THIS repo, or None (fall back to full run)."""
+    if not session_file:
+        return None
+    path = Path(session_file)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    if len(session_id) > 200 or any(c.isspace() for c in session_id):
+        return None
+    if data.get("repo") != str(repo):
+        return None
+    return session_id.strip()
+
+
+def write_session_id(session_file: str | None, repo: Path, session_id: str) -> None:
+    if not session_file or not session_id:
+        return
+    try:
+        Path(session_file).write_text(
+            json.dumps({"session_id": session_id, "repo": str(repo)}), encoding="utf-8")
+    except OSError as error:
+        print(f"external-build: could not write session file: {error}", file=sys.stderr)
+
+
+def run_codex(full_prompt: str, delta_prompt: str, schema: dict, model: str, reasoning: str,
+              sandbox: str, repo: Path, timeout: int, session_file: str | None = None,
+              is_retry: bool = False) -> str:
     with tempfile.TemporaryDirectory() as td:
         schema_file = Path(td) / "schema.json"
         last_file = Path(td) / "last.json"
         schema_file.write_text(json.dumps(schema), encoding="utf-8")
-        cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo),
-               "-s", sandbox,
-               "-m", model,
-               "-c", f"model_reasoning_effort={reasoning}",
-               "--output-schema", str(schema_file),
-               "-o", str(last_file)]
+        # `-c mcp_servers={}` makes the no-MCP contract real: Codex loads zero MCP servers
+        # regardless of the user's ~/.codex/config.toml (value parses as an empty TOML table).
+        common = ["-s", sandbox,
+                  "-m", model,
+                  "-c", f"model_reasoning_effort={reasoning}",
+                  "-c", "mcp_servers={}",
+                  "--output-schema", str(schema_file),
+                  "-o", str(last_file)]
+        env = os.environ.copy()
+        env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
+
+        def read_last() -> str:
+            if last_file.is_file() and last_file.read_text(encoding="utf-8").strip():
+                return last_file.read_text(encoding="utf-8")
+            return ""
+
+        # Resume a prior session (same repo) with a delta-only prompt when allowed. Never on
+        # a self-repair retry — that must re-send the full contract to avoid compounding a
+        # confused session.
+        resume_id = None if is_retry else read_session_id(session_file, repo)
+        if resume_id:
+            cmd = (["codex", "exec", "resume", resume_id, "--skip-git-repo-check",
+                    "-C", str(repo)] + common)
+            try:
+                subprocess.run(cmd, input=delta_prompt, text=True, timeout=timeout, env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                out = read_last()
+                if out:
+                    return out
+            except subprocess.TimeoutExpired:
+                print(f"external-build: codex resume timed out after {timeout}s",
+                      file=sys.stderr)
+            print("external-build: codex resume produced no output; "
+                  "starting a fresh full session", file=sys.stderr)
+
+        # Fresh full session. Capture the session id (needs --json) only when a session file
+        # was requested, so the default (no --session-file) path stays byte-identical.
+        capture_session = bool(session_file)
+        cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo)] + common
+        if capture_session:
+            cmd.append("--json")
         try:
-            env = os.environ.copy()
-            env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
-            res = subprocess.run(cmd, input=prompt, text=True, timeout=timeout, env=env,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            res = subprocess.run(
+                cmd, input=full_prompt, text=True, timeout=timeout, env=env,
+                stdout=(subprocess.PIPE if capture_session else subprocess.DEVNULL),
+                stderr=subprocess.PIPE)
         except subprocess.TimeoutExpired:
             print(f"external-build: codex timed out after {timeout}s", file=sys.stderr)
             return ""
-        if last_file.is_file() and last_file.read_text(encoding="utf-8").strip():
-            return last_file.read_text(encoding="utf-8")
+        if capture_session:
+            session_id = session_id_from_json_lines(res.stdout or "")
+            if session_id:
+                write_session_id(session_file, repo, session_id)
+        out = read_last()
+        if out:
+            return out
         err = (res.stderr or "").strip()
         if err:
             print("external-build: codex produced no output; stderr tail:\n"
@@ -249,6 +359,13 @@ def main() -> None:
                     choices=["workspace-write", "danger-full-access"])
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     ap.add_argument("--out", help="also write the result JSON to this file")
+    ap.add_argument("--session-file",
+                    help="path used to persist/reuse a Codex session id across sequential "
+                         "todos for the same repo; first dispatch records it, later "
+                         "dispatches resume it with a delta-only prompt")
+    ap.add_argument("--self-repair-retry", action="store_true",
+                    help="this dispatch is a self-repair retry; forces a fresh full session "
+                         "even when --session-file holds a resumable id")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -283,8 +400,19 @@ def main() -> None:
     parts.append(work_header + "\n" + work)
     prompt = "\n\n---\n\n".join(parts)
 
-    raw = run_codex(prompt, schema, args.model, args.reasoning, args.sandbox,
-                    repo, args.timeout)
+    # Delta-only prompt for a resumed session: the prior session already carries COMMON_RULES,
+    # task rules, and the stable orchestrator context; only the new work (and its fresh memory
+    # packet) need to be sent.
+    delta_parts = []
+    if memory_context:
+        delta_parts.append("EXPLICIT MEMORY TASK CONTEXT (bounded; expand/search only when "
+                           "needed):\n" + memory_context)
+    delta_parts.append(work_header + "\n" + work)
+    delta_prompt = "\n\n---\n\n".join(delta_parts)
+
+    raw = run_codex(prompt, delta_prompt, schema, args.model, args.reasoning, args.sandbox,
+                    repo, args.timeout, session_file=args.session_file,
+                    is_retry=args.self_repair_retry)
 
     exit_code = 0
     result = None

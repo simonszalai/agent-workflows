@@ -139,7 +139,14 @@ light path):
 - the **source artifact's deliverable list** (raw, not a summary — a summary written by the
   build orchestrator inherits the build's blind spots);
 - the **plan's** `what` / `how` / `elimination` scope and its `assumptions`;
-- the **builders' Deviations** entries collected from build_todo Completion Notes.
+- the **builders' Deviations** entries collected from build_todo Completion Notes;
+- the **deliverable → build_todo coverage map** emitted by `/create-build-todos` (in the first
+  build_todo), including any `DEFERRED — needs user approval` lines.
+
+This reviewer reads the **raw** plan/source deliverables list as its primary check (as today)
+**and additionally** cross-checks the coverage map. The map is a convenience cross-reference,
+not a replacement: a deliverable that the raw list contains but the map omits — or a map entry
+with no code in the diff — is still a missing-scope finding.
 
 Its charter is the Scope Completeness Check (see the section at the end of this skill for
 the method/table): every source deliverable must map to a plan step and to code in the diff;

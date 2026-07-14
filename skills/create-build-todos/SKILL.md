@@ -139,6 +139,7 @@ ticket = mcp__autodev-memory__get_ticket(
    - Test requirements per step
    - Verification commands
    - Edge cases to handle
+   - **Complexity class tag (MANDATORY)** — see "Complexity Tagging" below
 
 ## Process
 
@@ -168,7 +169,7 @@ ticket = mcp__autodev-memory__get_ticket(
      title="<step title>",
      sequence=N,
      status="pending",
-     content="<step content>",
+     content="<step content, including the **Complexity:** simple|complex line>",
      command="/create-build-todos"
    )
    ```
@@ -221,6 +222,42 @@ ticket = mcp__autodev-memory__get_ticket(
      command="/create-build-todos"
    )
    ```
+
+## Complexity Tagging (MANDATORY — drives per-todo builder model routing)
+
+The build-planner MUST tag **every** build_todo with a `complexity` class. `/build` reads this
+tag to route each todo to the cheap (`sonnet`) or strong (`opus`) builder model:
+
+- `complexity: simple` — the todo is scoped to **<=2 files**, touches **no**
+  schema/migration/auth/deploy-config paths, and makes **no** cross-module contract change.
+- `complexity: complex` — cross-cutting or schema-bearing todos, changes to auth or
+  deploy-config, or any cross-module contract change.
+
+Record the tag as a `**Complexity:** simple|complex` line in the todo content (first section),
+and mirror it in the `create_artifact` call. When in doubt, tag `complex` — `/build` defaults
+to opus (the fail-safe) whenever the tag is missing or ambiguous, so never guess `simple`.
+
+## Deliverable Coverage Map (MANDATORY — no silent drops)
+
+Before writing the todos, the build-planner MUST emit a **deliverable → build_todo coverage
+map** derived from the plan's deliverables list (the plan's scope/deliverables/"what we're
+building" section):
+
+1. Enumerate every deliverable named in the plan.
+2. Map each deliverable to the build_todo `sequence`(s) that implement it.
+3. Any deliverable with **no** covering build_todo MUST appear as an explicit
+   `DEFERRED — needs user approval: <deliverable>` line inside the **first** build_todo.
+   A deliverable may never be silently dropped.
+
+Include the full map (deliverable, covering sequences, or DEFERRED) in the first build_todo so
+the reviewer's plan-conformance check can cross-check it against the raw plan/source list.
+
+## Linked-Workspace Preflight (MANDATORY — fail fast before dispatch)
+
+Before any build dispatch, verify that **every repo referenced in the plan/source artifacts**
+(including cross-repo `related` contracts) has a linked, resolvable workspace on this machine.
+If any referenced repo has no resolvable linked workspace, **STOP** with a clear message naming
+the missing repo(s) — do not create todos that a later `/build` cannot execute.
 
 ## Research Depth
 
@@ -458,6 +495,10 @@ Before finalizing each build todo:
 - [ ] Implementation details follow discovered patterns
 - [ ] Test requirements match existing test patterns
 - [ ] Verification commands included
+- [ ] **Complexity tag set** (`simple`/`complex`) on every build_todo; `complex` when in doubt
+- [ ] **Deliverable coverage map** emitted; any unmapped deliverable recorded as an explicit
+      `DEFERRED — needs user approval` line in the first build_todo
+- [ ] **Linked-workspace preflight** passed for every referenced repo
 - [ ] **Elimination step included:** If plan has "What We're Eliminating" section, there is
       a dedicated build todo for deleting old code with grep verification of zero remaining
       imports

@@ -6,9 +6,14 @@ its existing ticketless `.context` behavior and is not changed by this reference
 ## Phase sequence
 
 1. **Resolve scope** — ticket/issue/conversation input, project, repo, branch, target.
-2. **Gather context** — feature research or bug investigation; similar tickets; relevant memory.
+2. **Gather context** — bug investigation / triage and epic-context loading only. When Phase 3
+   invokes `/auto-plan`, do **not** run codebase research or memory/similar-ticket searches here:
+   `/auto-plan` Phases 3-4 are the single owner of knowledge retrieval. Only run that retrieval in
+   this phase when the path does not invoke `/auto-plan`.
 3. **Plan** — run `/auto-plan` (the single planning skill; complexity-based light/heavy
-   gate) to create/update the plan artifact.
+   gate) to create/update the plan artifact. Carry `/auto-plan`'s returned prior-knowledge blob
+   (the applicable rules/patterns it retrieved) forward into the build and review packets so
+   downstream agents inherit the same knowledge without re-searching.
 4. **Critic loop (heavy path only)** — adversarially review the plan for complex/cross-cutting
    work and stop if open questions require user decisions. The light path skips the critic
    panel and uses one bounded native planner unless a peer-escalation trigger fires.

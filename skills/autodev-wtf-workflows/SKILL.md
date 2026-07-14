@@ -208,7 +208,7 @@ mcp__autodev-memory__create_artifact(
 ## Common Patterns
 
 **"No plan" pattern:**
-- Work was done ad-hoc without /plan
+- Work was done ad-hoc without /auto-plan
 - Fix: Enforce planning for non-trivial changes
 
 **"Silent scope reduction" pattern:**

@@ -396,7 +396,7 @@ while (iter < loopCap && dryRounds < 1) {
   const occurrencesArr = Array.from(occurrenceByKey.values())
   const critic = await agent(
     criticPrompt(question, occurrencesArr, searcherSummaries, iter, repoRoot, priorKnowledge),
-    { label: `critic:r${iter}`, phase: 'Gap-fill loop', schema: criticSchema }
+    { label: `critic:r${iter}`, phase: 'Gap-fill loop', model: 'sonnet', schema: criticSchema }
   )
 
   if (!critic || !Array.isArray(critic.gaps_identified) || critic.gaps_identified.length === 0) {

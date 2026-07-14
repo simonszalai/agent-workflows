@@ -54,75 +54,14 @@ assuming a fixed stack.
 
 ### 1. Search memory service:
 
-1. **Search for coding standards and relevant gotchas:**
-
-   Use `mcp__autodev-memory__search` with queries relevant to the code being reviewed:
-
-   ```
-   queries: [
-     {"keywords": ["coding-standards"], "text": "coding standards conventions"},
-     {"keywords": ["<technology>"], "text": "<area being reviewed> gotchas pitfalls"}
-   ]
-   ```
-
-2. **Review bounded injected context** in the system/task prompt when present. It is a
-   representative shortlist, not an exhaustive knowledge menu.
-
-3. **Search similar past work items:**
-
-   ```bash
-   # Find review findings in same codebase area
-   mcp__autodev-memory__search_tickets(
-     project=PROJECT, query="<relevant keywords>", detail="compact"
-   )
-   ```
-
-   Extract patterns of issues found in similar implementations.
-
-4. **Use loaded standards as your review criteria.** Every finding should reference which
-   standard or gotcha it violates. Cross-reference with past review findings to catch recurring
-   issues.
+Follow the `autodev-search` skill to search coding standards, gotchas, and similar past review
+findings for the code being reviewed, then cross-reference findings against what you find.
 
 **Do NOT proceed with the review until you have checked the memory service for relevant context.**
 
 ## Review Dimensions
 
-Apply the dimensions specified in your prompt. Read the corresponding reference files from
-`review/references/`. Available dimensions include:
-
-### Code Quality
-- **Python Quality** (references/python-standards.md) - Type hints, Pythonic patterns, error
-  handling, testability
-- **TypeScript Quality** (references/typescript-standards.md) - Type safety, modern patterns,
-  React/component best practices
-- **Framework-Specific** (dynamically discovered) - Loaded based on project tech stack detection
-
-### Design & Simplicity
-- **Simplicity** (references/simplicity.md) - YAGNI violations, unnecessary complexity,
-  over-abstraction, dead code
-- **Patterns** (references/patterns.md) - Design pattern usage, anti-patterns, naming
-  consistency, code duplication
-- **First-Principles** (first-principles) - Should this code exist at all? Is complexity
-  earned or assumed?
-
-### System-Level
-- **Architecture** (references/architecture.md) - SOLID compliance, component boundaries,
-  circular dependencies, layer violations, abstraction leaks
-- **Security** (references/security.md) - OWASP vulnerabilities, auth/input validation,
-  injection risks, secret handling, access control
-- **Performance** (references/performance.md) - Algorithmic complexity (Big O), N+1 queries,
-  memory management, caching opportunities, scalability projections
-
-### Data & Deployment
-- **Data Integrity** (references/data-integrity.md) - Database constraints, transaction
-  boundaries, referential integrity, privacy compliance (PII, GDPR), ACID properties
-- **Data Adequacy** (references/data-adequacy.md) - Content richness, source-to-destination
-  field mapping, downstream consumer requirements, pipeline data flow completeness
-- **Schema/Migration Safety** (references/migrations.md) - ID mapping validation (against
-  production, not fixtures), rollback safety, dual-write strategies, staged deployment
-  compatibility, and repo-specific schema system checks (Atlas/Prisma/Alembic/etc.)
-- **Deployment** (references/deployment.md) - Pre-deploy verification queries, post-deploy
-  monitoring plan, rollback procedures, feature flag strategy
+Apply the dimensions and read the references/*.md files named in your prompt.
 
 ## Review Process
 

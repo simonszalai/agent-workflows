@@ -195,8 +195,7 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                               | Action            |
 | --------------------------------------- | ----------------- |
-| "auto-build", "build this ticket end to end" | Run `/ticket-flow` |
-| "auto-flow", "ticket flow"              | Run `/ticket-flow` |
+| "auto-build", "build this ticket end to end", "auto-flow", "ticket flow" | Run `/ticket-flow` |
 | "/goal", "multi-ticket", "batch these related tickets", "hands-off" with multiple tickets | Run `/goal-flow` |
 | "milestone flow", "run this milestone"  | Run `/milestone-flow` |
 | "epic flow", "run this epic"            | Run `/epic-flow` |
@@ -206,14 +205,11 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                                                          | Action                        |
 | ------------------------------------------------------------------ | ----------------------------- |
-| "save this", "remember this", "store this"                         | Run `/compound`               |
-| "compound", "document this", "save this learning"                  | Run `/compound`               |
-| "what did we learn", "learn from review", "learn from this"        | Run `/compound`               |
+| "save this", "remember this", "store this", "compound", "document this", "save this learning", "what did we learn", "learn from review", "learn from this" | Run `/compound` |
 | "wtf", "why didn't you know this", "you should have known"         | Run `/autodev-wtf`            |
 | "retrospect", "what went wrong", "post-mortem"                     | Run `/retrospect`             |
 | "which workflow stage missed this bug"                             | Run `/autodev-wtf-workflows`  |
-| "no, do X instead", "that's wrong", "you should have"              | Proactively offer `/compound` |
-| "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/compound` |
+| "no, do X instead", "that's wrong", "you should have", "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/compound` |
 
 **Correction detection:** When the user explicitly corrects Claude's approach or output,
 proactively ask: "Should I `/compound` this so it sticks?" `/compound` decides whether the
@@ -320,22 +316,9 @@ Ticket reads must request the smallest sufficient context:
 
 ### Status Vocabulary (two enums)
 
-Canonical lifecycles live in `skills/references/ticket-lifecycle.md` and
-`skills/references/epic-lifecycle.md`. Short version:
-
-```text
-# standalone ticket, direct main
-backlog → up_next → in_progress → planned → in_progress → to_verify_prod → completed
-
-# standalone ticket, staging first
-backlog → up_next → in_progress → planned → in_progress → to_verify_staging
-                                                → staging_verified → ticket-promote
-                                                → to_verify_prod → completed
-
-# epic step ticket
-backlog → up_next → in_progress → planned → in_progress → merged
-                                            → staging_verified → to_verify_prod → completed
-```
+Canonical lifecycles (standalone direct-main, standalone staging-first, and epic-step) live in
+`skills/references/ticket-lifecycle.md` and `skills/references/epic-lifecycle.md` — read those
+for the full state diagrams. Essentials:
 
 There is no `approved` ticket status; approval is the decision to leave `planned` and begin
 work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`

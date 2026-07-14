@@ -94,19 +94,27 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 
 ### 1. Gather context
 
-- **Knowledge retrieval gate (hard gate, especially for Codex/Grok).** Before planning or
-  editing, run `mcp__autodev-memory__search` for the ticket's actual risk boundaries, not just
-  `search_tickets` / `get_similar_tickets`. Use terms from the source artifact, error, touched
-  subsystem, integration boundary, and likely deployment path (examples: schema/defaults/raw SQL,
-  decrypt-proxy/tailnet/auth, Prefect deployment/runtime, encryption/plaintext fields, external
-  API contracts). Read the returned entries and carry applicable rules into the plan. If no entry
-  is relevant, state that in the plan/build note. A Codex run that only loads tickets or similar
-  tickets has **not** satisfied the Knowledge Menu rule.
-- Feature/refactor: run codebase research and similar-ticket search.
-- Bug: investigate root cause first; for production incidents use hypothesis evaluation.
+**Single retrieval owner.** When §2 will invoke `/auto-plan` (the standalone path), ticket-flow
+must **not** run its own codebase research or memory/similar-ticket searches here — `/auto-plan`
+Phases 3-4 own knowledge retrieval (memory search across risk boundaries, codebase research,
+similar-ticket search) and are the single source of truth for it. Duplicating those searches in
+§1 wastes tokens and risks divergent context. `/auto-plan` returns a **prior-knowledge blob**
+(the applicable rules/patterns it retrieved); carry that blob forward into the build and review
+packets (§3) so builders and reviewers inherit the same knowledge without re-searching.
+
+§1 keeps only the context work that `/auto-plan` does not do:
+
+- Bug: investigate root cause first; for production incidents use hypothesis evaluation. (This
+  triage feeds the plan; it is not the plan's knowledge retrieval.)
 - Epic step: include the parent epic plan, milestone acceptance criteria, blockers, contracts,
   and the repo/path/branch mapping from `conductor-multi-repo.md` in the context passed to
   planning/build agents.
+
+If a ticket takes a path that does **not** invoke `/auto-plan`, run the memory/knowledge
+retrieval here instead (search `mcp__autodev-memory__search` across the ticket's actual risk
+boundaries — schema/defaults/raw SQL, decrypt-proxy/tailnet/auth, Prefect deployment/runtime,
+encryption/plaintext fields, external API contracts — not just `search_tickets` /
+`get_similar_tickets`), because the single owner must always run exactly once.
 
 ### 2. Plan and criticize
 
