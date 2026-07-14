@@ -11,6 +11,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class GatewaySecurityTest(unittest.TestCase):
+    def test_dbhub_production_sources_are_readonly(self) -> None:
+        expected = {
+            "ts.toml": ("prod", "prod_prefect", "autodev_ts"),
+            "amaru.toml": ("prod",),
+            "workflow.toml": ("prod",),
+            "shared.toml": ("autodev_global",),
+        }
+        for filename, sources in expected.items():
+            text = (ROOT / "mcp-gateway" / "dbhub" / filename).read_text()
+            blocks = text.split("[[tools]]")[1:]
+            for source in sources:
+                matching = [block for block in blocks
+                            if 'name = "execute_sql"' in block
+                            and f'source = "{source}"' in block]
+                self.assertEqual(len(matching), 1, f"{filename}:{source}")
+                self.assertIn("readonly = true", matching[0], f"{filename}:{source}")
+
     def test_project_mcp_protected_fallbacks_use_restricted_guard(self) -> None:
         source = (ROOT / "bin/project-mcp").read_text()
         for route in (

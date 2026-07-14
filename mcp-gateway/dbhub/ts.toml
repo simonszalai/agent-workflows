@@ -1,0 +1,78 @@
+# DBHub multi-source config for the ts project — replaces the five crystaldba
+# postgres-mcp children (ports 8811-8815). DSNs interpolate from the same env
+# vars start-gateway.sh already exports; readonly=true mirrors the old
+# `--access-mode restricted` on prod. Tool names become execute_sql_<id> /
+# search_objects_<id> because multiple sources share one endpoint.
+
+[[sources]]
+id = "dev"
+dsn = "${TS_POSTGRES_DEV_URL}"
+description = "ts dev database"
+lazy = true
+
+[[sources]]
+id = "staging"
+dsn = "${TS_POSTGRES_STAGING_URL}"
+description = "ts staging database"
+lazy = true
+
+[[sources]]
+id = "prod"
+dsn = "${TS_POSTGRES_PROD_URL}"
+description = "ts PRODUCTION database (read-only)"
+lazy = true
+
+[[sources]]
+id = "prod_prefect"
+dsn = "${TS_POSTGRES_PROD_PREFECT_URL}"
+description = "ts prod Prefect database"
+lazy = true
+
+[[sources]]
+id = "autodev_ts"
+dsn = "${TS_POSTGRES_AUTODEV_TS_URL}"
+description = "autodev-memory ts database"
+lazy = true
+
+[[tools]]
+name = "execute_sql"
+source = "dev"
+
+[[tools]]
+name = "search_objects"
+source = "dev"
+
+[[tools]]
+name = "execute_sql"
+source = "staging"
+
+[[tools]]
+name = "search_objects"
+source = "staging"
+
+[[tools]]
+name = "execute_sql"
+source = "prod"
+readonly = true
+
+[[tools]]
+name = "search_objects"
+source = "prod"
+
+[[tools]]
+name = "execute_sql"
+source = "prod_prefect"
+readonly = true
+
+[[tools]]
+name = "search_objects"
+source = "prod_prefect"
+
+[[tools]]
+name = "execute_sql"
+source = "autodev_ts"
+readonly = true
+
+[[tools]]
+name = "search_objects"
+source = "autodev_ts"

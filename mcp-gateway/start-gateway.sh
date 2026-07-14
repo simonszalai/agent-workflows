@@ -89,17 +89,10 @@ summarize_error_file() {
 # prod postgres URLs are composed from the canonicals in finish-start.zsh INSIDE
 # that op run (op can't transform values in an env file). Nothing is read from
 # the 1Password mount here anymore.
-#
-# Machine-local override: if gateway.local.env exists (gitignored), it is used
-# INSTEAD of gateway.env. This lets a machine whose 1Password account lacks some
-# project vaults (e.g. TS/AMARU) list only the refs it can resolve — the gateway
-# treats routes with unset URL envs as unavailable (502) instead of failing.
+# A machine-local gateway.local.env (gitignored) may replace the shared file when
+# this host intentionally has access to only a subset of the configured vaults.
 GATEWAY_ENV_FILE="$HERE/gateway.env"
 [[ -f "$HERE/gateway.local.env" ]] && GATEWAY_ENV_FILE="$HERE/gateway.local.env"
-
-# postgres-mcp launcher the daemon spawns (one SSE server per DB). Absolute path to the
-# ts-prefect dev venv binary by default; override POSTGRES_MCP_BIN for another env.
-export POSTGRES_MCP_BIN="${POSTGRES_MCP_BIN:-/Users/simon/dev/ts-prefect/.venv/bin/postgres-mcp}"
 
 export MCP_GATEWAY_HOST="${MCP_GATEWAY_HOST:-127.0.0.1}"
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
@@ -120,12 +113,12 @@ trap 'rm -f "${START_ERR_FILE:-}"' EXIT
 set +e
 "$OP_BIN" run --account "$OP_ACCOUNT" --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
   /bin/zsh "$HERE/finish-start.zsh" 2> >(tee "$START_ERR_FILE" >&2)
-exit_status=$?
+op_status=$?
 set -e
 
-if (( exit_status != 0 )); then
+if (( op_status != 0 )); then
   summary="$(summarize_error_file "$START_ERR_FILE")"
-  gateway_fail_once "op/gateway exited status $exit_status: $summary"
+  gateway_fail_once "op/gateway exited status $op_status: $summary"
 fi
 
 exit 0

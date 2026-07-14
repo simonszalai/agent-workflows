@@ -1,0 +1,45 @@
+# DBHub multi-source config for the amaru project — replaces the crystaldba
+# children on ports 8821-8823. readonly=true mirrors --access-mode restricted on prod.
+
+[[sources]]
+id = "dev"
+dsn = "${AMARU_POSTGRES_DEV_URL}"
+description = "amaru dev database"
+lazy = true
+
+[[sources]]
+id = "staging"
+dsn = "${AMARU_POSTGRES_STAGING_URL}"
+description = "amaru staging database"
+lazy = true
+
+[[sources]]
+id = "prod"
+dsn = "${AMARU_POSTGRES_PROD_URL}"
+description = "amaru PRODUCTION database (read-only)"
+lazy = true
+
+[[tools]]
+name = "execute_sql"
+source = "dev"
+
+[[tools]]
+name = "search_objects"
+source = "dev"
+
+[[tools]]
+name = "execute_sql"
+source = "staging"
+
+[[tools]]
+name = "search_objects"
+source = "staging"
+
+[[tools]]
+name = "execute_sql"
+source = "prod"
+readonly = true
+
+[[tools]]
+name = "search_objects"
+source = "prod"
