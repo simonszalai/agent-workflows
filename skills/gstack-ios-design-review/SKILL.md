@@ -1,1 +1,0 @@
-/Users/simon/dev/agent-workflows/skills/gstack/ios-design-review/SKILL.md

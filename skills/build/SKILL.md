@@ -176,12 +176,22 @@ self-repair (≤2 retries), and the final health gate.
 
    If `--step N` was passed, the execution set is just todo N.
 
-   For each pending todo, in order, dispatch a **fresh** builder for that ONE todo:
+   For each pending todo, in order, dispatch a **fresh** builder for that ONE todo.
+
+   **Per-todo model routing (mirror `resolve-review`'s cheap/strong split):** read the
+   `complexity` tag the build-planner attached to each build_todo and pick the builder model:
+
+   - `model="sonnet"` when the todo is scoped to **<=2 files**, touches **no**
+     schema/migration/auth/deploy-config paths, and makes **no** cross-module contract change.
+   - `model="opus"` for cross-cutting or schema-bearing todos, and for **any retry** after a
+     failed sonnet attempt (bounded self-repair below always escalates to opus).
+   - **DEFAULT TO OPUS** whenever the `complexity` tag is missing, ambiguous, or you are
+     uncertain — opus is the fail-safe; never downgrade to sonnet on a guess.
 
    ```
    Agent(
      subagent_type="builder",
-     model="opus",
+     model={sonnet|opus per the routing rule above},
      prompt="
        MODE: build
        Ticket: {ticket_id}  Project: {PROJECT}  Repo: {REPO}
@@ -215,8 +225,9 @@ self-repair (≤2 retries), and the final health gate.
    | `needs_replan`  | **STOP** the loop, hand back to `/auto-plan` with the builder's `error`; do not build on |
 
    **Bounded self-repair (on `failed`):** dispatch a *fresh* builder for the **same** todo with
-   the previous `error` and `verification_output` prepended as context. Retry at most **2**
-   times. If it still fails, **STOP** the loop and report which todo blocked — do **not** attempt
+   the previous `error` and `verification_output` prepended as context, always at
+   `model="opus"` (any retry escalates regardless of the todo's `complexity` tag). Retry at
+   most **2** times. If it still fails, **STOP** the loop and report which todo blocked — do **not** attempt
    downstream todos on a broken foundation.
 
 6. **Checkpoint (only on `complete`):**

@@ -1,14 +1,10 @@
 ---
 name: deep-dream
 description: >-
-  Whole-system offline consolidation. The big "dream" that goes beyond memory: scans recent
-  Claude AND Codex session logs and autodev tickets for what keeps going wrong, audits and
-  consolidates memory entries (merge / abstract / dedup / resolve contradictions), and decides
-  what knowledge should move between memory, starred rules, CLAUDE.md, and the skills themselves
-  — then improves the skills/workflows. Cheap models (haiku/sonnet) do the heavy log scouting;
-  the orchestrator and skeptic critics adjudicate. Memory and skill/workflow mutations are
-  proposed behind explicit gates by default; approved memory actions prefer repair,
-  supersession, and reversible quarantine over deletion.
+  Whole-system offline consolidation ("dream") of session logs, tickets, and memory. Use for:
+  consolidate/audit/clean up memories, dream, deep dream, whole-system dream, improve
+  skills/workflows from logs and tickets. Mutations gated; prefers repair/supersession/quarantine
+  over deletion.
 user_invocable: true
 argument-hint: "[project] [--all] [--since 14d] [--apply-memory] [--auto-skills] [--dry-run]"
 max_turns: 400

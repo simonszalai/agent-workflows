@@ -718,72 +718,76 @@ const disagreementLog = []
 const auditHistory = []
 let finalRoundDisagreements = []
 let disagreementRounds = 0
-for (let round = 1; round <= 3; round += 1) {
-  const audit = await agent(
-    disagreementAuditPrompt(
-      round, final.plan, allDrafts, validCritiques, question, codebaseResearchFile, repoRoot,
-      priorKnowledgeFile, auditHistory, final.revision_log
-    ),
-    // stay on opus — fable is not available on the subscription plan after 2026-07-07
-    { label: `disagreement-audit:${round}`, phase: 'Converge', model: 'opus', schema: disagreementAuditSchema }
-  )
-  const disagreements = (audit?.disagreements || []).filter(validDisagreement)
-  const actionable = disagreements.filter(d =>
-    d.severity === 'must-resolve' &&
-    (d.status === 'material_unresolved' || d.status === 'open_question')
-  )
-  auditHistory.push({
-    round,
-    overall_assessment: audit?.overall_assessment || '',
-    disagreements: disagreements.map(d => ({
-      title: d.title, area: d.area, status: d.status, severity: d.severity,
+if (validProviderDrafts.length > 0) {
+  for (let round = 1; round <= 3; round += 1) {
+    const audit = await agent(
+      disagreementAuditPrompt(
+        round, final.plan, allDrafts, validCritiques, question, codebaseResearchFile, repoRoot,
+        priorKnowledgeFile, auditHistory, final.revision_log
+      ),
+      // stay on opus — fable is not available on the subscription plan after 2026-07-07
+      { label: `disagreement-audit:${round}`, phase: 'Converge', model: 'opus', schema: disagreementAuditSchema }
+    )
+    const disagreements = (audit?.disagreements || []).filter(validDisagreement)
+    const actionable = disagreements.filter(d =>
+      d.severity === 'must-resolve' &&
+      (d.status === 'material_unresolved' || d.status === 'open_question')
+    )
+    auditHistory.push({
+      round,
+      overall_assessment: audit?.overall_assessment || '',
+      disagreements: disagreements.map(d => ({
+        title: d.title, area: d.area, status: d.status, severity: d.severity,
+        resolution: d.suggested_resolution,
+      })),
+    })
+    finalRoundDisagreements = disagreements
+    disagreementLog.push(...disagreements.map(d => ({
+      round,
+      title: d.title,
+      area: d.area,
+      providers: d.providers,
+      status: d.status,
+      severity: d.severity,
       resolution: d.suggested_resolution,
-    })),
-  })
-  finalRoundDisagreements = disagreements
-  disagreementLog.push(...disagreements.map(d => ({
-    round,
-    title: d.title,
-    area: d.area,
-    providers: d.providers,
-    status: d.status,
-    severity: d.severity,
-    resolution: d.suggested_resolution,
-    evidence: d.evidence_needed,
-  })))
-  disagreementRounds = round
-  log(`Converge round ${round}: ${disagreements.length} disagreement(s), ${actionable.length} actionable`)
-  if (actionable.length === 0) {
-    break
+      evidence: d.evidence_needed,
+    })))
+    disagreementRounds = round
+    log(`Converge round ${round}: ${disagreements.length} disagreement(s), ${actionable.length} actionable`)
+    if (actionable.length === 0) {
+      break
+    }
+    const revised = await agent(
+      convergenceRevisePrompt(
+        final.plan, { ...audit, disagreements: actionable }, question, repoRoot, priorKnowledgeFile
+      ),
+      // stay on opus — fable is not available on the subscription plan after 2026-07-07
+      { label: `convergence-revise:${round}`, phase: 'Converge', model: 'opus', schema: revisedOutputSchema }
+    )
+    if (!revised || !revised.plan) {
+      log(`Convergence revision ${round} failed; keeping current plan and surfacing disagreements`)
+      break
+    }
+    final = {
+      plan: revised.plan,
+      revision_log: {
+        incorporated: [
+          ...(final.revision_log?.incorporated || []),
+          ...(revised.revision_log?.incorporated || []),
+        ],
+        rejected: [
+          ...(final.revision_log?.rejected || []),
+          ...(revised.revision_log?.rejected || []),
+        ],
+        tension_resolutions: [
+          ...(final.revision_log?.tension_resolutions || []),
+          ...(revised.revision_log?.tension_resolutions || []),
+        ],
+      },
+    }
   }
-  const revised = await agent(
-    convergenceRevisePrompt(
-      final.plan, { ...audit, disagreements: actionable }, question, repoRoot, priorKnowledgeFile
-    ),
-    // stay on opus — fable is not available on the subscription plan after 2026-07-07
-    { label: `convergence-revise:${round}`, phase: 'Converge', model: 'opus', schema: revisedOutputSchema }
-  )
-  if (!revised || !revised.plan) {
-    log(`Convergence revision ${round} failed; keeping current plan and surfacing disagreements`)
-    break
-  }
-  final = {
-    plan: revised.plan,
-    revision_log: {
-      incorporated: [
-        ...(final.revision_log?.incorporated || []),
-        ...(revised.revision_log?.incorporated || []),
-      ],
-      rejected: [
-        ...(final.revision_log?.rejected || []),
-        ...(revised.revision_log?.rejected || []),
-      ],
-      tension_resolutions: [
-        ...(final.revision_log?.tension_resolutions || []),
-        ...(revised.revision_log?.tension_resolutions || []),
-      ],
-    },
-  }
+} else {
+  log('No external provider drafts; skipping cross-provider disagreement convergence')
 }
 
 const incorporatedCount = final.revision_log?.incorporated?.length || 0

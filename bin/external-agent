@@ -1154,6 +1154,50 @@ def extract_json_object(raw: str) -> dict | None:
     return None
 
 
+def repair_json_with_claude(raw_output: str, schema: dict, timeout: int) -> str | None:
+    """Cheap local recovery for a read-only peer response that failed schema validation.
+
+    Runs one `claude -p --model sonnet` restatement call: given the expected schema and the
+    previous (non-empty) raw output, restate the SAME content as one valid JSON object. No new
+    analysis, no repo access — this only fixes JSON shape. Returns the restated text, or None
+    if the repair CLI is unavailable/empty/timed out (caller then does the full re-run).
+    """
+    if shutil.which("claude") is None:
+        return None
+    prompt = (
+        "The text below was meant to be ONE JSON object matching the schema, but it failed "
+        "schema validation. Restate the SAME content as a single valid JSON object that "
+        "conforms to the schema. Do NOT add, drop, or reinterpret any information — only fix "
+        "the JSON structure/shape. Output ONLY the JSON object, nothing else.\n\n"
+        "SCHEMA:\n" + json.dumps(schema) + "\n\nPREVIOUS OUTPUT:\n" + raw_output)
+    cmd = ["claude", "-p",
+           "--model", "sonnet",
+           "--output-format", "json",
+           "--no-session-persistence",
+           "--permission-mode", "dontAsk",
+           "--disallowedTools", "Bash,Edit,MultiEdit,Write,NotebookEdit,Read,Grep,Glob"]
+    try:
+        res = subprocess.run(cmd, input=prompt, text=True, capture_output=True,
+                             timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print("external-agent: local JSON repair timed out", file=sys.stderr)
+        return None
+    out = (res.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        env = json.loads(out)
+    except json.JSONDecodeError:
+        return out
+    if isinstance(env, dict):
+        result = env.get("result")
+        if isinstance(result, str):
+            return result
+        if isinstance(result, dict):
+            return json.dumps(result)
+    return out
+
+
 # ---------------------------------------------------------------- main
 def main() -> None:
     ap = argparse.ArgumentParser(prog="external-agent", add_help=True)
@@ -1335,6 +1379,30 @@ def main() -> None:
                 emit(env, 0)
             last_err = err or "empty output"
             print(f"external-agent: attempt {attempt} invalid ({last_err})", file=sys.stderr)
+
+            # Cheap local recovery: if attempt 1 produced NON-EMPTY output that merely failed
+            # schema validation, try one sonnet restatement before paying for a full re-run.
+            # (Read-only tasks only — this binary never runs the write-enabled build task.)
+            if attempt == 1 and provider_run.output.strip():
+                repaired = repair_json_with_claude(provider_run.output, schema, args.timeout)
+                if repaired:
+                    renv, rerr = task["validate"](extract_json_object(repaired), args.provider)
+                    if renv is not None:
+                        confirm_packet_delivery(
+                            memory_context,
+                            provider=args.provider,
+                            mechanism=f"external_{args.task}",
+                            confirmation_stage="validated_provider_response",
+                            telemetry_file=args.telemetry_file,
+                        )
+                        n = len(renv.get("findings", renv.get("hypotheses",
+                                         renv.get("occurrences", []))))
+                        print(f"external-agent: {args.provider} output recovered via local "
+                              f"repair, {n} item(s)", file=sys.stderr)
+                        adapter_outcome = "validated_provider_response_local_repair"
+                        emit(renv, 0)
+                    print(f"external-agent: local repair did not validate ({rerr})",
+                          file=sys.stderr)
 
         adapter_outcome = "invalid_provider_output"
         emit(task["empty"](

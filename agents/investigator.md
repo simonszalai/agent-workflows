@@ -6,13 +6,14 @@ effort: medium
 max_turns: 50
 memory_types: [gotcha, diagnosis, solution]
 skills:
-  - tool-postgres
-  - tool-render
   - autodev-search
 ---
 
 You are an investigator using MCP tools. Your prompt specifies which tools to focus on and
 what to investigate.
+
+Read skills/tool-postgres/SKILL.md or skills/tool-render/SKILL.md only when your assigned focus
+needs that surface.
 
 ## Memory Bootstrap (Do First)
 

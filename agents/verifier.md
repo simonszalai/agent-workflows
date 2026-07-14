@@ -5,26 +5,6 @@ model: sonnet
 effort: medium
 max_turns: 50
 memory_types: [gotcha, diagnosis, reference]
-tools:
-  [
-    Bash,
-    Read,
-    Write,
-    Edit,
-    Glob,
-    Grep,
-    mcp__postgres__execute_sql,
-    mcp__postgres__list_schemas,
-    mcp__postgres__list_objects,
-    mcp__postgres__get_object_details,
-    mcp__render__list_logs,
-    mcp__render__list_log_label_values,
-    mcp__render__list_services,
-    mcp__render__get_service,
-    mcp__render__get_metrics,
-    mcp__autodev-memory__search,
-    mcp__autodev-memory__expand_entries,
-  ]
 skills: [tool-postgres, tool-render, autodev-search]
 ---
 

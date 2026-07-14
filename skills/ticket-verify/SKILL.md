@@ -359,49 +359,16 @@ case coverage.
 For standalone tickets, write the artifact on the ticket with `create_artifact` (or update the
 latest matching environment artifact when repeating the same verification).
 
-For explicit epic/milestone verification, evidence must be persisted in **all applicable scopes**:
-
-1. **Canonical milestone/final gate artifact on the epic** — create/update a full
-   `verification_evidence` epic artifact for the exact gate scope, for example
-   `Staging milestone gate evidence — E0010/M2` or `Production final gate evidence — E0010`.
-   This is the complete, self-contained proof package and is the source of truth for the
-   milestone/final gate verdict. Metadata must include `scope`, `environment`, `verdict`,
-   `activation_boundary`, `evidence_count`, `edge_case_count`, `screenshot_count`,
-   `generated_by`, `step_ticket_ids`, and an `artifact_family` such as
-   `epic-milestone-verification`. If this canonical artifact cannot be written, do not update
-   milestone/step/epic statuses; production verdict is `BLOCKED`, and staging verdict must be
-   reported without advancing statuses.
-2. **Full ticket-level verification artifact on every included step ticket** — create/update a
-   `verification_evidence` ticket artifact for each step ticket in the requested scope. This is
-   more than a bare backlink: include the step's activation boundary, the evidence rows relevant
-   to that step/contract edge, actual observed output summaries, verdict, status action, and a
-   pointer to the canonical epic gate artifact. Shared cross-step evidence may be summarized instead
-   of duplicated verbatim, but each step ticket page must be understandable without searching the
-   epic first. Metadata must include `parent_scope`, `canonical_evidence_artifact_id`,
-   `environment`, `verdict`, `step_ticket_id`, `repo`, `generated_by`, and
-   `artifact_family=epic-step-verification`. If these ticket artifacts cannot be written, leave
-   the corresponding step ticket statuses unchanged and report exactly which ticket artifact write
-   failed.
-3. **Compact epic-level verification summary** — create/update a separate concise epic artifact,
-   for example `Epic verification summary — E0010`, after writing the gate and ticket artifacts.
-   It should roll up all verified milestone/final gates, verdicts, canonical gate artifact ids,
-   step ticket artifact ids, step statuses, remaining risks, and next action. This summary is not
-   a substitute for the canonical gate artifact; it is the epic dashboard/readability index. Use
-   `artifact_family=epic-verification-summary` in metadata and update the existing summary artifact
-   if one exists.
+For explicit epic/milestone verification, evidence must be persisted across all applicable
+scopes (canonical gate artifact on the epic, full per-step ticket artifacts, and a compact epic
+summary). This is **only** relevant in `--epic`/`--milestone` mode — see the "§6 (epic/milestone)"
+section of `references/verify-epic-gates.md`.
 
 ### 7. Epic/milestone aggregation
 
-In `--epic` mode, produce one gate verdict for the requested scope:
-
-- include every evidence row from the milestone gate package or final epic deployment guide;
-- for a non-first staging milestone, include an impact-based regression subset from earlier
-  passed milestone gates so later work cannot silently break already-verified epic behavior;
-- map each failed row to the most likely step ticket(s) and contract edge(s);
-- prove every included step commit is present on the expected branch (`origin/staging` for
-  staging, `origin/main` for production);
-- do not pass the gate just because individual step tickets look healthy; the milestone's
-  acceptance criteria and cross-step contracts must pass as a unit.
+Epic/milestone aggregation produces one gate verdict for the requested scope. This is **only**
+relevant in `--epic`/`--milestone` mode — see the "§7" section of
+`references/verify-epic-gates.md`.
 
 ### 8. Verdict
 
@@ -480,18 +447,10 @@ counterpart of `verify_staging_failed`. Set it on every staging PASS, **includin
 must NOT be promoted individually (e.g. ones held for a batched epic promotion, or a ticket whose
 own artifacts forbid a solo cherry-pick): those rest in `staging_verified` rather than advancing.
 
-Epic/milestone mode:
-
-| Environment | Verdict | Action |
-|---|---|---|
-| staging | PASS | write canonical staging milestone gate `verification_evidence` on the epic; write full per-step ticket `verification_evidence` artifacts; update the compact epic verification summary; mark the milestone staging gate passed; set included step tickets to `staging_verified`/ready-for-parent-promotion when the lifecycle supports it; do **not** call `/ticket-promote` |
-| staging | FAIL | write canonical staging gate `verification_evidence` plus per-step ticket artifacts for every included step, with failed evidence-to-step mapping on affected steps; update the epic summary; leave the milestone unpassed for `/epic-flow` fix loop |
-| staging | NEEDS_MORE_TIME | write/update canonical staging gate `verification_evidence` plus per-step ticket artifacts for collected evidence; update the epic summary; leave milestone and step statuses unchanged |
-| staging | BLOCKED | write/update canonical staging gate `verification_evidence` plus per-step ticket artifacts for every included step, with blocker ground-truth evidence on affected steps; update the epic summary; leave milestone and step statuses unchanged |
-| production | PASS | write mandatory final production gate `verification_evidence` on the epic; write full per-step ticket `verification_evidence` artifacts; update the compact epic verification summary; if deferred cleanup remains, set the epic/affected owning item to `prod_verified_needs_cleanup`; otherwise mark included step tickets `completed` when their parent epic owns completion and mark epic complete only if all milestones are done |
-| production | FAIL | write mandatory production gate `verification_evidence` plus per-step ticket artifacts for every included step; update the epic summary; mark epic/affected step production verification failed if supported, otherwise record blocker/failure metadata |
-| production | NEEDS_MORE_TIME | write/update mandatory production gate `verification_evidence` plus per-step ticket artifacts for collected evidence; update the epic summary; leave statuses unchanged |
-| production | BLOCKED | write/update mandatory production gate `verification_evidence` plus per-step ticket artifacts for every included step, with blocker ground-truth evidence on affected steps; update the epic summary; leave statuses unchanged; update/preserve blocker metadata |
+Epic/milestone mode uses a separate status/promotion table (never auto-promotes; updates the
+canonical gate artifact, per-step ticket artifacts, and epic summary). This is **only** relevant
+in `--epic`/`--milestone` mode — see the "§9 (epic/milestone)" section of
+`references/verify-epic-gates.md`.
 
 When staging PASS then calls `/ticket-promote` in standalone mode, the status advances from
 `staging_verified` to `to_verify_prod` once the promotion lands on `main` **and** the
@@ -573,95 +532,13 @@ mcp__autodev-memory__create_entry(
 This closes the loop that `/auto-plan`'s "Related past failures" prior search reads from.
 If the MCP tool is unavailable, skip silently.
 
-### 10. Deferred post-verification cleanup (production PASS only)
+### 10 / 10a. Deferred post-verification cleanup (production PASS only)
 
-Some tickets carry a cleanup action that must run only once the fix is confirmed live in
-production — never before. This is the single mutation ticket-verify may perform, and only after
-a `PASS` verdict has been recorded for that ticket. Like the bounded canary trigger, it is
-executed by the orchestrator itself — never delegated to a (read-only) verifier agent.
-
-The generic contract is a **`deferred_cleanup` artifact**. (The old `flow-run-cleanup` artifact
-name is retired; flow-run deletion is now just a `deferred_cleanup` with
-`cleanup_kind="flow_run_cleanup"`.)
-
-```json
-{
-  "cleanup_command": "<command; run with --artifact <temp-file> --fix-time <activation boundary §4> --execute plus any documented non-interactive flags (e.g. --yes)>",
-  "scope_manifest": ["<exactly what the command may touch: tables, deployments, paths, ids>"],
-  "reversibility": "reversible | destructive (missing/unknown => destructive)",
-  "cleanup_kind": "<e.g. flow_run_cleanup, deployment_retirement, table_drop>",
-  "trigger_condition": {"check_command": "<read-only; exit 0 = trigger true, non-zero = not yet>", "description": "<when this becomes safe>"},
-  "soak_window": "<duration the effect must soak before final verification>",
-  "evidence_contract": [{"command": "<read-only check>", "good": "<expected>", "bad-interpretation": "<what a bad output means>"}],
-  "revert_ref": "<commit/artifact to restore>", "revert_command": "<optional explicit revert>"
-}
-```
-
-Execution rules:
-
-1. Fetch the artifact and write its JSON body to a temp file under the run-scoped scratch
-   directory from §5; delete it as part of §9a cleanup.
-2. **Dry-run first, independently checked:** run `cleanup_command` WITHOUT `--execute` and diff
-   its declared targets against `scope_manifest` BEFORE any mutating run. Anything out of scope
-   → ABORT here; never reach `--execute`.
-3. Run `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation boundary
-   from §4>`, `--execute`, and any documented non-interactive flags.
-4. **Scope enforcement is not self-report alone:** after execution, re-diff reported effects
-   against `scope_manifest` AND corroborate with the out-of-band read-only checks from
-   `evidence_contract` (before/after inventory) rather than trusting the command's own counts.
-   Any out-of-scope effect → ABORT/blocked, capture the diff into `blocked_context`, do not
-   re-run. A command whose executed effects cannot be independently observed is treated as
-   destructive (approval-gated), whatever its label says.
-5. Fold the command's reported counts into the verdict output.
-
-**Same-cycle path:** no `trigger_condition` and `reversibility="reversible"` → the orchestrator
-runs the cleanup immediately after the production PASS is recorded (preserving prior behavior).
-`reversible` is not accepted on assertion alone: the artifact must carry a non-empty
-`revert_ref`/`revert_command`; absent a concrete revert, treat as destructive and move to the
-§10a approval-gated cleanup-holding path regardless of the label.
-Anything else is deferred in-place (§10a). A ticket/epic without a `deferred_cleanup`
-artifact has no cleanup step, and a non-PASS verdict never triggers one.
-
-### 10a. In-place cleanup holding status (production PASS only)
-
-Every structured decommission/retirement follow-up identified during verification MUST stay on
-the **same parent ticket/epic** as a `deferred_cleanup` artifact. Do **not** create a child
-cleanup ticket by default. Prose-only follow-ups in learning_reports are a violation: normalize
-them into the parent's `deferred_cleanup` artifact before changing status.
-
-§10a runs BEFORE the parent is set `completed`:
-
-1. Dedup/normalize: if equivalent cleanup is already represented by a parent
-   `deferred_cleanup` artifact (`cleanup_kind` + scope), update it rather than duplicating it.
-   Legacy child cleanup tickets may be read for context, but new work remains on the parent.
-2. Set the parent status to `prod_verified_needs_cleanup`.
-3. Set blocker metadata on the parent when appropriate:
-   - `blocked_by="trigger_condition"` with `blocked_context.check_command` when the trigger is
-     not yet true;
-   - `blocked_by="approval"` for destructive cleanup or when reversibility lacks a concrete
-     `revert_ref`/`revert_command`;
-   - `blocked_by="soak"` with `blocked_context={"soak_until": ...}` after cleanup execution if a
-     soak window must elapse before final cleanup verification.
-
-Cleanup holding lifecycle (same item, new status; see `references/ticket-lifecycle.md`):
-
-- `to_verify_prod` production PASS + pending cleanup → `prod_verified_needs_cleanup`.
-- An explicit `/ticket-verify production <ID>` on `prod_verified_needs_cleanup` evaluates the
-  cleanup trigger/approval/soak from blocker metadata and the `deferred_cleanup` artifact.
-- Trigger false: the §3 blocker-metadata refresh is the **only** permitted write.
-- Trigger true + reversible: clear trigger blocker → run `cleanup_command` with scope
-  enforcement (§10) → keep `prod_verified_needs_cleanup` with `blocked_by="soak"` if soaking is
-  required, otherwise grade the cleanup `evidence_contract`.
-- Destructive: `blocked_by="approval"` is an ABSOLUTE no-run gate regardless of trigger state.
-  Approval = an operator clears the blocker (optionally recording
-  `blocked_context.approved_by`).
-- Post-soak/final cleanup verification grades the artifact's `evidence_contract` — it IS the
-  FINALIZED cleanup contract (§2) → `completed` | `verify_prod_failed` (revert =
-  `revert_ref`/`revert_command`). A verify before `soak_until` must refuse completion
-  (`NEEDS_MORE_TIME`).
-
-Periodic sweep/supervisor adoption of due cleanup holders is a contract-consumer concern; this
-skill guarantees explicit-invocation evaluation only.
+Load `references/verify-deferred-cleanup.md` **only when a `deferred_cleanup` artifact exists**
+on the ticket/epic being verified. It defines §10 (the `deferred_cleanup` contract, dry-run/scope
+enforcement, same-cycle path) and §10a (the `prod_verified_needs_cleanup` holding status and
+cleanup-holding lifecycle). A ticket/epic without a `deferred_cleanup` artifact has no cleanup
+step, and a non-PASS verdict never triggers one.
 
 ## Output
 

@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: 'Explore requirements and approaches through collaborative dialogue before writing a right-sized requirements document and planning implementation. Use for feature ideas, problem framing, when the user says ''let''s brainstorm'', or when they want to think through options before deciding what to build. Also use when a user describes a vague or ambitious feature request, asks ''what should we build'', ''help me think through X'', presents a problem with multiple valid solutions, or seems unsure about scope or direction — even if they don''t explicitly ask to brainstorm.'
+description: "Explore requirements/approaches via dialogue before a right-sized requirements doc. Triggers on: brainstorm, \"let's brainstorm\", feature idea, problem framing, \"what should we build\", \"help me think through X\", vague/ambitious feature request, multiple valid solutions, unsure of scope/direction."
 argument-hint: "[feature idea or problem to explore]"
 ---
 
