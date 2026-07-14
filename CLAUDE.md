@@ -112,6 +112,14 @@ Shared skills, hooks, tool-specific agents, and this instruction file live in
 **Resolution:** shared skills live under `.agents/skills` and are symlinked into Claude where
 needed. Agent definitions remain tool-specific because Claude and Codex use different formats.
 
+**Local dev links point directly at `~/dev/agent-workflows`** (per-item symlinks in
+`~/.claude/{skills,agents,hooks,workflows}`, `~/.agents/skills`, `~/.codex/{skills,hooks}`,
+and `~/.local/bin`). Edits to the repo are live in new sessions immediately — no install step.
+**Do NOT run `bin/install-agent-workflows` locally**: it re-pins those links to a frozen
+snapshot under `~/.local/share/agent-workflows/versions/<commit>`, after which repo edits and
+merges silently stop reaching live sessions (this caused PRs #36/#37 to sit dormant). The
+installer remains valid only for environments that intentionally deploy pinned commits.
+
 ### Where to Make Changes
 
 | Change type                      | Target                                    | Why                  |
