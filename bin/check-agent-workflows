@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Run the canonical agent-workflows repository health gate."""
+
+from __future__ import annotations
+
+import ast
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def python_sources() -> list[Path]:
+    roots = (ROOT / "bin", ROOT / "hooks", ROOT / "mcp-gateway", ROOT / "skills")
+    sources: list[Path] = []
+    for root in roots:
+        for path in root.rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if path.suffix == ".py":
+                sources.append(path)
+                continue
+            try:
+                first_line = path.open(encoding="utf-8", errors="replace").readline()
+            except OSError:
+                continue
+            if first_line.startswith("#!/usr/bin/env python3"):
+                sources.append(path)
+    return sorted(set(sources))
+
+
+def validate_python_syntax() -> None:
+    for path in python_sources():
+        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def run(label: str, command: list[str]) -> None:
+    print(f"==> {label}: {' '.join(command)}", flush=True)
+    completed = subprocess.run(command, cwd=ROOT, check=False)
+    if completed.returncode:
+        raise SystemExit(completed.returncode)
+
+
+def main() -> None:
+    print("==> python syntax", flush=True)
+    validate_python_syntax()
+    run("python tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
+    node_tests = [str(path.relative_to(ROOT)) for path in sorted((ROOT / "workflows").glob("*.test.mjs"))]
+    if node_tests:
+        run("node tests", ["node", "--test", *node_tests])
+    run("unstaged whitespace", ["git", "diff", "--check"])
+    run("staged whitespace", ["git", "diff", "--cached", "--check"])
+    print("agent-workflows health: PASS", flush=True)
+
+
+if __name__ == "__main__":
+    main()

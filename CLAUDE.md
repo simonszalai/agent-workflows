@@ -125,7 +125,11 @@ needed. Agent definitions remain tool-specific because Claude and Codex use diff
 
 **Local dev links point directly at `~/dev/agent-workflows`** (per-item symlinks in
 `~/.claude/{skills,agents,hooks,workflows}`, `~/.agents/skills`, `~/.codex/{skills,hooks}`,
-and `~/.local/bin`). Edits to the repo are live in new sessions immediately — no install step.
+and `~/.local/bin`). A merge to remote `main` does **not** update that checkout automatically when
+its local branch is dirty, ahead, behind, or divergent. Remote merge, local live propagation, and
+already-running session context are three separate states: new cloud sessions receive merged files;
+new local sessions read the live symlink checkout; an ongoing session retains instructions already
+loaded into its context, though explicit later file reads see filesystem changes.
 **Do NOT run `bin/install-agent-workflows` locally**: it re-pins those links to a frozen
 snapshot under `~/.local/share/agent-workflows/versions/<commit>`, after which repo edits and
 merges silently stop reaching live sessions (this caused PRs #36/#37 to sit dormant). The
@@ -143,17 +147,18 @@ installer remains valid only for environments that intentionally deploy pinned c
 
 ### Committing User-Level Changes (Critical)
 
-When the `compound` skill, `heal-workflows` skill, or any correction triggers an edit to a
-**user-level** file (shared skill, hook, agent, or this instruction file), the edit goes through the symlink
-and modifies the `agent-workflows` repo directly. The agent MUST then:
+When the `compound` skill, `heal-workflows` skill, or any correction triggers a user-level change:
 
-1. `cd ~/dev/agent-workflows` (or wherever the repo is checked out)
-2. `git add` the changed files
-3. `git commit -m "compound: <description of what changed>"`
-4. `git push origin main`
+1. In Conductor, edit only the linked/current `agent-workflows` workspace and follow
+   `/workflow-authoring`; never edit `~/dev/agent-workflows` directly.
+2. Commit all files, push the workspace branch, merge its PR to `main`, and confirm the remote merge.
+3. Run `bin/verify-agent-workflows-live <merge-sha>` after fetching `origin/main`. If the live
+   symlink checkout is dirty/diverged or does not contain the merge, report **local propagation
+   pending**. Never overwrite, reset, stash, or auto-merge unrelated live-checkout work.
+4. Outside Conductor, direct edits through a clean live symlink checkout may be committed/pushed
+   there, but the same live verification is still required.
 
-This ensures the improvement propagates to all environments. Without the push, the change
-only exists locally and won't reach cloud sessions or other machines.
+A remote merge ensures cloud/other-machine propagation. Only the verifier proves local propagation.
 
 **Project-level changes** (files in the project's config directories)
 do NOT need this — they are committed as part of normal project workflow.
@@ -244,9 +249,9 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 
 ### Agent Workflow Modification
 
-No dedicated authoring skill exists. When the user wants to add/modify a skill, agent, or
-workflow, work directly on the files under `skills/`, `agents/`, or `workflows/` in
-agent-workflows. Follow the conventions in this file and the patterns in neighboring skills.
+When the user wants to add or modify a skill, agent, hook, binary, or workflow, use the
+`workflow-authoring` skill. It owns bounded discovery, the canonical repository health gate,
+worktree-safe PR merge/cleanup, and truthful remote-versus-local propagation reporting.
 
 ## Parallelism
 
