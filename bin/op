@@ -21,6 +21,7 @@
 # OP_BIN) — start-gateway.sh appends its own audit line instead.
 
 REAL_OP="/opt/homebrew/bin/op"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG="$LOG_DIR/op-audit.log"
 mkdir -p "$LOG_DIR" 2>/dev/null
@@ -36,6 +37,59 @@ done
 parent="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1 | tr -d ' ')"
 gparent_pid="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
 gparent="$(ps -o comm= -p "${gparent_pid:-1}" 2>/dev/null | tail -1 | tr -d ' ')"
+
+# --- sensitive-access attribution ------------------------------------------
+# A reason is mandatory before an agent/tool can trigger Touch ID for a
+# *-sensitive vault. Detect both direct refs and `--vault <name>` operations.
+sensitive_vault="" sensitive_item="" env_file=""
+previous=""
+for a in "$@"; do
+  case "$a" in
+    op://*-sensitive/*/*)
+      ref="${a#op://}"
+      sensitive_vault="${ref%%/*}"
+      rest="${ref#*/}"
+      sensitive_item="${rest%%/*}"
+      ;;
+    --vault=*-sensitive)
+      sensitive_vault="${a#--vault=}"
+      sensitive_item="vault operation"
+      ;;
+    *-sensitive)
+      sensitive_vault="$a"
+      sensitive_item="vault operation"
+      ;;
+    --env-file=*) env_file="${a#--env-file=}" ;;
+    --env-file) ;;
+    *)
+      if [[ "$previous" == "--env-file" ]]; then env_file="$a"; fi
+      ;;
+  esac
+  previous="$a"
+done
+
+if [[ -z "$sensitive_vault" && -n "$env_file" && -r "$env_file" ]]; then
+  sensitive_ref="$(grep -E -m1 -o 'op://[^/[:space:]]+-sensitive/[^/[:space:]]+' "$env_file" 2>/dev/null || true)"
+  if [[ -n "$sensitive_ref" ]]; then
+    ref="${sensitive_ref#op://}"
+    sensitive_vault="${ref%%/*}"
+    sensitive_item="env-file references"
+  fi
+fi
+
+if [[ -n "$sensitive_vault" && "${OP_SENSITIVE_NOTIFICATION_SENT:-0}" != "1" ]]; then
+  reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
+  if [[ -z "$reason" ]]; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED missing-reason vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$sensitive_vault" "$sensitive_item" \
+      >> "$LOG" 2>/dev/null
+    echo "ERROR: sensitive vault access requires a reason." >&2
+    echo "Set SENSITIVE_ACCESS_REASON (or OP_ACCESS_REASON) to a concise explanation." >&2
+    exit 3
+  fi
+  requester="${CONDUCTOR_WORKSPACE_NAME:-${CONDUCTOR_WORKSPACE:-$parent}}"
+  "$HERE/sensitive-access-notify" "$sensitive_vault" "$sensitive_item" "$reason" "$requester"
+fi
 
 # --- auth mode resolution ---------------------------------------------------
 # signin/account subcommands and explicit --account calls are desktop-only
@@ -57,7 +111,10 @@ elif [ "$wants_desktop" != "1" ]; then
   fi
 fi
 
-printf '%s pid=%s parent=%s<-%s auth=%s :: op %s\n' \
-  "$(date '+%F %T')" "$$" "$parent" "$gparent" "$auth" "${sanitized[*]}" >> "$LOG" 2>/dev/null
+reason_log="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
+reason_log="$(printf '%s' "$reason_log" | tr '\r\n\t' '   ' | cut -c1-220)"
+printf '%s pid=%s parent=%s<-%s auth=%s%s :: op %s\n' \
+  "$(date '+%F %T')" "$$" "$parent" "$gparent" "$auth" \
+  "${reason_log:+ reason=[$reason_log]}" "${sanitized[*]}" >> "$LOG" 2>/dev/null
 
 exec "$REAL_OP" "$@"

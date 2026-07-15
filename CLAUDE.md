@@ -8,6 +8,11 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 
 - Never create markdown files unless explicitly instructed
 - Never deploy or run production operations without explicit instruction
+- Before any `op://*-sensitive/...` access, load the `sensitive-vault-access` skill and pass a
+  concise, operation-specific reason via `SENSITIVE_ACCESS_REASON` or the wrapper's `--reason`.
+  The reason must explain why the credential is needed and include the ticket/milestone when
+  known. Sensitive access without a reason must fail before Touch ID; never bypass the notifier
+  with the real `op` path or `OP_BIN`.
 - Always include the repo's active schema-deploy artifact when schema changes require it
   (Atlas reviewed plans, Prisma/Alembic migrations, or the repo-specific equivalent).
   Omitting the schema artifact means the column/object may not exist at runtime.

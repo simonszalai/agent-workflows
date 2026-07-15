@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sensitive Vault Access"
+  short_description: "Explain and notify before Touch ID access"
+  default_prompt: "Use $sensitive-vault-access to request sensitive 1Password access with a clear reason and notification."

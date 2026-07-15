@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Show a value-free macOS notification immediately before sensitive vault access.
+set -euo pipefail
+
+vault="${1:-}"
+item="${2:-}"
+reason="${3:-${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}}"
+requester="${4:-${CONDUCTOR_WORKSPACE_NAME:-${CONDUCTOR_WORKSPACE:-${TERM_PROGRAM:-shell}}}}"
+
+[[ -n "$vault" && -n "$item" ]] || {
+  echo "usage: sensitive-access-notify <vault> <item> <reason> [requester]" >&2
+  exit 2
+}
+[[ -n "$reason" ]] || {
+  echo "ERROR: sensitive vault access requires a reason." >&2
+  echo "Set SENSITIVE_ACCESS_REASON (or OP_ACCESS_REASON) to a concise explanation." >&2
+  exit 3
+}
+
+# Notifications must never contain newlines, control characters, or secret values.
+clean() { printf '%s' "$1" | tr '\r\n\t' '   ' | cut -c1-220; }
+vault="$(clean "$vault")"
+item="$(clean "$item")"
+reason="$(clean "$reason")"
+requester="$(clean "$requester")"
+
+title="Sensitive vault access requested"
+subtitle="$vault / $item"
+body="$reason — requester: $requester"
+
+if [[ "$(uname -s)" == "Darwin" && -x /usr/bin/osascript ]]; then
+  /usr/bin/osascript - "$title" "$subtitle" "$body" >/dev/null 2>&1 <<'APPLESCRIPT'
+on run argv
+  display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)
+end run
+APPLESCRIPT
+else
+  echo "ERROR: sensitive vault access requires macOS notifications" >&2
+  exit 4
+fi

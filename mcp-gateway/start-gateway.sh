@@ -37,6 +37,7 @@ fi
 
 AUDIT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
 mkdir -p "$AUDIT_DIR" 2>/dev/null || true
+SENSITIVE_REASON="MCP gateway startup/restart needs its cached sensitive credentials"
 
 sanitize_gateway_message() {
   sed -E \
@@ -101,10 +102,14 @@ export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"
 # prod postgres URLs and execs node). --no-masking: gateway stdout is its own
 # log stream; masking would scan every log line for secret substrings.
 [[ -x "$OP_BIN" ]] || gateway_fail_once "op CLI not found at $OP_BIN"
+# Tell the user what the imminent Touch ID request is for. The gateway uses the
+# real op binary directly, so it cannot rely on the audit shim notification.
+"$HERE/../bin/sensitive-access-notify" "configured sensitive vaults" \
+  "gateway.env" "$SENSITIVE_REASON" "mcp-gateway (launchd)"
 # Audit line (the gateway bypasses the bin/op shim via absolute OP_BIN):
 # gateway restarts are the one KNOWN biometric event — log them so op-audit
 # attributes every prompt, including this one.
-print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT :: op run --env-file=${GATEWAY_ENV_FILE:t} (daemon restart, one-per-lifetime)" \
+print -r -- "$(date '+%F %T') pid=$$ parent=mcp-gateway(launchd) auth=interactive BIOMETRIC-PROMPT reason=[$SENSITIVE_REASON] :: op run --env-file=${GATEWAY_ENV_FILE:t} (daemon restart, one-per-lifetime)" \
   >> "$AUDIT_DIR/op-audit.log" 2>/dev/null || true
 
 START_ERR_FILE="$(mktemp -t mcp-gateway-op-run.XXXXXX.err)"
