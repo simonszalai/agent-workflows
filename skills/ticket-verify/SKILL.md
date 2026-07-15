@@ -71,54 +71,10 @@ First argument must be `staging`, `prod`, or `production`.
 
 ### 1. Select scope
 
-If `--epic` is provided:
-
-1. Load `get_epic(project, epic_id)` with artifacts, milestones, step tickets, events, and
-   blockers.
-2. If `--milestone` is present, restrict verification to that milestone's step tickets and gate
-   package. If not present, verify the final/current production gate for all completed milestones.
-3. Include epic step tickets explicitly. The default queue skip for epic steps does not apply
-   when the parent epic/milestone is the requested scope.
-
-If explicit ticket IDs are provided, load those. Otherwise the default queue selects, for the
-target environment, the **union of verification/cleanup statuses** plus **pending epic gates**:
-
-- `staging` -> `list_tickets(status="to_verify_staging")` ∪ `list_tickets(status="verify_staging_failed")`
-- `production` -> `list_tickets(status="to_verify_prod")` ∪
-  `list_tickets(status="verify_prod_failed")` ∪
-  `list_tickets(status="prod_verified_needs_cleanup")`
-
-Including the `verify_*_failed` status means a ticket that previously failed verification is
-re-attempted automatically on the next queue run instead of being stranded. A re-selected failed
-ticket still runs the full evidence collection (§5); if its activation boundary (§4) shows no
-newly-landed fix commit since the recorded failure, say so in the report — a re-run without a new
-fix will usually just re-confirm the `FAIL`, and that should be stated rather than presented as a
-fresh result.
-
-Including `prod_verified_needs_cleanup` means a normal `/ticket-verify production` run also
-finishes due cleanup holders. Re-check blocker metadata per §3: stale approval blockers on
-automatically eligible noncritical cleanup are cleared and executed per §10; genuinely critical,
-trigger-blocked, or soaking items remain blocked without mutation beyond the allowed blocker
-refresh.
-
-Also auto-include **pending epic gates** for the target environment, each verified exactly as if
-`--epic <ID>` had been passed (the epic branch above, aggregated per §7). An epic has a pending
-gate when **either**:
-
-- its `epic_status` is the environment's verify status (e.g. `to_verify_prod` /
-  `verify_prod_failed`, `staging` analogues for staging), **or**
-- it owns at least one step ticket currently in `to_verify_prod`/`verify_prod_failed` (staging
-  analogues for staging).
-
-Discover these with `list_epics(project, status=...)` plus a scan of the step tickets already
-pulled above for their parent epic. Verifying the epic gate **subsumes its step tickets**, so a
-step ticket covered by an auto-included epic gate is not also verified as a standalone item in the
-same run (avoid double work and conflicting verdicts).
-
-For the default queue mode, skip `abandoned`, `completed`, and source tickets. Epic step tickets
-are still not verified as loose standalone items — but because any step sitting in a verify status
-makes its parent epic a pending gate above, those steps are now covered through their parent epic
-rather than skipped and stranded.
+If explicit standalone ticket IDs are provided, load only those tickets. For default-queue mode,
+`--epic`/`--milestone` mode, or any run with multiple scopes, load
+`references/verify-scope-dispatch.md`. Epic/milestone runs must also load
+`references/verify-epic-gates.md`.
 
 Do **not** skip tickets merely because they have `blocked_at`, `blocked_by`, `blocked_reason`, or
 `blocked_context` metadata. Blocked candidates stay in scope and go through the blocker re-check
@@ -126,39 +82,20 @@ in §3.
 
 ### 1a. Parallel verifier dispatch
 
-Build one queue-wide evidence execution plan before dispatch. Normalize every contract row by
-environment, authoritative surface, activation boundary, query/command, parameters, and expected
-interpretation. Coalesce rows only when one execution can validly prove all mapped rows; differences
-in tenant, ticket-specific identifier, time boundary, expected value, or permissions keep checks
-separate.
-
-- Group compatible checks by surface/query across tickets and epic steps: database aggregates,
-  service logs, flow/deployment health, browser/UI state, or external provider state.
-- Spawn one bounded `verifier` per independent group, not mechanically one per ticket. Each agent
-  receives `fork_turns: "none"`, the exact shared command/query, row/payload cap, activation
-  boundary, and a mapping of `scope -> evidence row IDs -> expected interpretation`.
-- Execute a shared query/command once and return the compact result plus that mapping. Store verbose
-  output in run-local scratch. The orchestrator fans the result back into every applicable row.
-- If tickets share a surface but require different predicates, prefer one bounded query that
-  returns a ticket/scope key and aggregate per key; never broaden the time window or payload beyond
-  the union actually required.
-- Large epic/milestone gates use the same surface grouping. Independent groups run in one
-  foreground parallel batch; never `run_in_background` when synthesis depends on their output.
-- The orchestrator consolidates all agent output, computes verdicts, writes artifacts, and
-  performs status changes. Verifier agents never write artifacts or change statuses, and never
-  execute the canary/cleanup mutations (see Boundaries).
-
-Coalescing saves execution, not evidence obligations. Every ticket/gate retains its own verdict and
-`verification_evidence` artifact with the relevant row results and a pointer to the canonical shared
-execution. A shared PASS cannot satisfy an unmapped ticket-specific row, and one scope's FAIL must
-not contaminate unrelated mapped scopes.
+Single-scope runs execute inline. Multi-scope/queue runs load and follow the parallel-dispatch
+section of `references/verify-scope-dispatch.md`.
 
 ### 2. Load context
 
 For each standalone ticket, or for the epic/milestone gate as a unit:
 
-- load ticket/epic artifacts and events;
-- read source, plan, review notes, existing `verification_evidence` artifacts, and milestone acceptance criteria;
+- begin with `detail="light", include_events=false` and cache the response's artifact IDs and
+  `context_version` for the entire verification run;
+- fetch `detail="full"` only for the artifact types the contract needs — normally `source`,
+  `deployment_guide`, and the latest environment-matching `verification_evidence`; add `plan`,
+  review notes, or milestone acceptance criteria only when the source/contract refers to them;
+- do not call `get_ticket` again when `context_version` is unchanged; use `known_version` with the
+  bulk context API when refreshing multiple tickets;
 - read the **`deployment_guide` artifact** — its **Verification Evidence** section is the
   contract you grade against. Each row is one evidence item: a reproducible query/command, an
   expected good output, and a bad-output interpretation, listed per environment (staging / prod).
@@ -170,7 +107,8 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   `cleanup=true`): the item's `deferred_cleanup.evidence_contract` IS the FINALIZED cleanup
   contract (§10/§10a); the contract-missing verdict cap does not apply and no
   `deployment_guide` is synthesized for cleanup-only verification;
-- find PR/commit/landing branch from events, tags, PR title, or git history;
+- find PR/commit/landing branch from ticket tags and loaded artifacts first; request event history
+  only when those bounded sources cannot establish the activation boundary;
 - read `.claude/environments/{env}.md` when present.
 
 ### 3. Re-check active blockers from ground truth
@@ -244,36 +182,8 @@ crediting them.
 
 ### 5b. Visible-surface (UI) acceptance is graded on STAGING, never production
 
-Dashboard/UI rendering is **environment-independent**: the same frontend code reads the same table
-shapes in staging and production, so "does this surface render/behave correctly" is a property of the
-code + schema, not of the environment. Do **not** require a production browser session to grade a UI
-row, and **never** stand up autonomous production dashboard/session/browser tooling for it — a live
-prod session breaks the read-only guarantee by capability (the dashboard has write actions) and is a
-standing credential attack surface.
-
-For any ticket/gate whose acceptance includes a **visible surface** (UI, rendered page/chart, badge,
-heatmap, email/document preview, browser-visible state):
-
-- **Grade the rendering half on staging.** Open the surface in a real browser against the **staging**
-  dashboard, authenticating via `.claude/environments/staging.md` (§2). A staging visual PASS (from
-  this run or a recorded prior staging `verification_evidence` artifact) is the terminal gate for the
-  rendered behavior.
-- **A production run grades only the environment-specific halves, read-only:** (a) the code is
-  deployed (commit on the expected branch, §4), and (b) the production **data precondition** holds
-  (read-only DB/query — the rows the surface reads exist and are correct). If both hold and the
-  rendering already passed on staging, the UI acceptance is satisfied — do **not** leave the row
-  BLOCKED waiting for a production screenshot, which would add nothing.
-- A production-only rendering difference (a prod-only feature flag, or a data shape staging cannot
-  reproduce) is the only case that needs a real prod capture; treat it as a human-in-the-loop spot
-  check, not a reason to provision standing prod tooling.
-
-**Staging-deployment precondition for UI scopes (check FIRST).** Because work sometimes goes direct to
-`main` and skips staging, before grading any UI row confirm the change is actually deployed to staging:
-the commit is on `origin/staging` **and** the staging dashboard is serving it. If the UI change is
-**not** on staging, the UI scope's verdict is **BLOCKED** — not FAIL, and not a prod-graded pass — with
-the reason "**needs to be deployed to staging as well, not only main**". The unblock action is to
-land/deploy the change to staging, then verify the rendering via `/ticket-verify staging <scope>`. This
-is a deploy-prerequisite gap (§8 case (c)); waiting alone will not resolve it.
+Load and follow `references/verify-visible-surfaces.md` only when acceptance includes a UI,
+rendered document, email preview, chart, public page, or other browser-visible state.
 
 ### 5. Collect evidence
 
@@ -323,20 +233,8 @@ summaries of long logs, artifact IDs/URLs, and the final verdict. The autodev ar
 self-contained enough that the local scratch directory can be deleted without losing the
 verification record.
 
-For any evidence item that verifies a visible surface (UI, rendered document, email preview,
-chart, public page, browser-visible error/success state), grade the rendering on **staging** per §5b
-(a production run checks only deployed-code + the read-only prod data precondition for such rows, and
-BLOCKs a UI scope that never reached staging). To capture such a surface, open the actual target in a
-real browser and save a screenshot only as temporary scratch. If the surface is behind authentication, get the
-login method and credentials from the repo-specific `.claude/environments/{env}.md` (see §2) and
-authenticate before capture; read secrets from the source it names (e.g. a 1Password-mounted env
-file) at runtime and never print, echo, or persist them. Only if that env file is missing or does
-not document a working login is a missing session a real capture blocker. If screenshots are material to the verdict,
-persist the durable evidence in the autodev artifact (for example: the target URL, exact browser
-actions, visible text/state asserted, and a concise screenshot description; or a durable uploaded
-image URL if the workflow provides one). Do **not** leave screenshot files in `.context` after the
-artifact is persisted unless the user explicitly asked to keep them. If browser capture is
-impossible, mark the row `BLOCKED`/`FAIL` as appropriate and include the exact capture blocker.
+Visible-surface evidence uses the screenshot and authentication rules in
+`references/verify-visible-surfaces.md`.
 
 ### 6. Record the fixed Verification Evidence artifact
 
@@ -374,7 +272,9 @@ production PASS is invalid until that artifact exists and contains all executed 
 case coverage.
 
 For standalone tickets, write the artifact on the ticket with `create_artifact` (or update the
-latest matching environment artifact when repeating the same verification).
+latest matching environment artifact when repeating the same verdict). If the verdict changed,
+create a new correctly titled artifact first, then mark the prior artifact `superseded` and link it
+to the new artifact ID. Never overwrite a verdict-bearing title with contradictory metadata.
 
 For explicit epic/milestone verification, evidence must be persisted across all applicable
 scopes (canonical gate artifact on the epic, full per-step ticket artifacts, and a compact epic
@@ -445,34 +345,9 @@ the report so the gap is visible rather than silently passing.
 
 ### 9. Status and promotion
 
-Standalone ticket mode:
-
-| Environment | Verdict | Action |
-|---|---|---|
-| staging | PASS | write optional staging `verification_evidence`; set status `staging_verified` (green "Ready for prod" flag), then apply the **auto-promotion gate (§9b)**: call `/ticket-promote <ID>` only if the gate passes and neither `--no-promote` nor a batch/epic hold applies; otherwise rest at `staging_verified` and report exactly which gate condition held promotion |
-| staging | PASS (contract-missing) | write staging `verification_evidence` flagging the missing contract; set status `staging_verified`; do **not** call `/ticket-promote` — require a human go-ahead or a regenerated FINALIZED deployment guide first |
-| staging | FAIL | write staging `verification_evidence`; status `verify_staging_failed` |
-| staging | NEEDS_MORE_TIME | leave status unchanged |
-| staging | BLOCKED | write/update staging `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
-| production | PASS | write mandatory production `verification_evidence`; if a `deferred_cleanup` item exists, run same-cycle cleanup when §10 permits it, otherwise set status `prod_verified_needs_cleanup` and leave the cleanup on this same item (§10a); set status `completed` only when no cleanup remains or cleanup verification passes |
-| production | FAIL | write mandatory production `verification_evidence`; status `verify_prod_failed` |
-| production | NEEDS_MORE_TIME | leave status unchanged |
-| production | BLOCKED | write/update mandatory production `verification_evidence` with blocker ground-truth evidence; leave status unchanged; update/preserve blocker metadata |
-
-`staging_verified` is the resting "passed staging, ready for prod" state — the green-flag
-counterpart of `verify_staging_failed`. Set it on every staging PASS, **including** tickets that
-must NOT be promoted individually (e.g. ones held for a batched epic promotion, or a ticket whose
-own artifacts forbid a solo cherry-pick): those rest in `staging_verified` rather than advancing.
-
-Epic/milestone mode uses a separate status/promotion table (never auto-promotes; updates the
-canonical gate artifact, per-step ticket artifacts, and epic summary). This is **only** relevant
-in `--epic`/`--milestone` mode — see the "§9 (epic/milestone)" section of
+After computing the verdict, load `references/verify-lifecycle-actions.md` and apply only the row
+for the current environment/mode. Epic/milestone mode instead uses the lifecycle section of
 `references/verify-epic-gates.md`.
-
-When staging PASS then calls `/ticket-promote` in standalone mode, the status advances from
-`staging_verified` to `to_verify_prod` once the promotion lands on `main` **and** the
-production deploy steps complete (`/ticket-promote` runs both, then invokes
-`/ticket-verify production <ID>`).
 
 ### 9a. Persist report before status changes and clean scratch
 
@@ -496,58 +371,12 @@ create.
 
 ### 9b. Auto-promotion gate (standalone staging PASS only)
 
-A staging PASS is an LLM-graded verdict, and auto-invoking `/ticket-promote` chains it
-straight into a production mutation (land on main + prod deploy steps) with no human in
-between. That chain is earned only by low-risk, fully-graded scopes. Auto-invoke
-`/ticket-promote <ID>` only when ALL of these hold:
-
-1. **Contract graded, not derived** — the deployment_guide evidence contract was
-   `FINALIZED` and every row for staging was executed (a `PASS (contract-missing)` never
-   auto-promotes; that rule already exists in §8).
-2. **Fresh evidence** — every evidence row passed on post-activation data; no row passed
-   only on pre-existing/ambiguous-provenance data (§5a provenance).
-3. **Low-risk diff** — the ticket's landed diff contains **no schema/migration, deploy-config,
-   or auth/security/payment category**. Detect with the same path checks `/ticket-promote`'s
-   schema gate and `landing-policy.md` use (`migrations/`, `alembic/`, `prisma/`, Atlas
-   model/plan paths, deployment YAML/env config, auth paths). These are exactly the classes
-   landing-policy routes staging-first *because* they are risky — the same risk reasoning
-   applies to leaving staging.
-
-If any condition fails: leave the ticket at `staging_verified` (the dashboard already shows
-it as "Ready for prod"), and report which condition held promotion plus the exact next
-command (`/ticket-promote <ID>`). This costs nothing on the common low-risk case and puts
-the one human gate exactly where a false PASS would be amplified into production.
+Load `references/verify-staging-promotion.md` only for a standalone staging PASS when
+`--no-promote` and batch/epic holds do not already prohibit promotion.
 
 ### 9c. Capture failure knowledge (FAIL verdicts, staging or production)
 
-A FAIL verdict is the most informative event this system produces — a confident
-plan/build/review met reality and lost. Do not let it rest only in the ticket: after
-writing the `verification_evidence` artifact and setting the failed status, persist the
-lesson to memory (same duplicate-check-then-store pattern as `/review` step 7):
-
-```
-# 1. Check for duplicates
-mcp__autodev-memory__search(queries=[{"keywords": ["<feature area>"], "text": "<failure summary>"}], project=PROJECT)
-
-# 2. If no duplicate, store
-mcp__autodev-memory__create_entry(
-  project=PROJECT,
-  title="Verify failure: <1-sentence what broke>",
-  content="Ticket <ID> (<env>). Evidence row that failed: <command + expected vs observed>.
-           Cause (if known): <root cause or 'unknown — see verification_evidence <artifact id>'>.
-           What planning/build should have done differently: <lesson>.",
-  entry_type="gotcha",
-  summary="<1-sentence summary>",
-  tags=["verification", "<area>"],
-  source="captured",
-  caller_context={"skill": "ticket-verify", "reason": "verification FAIL — feed future planning priors",
-                  "action_rationale": "New entry — no existing entry covers this failure",
-                  "trigger": "verify FAIL <env>"}
-)
-```
-
-This closes the loop that `/auto-plan`'s "Related past failures" prior search reads from.
-If the MCP tool is unavailable, skip silently.
+Load `references/verify-failure-capture.md` only after a staging or production `FAIL`.
 
 ### 10 / 10a. Deferred post-verification cleanup (production PASS only)
 

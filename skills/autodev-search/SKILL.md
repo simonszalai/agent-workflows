@@ -57,7 +57,7 @@ risk-bearing work:
    search for known issues:
 
    ```
-   mcp__autodev-memory__search(
+   mcp__autodev_memory__search(
      queries=[{"keywords": ["<tech>", "<area>"], "text": "<what you're investigating/building>"}],
      project="<project>",
      repo="<current repo>",
@@ -70,7 +70,7 @@ risk-bearing work:
    the compact response:
 
    ```
-   mcp__autodev-memory__expand_entries(
+   mcp__autodev_memory__expand_entries(
      entry_ids=["<id-1>", "<id-2>"],
      project="<project>", repo="<current repo>",
      corpus_generation="<generation from search>", scope_mode="current_repo"
@@ -84,7 +84,7 @@ This takes ~5 seconds and prevents re-introducing bugs that were already documen
 
 ## MCP Tools for Search
 
-### `mcp__autodev-memory__search` — Primary search tool
+### `mcp__autodev_memory__search` — Primary search tool
 
 Hybrid semantic + full-text search across all entries.
 
@@ -110,7 +110,7 @@ limit: 5
 - Always pass `repo` for repo-scoped work; omit it only for intentional project-wide search
 - Keep `detail="compact"`, then expand 2-5 selected IDs with the returned generation
 
-### `mcp__autodev-memory__get_review_patterns` — For reviewers
+### `mcp__autodev_memory__get_review_patterns` — For reviewers
 
 Search past review findings for recurring issues.
 
@@ -122,7 +122,7 @@ limit: 10
 
 Use this during code review to check if similar code has had issues before.
 
-### `mcp__autodev-memory__get_similar_tickets` — For planners
+### `mcp__autodev_memory__get_similar_tickets` — For planners
 
 Find completed tickets similar to the current work item.
 
@@ -134,7 +134,7 @@ repo: "ts-prefect"
 
 Use during planning to discover how similar features were built.
 
-### `mcp__autodev-memory__list_entries` — Browse by type
+### `mcp__autodev_memory__list_entries` — Browse by type
 
 List entries filtered by type and/or repo.
 
@@ -146,7 +146,7 @@ repo: "ts-prefect"      # optional — also includes project-wide entries
 
 Use when you want all gotchas for a repo, or all entries of a specific type.
 
-### `mcp__autodev-memory__get_all_tags` — Tag vocabulary
+### `mcp__autodev_memory__get_all_tags` — Tag vocabulary
 
 Returns all tags in use for a project. Useful to understand what knowledge areas are covered.
 
