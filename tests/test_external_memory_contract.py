@@ -8,6 +8,7 @@ import re
 import tempfile
 import subprocess
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -49,6 +50,18 @@ class ExternalMemoryContractTest(unittest.TestCase):
                             + "</autodev-memory-task-context>")
             with self.assertRaises(SystemExit):
                 loaded.read_memory_context(str(path))
+
+    def test_grok_sidecars_default_to_grok_4_5(self) -> None:
+        loaded = module(ROOT / "bin/external-agent", "external_agent_grok_model")
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"text":"{}"}', stderr="",
+        )
+        with mock.patch.object(loaded.subprocess, "run", return_value=completed) as run:
+            loaded.run_grok("prompt", {}, None, ROOT, 30)
+
+        command = run.call_args.args[0]
+        self.assertEqual(loaded.GROK_DEFAULT_MODEL, "grok-4.5")
+        self.assertEqual(command[command.index("-m") + 1], "grok-4.5")
 
     def test_task_prompt_uses_stdin_and_is_absent_from_output_and_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

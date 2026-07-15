@@ -82,7 +82,7 @@ RESEARCH_CORE_REFS = ["best-practices.md", "exhaustive.md", "repo-patterns.md"]
 
 DIFF_CHAR_CAP = 180_000   # keep the prompt well under provider context limits
 GIT_TIMEOUT = 60          # seconds; git prep must not hang the whole run
-GROK_DEFAULT_MODEL = "grok-build"   # most capable agentic/reasoning grok; overridable
+GROK_DEFAULT_MODEL = "grok-4.5"   # pin sidecars; overridable per dispatch
 USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
               "reasoning_output_tokens", "total_tokens")
 
@@ -1204,7 +1204,7 @@ def main() -> None:
     ap.add_argument("--task", default="review", choices=sorted(TASKS.keys()))
     ap.add_argument("--provider", required=True, choices=["claude", "codex", "grok"])
     ap.add_argument("--model", default=None,
-                    help="model override (default: provider CLI default / grok-build)")
+                    help="model override (default: provider CLI default / grok-4.5)")
     ap.add_argument("--repo", default=None, help="repo dir (default: git toplevel of cwd)")
     ap.add_argument("--out", default=None, help="write envelope here (default: stdout)")
     ap.add_argument("--timeout", type=int,
