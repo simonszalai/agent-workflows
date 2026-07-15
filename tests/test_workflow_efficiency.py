@@ -45,6 +45,34 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertNotIn("${codebaseResearch}", fanout)
         self.assertNotIn("${priorKnowledge}", fanout)
 
+    def test_deploy_contracts_enforce_wait_preflight_redaction_and_negative_inventory(self) -> None:
+        deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
+        promote = (ROOT / "skills/ticket-promote/SKILL.md").read_text()
+        create_pr = (ROOT / "skills/create-pr/SKILL.md").read_text()
+        methodology = (ROOT / "skills/auto-plan/references/plan-methodology.md").read_text()
+
+        self.assertIn("bin/wait-ci {pr_number}", deploy)
+        self.assertNotIn("gh pr checks {pr_number} --watch", deploy)
+        self.assertIn("Preflight every deploy command before merge", deploy)
+        self.assertIn("bin/redacted-exec", deploy)
+        self.assertIn("negative inventory", deploy)
+        self.assertIn("Production command preflight (before landing)", promote)
+        self.assertIn("bin/redacted-exec", promote)
+        self.assertIn("one final-tree health gate", promote)
+        self.assertIn("--context-file", create_pr)
+        self.assertIn("tree SHA equals `HEAD`", create_pr)
+        self.assertIn("Record a before inventory", methodology)
+        self.assertIn("live inventory contains none of the retired items", methodology)
+
+    def test_all_documented_agent_calls_use_fresh_bounded_context(self) -> None:
+        for path in (ROOT / "skills").rglob("*.md"):
+            lines = path.read_text().splitlines()
+            for index, line in enumerate(lines):
+                if "Agent(" not in line:
+                    continue
+                block = "\n".join(lines[index:index + 8])
+                self.assertIn("fork_turns", block, f"unbounded Agent call in {path}:{index + 1}")
+
     def test_compact_exec_keeps_full_output_and_returns_bounded_tail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = run_script("compact-exec", "--run-dir", directory, "--tail-bytes", "5",
@@ -89,6 +117,49 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(summary["status"], "success")
             self.assertEqual(summary["polls"], 2)
             self.assertEqual(result.stdout.count("\n"), 1)
+
+    def test_wait_ci_can_wait_for_one_actions_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / "gh"
+            fake.write_text(
+                "#!/bin/sh\n"
+                f"n=$(cat '{root / 'count'}' 2>/dev/null || echo 0); n=$((n+1)); "
+                f"echo $n > '{root / 'count'}'\n"
+                "if [ $n -eq 1 ]; then status=in_progress; conclusion=null; "
+                "else status=completed; conclusion='\"success\"'; fi\n"
+                "printf '{\"name\":\"deploy\",\"status\":\"%s\","
+                "\"conclusion\":%s,\"url\":\"x\",\"jobs\":[]}' "
+                '"$status" "$conclusion"\n'
+            )
+            fake.chmod(0o755)
+            result = run_script("wait-ci", "--run", "99", "--gh", str(fake),
+                                "--timeout", "1", "--initial-delay", "0", "--max-delay", "0")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertEqual(summary["kind"], "run")
+            self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["polls"], 2)
+            self.assertEqual(summary["run"]["conclusion"], "success")
+
+    def test_redacted_exec_never_emits_environment_or_labeled_secrets(self) -> None:
+        environment = os.environ.copy()
+        environment["PREFECT_API_AUTH_STRING"] = "operator:actual-production-secret"
+        result = run_script(
+            "redacted-exec", "--", "/bin/sh", "-c",
+            "printf '%s\\n' \"$PREFECT_API_AUTH_STRING\"; "
+            "printf '%s\\n' 'PREFECT_API_AUTH_STRING=profile-only-value' >&2; "
+            "printf '%s\\n' 'Authorization: Basic encoded-credential'; "
+            "printf '%s\\n' '\"api_key\": \"json-profile-value\"'",
+            env=environment,
+        )
+        combined = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("actual-production-secret", combined)
+        self.assertNotIn("profile-only-value", combined)
+        self.assertNotIn("encoded-credential", combined)
+        self.assertNotIn("json-profile-value", combined)
+        self.assertGreaterEqual(combined.count("[REDACTED]"), 4)
 
     @staticmethod
     def write_session(path: Path, meta: dict, records: list[dict]) -> None:
@@ -208,7 +279,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertFalse(report["sessions"][1]["fork_baseline_known"])
             self.assertEqual(report["sessions"][1]["usage_unique"], usage)
 
-    def test_report_sums_post_task_last_usage_when_no_replayed_baseline_exists(self) -> None:
+    def test_report_uses_zero_baseline_when_no_replayed_usage_exists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.write_session(root / "root.jsonl", {"id": "root"}, [])
@@ -234,9 +305,54 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             report = json.loads(result.stdout)
             child = report["sessions"][1]
             self.assertTrue(child["fork_baseline_known"])
-            self.assertEqual(child["fork_baseline_method"], "sum_post_task_last_token_usage")
+            self.assertEqual(child["fork_baseline_method"],
+                             "zero_no_usage_before_activity_boundary")
             self.assertEqual(child["usage_unique"], total)
             self.assertEqual(report["coverage"]["fork_baselines"], "complete")
+
+    def test_report_excludes_replayed_parent_turns_before_child_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_session(root / "root.jsonl", {"id": "root"}, [])
+            replay = {"input_tokens": 100, "cached_input_tokens": 40,
+                      "output_tokens": 10, "reasoning_output_tokens": 2, "total_tokens": 110}
+            gross = {"input_tokens": 160, "cached_input_tokens": 70,
+                     "output_tokens": 25, "reasoning_output_tokens": 4, "total_tokens": 185}
+            duplicate_last = {"input_tokens": 60, "cached_input_tokens": 30,
+                              "output_tokens": 15, "reasoning_output_tokens": 2,
+                              "total_tokens": 75}
+            self.write_session(root / "child.jsonl", {
+                "id": "child", "parent_thread_id": "root"
+            }, [
+                {"timestamp": "2026-01-01T00:00:00.000Z", "type": "event_msg",
+                 "payload": {"type": "task_started"}},
+                {"timestamp": "2026-01-01T00:00:00.001Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": replay, "last_token_usage": replay}}},
+                {"timestamp": "2026-01-01T00:00:00.010Z", "type": "event_msg",
+                 "payload": {"type": "task_started"}},
+                {"timestamp": "2026-01-01T00:00:00.020Z",
+                 "type": "inter_agent_communication_metadata",
+                 "payload": {"trigger_turn": True}},
+                {"timestamp": "2026-01-01T00:00:01.000Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": gross, "last_token_usage": duplicate_last}}},
+                # Codex can duplicate the terminal token_count; attribution must not double it.
+                {"timestamp": "2026-01-01T00:00:01.001Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": gross, "last_token_usage": duplicate_last}}},
+            ])
+            result = run_script("workflow-efficiency-report", str(root / "root.jsonl"),
+                                "--sessions-root", str(root),
+                                "--external-usage-dir", str(root / "missing"))
+            report = json.loads(result.stdout)
+            child = report["sessions"][1]
+            self.assertEqual(child["activity_boundary_method"],
+                             "last_task_started_before_trigger_turn")
+            self.assertEqual(child["inherited_fork_baseline"], replay)
+            self.assertEqual(child["usage_unique"]["total_tokens"], 75)
+            self.assertLessEqual(child["usage_unique"]["total_tokens"],
+                                 child["usage_gross"]["total_tokens"])
 
     def test_external_agent_sidecar_records_provider_usage_without_changing_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

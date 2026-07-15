@@ -92,6 +92,7 @@ pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-u
    ```
    Agent(
      subagent_type="builder",
+     fork_turns="none",
      model="sonnet",
      prompt="
        MODE: resolve
@@ -165,6 +166,7 @@ pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-u
    ```
    Agent(
      subagent_type="builder",
+     fork_turns="none",
      model="opus",
      prompt="
        MODE: resolve

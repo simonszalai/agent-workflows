@@ -101,15 +101,26 @@ def summarize(path: Path, is_descendant: bool) -> dict:
     records = read_records(path)
     meta = metadata(records)
     token_events: list[tuple[int, str | None, dict]] = []
-    task_started_at = None
-    task_started_index = None
+    task_starts: list[int] = []
+    trigger_turn_indices: list[int] = []
     for index, record in enumerate(records):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         if record.get("type") == "event_msg" and payload.get("type") == "task_started":
-            task_started_index = index
-            task_started_at = record.get("timestamp") \
-                if isinstance(record.get("timestamp"), str) else None
-            break
+            task_starts.append(index)
+        if record.get("type") == "inter_agent_communication_metadata" \
+                and payload.get("trigger_turn") is True:
+            trigger_turn_indices.append(index)
+    task_started_index = task_starts[0] if task_starts else None
+    activity_boundary_method = "first_task_started"
+    if is_descendant and trigger_turn_indices:
+        # A Codex fork rollout can begin with a replay of the parent's complete event stream,
+        # including several old task_started/token_count records. The trigger_turn marker belongs
+        # to the fresh child turn; the last task_started before it is the real activity boundary.
+        trigger_index = trigger_turn_indices[0]
+        candidates = [index for index in task_starts if index < trigger_index]
+        if candidates:
+            task_started_index = candidates[-1]
+            activity_boundary_method = "last_task_started_before_trigger_turn"
     tool_calls = forks = all_forks = compactions = truncations = output_bytes = 0
     fork_modes: Counter[str] = Counter()
     for index, record in enumerate(records):
@@ -148,29 +159,21 @@ def summarize(path: Path, is_descendant: bool) -> dict:
     unique = gross.copy()
     if is_descendant:
         baseline_method = "unavailable_no_pre_task_total_usage"
-        if task_started_at is not None and task_started_index is not None:
-            eligible = [info for index, timestamp, info in token_events
-                        if index <= task_started_index and timestamp is not None
-                        and timestamp <= task_started_at]
+        if task_started_index is not None:
+            eligible = [info for index, _, info in token_events if index < task_started_index]
             if eligible:
                 baseline = usage_dict(eligible[-1]["total_token_usage"])
                 baseline_known = True
-                baseline_method = "last_total_usage_at_or_before_task_started"
+                baseline_method = "last_total_usage_before_activity_boundary"
                 unique = {key: max(0, gross[key] - baseline[key]) for key in USAGE_KEYS}
             else:
-                active_infos = [info for index, _, info in token_events
-                                if index >= task_started_index]
-                last_usages = [info.get("last_token_usage") for info in active_infos]
-                if active_infos and all(isinstance(item, dict) for item in last_usages):
-                    unique = usage_dict({})
-                    for item in last_usages:
-                        for key, value in usage_dict(item).items():
-                            unique[key] += value
-                    baseline = {key: max(0, gross[key] - unique[key]) for key in USAGE_KEYS}
-                    baseline_known = True
-                    baseline_method = "sum_post_task_last_token_usage"
+                # No cumulative usage precedes the child's first real task, so the cumulative
+                # total is already child-unique. Do not sum last_token_usage events: Codex may
+                # repeat a final token_count record, which can make that sum exceed gross usage.
+                baseline_known = True
+                baseline_method = "zero_no_usage_before_activity_boundary"
         else:
-            baseline_method = "unavailable_no_task_started_timestamp"
+            baseline_method = "unavailable_no_task_started"
     return {
         "session_id": meta.get("id") or meta.get("session_id"),
         "parent_thread_id": meta.get("parent_thread_id"),
@@ -182,6 +185,8 @@ def summarize(path: Path, is_descendant: bool) -> dict:
         "inherited_fork_baseline_tokens": baseline["total_tokens"],
         "fork_baseline_known": baseline_known,
         "fork_baseline_method": baseline_method,
+        "activity_boundary_method": activity_boundary_method if task_started_index is not None
+        else "unavailable_no_task_started",
         "activity_boundary_known": not is_descendant or task_started_index is not None,
         "usage_unique": unique,
         "tool_calls": tool_calls,

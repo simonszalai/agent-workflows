@@ -51,6 +51,9 @@ Read before acting:
 
 - Load `get_epic(project, epic_id)` with source tickets, step tickets, artifacts, events, and
   blockers.
+- Cache that response/version as the orchestration snapshot and pass bounded milestone extracts to
+  milestone-flow. Reload only after `/epic-plan`, `/epic-split`, or a completed milestone mutates
+  the epic; do not re-read the unchanged full epic between routing decisions.
 - If the epic spans multiple repos, resolve every involved repo to an actual Conductor workspace
   path or linked directory using `conductor-multi-repo.md`. If any required repo is missing, stop
   before invoking milestone-flow and report the missing repo/path requirement.

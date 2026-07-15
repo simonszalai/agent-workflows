@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for GitHub checks with one bounded, backoff-controlled invocation."""
+"""Wait for GitHub PR checks or an Actions run in one bounded invocation."""
 
 from __future__ import annotations
 
@@ -13,18 +13,23 @@ import time
 
 
 TERMINAL_FAILURE = {"fail", "cancel"}
+RUN_SUCCESS = {"success", "neutral", "skipped"}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="wait-ci")
     parser.add_argument("ref", nargs="?", default="")
-    # Default caps at 540s so a foreground run stays under the ~9-minute Bash harness cap;
-    # background runs that expect longer CI must pass a higher --timeout explicitly.
+    parser.add_argument("--run", dest="run_id", default="",
+                        help="wait for one GitHub Actions run instead of PR checks")
+    # Default caps at 540s so one foreground call stays under a typical 9-minute harness cap.
+    # Longer waits belong in a fresh no-history waiter, not parent-turn process polling.
     parser.add_argument("--timeout", type=float, default=540)
     parser.add_argument("--initial-delay", type=float, default=5)
     parser.add_argument("--max-delay", type=float, default=30)
     parser.add_argument("--gh", default="gh", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.run_id and args.ref:
+        parser.error("pass either a PR ref or --run, not both")
     if args.timeout < 0 or args.initial_delay < 0 or args.max_delay < 0:
         parser.error("timeouts and delays must be non-negative")
 
@@ -33,6 +38,7 @@ def main() -> None:
     delay = args.initial_delay
     polls = 0
     checks: list[dict] = []
+    run: dict = {}
     status = "timeout"
     error = None
 
@@ -40,7 +46,9 @@ def main() -> None:
         elapsed = time.monotonic() - started
         remaining = max(1, round(args.timeout - elapsed))
         command = "bin/wait-ci"
-        if args.ref:
+        if args.run_id:
+            command += f" --run {args.run_id}"
+        elif args.ref:
             command += f" {args.ref}"
         return command + f" --timeout {remaining}"
 
@@ -50,12 +58,15 @@ def main() -> None:
         # can pick the wait back up, then exit 124 like a natural timeout.
         summary = {
             "status": "timeout",
+            "kind": "run" if args.run_id else "pr",
             "polls": polls,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "checks_total": len(checks),
             "checks": [{key: item.get(key) for key in ("name", "state", "bucket", "link")}
                        for item in checks[:100] if isinstance(item, dict)],
             "checks_truncated": len(checks) > 100,
+            "run": {key: run.get(key) for key in
+                    ("name", "status", "conclusion", "url")} if run else None,
             "error": f"interrupted by signal {signum} before a terminal CI state",
             "resume_command": resume_command(),
         }
@@ -70,10 +81,14 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
 
     while True:
-        command = [args.gh, "pr", "checks"]
-        if args.ref:
-            command.append(args.ref)
-        command += ["--json", "name,state,link,bucket"]
+        if args.run_id:
+            command = [args.gh, "run", "view", args.run_id, "--json",
+                       "name,status,conclusion,url,jobs"]
+        else:
+            command = [args.gh, "pr", "checks"]
+            if args.ref:
+                command.append(args.ref)
+            command += ["--json", "name,state,link,bucket"]
         remaining = max(0.1, deadline - time.monotonic())
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=False,
@@ -85,24 +100,31 @@ def main() -> None:
             status, error = "error", str(exception)[-1000:]
             break
         polls += 1
-        if result.returncode not in (0, 8):
+        if result.returncode not in ((0,) if args.run_id else (0, 8)):
             status = "error"
-            error = (result.stderr or "gh pr checks failed").strip()[-1000:]
+            error = (result.stderr or "gh CI query failed").strip()[-1000:]
             break
         try:
             parsed = json.loads(result.stdout or "[]")
-            checks = parsed if isinstance(parsed, list) else []
         except json.JSONDecodeError:
             status, error = "error", "gh emitted invalid JSON"
             break
-        buckets = {str(item.get("bucket", "pending")).lower() for item in checks
-                   if isinstance(item, dict)}
-        if buckets & TERMINAL_FAILURE:
-            status = "failure"
-            break
-        if checks and buckets <= {"pass", "skipping"}:
-            status = "success"
-            break
+        if args.run_id:
+            run = parsed if isinstance(parsed, dict) else {}
+            conclusion = str(run.get("conclusion") or "").lower()
+            if str(run.get("status") or "").lower() == "completed":
+                status = "success" if conclusion in RUN_SUCCESS else "failure"
+                break
+        else:
+            checks = parsed if isinstance(parsed, list) else []
+            buckets = {str(item.get("bucket", "pending")).lower() for item in checks
+                       if isinstance(item, dict)}
+            if buckets & TERMINAL_FAILURE:
+                status = "failure"
+                break
+            if checks and buckets <= {"pass", "skipping"}:
+                status = "success"
+                break
         now = time.monotonic()
         if now >= deadline:
             break
@@ -111,14 +133,19 @@ def main() -> None:
 
     summary = {
         "status": status,
+        "kind": "run" if args.run_id else "pr",
         "polls": polls,
         "duration_ms": round((time.monotonic() - started) * 1000),
         "checks_total": len(checks),
         "checks": [{key: item.get(key) for key in ("name", "state", "bucket", "link")}
                    for item in checks[:100] if isinstance(item, dict)],
         "checks_truncated": len(checks) > 100,
+        "run": {key: run.get(key) for key in
+                ("name", "status", "conclusion", "url")} if run else None,
         "error": error,
     }
+    if status == "timeout":
+        summary["resume_command"] = resume_command()
     print(json.dumps(summary, separators=(",", ":")))
     raise SystemExit({"success": 0, "failure": 1, "error": 2, "timeout": 124}[status])
 

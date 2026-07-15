@@ -65,8 +65,10 @@ Repeated work:
 - Identical MCP reads (same tool, same args) mean the run ignored its cache contract:
   ticket context is fetched once, bounded (`detail`, `artifact_types`,
   `include_events=false`), and passed to children as a packet.
-- Long command output belongs in `bin/compact-exec`; CI waits belong in `bin/wait-ci`,
-  not poll loops in model turns.
+- Long command output belongs in `bin/compact-exec`; CI waits belong in one foreground
+  `bin/wait-ci` call (or a `fork_turns: "none"` waiter when the harness cannot block), not a
+  background process followed by poll loops in model turns. The process may poll; the model should
+  be sampled once at the terminal result.
 
 Contracts and measurement:
 
@@ -74,6 +76,9 @@ Contracts and measurement:
   where enforcement is missing (Grok adapter).
 - Every external leg must be measurable (usage sidecar or rollout). Unmeasured spend is
   itself a finding — recommend fixing capture before optimizing further.
+- Validate attribution invariants before citing the report: descendant unique usage must never
+  exceed its gross cumulative usage. A violation means replay/baseline detection is broken; fix the
+  measurement before drawing efficiency conclusions.
 - Prompts follow current-model guidance (Fable 5 / GPT-5.6 / Grok 4.5): outcome, success
   criteria, constraints, stop rules. Prescriptive step-by-step scaffolding is a legacy
   profile for older models, not the default.
