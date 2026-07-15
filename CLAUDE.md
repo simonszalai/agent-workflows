@@ -238,6 +238,7 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 | "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
 | "consolidate memories", "audit memories", "clean up memories", "dream", "deep dream", "whole-system dream", "improve skills from logs/tickets" | Run `/deep-dream` |
 | "session retro", "audit this session's tokens", "why was this run so expensive" | Run `/session-retro` |
+| "apply/implement the retro", "implement R1/R2", accepts session-retro recommendations | Run `/retro-apply`; the parent only writes the compact packet and delegates with `fork_turns: "none"` |
 
 ### Ticket Management
 
@@ -252,6 +253,10 @@ correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow chang
 When the user wants to add or modify a skill, agent, hook, binary, or workflow, use the
 `workflow-authoring` skill. It owns bounded discovery, the canonical repository health gate,
 worktree-safe PR merge/cleanup, and truthful remote-versus-local propagation reporting.
+
+When those changes are accepted recommendations from `/session-retro`, use `/retro-apply` first.
+It creates the bounded change packet and makes a fresh workflow-maintainer context own the entire
+`workflow-authoring` lifecycle; the long retro parent wakes only for the terminal result.
 
 ## Parallelism
 

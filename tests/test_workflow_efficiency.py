@@ -35,6 +35,22 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertNotIn("/review mode:cross", lfg)
         self.assertIn("workflow-efficiency-report --before-retro", retro)
 
+    def test_accepted_retro_changes_require_one_fresh_bounded_maintainer(self) -> None:
+        conventions = (ROOT / "CLAUDE.md").read_text()
+        retro = (ROOT / "skills/session-retro/SKILL.md").read_text()
+        apply = (ROOT / "skills/retro-apply/SKILL.md").read_text()
+
+        self.assertIn("/retro-apply R1,R3", retro)
+        self.assertIn("request to `/retro-apply`", retro)
+        self.assertIn("accepted-change-packet.md", apply)
+        self.assertIn("at most 12 KiB", apply)
+        self.assertIn('fork_turns="none"', apply)
+        self.assertIn("Block once for its terminal result", apply)
+        self.assertIn("Never silently", apply)
+        self.assertNotIn('fork_turns="all"', apply)
+        self.assertIn("accepts session-retro recommendations", conventions)
+        self.assertIn("fresh workflow-maintainer context", conventions)
+
     def test_ticket_context_and_plan_fanout_inputs_are_bounded(self) -> None:
         conventions = (ROOT / "CLAUDE.md").read_text()
         auto_plan = (ROOT / "skills/auto-plan/SKILL.md").read_text()
