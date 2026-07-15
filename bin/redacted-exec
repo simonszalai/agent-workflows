@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Run a command without returning credential material to the agent transcript.
+
+This wrapper is for authenticated operational commands whose normal output is useful but may
+contain echoed configuration. It deliberately keeps output in memory, redacts it, and emits only
+the redacted streams; unlike compact-exec it never writes the raw output to a log file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import signal
+import subprocess
+import sys
+
+
+SENSITIVE_NAME = re.compile(
+    r"(?:secret|token|password|passwd|credential|auth(?:_string)?|api[_-]?key|"
+    r"database_(?:url|uri)|dsn)",
+    re.IGNORECASE,
+)
+LABELED_VALUE = re.compile(
+    r"(?i)((?:[\"'])?[A-Z0-9_-]*(?:secret|token|password|passwd|credential|"
+    r"auth(?:_string)?|api[_-]?key|database_(?:url|uri)|dsn)[A-Z0-9_-]*"
+    r"(?:[\"'])?\s*[=:]\s*)"
+    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,}\]]+)"
+)
+BASIC_AUTH = re.compile(r"(?i)(\bauthorization\s*:\s*basic\s+)\S+")
+URL_USERINFO = re.compile(r"([a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@", re.IGNORECASE)
+
+
+def redact(text: str, environment: dict[str, str]) -> str:
+    values = {
+        value for name, value in environment.items()
+        if SENSITIVE_NAME.search(name) and len(value) >= 4
+    }
+    for value in sorted(values, key=len, reverse=True):
+        text = text.replace(value, "[REDACTED]")
+    text = BASIC_AUTH.sub(r"\1[REDACTED]", text)
+    text = URL_USERINFO.sub(r"\1[REDACTED]@", text)
+    return LABELED_VALUE.sub(r"\1[REDACTED]", text)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="redacted-exec")
+    parser.add_argument("--timeout", type=float)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        parser.error("a command is required after --")
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be positive")
+
+    environment = os.environ.copy()
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        stderr += "\nredacted-exec: command timed out\n"
+        return_code = 124
+    else:
+        return_code = process.returncode
+
+    sys.stdout.write(redact(stdout, environment))
+    sys.stderr.write(redact(stderr, environment))
+    raise SystemExit(return_code)
+
+
+if __name__ == "__main__":
+    main()

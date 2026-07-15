@@ -109,7 +109,7 @@ For every failure, answer:
 
 **For complex code analysis:** Spawn `researcher` agent:
 ```
-Agent(subagent_type="researcher", prompt="
+Agent(subagent_type="researcher", fork_turns="none", prompt="
 Research the codebase for: [bug/failure area]
 Find:
 1. When was the buggy code introduced? (git blame)
@@ -122,7 +122,7 @@ what was actually committed.
 
 **For disputed root cause:** Spawn `hypothesis-evaluator` agent:
 ```
-Agent(subagent_type="hypothesis-evaluator", prompt="
+Agent(subagent_type="hypothesis-evaluator", fork_turns="none", prompt="
 Post-mortem hypothesis: [suspected root cause]
 Evidence so far: [what we know]
 Verify using production data, metrics, and logs.

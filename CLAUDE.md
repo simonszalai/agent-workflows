@@ -8,6 +8,12 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 
 - Never create markdown files unless explicitly instructed
 - Never deploy or run production operations without explicit instruction
+- Never print resolved secret values into agent-visible output. Do not run credential/profile/config
+  dumps such as `prefect profile inspect`, `env`, or `printenv`. Direct local-shell production DB
+  writes are prohibited; use an audited MCP/server-side operation. Authenticated production CLI
+  mutations with no remote route must run through `bin/redacted-exec -- ...`, never a raw-output log.
+  If a value is emitted anyway, treat the credential as exposed: stop echoing/inspecting it, identify
+  only the credential name and affected service, and require rotation of the source and consumers.
 - Before any `op://*-sensitive/...` access, load the `sensitive-vault-access` skill and pass a
   concise, operation-specific reason via `SENSITIVE_ACCESS_REASON` or the wrapper's `--reason`.
   The reason must explain why the credential is needed and include the ticket/milestone when

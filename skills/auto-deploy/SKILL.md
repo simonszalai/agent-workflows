@@ -115,6 +115,13 @@ ticket = mcp__autodev-memory__get_ticket(
 )
 ```
 
+This is the retrieval owner for the whole auto-deploy run. Cache the response and its
+`context_version` in run-local state; do not call `get_ticket` again unless an external writer
+changes a relevant artifact. If Phase 2 invokes `/create-pr`, pass this cached response through its
+`--context-file` input rather than letting create-pr reload the same ticket. The file is an ephemeral
+0600 OS-temp cache (for example `${TMPDIR:-/tmp}/agent-workflows/<run-id>/ticket.json`), not a
+durable ticket artifact; delete it at the end of the run and never place it in `.context/`.
+
 - If not found: STOP - "Ticket not found"
 - Parse arguments: if second arg is `staging` or `production`, use as target override
 - If no override: check ticket status is `ready_to_deploy_staging`
@@ -134,9 +141,8 @@ gh pr list --search "{ticket-id} in:title,body" \
 - **PR found, already merged:** skip the merge phase (Phase 7), continue to deploy steps
 - **No PR found:** fall back to the current branch — if the current branch is a pushed
   feature branch for this ticket (not `main`/`staging`), use it as the PR head; then run
-  `/create-pr {ticket-id}` internally to:
-  1. Collect all ticket artifacts (plan, build_todos, review_todos, deployment_guide)
-     via `get_ticket`
+  `/create-pr {ticket-id} --context-file <run-local-cached-ticket>` internally to:
+  1. Reuse the ticket artifacts already loaded in Phase 1
   2. Generate the PR summary from those artifacts + test results
   3. Create the PR against the target branch with the generated body
 
@@ -168,12 +174,13 @@ the generic process; the project-specific command overrides where it differs.
 ### Phase 4: Check CI
 
 ```bash
-timeout 600 gh pr checks {pr_number} --watch
+bin/wait-ci {pr_number} --timeout 540
 ```
 
-- Use `gh pr checks --watch` with a 10-minute cap (as above) whenever checks are pending
+- Invoke that as one blocking foreground tool call with an outer timeout above 540 seconds; consume
+  its one JSON result. Do not background it and poll process output from model turns.
 - If checks failing: STOP - "CI checks failing, cannot deploy"
-- If still pending after 10 minutes: STOP - report pending checks
+- If still pending at the cap: STOP - report pending checks and the returned `resume_command`
 - If PR already merged: skip CI check (already passed)
 
 ### Phase 5: Rebase onto Target Branch (CRITICAL)
@@ -206,10 +213,9 @@ git rebase origin/{target_branch}
 git push --force-with-lease
 ```
 
-Wait for CI to re-run after rebase (checks must pass again). Waiting is **bounded**: poll
-`gh pr checks` at increasing intervals (~2m, ~5m, ~10m). If checks are still pending after
-~20 minutes total, stop polling and report the current check states plus the exact command
-to resume — do not loop "still waiting" indefinitely.
+Wait for CI to re-run after rebase (checks must pass again) with one new
+`bin/wait-ci {pr_number} --timeout 540` invocation. If it times out, return its resume command;
+never turn GitHub polling into repeated model turns.
 
 If rebase has conflicts: STOP - "Rebase conflicts, manual resolution needed"
 
@@ -273,6 +279,23 @@ entry `216431b0`). Set `blocked_by="Thomas"`,
 `blocked_context={"repo":"ts-decrypt-proxy","target":"production","manual_deploy_owner":"Thomas"}`,
 and do not deploy `ts-decrypt-proxy` production yourself.
 
+### Phase 6b: Preflight every deploy command before merge
+
+Build the exact ordered command table for Phase 8 while the PR can still be stopped safely. Every
+row must have a preflight result:
+
+- validate script/module imports and CLI argument shape (`--help`, compile/import, config parse, or
+  the project's non-mutating plan/dry-run command);
+- when the project documents a safe idempotent staging mirror, execute the same command shape there
+  with **staging credentials only** and verify its postcondition;
+- when no staging mirror exists, use a non-mutating production plan/readiness check — never invent a
+  fake dry-run flag and never perform the production mutation as the preflight.
+
+Record `command`, `target`, `preflight`, and `expected postcondition`. A missing/failed preflight is
+a STOP before merge. The preflight does not replace the real deploy or its verification; it catches
+bad imports, stale flags, wrong YAML/entrypoints, and environment selection before production code
+lands.
+
 ### Phase 7: Merge PR
 
 ```bash
@@ -315,6 +338,10 @@ the target environment determined in Phase 1.
 - Each step depends on the previous one succeeding
 - If a step fails: STOP, do not continue, revert ticket status
 - Log output of each step for verification
+- For production, prefer audited MCP/server-side mutations. Direct local production DB writes are
+  prohibited. Any other authenticated production CLI step with no remote route must run as
+  `bin/redacted-exec -- <documented command>`; never inspect the auth profile or write raw output to
+  a compact-exec log.
 - Only flag steps to the user that are **genuinely manual** and cannot be
   run from the CLI (e.g., clicking "Deploy" in a web dashboard). Steps
   that have CLI commands are not manual — run them.
@@ -340,6 +367,12 @@ executing the detected categories:
 
 Include the per-step reconciliation table in the Phase 9 verification checklist output.
 
+If the diff removes or retires a route, writer, trigger, queue consumer, deployment, flag, or other
+runtime surface, Phase 9 must also close the negative inventory recorded by the plan/deployment
+guide: code/config search shows each old item absent, authoritative live inventory shows retired
+registrations absent, and the surviving route is exercised. An unexplained legacy item is a failed
+deploy verification.
+
 ### Phase 9: Verify Deployment
 
 After all deployment steps complete, verify each one succeeded:
@@ -355,8 +388,9 @@ After all deployment steps complete, verify each one succeeded:
 
 **Bounded log reads (always):** never pull full unbounded logs into context. Constrain every
 log read to the time window since the deploy AND a generous tail cap (e.g. the last 2000
-lines). If the windowed log is still larger than that, spawn a haiku subagent to extract only
-the relevant excerpts (errors, feature-specific lines) and work from the excerpts.
+lines). If the windowed log is still larger than that, spawn a haiku subagent with
+`fork_turns: "none"` and only the log path, time window, feature terms, and output cap; work from
+its relevant excerpts (errors and feature-specific lines).
 
 **Project-specific verification** (from `/deploy` command):
 

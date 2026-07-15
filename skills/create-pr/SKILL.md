@@ -22,13 +22,16 @@ epic DAG.
 /create-pr F007                     # Create PR for feature F007
 /create-pr B001                     # Create PR for bug fix B001
 /create-pr F007 --issue 123         # Link to GitHub issue #123
+/create-pr F007 --context-file PATH # Reuse caller-owned run-local ticket cache
 ```
 
 ## Process
 
 ### 1. Gather Context
 
-Load only the artifacts used to construct the PR summary:
+When `--context-file` is supplied by an owning workflow, validate that it matches project, repo,
+ticket ID, and the caller's recorded `context_version`, then use it. Do **not** call `get_ticket`.
+Without that input, load only the artifacts used to construct the PR summary once:
 
 ```
 ticket = mcp__autodev-memory__get_ticket(
@@ -53,7 +56,10 @@ ticket = mcp__autodev-memory__get_ticket(
 
 ### 2. Collect Test Results
 
-Run the project's test suite and capture results:
+Reuse the owning workflow's health-gate result when it is keyed to the current tree SHA and exact
+command. Do not re-run an unchanged final tree merely to populate a PR body. If no current-tree
+health result exists (normal for a manually invoked `/create-pr`), run the project's health command
+once and capture results:
 
 ```bash
 # Run tests (project-specific command from AGENTS.md)
@@ -66,8 +72,8 @@ Record:
 - Tests failing
 - Test types (unit, integration, e2e)
 
-If tests were already run recently (within this workflow), use those results instead of
-re-running.
+"Recently" is not a freshness boundary: reuse only when the recorded tree SHA equals `HEAD`. Any
+tree-changing edit/rebase invalidates it.
 
 ### 3. Collect Verification Status
 

@@ -123,7 +123,7 @@ instead):
 
 **Memory investigation:**
 ```
-Agent(subagent_type="general-purpose", name="retro-memory", prompt="
+Agent(subagent_type="general-purpose", name="retro-memory", fork_turns="none", prompt="
 Run the /autodev-wtf-memory skill process for this incident that occurred in a live session.
 There is no ticket — work from this incident statement:
 
@@ -143,7 +143,7 @@ Report in the WTF Memory Verdict format. Do NOT save anything yet — propose on
 
 **Workflow investigation:**
 ```
-Agent(subagent_type="general-purpose", name="retro-workflows", prompt="
+Agent(subagent_type="general-purpose", name="retro-workflows", fork_turns="none", prompt="
 Run the /autodev-wtf-workflows skill process for this incident that occurred in a live session.
 There is no ticket — work from this incident statement:
 

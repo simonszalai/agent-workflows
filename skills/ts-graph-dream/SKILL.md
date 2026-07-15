@@ -413,7 +413,8 @@ edge/mention counts.
 **Step 2 — Decide the real name (REQUIRED — reasoning model, per "Model selection").** Mapping a
 ticker to a company name (`005930.KS` → *Samsung Electronics*) or judging whether an opaque node is
 a duplicate of a readable twin is world-knowledge, not string work. Batch the candidates to an
-Agent-tool subagent (`model: "sonnet"` routine, `model: "opus"` ambiguous; prefer 1M-context so the
+Agent-tool subagent (`fork_turns: "none"`; `model: "sonnet"` routine, `model: "opus"` ambiguous;
+prefer 1M-context so the
 whole batch fits) and have it return, per entity: a verdict `RELABEL` (with the exact `new_name`) /
 `MERGE` (opaque node is a duplicate of a named twin → which survivor) / `QUARANTINE` (pure noise,
 no real edges) / `LEAVE`, plus the correct `ticker` when it recognises one, a confidence, and a
@@ -601,7 +602,7 @@ decommission, not patching the fallback.
 SQL finds candidates; **it cannot decide meaning.** Any step that asks "are these the same real-world
 thing?", "is this predicate a true synonym/inverse?", or "is this alias contamination?" must be
 delegated to a reasoning model, not answered from string heuristics. Spawn an Agent-tool subagent with
-`model: "sonnet"` (routine) or `model: "opus"` (hard/ambiguous), and prefer a **1M-context** model so
+`fork_turns: "none"`, `model: "sonnet"` (routine) or `model: "opus"` (hard/ambiguous), and prefer a **1M-context** model so
 the whole candidate set for one entity/predicate family fits in a single prompt. Return structured
 verdicts with confidence; apply only the safe tier automatically, and only above a confidence bar.
 

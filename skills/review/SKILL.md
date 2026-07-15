@@ -190,6 +190,12 @@ file changed. The reviewer must check:
 Unbounded redundant persistence that scales linearly with polling frequency is a p1 finding
 unless a named consumer, retention policy, and volume budget make it intentional.
 
+**CRITICAL: removal closure rule.** If the diff replaces/decommissions an old structure, compare it
+to the plan's before inventory. Review must require bounded zero-match searches across code and
+deploy/config paths, explicit deletion commands for old live registrations, and a surviving-path
+smoke check. Any scoped legacy entrypoint/writer/flag/deployment left unexplained, or any removal
+claim without a negative postcondition, is a p1 completeness finding.
+
 **CRITICAL: external cache temporal-finality rule.** If the diff reads from or writes to a
 provider-backed cache, market/reference data table, prompt-context price table, evaluation
 label, or ground-truth outcome table, spawn the data-integrity reviewer even if no model file
