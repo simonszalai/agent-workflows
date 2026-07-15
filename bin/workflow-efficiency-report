@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 from collections import Counter, defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -18,6 +18,21 @@ CALL_TYPES = {"function_call", "custom_tool_call"}
 OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output"}
 COMPACTION_TYPES = {"compacted", "context_compacted"}
 MAX_DIAGNOSTIC_ROWS = 20
+
+
+def parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(value[:16], "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def read_records(path: Path) -> list[dict]:
@@ -129,13 +144,7 @@ def tool_label(payload: dict) -> str:
 
 
 def record_timestamp(record: dict) -> datetime | None:
-    value = record.get("timestamp")
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return parse_timestamp(record.get("timestamp"))
 
 
 def before_retro_cutoff(records: list[dict]) -> list[dict]:
@@ -155,6 +164,8 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
     if before_retro:
         records = before_retro_cutoff(records)
     meta = metadata(records)
+    timestamps = [parsed for record in records
+                  if (parsed := parse_timestamp(record.get("timestamp"))) is not None]
     token_events: list[tuple[int, str | None, dict]] = []
     task_starts: list[int] = []
     trigger_turn_indices: list[int] = []
@@ -280,6 +291,8 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
         "file": str(path.resolve()),
         "records_analyzed": len(records),
         "before_retro_cutoff_applied": len(records) < original_record_count,
+        "started_at": min(timestamps).isoformat() if timestamps else None,
+        "ended_at": max(timestamps).isoformat() if timestamps else None,
         "usage_available": bool(token_events),
         "usage_gross": gross,
         "inherited_fork_baseline": baseline,
@@ -322,13 +335,15 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
     }
 
 
-def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
+def external_usage(directory: Path | None, session_ids: set[str],
+                   window_start: datetime | None, window_end: datetime | None) -> dict:
     empty = {"sidecars": 0, "available_runs": 0, "unavailable_runs": 0,
-             "unattributed_sidecars": 0, "usage": usage_dict({}), "duration_ms": 0,
+             "unattributed_sidecars": 0, "unrelated_sidecars": 0, "invalid_sidecars": 0,
+             "usage": usage_dict({}), "duration_ms": 0,
              "models": {}, "repos": {}, "providers": {}, "status": "unavailable"}
     if directory is None or not directory.exists():
         return empty
-    sidecars = available = unavailable = unattributed = duration_ms = 0
+    sidecars = available = unavailable = unattributed = unrelated = invalid = duration_ms = 0
     total = usage_dict({})
     models: Counter[str] = Counter()
     repos: Counter[str] = Counter()
@@ -337,11 +352,18 @@ def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            unattributed += 1
+            invalid += 1
             continue
         thread_id = record.get("orchestrator_thread_id") if isinstance(record, dict) else None
         if not thread_id or str(thread_id) not in session_ids:
-            unattributed += 1
+            sidecar_time = parse_timestamp(record.get("started_at") if isinstance(record, dict)
+                                           else None) or parse_timestamp(path.name)
+            grace = timedelta(minutes=5)
+            if sidecar_time is not None and window_start is not None and window_end is not None \
+                    and window_start - grace <= sidecar_time <= window_end + grace:
+                unattributed += 1
+            else:
+                unrelated += 1
             continue
         sidecars += 1
         try:
@@ -361,6 +383,7 @@ def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
     status = "unavailable" if sidecars == 0 else ("complete" if unavailable == 0 else "partial")
     return {"sidecars": sidecars, "available_runs": available,
             "unavailable_runs": unavailable, "unattributed_sidecars": unattributed,
+            "unrelated_sidecars": unrelated, "invalid_sidecars": invalid,
             "usage": total, "duration_ms": duration_ms, "models": dict(sorted(models.items())),
             "repos": dict(sorted(repos.items())), "providers": dict(sorted(providers.items())),
             "status": status}
@@ -448,7 +471,14 @@ def main() -> None:
             elapsed_by_tool[tool].extend([values["total"], values["max"],
                                          values["measured_calls"]])
     session_ids = {str(session["session_id"]) for session in sessions if session["session_id"]}
-    external = external_usage(args.external_usage_dir, session_ids)
+    starts = [value for session in sessions
+              if (value := parse_timestamp(session.get("started_at"))) is not None]
+    ends = [value for session in sessions
+            if (value := parse_timestamp(session.get("ended_at"))) is not None]
+    external = external_usage(
+        args.external_usage_dir, session_ids,
+        min(starts) if starts else None, max(ends) if ends else None,
+    )
     whole_tree_usage = {key: tree_usage[key] + external["usage"][key] for key in USAGE_KEYS}
     baselines_complete = all(session["fork_baseline_known"] for session in sessions)
     activity_complete = all(session["activity_boundary_known"] for session in sessions)

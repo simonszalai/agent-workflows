@@ -90,6 +90,19 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("Record a before inventory", methodology)
         self.assertIn("live inventory contains none of the retired items", methodology)
 
+    def test_workflow_authoring_and_promotion_contracts_are_worktree_safe(self) -> None:
+        authoring = (ROOT / "skills/workflow-authoring/SKILL.md").read_text()
+        promote = (ROOT / "skills/ticket-promote/SKILL.md").read_text()
+
+        self.assertIn("bin/check-agent-workflows", authoring)
+        self.assertIn("bin/verify-agent-workflows-live", authoring)
+        self.assertIn("bounded discovery", authoring)
+        self.assertNotIn("gh pr merge <pr_number> --squash --delete-branch", promote)
+        self.assertIn('test "$(gh pr view <pr_number> --json state -q .state)" = "MERGED"',
+                      promote)
+        self.assertTrue(os.access(ROOT / "bin/check-agent-workflows", os.X_OK))
+        self.assertTrue(os.access(ROOT / "bin/verify-agent-workflows-live", os.X_OK))
+
     def test_all_documented_agent_calls_use_fresh_bounded_context(self) -> None:
         for path in (ROOT / "skills").rglob("*.md"):
             lines = path.read_text().splitlines()
@@ -433,6 +446,68 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertLessEqual(child["usage_unique"]["total_tokens"],
                                  child["usage_gross"]["total_tokens"])
 
+    def test_report_separates_nearby_unattributed_old_unrelated_and_invalid_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_session(root / "root.jsonl", {"id": "root"}, [
+                {"timestamp": "2026-01-01T00:00:00Z", "type": "event_msg",
+                 "payload": {"type": "task_started"}},
+                {"timestamp": "2026-01-01T00:00:10Z", "type": "event_msg",
+                 "payload": {"type": "task_started"}},
+            ])
+            usage_dir = root / "usage"
+            usage_dir.mkdir()
+            (usage_dir / "20260101T000004Z-near.json").write_text(json.dumps({
+                "orchestrator_thread_id": "another-thread",
+                "started_at": "2026-01-01T00:00:04Z",
+            }))
+            (usage_dir / "20200101T000000Z-old.json").write_text(json.dumps({
+                "orchestrator_thread_id": "another-thread",
+                "started_at": "2020-01-01T00:00:00Z",
+            }))
+            (usage_dir / "invalid.json").write_text("not-json")
+
+            result = run_script("workflow-efficiency-report", str(root / "root.jsonl"),
+                                "--sessions-root", str(root),
+                                "--external-usage-dir", str(usage_dir))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            external = json.loads(result.stdout)["external_provider_usage"]
+            self.assertEqual(external["sidecars"], 0)
+            self.assertEqual(external["unattributed_sidecars"], 1)
+            self.assertEqual(external["unrelated_sidecars"], 1)
+            self.assertEqual(external["invalid_sidecars"], 1)
+
+    def test_live_verifier_distinguishes_clean_from_locally_modified_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"],
+                           cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            (repo / "CLAUDE.md").write_text("test\n")
+            subprocess.run(["git", "add", "CLAUDE.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=repo, check=True)
+            revision = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+            clean = run_script("verify-agent-workflows-live", revision,
+                               "--live-repo", str(repo))
+            self.assertEqual(clean.returncode, 0, clean.stderr)
+            self.assertEqual(json.loads(clean.stdout)["status"], "live")
+
+            missing = run_script("verify-agent-workflows-live", "0" * 40,
+                                 "--live-repo", str(repo))
+            self.assertEqual(missing.returncode, 1, missing.stderr)
+            self.assertEqual(json.loads(missing.stdout)["status"], "not_live")
+
+            (repo / "CLAUDE.md").write_text("locally modified\n")
+            dirty = run_script("verify-agent-workflows-live", revision,
+                               "--live-repo", str(repo))
+            self.assertEqual(dirty.returncode, 1, dirty.stderr)
+            self.assertEqual(json.loads(dirty.stdout)["status"], "live_but_modified")
+
     def test_external_agent_sidecar_records_provider_usage_without_changing_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -465,6 +540,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(sidecar["usage"]["total_tokens"], 12)
             self.assertEqual(sidecar["model"], "provider_default")
             self.assertEqual(sidecar["repo"], str(ROOT.resolve()))
+            self.assertRegex(sidecar["started_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
             self.assertGreaterEqual(sidecar["duration_ms"], 0)
             self.assertNotIn("all good", json.dumps(sidecar))
 
