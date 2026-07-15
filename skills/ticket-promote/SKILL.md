@@ -296,7 +296,13 @@ Merge with the method chosen in Preflight #5:
 
 ```bash
 # ticket / batch / epic modes — head is the throwaway promotion branch:
-gh pr merge <pr_number> --squash --delete-branch    # or another allowed linear method
+HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
+gh pr merge <pr_number> --squash                    # or another allowed linear method
+test "$(gh pr view <pr_number> --json state -q .state)" = "MERGED"
+case "$HEAD_BRANCH" in
+  staging|main) echo "Head is long-lived ($HEAD_BRANCH) — leave it." ;;
+  *)            git push origin --delete "$HEAD_BRANCH" ;;
+esac
 
 # all-staging mode — real merge commit; head may be long-lived:
 HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
@@ -308,6 +314,10 @@ esac
 git ls-remote --heads origin staging | grep -q refs/heads/staging \
   || git push origin origin/main:refs/heads/staging   # long-lived-branch safety net
 ```
+
+Never pass `--delete-branch` to `gh pr merge` from a Conductor worktree. `gh` may try to check out
+the base locally even after the remote merge succeeded, then fail because that base is already used
+by another worktree. Confirm remote `MERGED` first and delete only the remote throwaway head.
 
 Confirm the landing:
 
