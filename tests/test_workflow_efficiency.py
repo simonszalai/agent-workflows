@@ -23,16 +23,19 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         review = (ROOT / "skills/review/SKILL.md").read_text()
         lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
+        retro = (ROOT / "skills/session-retro/SKILL.md").read_text()
         self.assertIn("get_ticket_contexts", goal)
         self.assertIn("mutate_ticket_workflows", goal)
         self.assertIn('fork_turns: "none"', economy)
         self.assertIn("plain review starts native-only", review)
         self.assertNotIn("/review mode:cross", lfg)
+        self.assertIn("workflow-efficiency-report --before-retro", retro)
 
     def test_ticket_context_and_plan_fanout_inputs_are_bounded(self) -> None:
         conventions = (ROOT / "CLAUDE.md").read_text()
         auto_plan = (ROOT / "skills/auto-plan/SKILL.md").read_text()
         fanout = (ROOT / "workflows/plan-fanout.js").read_text()
+        ticket_verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
 
         self.assertIn('detail="light", include_events=false', conventions)
         self.assertIn("sourceArtifactFile", auto_plan)
@@ -44,6 +47,29 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertNotIn("${sourceArtifact}", fanout)
         self.assertNotIn("${codebaseResearch}", fanout)
         self.assertNotIn("${priorKnowledge}", fanout)
+        self.assertIn('detail="light", include_events=false', ticket_verify)
+        self.assertIn("context_version", ticket_verify)
+        self.assertIn("verify-scope-dispatch.md", ticket_verify)
+        self.assertIn("verify-visible-surfaces.md", ticket_verify)
+        self.assertIn("verify-lifecycle-actions.md", ticket_verify)
+        self.assertIn("mark the prior artifact `superseded`", ticket_verify)
+        for name in (
+            "verify-scope-dispatch.md", "verify-visible-surfaces.md",
+            "verify-lifecycle-actions.md", "verify-staging-promotion.md",
+            "verify-failure-capture.md",
+        ):
+            self.assertTrue((ROOT / "skills/references" / name).is_file())
+
+    def test_sensitive_and_memory_guidance_use_safe_callable_routes(self) -> None:
+        sensitive = (ROOT / "skills/sensitive-vault-access/SKILL.md").read_text()
+        memory = (ROOT / "skills/autodev-search/SKILL.md").read_text()
+
+        self.assertIn("ts-prefect-prod-ro", sensitive)
+        self.assertIn("do not fall back to Touch ID", sensitive)
+        self.assertNotIn('"Verify F0123 production schema', sensitive)
+        self.assertIn("mcp__autodev_memory__search", memory)
+        self.assertIn("mcp__autodev_memory__expand_entries", memory)
+        self.assertNotIn("mcp__autodev-memory__", memory)
 
     def test_deploy_contracts_enforce_wait_preflight_redaction_and_negative_inventory(self) -> None:
         deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
@@ -264,6 +290,8 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(report["external_provider_usage"]["usage"]["total_tokens"], 15)
             self.assertEqual(report["external_provider_usage"]["duration_ms"], 250)
             self.assertEqual(report["coverage"]["fork_baselines"], "complete")
+            self.assertEqual(report["tool_histogram"], {"read_file": 1, "spawn_agent": 1})
+            self.assertEqual(report["largest_tool_outputs"][0]["tool"], "spawn_agent")
             capped = run_script("workflow-efficiency-report", str(root_log),
                                 "--sessions-root", str(root), "--max-descendants", "1",
                                 "--external-usage-dir", str(usage_dir))
@@ -271,6 +299,57 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(capped_report["descendants_discovered"], 2)
             self.assertEqual(capped_report["descendants_reported"], 1)
             self.assertTrue(capped_report["descendants_truncated"])
+
+    def test_report_bounds_call_diagnostics_and_can_stop_before_retro(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = {"input_tokens": 100, "cached_input_tokens": 50,
+                      "output_tokens": 10, "reasoning_output_tokens": 1,
+                      "total_tokens": 110}
+            after = {"input_tokens": 200, "cached_input_tokens": 100,
+                     "output_tokens": 20, "reasoning_output_tokens": 2,
+                     "total_tokens": 220}
+            repeated_input = 'await tools.exec_command({cmd:"echo 12345",yield_time:1000})'
+            self.write_session(root / "root.jsonl", {"id": "root"}, [
+                {"timestamp": "2026-01-01T00:00:00Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": before, "last_token_usage": before}}},
+                {"timestamp": "2026-01-01T00:00:01Z", "type": "response_item",
+                 "payload": {"type": "function_call", "name": "exec",
+                             "call_id": "one", "arguments": repeated_input}},
+                {"timestamp": "2026-01-01T00:00:01.250Z", "type": "response_item",
+                 "payload": {"type": "function_call_output", "call_id": "one",
+                             "output": "small"}},
+                {"timestamp": "2026-01-01T00:00:02Z", "type": "response_item",
+                 "payload": {"type": "function_call", "name": "exec",
+                             "call_id": "two", "arguments": repeated_input}},
+                {"timestamp": "2026-01-01T00:00:02.500Z", "type": "response_item",
+                 "payload": {"type": "function_call_output", "call_id": "two",
+                             "output": "larger output"}},
+                {"type": "response_item", "payload": {"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "[session-retro](x)"}]}},
+                {"type": "response_item", "payload": {
+                    "type": "function_call", "name": "after_retro", "arguments": "{}"}},
+                {"timestamp": "2026-01-01T00:00:03Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": after, "last_token_usage": after}}},
+            ])
+
+            result = run_script(
+                "workflow-efficiency-report", str(root / "root.jsonl"),
+                "--sessions-root", str(root), "--external-usage-dir", str(root / "missing"),
+                "--before-retro",
+            )
+            report = json.loads(result.stdout)
+            self.assertEqual(report["codex_tree_usage_unique"], before)
+            self.assertTrue(report["sessions"][0]["before_retro_cutoff_applied"])
+            self.assertEqual(report["tool_histogram"], {"exec_command": 2})
+            self.assertEqual(report["repeated_tool_calls"][0]["count"], 2)
+            self.assertNotIn("echo 12345", json.dumps(report["repeated_tool_calls"]))
+            self.assertEqual(report["largest_tool_outputs"][0]["output_bytes"], 13)
+            self.assertEqual(report["tool_elapsed_ms"]["exec_command"], {
+                "total": 750, "max": 500, "measured_calls": 2,
+            })
 
     def test_report_marks_missing_fork_baseline_uncertain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
