@@ -50,6 +50,12 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   The parent uses the platform's blocking agent-wait/wake mechanism once — never repeated status
   reads. If neither a blocking call nor a fresh waiter is available, stop with the resume command
   rather than model-polling.
+- **Conductor enforcement:** unified exec yields long-running foreground commands as resumable
+  sessions, which would force the parent to sample again for every `write_stdin`/`wait` poll. In
+  Conductor, do not start `bin/wait-ci` in the parent at all. Always dispatch the wait immediately
+  to one fresh `fork_turns: "none"` leaf and block once on that agent. A parent that receives a
+  resumable session from an accidental CI wait must terminate that parent session and restart the
+  exact bounded wait command in the leaf; it must not poll the parent session itself.
 - `bin/wait-ci <pr>` waits for PR checks. `bin/wait-ci --run <run-id>` waits for one Actions run.
   On interruption or timeout it returns `status="timeout"` plus an exact `resume_command`.
 - If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,

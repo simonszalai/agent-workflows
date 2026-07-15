@@ -30,9 +30,10 @@ by cutting necessary verification has failed.
      window and reports totals, per-spawn first-message context, tool histograms,
      repeated commands/MCP calls, and external legs.
    - Codex legs in the same window: `bin/workflow-efficiency-report --before-retro` on the root
-     rollout. Use its tool histogram, repeated-call fingerprints, largest-output attribution, and
-     elapsed-time summary before writing any targeted parser. Note compaction/truncation counts —
-     context thrash is a finding.
+     rollout. The cutoff is the latest retro request, so earlier retros in a long-lived thread do
+     not hide later work. Use its tool histogram, repeated-call fingerprints, largest-output
+     attribution, and elapsed-time summary before writing any targeted parser. Note
+     compaction/truncation counts — context thrash is a finding.
    - Raw JSONL is off-limits except targeted `grep`/`jq` to answer a specific question a
      report raised. Never load whole transcripts into context.
 2. **Judge the measurements against the rubric below.** For every violation, find the

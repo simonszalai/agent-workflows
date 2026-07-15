@@ -148,7 +148,10 @@ def record_timestamp(record: dict) -> datetime | None:
 
 
 def before_retro_cutoff(records: list[dict]) -> list[dict]:
-    for index, record in enumerate(records):
+    # Long-lived threads can contain an earlier retro followed by more work. The current
+    # report must stop at the latest retro request, not the first historical one.
+    for index in range(len(records) - 1, -1, -1):
+        record = records[index]
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         if record.get("type") != "response_item" or payload.get("type") != "message" \
                 or payload.get("role") != "user":
@@ -432,7 +435,7 @@ def main() -> None:
     parser.add_argument("--max-descendants", type=int, default=100)
     parser.add_argument(
         "--before-retro", action="store_true",
-        help="exclude the user session-retro request and all later records",
+        help="exclude the latest user session-retro request and all later records",
     )
     args = parser.parse_args()
     root_records = read_records(args.root_session)

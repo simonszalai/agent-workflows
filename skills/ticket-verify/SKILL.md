@@ -187,6 +187,26 @@ rendered document, email preview, chart, public page, or other browser-visible s
 
 ### 5. Collect evidence
 
+#### Reusable query packs
+
+Before inventing sequential schema-discovery and evidence queries, look for a repo-owned bounded
+verification query pack referenced by the deployment guide or stored under
+`.agents/verification-query-packs/`. A pack is project-specific and must declare:
+
+- a stable pack ID/version and the ticket surfaces it proves;
+- the target environment/database role (read-only only);
+- selected tables/columns plus one bounded schema-fingerprint query;
+- one or a few parameterized aggregate queries, preferably multi-CTE, that return only the compact
+  evidence fields required by the contract;
+- expected-good and bad-output interpretations for every returned field.
+
+Load a matching pack once per run and cache its fingerprint/result at the activation boundary.
+When the fingerprint matches, run the packed aggregate instead of repeating `information_schema`
+discovery and one query per evidence row. If it does not match, run exactly one bounded discovery
+query, mark the pack stale, and fall back to explicit contract queries; never guess around schema
+drift. Packs optimize retrieval only: every ticket-specific evidence row still needs an explicit
+grade and provenance, and a shared aggregate cannot hide a missing result.
+
 Run **every** Verification Evidence item listed for the environment being verified (staging items
 for staging, prod items for prod) — execute each item's query/command and compare against its
 expected good output. Then supplement with read-only checks until the report proves the feature

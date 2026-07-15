@@ -67,6 +67,10 @@ plan and DRAFT deployment guide on every ticket: shared sections may be identica
 must identify that ticket's owned changes, dependencies, evidence rows, and goal ID. Persist
 independent artifact/status writes with `mutate_ticket_workflows`; use atomic mode only when all
 operations are one lifecycle unit, otherwise use explicit partial results and handle every item.
+Capability-check the endpoint once. Until the server exposes `mutate_ticket_workflows`, group the
+bounded sequential MCP mutations inside one orchestrator tool execution and return only a compact
+per-operation ledger (operation, ticket/artifact ID, success/error); never spend one model turn per
+mutation or echo full updated ticket bodies. Do not claim atomicity when using this fallback.
 
 Use `/auto-plan`'s escalation gates. A routine goal can use one native planner; peer providers are
 added only for explicit high risk, material uncertainty, or unresolved disagreement.
@@ -84,6 +88,12 @@ Each task packet must list:
 Dispatch independent clusters in parallel with `fork_turns: "none"`; execute dependent waves in
 topological order. One cluster may satisfy several tickets, but every completed change must map back
 to its owning ticket artifacts. Stop on unexpected write overlap and re-plan the wave.
+
+Before dispatch, merge proposed clusters that would read the same tickets, PRs, Git history, or
+diff surface even when their output labels differ. For branch reconciliation, use one combined
+tree-and-lifecycle audit cluster (semantic diff, PR ownership, ticket status) and, only when needed,
+one independent merge-mechanics/protection cluster. Do not spawn separate ticket-audit and
+diff-audit agents that must rediscover the same branch and ticket context.
 
 ### 5. Integrate, test, and review once per coherent diff
 
