@@ -262,7 +262,8 @@ errors are the most expensive class to catch at review time (full rebuild). So b
 approving, when the work matches any heavy signal — new system/app from scratch,
 schema/data change, multi-component work, repeated writer (poller/observer/scheduler/
 queue/webhook), or research found no existing pattern to follow — spawn ONE critique agent
-(same runner, correctness + YAGNI lenses combined; it should read the code to check the
+(same runner, `fork_turns: "none"`, bounded plan/path packet, correctness + YAGNI lenses combined;
+it should read the code to check the
 plan's assumptions) and revise the plan once for its must-address findings. Skip the
 critique for work matching none of the signals. This is deliberately lighter than
 `/auto-plan`: no peer providers, no convergence — LFG stays fast and never pushes, so the

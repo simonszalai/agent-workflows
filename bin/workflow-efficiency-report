@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 from collections import Counter, defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -14,6 +17,22 @@ USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
 CALL_TYPES = {"function_call", "custom_tool_call"}
 OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output"}
 COMPACTION_TYPES = {"compacted", "context_compacted"}
+MAX_DIAGNOSTIC_ROWS = 20
+
+
+def parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(value[:16], "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc,
+            )
+        except ValueError:
+            return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def read_records(path: Path) -> list[dict]:
@@ -97,21 +116,86 @@ def call_arguments(payload: dict) -> dict:
     return {}
 
 
-def summarize(path: Path, is_descendant: bool) -> dict:
+def raw_call_arguments(payload: dict) -> str:
+    value = payload.get("input", payload.get("arguments", ""))
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(type(value).__name__)
+
+
+def normalized_call_digest(payload: dict) -> str:
+    """Fingerprint repeatable call shape without returning potentially sensitive arguments."""
+    text = " ".join(raw_call_arguments(payload).split())
+    text = re.sub(r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", "<uuid>", text, flags=re.I)
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}T[^\s\"']+", "<timestamp>", text)
+    text = re.sub(r"\b\d{4,}\b", "<number>", text)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def tool_label(payload: dict) -> str:
+    outer = str(payload.get("name") or "unknown")
+    if outer != "exec":
+        return outer
+    match = re.search(r"\btools\.([A-Za-z0-9_]+)\s*\(", raw_call_arguments(payload))
+    return match.group(1) if match else outer
+
+
+def record_timestamp(record: dict) -> datetime | None:
+    return parse_timestamp(record.get("timestamp"))
+
+
+def before_retro_cutoff(records: list[dict]) -> list[dict]:
+    for index, record in enumerate(records):
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if record.get("type") != "response_item" or payload.get("type") != "message" \
+                or payload.get("role") != "user":
+            continue
+        if "session-retro" in output_text(payload.get("content")).lower():
+            return records[:index]
+    return records
+
+
+def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> dict:
     records = read_records(path)
+    original_record_count = len(records)
+    if before_retro:
+        records = before_retro_cutoff(records)
     meta = metadata(records)
+    timestamps = [parsed for record in records
+                  if (parsed := parse_timestamp(record.get("timestamp"))) is not None]
     token_events: list[tuple[int, str | None, dict]] = []
-    task_started_at = None
-    task_started_index = None
+    task_starts: list[int] = []
+    trigger_turn_indices: list[int] = []
     for index, record in enumerate(records):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         if record.get("type") == "event_msg" and payload.get("type") == "task_started":
-            task_started_index = index
-            task_started_at = record.get("timestamp") \
-                if isinstance(record.get("timestamp"), str) else None
-            break
+            task_starts.append(index)
+        if record.get("type") == "inter_agent_communication_metadata" \
+                and payload.get("trigger_turn") is True:
+            trigger_turn_indices.append(index)
+    task_started_index = task_starts[0] if task_starts else None
+    activity_boundary_method = "first_task_started"
+    if is_descendant and trigger_turn_indices:
+        # A Codex fork rollout can begin with a replay of the parent's complete event stream,
+        # including several old task_started/token_count records. The trigger_turn marker belongs
+        # to the fresh child turn; the last task_started before it is the real activity boundary.
+        trigger_index = trigger_turn_indices[0]
+        candidates = [index for index in task_starts if index < trigger_index]
+        if candidates:
+            task_started_index = candidates[-1]
+            activity_boundary_method = "last_task_started_before_trigger_turn"
     tool_calls = forks = all_forks = compactions = truncations = output_bytes = 0
     fork_modes: Counter[str] = Counter()
+    tool_histogram: Counter[str] = Counter()
+    call_shapes: Counter[tuple[str, str]] = Counter()
+    call_shape_bytes: dict[tuple[str, str], int] = {}
+    pending_calls: dict[str, tuple[str, datetime | None, str, int]] = {}
+    pending_order: deque[tuple[str, str, datetime | None, str, int]] = deque()
+    largest_outputs: list[dict] = []
+    elapsed_by_tool: defaultdict[str, list[int]] = defaultdict(list)
     for index, record in enumerate(records):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         payload_type = payload.get("type")
@@ -128,7 +212,19 @@ def summarize(path: Path, is_descendant: bool) -> dict:
             compactions += 1
         if record.get("type") == "response_item" and payload_type in CALL_TYPES:
             tool_calls += 1
-            if str(payload.get("name", "")).split(".")[-1] == "spawn_agent":
+            tool_name = tool_label(payload)
+            tool_histogram[tool_name] += 1
+            digest = normalized_call_digest(payload)
+            shape = (tool_name, digest)
+            call_shapes[shape] += 1
+            argument_bytes = len(raw_call_arguments(payload).encode())
+            call_shape_bytes[shape] = argument_bytes
+            call_id = str(payload.get("call_id") or payload.get("id") or "")
+            started = record_timestamp(record)
+            if call_id:
+                pending_calls[call_id] = (tool_name, started, digest, argument_bytes)
+            pending_order.append((call_id, tool_name, started, digest, argument_bytes))
+            if tool_name.split(".")[-1] == "spawn_agent":
                 forks += 1
                 mode = str(call_arguments(payload).get("fork_turns", "unspecified"))
                 fork_modes[mode] += 1
@@ -136,9 +232,34 @@ def summarize(path: Path, is_descendant: bool) -> dict:
                     all_forks += 1
         if record.get("type") == "response_item" and payload_type in OUTPUT_TYPES:
             text = output_text(payload.get("output"))
-            output_bytes += len(text.encode("utf-8"))
-            if "Warning: truncated output" in text or "tokens truncated" in text:
+            byte_count = len(text.encode("utf-8"))
+            output_bytes += byte_count
+            truncated = "Warning: truncated output" in text or "tokens truncated" in text
+            if truncated:
                 truncations += 1
+            call_id = str(payload.get("call_id") or "")
+            matched = pending_calls.pop(call_id, None) if call_id else None
+            matched_by_id = matched is not None
+            if matched is not None:
+                tool_name, started, digest, argument_bytes = matched
+                pending_order = deque(item for item in pending_order if item[0] != call_id)
+            elif pending_order:
+                _, tool_name, started, digest, argument_bytes = pending_order.popleft()
+            else:
+                tool_name, started, digest, argument_bytes = "unknown", None, "", 0
+            largest_outputs.append({
+                "tool": tool_name,
+                "output_bytes": byte_count,
+                "truncated": truncated,
+                "attribution": "call_id" if matched_by_id else "sequence",
+                "normalized_arguments_sha256": digest,
+                "argument_bytes": argument_bytes,
+            })
+            finished = record_timestamp(record)
+            if matched_by_id and started is not None and finished is not None:
+                elapsed_by_tool[tool_name].append(
+                    max(0, round((finished - started).total_seconds() * 1000))
+                )
 
     gross = usage_dict(token_events[-1][2]["total_token_usage"]) \
         if token_events else usage_dict({})
@@ -148,43 +269,62 @@ def summarize(path: Path, is_descendant: bool) -> dict:
     unique = gross.copy()
     if is_descendant:
         baseline_method = "unavailable_no_pre_task_total_usage"
-        if task_started_at is not None and task_started_index is not None:
-            eligible = [info for index, timestamp, info in token_events
-                        if index <= task_started_index and timestamp is not None
-                        and timestamp <= task_started_at]
+        if task_started_index is not None:
+            eligible = [info for index, _, info in token_events if index < task_started_index]
             if eligible:
                 baseline = usage_dict(eligible[-1]["total_token_usage"])
                 baseline_known = True
-                baseline_method = "last_total_usage_at_or_before_task_started"
+                baseline_method = "last_total_usage_before_activity_boundary"
                 unique = {key: max(0, gross[key] - baseline[key]) for key in USAGE_KEYS}
             else:
-                active_infos = [info for index, _, info in token_events
-                                if index >= task_started_index]
-                last_usages = [info.get("last_token_usage") for info in active_infos]
-                if active_infos and all(isinstance(item, dict) for item in last_usages):
-                    unique = usage_dict({})
-                    for item in last_usages:
-                        for key, value in usage_dict(item).items():
-                            unique[key] += value
-                    baseline = {key: max(0, gross[key] - unique[key]) for key in USAGE_KEYS}
-                    baseline_known = True
-                    baseline_method = "sum_post_task_last_token_usage"
+                # No cumulative usage precedes the child's first real task, so the cumulative
+                # total is already child-unique. Do not sum last_token_usage events: Codex may
+                # repeat a final token_count record, which can make that sum exceed gross usage.
+                baseline_known = True
+                baseline_method = "zero_no_usage_before_activity_boundary"
         else:
-            baseline_method = "unavailable_no_task_started_timestamp"
+            baseline_method = "unavailable_no_task_started"
     return {
         "session_id": meta.get("id") or meta.get("session_id"),
         "parent_thread_id": meta.get("parent_thread_id"),
         "agent_path": meta.get("agent_path"),
         "file": str(path.resolve()),
+        "records_analyzed": len(records),
+        "before_retro_cutoff_applied": len(records) < original_record_count,
+        "started_at": min(timestamps).isoformat() if timestamps else None,
+        "ended_at": max(timestamps).isoformat() if timestamps else None,
         "usage_available": bool(token_events),
         "usage_gross": gross,
         "inherited_fork_baseline": baseline,
         "inherited_fork_baseline_tokens": baseline["total_tokens"],
         "fork_baseline_known": baseline_known,
         "fork_baseline_method": baseline_method,
+        "activity_boundary_method": activity_boundary_method if task_started_index is not None
+        else "unavailable_no_task_started",
         "activity_boundary_known": not is_descendant or task_started_index is not None,
         "usage_unique": unique,
         "tool_calls": tool_calls,
+        "tool_histogram": dict(sorted(tool_histogram.items())),
+        "repeated_tool_calls": [
+            {"tool": tool, "count": count, "normalized_arguments_sha256": digest,
+             "argument_bytes": call_shape_bytes[(tool, digest)]}
+            for (tool, digest), count in sorted(
+                call_shapes.items(), key=lambda item: (-item[1], item[0])
+            ) if count > 1
+        ][:MAX_DIAGNOSTIC_ROWS],
+        "_tool_call_shapes": [
+            {"tool": tool, "count": count, "normalized_arguments_sha256": digest,
+             "argument_bytes": call_shape_bytes[(tool, digest)]}
+            for (tool, digest), count in call_shapes.items()
+        ],
+        "largest_tool_outputs": sorted(
+            largest_outputs, key=lambda item: (-item["output_bytes"], item["tool"])
+        )[:MAX_DIAGNOSTIC_ROWS],
+        "tool_elapsed_ms": {
+            tool: {"measured_calls": len(values), "total": sum(values),
+                   "max": max(values)}
+            for tool, values in sorted(elapsed_by_tool.items()) if values
+        },
         "forks": forks,
         "fork_turns_modes": dict(sorted(fork_modes.items())),
         "all_forks": all_forks,
@@ -195,13 +335,15 @@ def summarize(path: Path, is_descendant: bool) -> dict:
     }
 
 
-def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
+def external_usage(directory: Path | None, session_ids: set[str],
+                   window_start: datetime | None, window_end: datetime | None) -> dict:
     empty = {"sidecars": 0, "available_runs": 0, "unavailable_runs": 0,
-             "unattributed_sidecars": 0, "usage": usage_dict({}), "duration_ms": 0,
+             "unattributed_sidecars": 0, "unrelated_sidecars": 0, "invalid_sidecars": 0,
+             "usage": usage_dict({}), "duration_ms": 0,
              "models": {}, "repos": {}, "providers": {}, "status": "unavailable"}
     if directory is None or not directory.exists():
         return empty
-    sidecars = available = unavailable = unattributed = duration_ms = 0
+    sidecars = available = unavailable = unattributed = unrelated = invalid = duration_ms = 0
     total = usage_dict({})
     models: Counter[str] = Counter()
     repos: Counter[str] = Counter()
@@ -210,11 +352,18 @@ def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            unattributed += 1
+            invalid += 1
             continue
         thread_id = record.get("orchestrator_thread_id") if isinstance(record, dict) else None
         if not thread_id or str(thread_id) not in session_ids:
-            unattributed += 1
+            sidecar_time = parse_timestamp(record.get("started_at") if isinstance(record, dict)
+                                           else None) or parse_timestamp(path.name)
+            grace = timedelta(minutes=5)
+            if sidecar_time is not None and window_start is not None and window_end is not None \
+                    and window_start - grace <= sidecar_time <= window_end + grace:
+                unattributed += 1
+            else:
+                unrelated += 1
             continue
         sidecars += 1
         try:
@@ -234,6 +383,7 @@ def external_usage(directory: Path | None, session_ids: set[str]) -> dict:
     status = "unavailable" if sidecars == 0 else ("complete" if unavailable == 0 else "partial")
     return {"sidecars": sidecars, "available_runs": available,
             "unavailable_runs": unavailable, "unattributed_sidecars": unattributed,
+            "unrelated_sidecars": unrelated, "invalid_sidecars": invalid,
             "usage": total, "duration_ms": duration_ms, "models": dict(sorted(models.items())),
             "repos": dict(sorted(repos.items())), "providers": dict(sorted(providers.items())),
             "status": status}
@@ -280,6 +430,10 @@ def main() -> None:
     parser.add_argument("--external-usage-dir", type=Path,
                         default=Path.home() / ".cache/agent-workflows/external-agent-usage")
     parser.add_argument("--max-descendants", type=int, default=100)
+    parser.add_argument(
+        "--before-retro", action="store_true",
+        help="exclude the user session-retro request and all later records",
+    )
     args = parser.parse_args()
     root_records = read_records(args.root_session)
     root_meta = metadata(root_records)
@@ -292,20 +446,39 @@ def main() -> None:
                 break
     descendants, direct_children = discover_descendants(search_root, args.root_session, root_ids)
     selected = descendants[:max(0, args.max_descendants)]
-    sessions = [summarize(args.root_session, False)] \
-        + [summarize(path, True) for path in selected]
+    sessions = [summarize(args.root_session, False, args.before_retro)] \
+        + [summarize(path, True, args.before_retro) for path in selected]
     tree_usage = usage_dict({})
     totals = {key: 0 for key in ("tool_calls", "forks", "all_forks", "truncations",
                                   "compactions", "tool_output_bytes", "session_log_bytes")}
     fork_modes: Counter[str] = Counter()
+    tool_histogram: Counter[str] = Counter()
+    repeated_calls: Counter[tuple[str, str, int]] = Counter()
+    largest_outputs: list[dict] = []
+    elapsed_by_tool: defaultdict[str, list[int]] = defaultdict(list)
     for session in sessions:
         for key, value in session["usage_unique"].items():
             tree_usage[key] += value
         for key in totals:
             totals[key] += session[key]
         fork_modes.update(session["fork_turns_modes"])
+        tool_histogram.update(session["tool_histogram"])
+        for row in session.pop("_tool_call_shapes"):
+            repeated_calls[(row["tool"], row["normalized_arguments_sha256"],
+                            row["argument_bytes"])] += row["count"]
+        largest_outputs.extend(session["largest_tool_outputs"])
+        for tool, values in session["tool_elapsed_ms"].items():
+            elapsed_by_tool[tool].extend([values["total"], values["max"],
+                                         values["measured_calls"]])
     session_ids = {str(session["session_id"]) for session in sessions if session["session_id"]}
-    external = external_usage(args.external_usage_dir, session_ids)
+    starts = [value for session in sessions
+              if (value := parse_timestamp(session.get("started_at"))) is not None]
+    ends = [value for session in sessions
+            if (value := parse_timestamp(session.get("ended_at"))) is not None]
+    external = external_usage(
+        args.external_usage_dir, session_ids,
+        min(starts) if starts else None, max(ends) if ends else None,
+    )
     whole_tree_usage = {key: tree_usage[key] + external["usage"][key] for key in USAGE_KEYS}
     baselines_complete = all(session["fork_baseline_known"] for session in sessions)
     activity_complete = all(session["activity_boundary_known"] for session in sessions)
@@ -322,6 +495,25 @@ def main() -> None:
         "codex_tree_efficiency": efficiency_summary(tree_usage),
         **totals,
         "fork_turns_modes": dict(sorted(fork_modes.items())),
+        "tool_histogram": dict(sorted(tool_histogram.items())),
+        "repeated_tool_calls": [
+            {"tool": tool, "count": count, "normalized_arguments_sha256": digest,
+             "argument_bytes": argument_bytes}
+            for (tool, digest, argument_bytes), count in sorted(
+                repeated_calls.items(), key=lambda item: (-item[1], item[0])
+            )
+        ][:MAX_DIAGNOSTIC_ROWS],
+        "largest_tool_outputs": sorted(
+            largest_outputs, key=lambda item: (-item["output_bytes"], item["tool"])
+        )[:MAX_DIAGNOSTIC_ROWS],
+        "tool_elapsed_ms": {
+            tool: {
+                "total": sum(values[0::3]),
+                "max": max(values[1::3]),
+                "measured_calls": sum(values[2::3]),
+            }
+            for tool, values in sorted(elapsed_by_tool.items()) if values
+        },
         "sessions": sessions,
         "external_provider_usage": external,
         "coverage": {

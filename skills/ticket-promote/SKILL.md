@@ -68,6 +68,12 @@ Higher-risk scopes rest at `staging_verified` until a human invokes this skill e
 
 Run before creating any worktree, branch, or PR:
 
+0. **Load once.** The orchestrator loads the scoped ticket(s) once with only
+   `plan`, `deployment_guide`, and `verification_evidence` bodies plus light artifact manifests;
+   epic mode loads `get_epic` once. Cache `context_version` and reuse these objects through landing,
+   deploy, status update, and handoff. Re-read only after an external artifact mutation invalidates
+   the recorded version; child steps receive bounded extracts, not independent MCP reads.
+
 1. `git fetch origin main staging --prune`.
 2. **Existing promotion PR check.** Look for an open promotion PR for the same scope:
 
@@ -244,6 +250,11 @@ Run the repo's standard checks in the promotion worktree (install, typecheck, bu
 the project defines them). Do not start dev servers. Fix only promotion/conflict/schema-gate
 issues — no unrelated refactors.
 
+This is one final-tree health gate keyed by the promotion worktree tree SHA and command. Do not run
+the same full gate again while that SHA is unchanged. A conflict fix, merge/rebase, generated-file
+change, or other tree mutation invalidates the evidence and requires one new gate for the new SHA.
+Targeted diagnostics are not duplicate full gates.
+
 **Residual risk — verify against main, not staging.** The staging PASS evidence was collected
 with OTHER staging commits present; the promoted commit set on top of `main` is a combination
 that has never run anywhere. The worktree's local checks must therefore include at least the
@@ -257,23 +268,41 @@ in the manifest as residual risk, and weight it when deciding whether to proceed
 helper fixed by a co-staged ticket is the classic false-PASS mechanism). Missing metadata
 (older evidence artifacts) is not a blocker; note it and continue.
 
+## Production command preflight (before landing)
+
+While `origin/main` is still unchanged, read the cached production deployment guide and project
+deploy config, detect deploy categories with `git diff origin/main..HEAD`, and build the exact
+ordered production command table. Preflight every command: validate imports/CLI/config with a
+non-mutating command and, when the guide defines a safe idempotent staging mirror, execute the same
+command shape there with staging credentials. Record each expected production postcondition in the
+manifest. Missing/failed preflight stops before merge; never invent a dry-run flag or use the
+production mutation itself as its preflight.
+
 ## Land on main
 
 ```bash
 git push -u origin "$BRANCH"
 gh pr create --base main --head "$BRANCH" \
   --title "Promote ${SCOPE} to production" --body-file manifest.md
-gh pr checks <pr_number> --watch      # cap the wait at 10 minutes
+bin/wait-ci <pr_number> --timeout 540
 ```
 
-If CI fails, fix in the promotion worktree, push, re-watch. If it cannot be made green, STOP
+Run `wait-ci` as one blocking foreground tool call and consume its single JSON result; do not poll
+the process from model turns. If CI fails, fix in the promotion worktree, push, wait once on the
+new tree. If it cannot be made green, STOP
 (in batch mode: stop the whole batch).
 
 Merge with the method chosen in Preflight #5:
 
 ```bash
 # ticket / batch / epic modes — head is the throwaway promotion branch:
-gh pr merge <pr_number> --squash --delete-branch    # or another allowed linear method
+HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
+gh pr merge <pr_number> --squash                    # or another allowed linear method
+test "$(gh pr view <pr_number> --json state -q .state)" = "MERGED"
+case "$HEAD_BRANCH" in
+  staging|main) echo "Head is long-lived ($HEAD_BRANCH) — leave it." ;;
+  *)            git push origin --delete "$HEAD_BRANCH" ;;
+esac
 
 # all-staging mode — real merge commit; head may be long-lived:
 HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
@@ -286,6 +315,10 @@ git ls-remote --heads origin staging | grep -q refs/heads/staging \
   || git push origin origin/main:refs/heads/staging   # long-lived-branch safety net
 ```
 
+Never pass `--delete-branch` to `gh pr merge` from a Conductor worktree. `gh` may try to check out
+the base locally even after the remote merge succeeded, then fail because that base is already used
+by another worktree. Confirm remote `MERGED` first and delete only the remote throwaway head.
+
 Confirm the landing:
 
 ```bash
@@ -297,19 +330,18 @@ git merge-base --is-ancestor <merge_sha> origin/main && echo landed
 
 Landing alone is not promotion — this skill also deploys what landed.
 
-1. Read the ticket's **`deployment_guide` artifact** (production section) and the project
-   deploy config (`.claude/commands/deploy.md` when it exists). These are authoritative for
-   step order, commands, env files, and verification; the guide's Verification Evidence
-   section stays with `/ticket-verify`.
-2. Detect which deploy categories the promoted diff actually touched — run the detection
-   BEFORE the merge advances `main` (`git diff origin/main..HEAD --name-only -- <paths>` per
-   category from the deploy config): schema apply, config/blocks, service deploy, data/DAG
-   sync, dependencies, etc.
-3. Execute only the detected categories, in the deploy config's order, **running each
+1. Use the deployment guide, detected categories, ordered command table, and preflight evidence
+   already cached in the manifest before landing. Do not rediscover or reload them after merge.
+2. Execute only the detected categories, in the deploy config's order, **running each
    automatable step yourself** — do not just print commands. Verify each step's success
    before the next.
-4. Steps that are genuinely manual (no CLI path, or owned by a specific person) are recorded
+3. Steps that are genuinely manual (no CLI path, or owned by a specific person) are recorded
    as blocker metadata (`blocked_by`, `blocked_reason`, `blocked_context`), not performed.
+
+Production mutation boundary: prefer audited MCP/server-side operations; never write the production
+database directly from a local agent shell. Authenticated production CLI mutations with no remote
+route run through `bin/redacted-exec -- <documented command>`. Never inspect profiles/config/env and
+never send possibly secret-bearing output to `compact-exec`'s raw log.
 
 *Example (ts-prefect):* schema apply is the main-branch `Run Migrations` workflow's Atlas
 reviewed-plan job (verify it is green — never run Alembic); block changes run prod
@@ -322,6 +354,11 @@ dependency changes require a manual Render worker deploy (record as blocker unti
 If any deploy step fails: STOP at that step (batch: stop the whole batch). The code is
 already on `main`, so report that a re-run of the failed deploy step is what's needed, not a
 re-promotion. Do not continue to later steps or later units.
+
+For removal/decommission scopes, completion additionally requires the manifest's negative inventory:
+every legacy code/config item is absent, every old live registration/route/job is absent from the
+authoritative production inventory, and the sole surviving path is exercised. Do not call the cleanup
+complete from positive tests alone or defer an unexplained old item as incidental debt.
 
 ## Status update and handoff
 

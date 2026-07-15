@@ -142,6 +142,7 @@ workflow requires one or the user asks to retain the research.
    ```
    Agent(
      subagent_type="researcher",
+     fork_turns="none",
      prompt="
        Research question: {question}
        Repository root: {REPO_ROOT}

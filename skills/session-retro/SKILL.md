@@ -29,8 +29,10 @@ by cutting necessary verification has failed.
      `--project-dir ~/.claude/projects/<slug>`). It discovers child sessions in the time
      window and reports totals, per-spawn first-message context, tool histograms,
      repeated commands/MCP calls, and external legs.
-   - Codex legs in the same window: `bin/workflow-efficiency-report` on the rollout
-     files. Note compaction/truncation counts — context thrash is a finding.
+   - Codex legs in the same window: `bin/workflow-efficiency-report --before-retro` on the root
+     rollout. Use its tool histogram, repeated-call fingerprints, largest-output attribution, and
+     elapsed-time summary before writing any targeted parser. Note compaction/truncation counts —
+     context thrash is a finding.
    - Raw JSONL is off-limits except targeted `grep`/`jq` to answer a specific question a
      report raised. Never load whole transcripts into context.
 2. **Judge the measurements against the rubric below.** For every violation, find the
@@ -65,8 +67,10 @@ Repeated work:
 - Identical MCP reads (same tool, same args) mean the run ignored its cache contract:
   ticket context is fetched once, bounded (`detail`, `artifact_types`,
   `include_events=false`), and passed to children as a packet.
-- Long command output belongs in `bin/compact-exec`; CI waits belong in `bin/wait-ci`,
-  not poll loops in model turns.
+- Long command output belongs in `bin/compact-exec`; CI waits belong in one foreground
+  `bin/wait-ci` call (or a `fork_turns: "none"` waiter when the harness cannot block), not a
+  background process followed by poll loops in model turns. The process may poll; the model should
+  be sampled once at the terminal result.
 
 Contracts and measurement:
 
@@ -74,6 +78,9 @@ Contracts and measurement:
   where enforcement is missing (Grok adapter).
 - Every external leg must be measurable (usage sidecar or rollout). Unmeasured spend is
   itself a finding — recommend fixing capture before optimizing further.
+- Validate attribution invariants before citing the report: descendant unique usage must never
+  exceed its gross cumulative usage. A violation means replay/baseline detection is broken; fix the
+  measurement before drawing efficiency conclusions.
 - Prompts follow current-model guidance (Fable 5 / GPT-5.6 / Grok 4.5): outcome, success
   criteria, constraints, stop rules. Prescriptive step-by-step scaffolding is a legacy
   profile for older models, not the default.

@@ -39,14 +39,46 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 ## Waiting and polling
 
 - Prefer a blocking tool with a bounded timeout or one timer-friendly resume command. Do not spend
-  model turns repeatedly asking whether a job is finished. For GitHub checks, use
-  `bin/wait-ci` — one bounded, backoff-controlled invocation that returns on terminal state.
-  Invoke it in the foreground with Bash `timeout=600000` (its 540s default returns just under
-  the ~9-minute Bash harness cap). For CI expected to exceed ~9 minutes, invoke it with
-  `run_in_background` and an explicit higher `--timeout` — the 540s default caps background runs
-  too unless overridden. On interruption or timeout it prints a summary with `status="timeout"`
-  and a `resume_command` you re-run to continue waiting.
+  model turns repeatedly asking whether a job is finished. For GitHub PR checks and Actions runs,
+  use `bin/wait-ci` — one bounded, backoff-controlled process that returns one terminal JSON result.
+  Invoke it as **one foreground tool call** with the outer tool timeout set slightly above
+  `wait-ci --timeout`; do not background it and then poll task/process output from model turns.
+  The process may poll GitHub many times, but the model is sampled once, after the process exits.
+- When the tool harness cannot hold a foreground call for the expected duration, delegate only the
+  wait to a fresh leaf with no inherited conversation (`fork_turns: "none"`). Its packet contains
+  only repo, PR/run ID, timeout, and the exact `bin/wait-ci` command; it returns the final JSON once.
+  The parent uses the platform's blocking agent-wait/wake mechanism once — never repeated status
+  reads. If neither a blocking call nor a fresh waiter is available, stop with the resume command
+  rather than model-polling.
+- `bin/wait-ci <pr>` waits for PR checks. `bin/wait-ci --run <run-id>` waits for one Actions run.
+  On interruption or timeout it returns `status="timeout"` plus an exact `resume_command`.
 - If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,
   and full log on disk. Return once on completion or once at the cap with the exact resume command.
 - Never trade away a required test, review, deployment check, or verification row to save tokens.
   Missing evidence remains missing; failures remain loud.
+
+## Secret-safe operations
+
+- Never run credential/profile/config introspection in an agent-visible shell (`prefect profile
+  inspect`, config dumps, `env`, `printenv`, authenticated headers, or equivalent). Names may be
+  inspected; resolved values may not. A credential printed by a tool is exposed even if it appears
+  only in an intermediate tool result.
+- Direct production database writes from a local agent shell are prohibited. Prefer an audited MCP
+  mutation or a server-side deployment/workflow. For other authenticated production CLI mutations
+  that have no audited remote route, mount the credential command-locally and run the command through
+  `bin/redacted-exec -- ...`. That wrapper emits no raw log file and redacts environment-derived and
+  labeled credential values before output reaches the transcript.
+- Do not put authenticated production commands behind `bin/compact-exec`: its full raw log is an
+  intentional feature and therefore the wrong boundary for possibly secret-bearing output.
+
+## Final-tree evidence ownership
+
+- Key expensive validation by `(tree SHA, command)`. Builders run targeted checks; the orchestrator
+  owns one full health gate for the final tree. Reuse that recorded PASS everywhere downstream while
+  the tree SHA is unchanged. A rebase, merge/conflict fix, generated-file change, or late edit creates
+  a new tree and invalidates the old gate; run the gate once for the new tree.
+- Removal/decommission work closes with a **negative inventory**, not only passing tests: record the
+  before inventory of old entrypoints/writers/config/deployments, then prove every scoped item is
+  absent after the final deploy. Search code and config, query live registrations/routes/jobs where
+  applicable, and exercise the surviving path. Any unexplained old item is a failure, not cleanup
+  debt to silently defer.

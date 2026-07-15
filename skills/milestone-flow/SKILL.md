@@ -50,6 +50,9 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 
 - `get_epic(project, epic_id)`. `get_epic` responses are often large (tens of KB) and may
   be spilled to a file — read with `jq` / offsets; don't try to swallow the whole payload.
+- This first response and its version are the run cache. Reuse it through wave construction and
+  pass bounded milestone/step extracts to delegated ticket-flows; reload only after a workflow in
+  this run mutates epic structure or gate artifacts.
 - Resolve milestone by display id (`M2`) or choose the first incomplete milestone for `--next`.
 - Load all step tickets in that milestone.
 - Read parent epic plan, milestone acceptance criteria, blockers, and contracts.
@@ -184,14 +187,15 @@ re-run/fix the evidence write rather than marking the milestone complete.
 - `PASS`: confirm all evidence artifacts exist, confirm `/ticket-verify` updated the included
   step ticket statuses per the lifecycle (single owner — do not update them here), and return
   milestone success.
-- `NEEDS_MORE_TIME`: re-run the timer-friendly verifier with backoff, but **bounded**: at most
-  3 re-runs in-session with increasing intervals (~5m, ~15m, ~30m). If still not `PASS`/`FAIL`
-  after the third re-run, stop polling — persist the gate state, the awaited condition (what
-  evidence is missing and when it is expected), and the exact resume command, then report that
-  status to the user instead of another "still waiting" cycle. Open-ended polling with repeated
-  "Still running; waiting" is an audit-flagged anti-pattern; a bounded stop with a clear resume
-  command beats a fourth silent retry. If the session must stop earlier for budget/runtime
-  reasons, same rule; do not claim milestone success.
+- `NEEDS_MORE_TIME`: do not make the milestone-flow parent wake and reread its full conversation for
+  each timer. Spawn one fresh waiter with `fork_turns: "none"`; its self-contained packet contains
+  only epic/milestone IDs, environment, the persisted awaited condition/timestamp, the exact verifier
+  resume command, and the cap. The waiter performs at most 3 re-runs with increasing intervals
+  (~5m, ~15m, ~30m) and returns once with `PASS`/`FAIL`/`BLOCKED` or a capped
+  `NEEDS_MORE_TIME`. The parent uses one blocking agent-wait/wake call, not repeated status reads.
+  At the cap, persist the gate state and exact resume command and report it; never claim milestone
+  success. If the platform cannot block on a fresh waiter, stop after the first
+  `NEEDS_MORE_TIME` with that resume command instead of model-polling.
 - `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
   Stop only for a genuine external/manual blocker or the same unresolved failure repeating after

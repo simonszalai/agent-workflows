@@ -1310,6 +1310,7 @@ def main() -> None:
     print(f"external-agent: task={args.task} provider={args.provider} {meta} "
           f"model={args.model or '(default)'}", file=sys.stderr)
 
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     run_id = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:12]}"
     run_started = time.monotonic()
     provider_runs: list[ProviderRun] = []
@@ -1332,6 +1333,7 @@ def main() -> None:
         record = {
             "schema_version": 1,
             "run_id": run_id,
+            "started_at": started_at,
             "provider": args.provider,
             "task": args.task,
             "model": args.model or "provider_default",

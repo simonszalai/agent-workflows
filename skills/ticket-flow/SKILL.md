@@ -88,7 +88,8 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 - If input is an issue/conversation, search existing tickets first; create a new ticket only
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
-  source text. If found, load `get_epic` and the step's milestone/contracts.
+  source text. If found, load `get_epic` once and cache its version plus the step's
+  milestone/contracts; delegated phases receive bounded extracts rather than reloading it.
 - Decide and record the delivery target using `landing-policy.md`: staging-first for
   complex/risky/uncertain standalone work, direct-production only for tiny safe standalone work.
 
@@ -160,9 +161,11 @@ it unauditable and makes later `/retrospect` / `/autodev-wtf` misread it as "no 
 
 ### 4. Local verification
 
-Run project-local checks only. Do not query staging/prod as verification and do not trigger
-flows/processes. Local verification failure blocks landing unless the user explicitly chooses a
-no-land partial result.
+Reuse `/build`'s full health-gate PASS when it is keyed to the current tree SHA and exact command;
+run only focused checks added after review resolution. If review/fixes changed the tree, run the
+full health gate once for that new final SHA. Do not query staging/prod as verification and do not
+trigger flows/processes. Local verification failure blocks landing unless the user explicitly
+chooses a no-land partial result.
 
 ### 5. Deploy / Land
 

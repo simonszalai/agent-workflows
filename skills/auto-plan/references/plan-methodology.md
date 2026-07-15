@@ -275,17 +275,22 @@ When a feature replaces, supersedes, or eliminates an existing system:
 
 - [ ] **List what gets deleted:** Enumerate every file, class, and module the new system
       replaces. This list goes into the plan under "What We're Eliminating"
-- [ ] **Find all consumers:** `grep -r "OldSystem\|old_module" src/` — every import and
-      call site must be migrated or removed
-- [ ] **Verify zero remaining references:** After migration, grep must return 0 results
+- [ ] **Record a before inventory:** enumerate old imports/call sites, flags/env/config, routes,
+      writers/triggers/consumers, scheduled jobs, deployment registrations, and operator scripts.
+      Name the authoritative live-inventory query for runtime items.
+- [ ] **Find all consumers:** bounded searches across code **and deployment/config paths** — every
+      import, call site, and registration must be migrated or removed
+- [ ] **Define the negative postcondition:** after deploy, code/config searches return zero
+      unexplained matches, the live inventory contains none of the retired items, and the sole
+      surviving path is exercised
       for the old system's imports
 - [ ] **Deletion is part of the plan, not a follow-up:** The plan must include elimination
       as a required step, not a "nice to have" or separate PR. Adding a replacement without
       removing the old system is an incomplete plan.
 
 **Rule:** If the plan says "replace X with Y", the deliverable is: Y is wired up at all
-call sites AND X is deleted. If the plan only covers adding Y, it is incomplete — send it
-back for revision.
+call sites AND X is deleted from code, config, and live registrations. If the plan only covers
+adding Y, or has no before/after inventory commands, it is incomplete — send it back for revision.
 
 ### Database Changes
 

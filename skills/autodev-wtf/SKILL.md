@@ -61,7 +61,7 @@ Spawn two agents simultaneously:
 
 **Memory investigation:**
 ```
-Agent(subagent_type="general-purpose", name="wtf-memory", prompt="
+Agent(subagent_type="general-purpose", name="wtf-memory", fork_turns="none", prompt="
 Run /autodev-wtf-memory for this failure:
 
 Bug: [description]
@@ -81,7 +81,7 @@ which entries you created or updated (with entry IDs).
 
 **Workflow investigation:**
 ```
-Agent(subagent_type="general-purpose", name="wtf-workflows", prompt="
+Agent(subagent_type="general-purpose", name="wtf-workflows", fork_turns="none", prompt="
 Run /autodev-wtf-workflows for this failure:
 
 Bug: [description]

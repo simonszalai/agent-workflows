@@ -191,6 +191,7 @@ self-repair (≤2 retries), and the final health gate.
    ```
    Agent(
      subagent_type="builder",
+     fork_turns="none",
      model={sonnet|opus per the routing rule above},
      prompt="
        MODE: build
@@ -286,6 +287,11 @@ self-repair (≤2 retries), and the final health gate.
      migration lane (schema-first with immediate `main→staging` sync, or full parity merge).
      Do not leave the build artifact implying that normal selective ticket promotion is safe for
      migration-bearing work.
+
+   If the plan removes/decommissions an old structure, close its negative inventory after the final
+   tree health gate: re-run the plan's bounded old-entrypoint/writer/config search and require zero
+   unexplained matches. Runtime registrations are verified later by deploy/verify, but the build
+   cannot report complete while scoped legacy code/config remains.
 
 8. **After the loop converges:**
    - Do NOT re-run the full suite here — the health gate in step 7 already ran it against

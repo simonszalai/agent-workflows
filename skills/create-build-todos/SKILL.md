@@ -156,7 +156,8 @@ ticket = mcp__autodev-memory__get_ticket(
    - Agent searches memory service exhaustively
    - Agent searches codebase for all relevant patterns
    - Agent analyzes git history for context
-   - Agent may spawn additional researcher agents
+   - Agent may spawn additional researcher agents only with `fork_turns: "none"` and bounded,
+     self-contained packets
 
 4. **Write build_todo artifacts:**
    - One artifact per implementation step
@@ -398,10 +399,13 @@ for the elimination step. This is NOT optional — it is as mandatory as a migra
 
 **The elimination todo must include:**
 
-1. **Migrate all consumers** — list every call site from the plan's consumer grep, with the
+1. **Capture the before inventory** — list every old code call site, flag/config entry, route,
+   writer/trigger/consumer, job/deployment registration, and operator script named by the plan
+2. **Migrate all consumers** — list every call site from the plan's consumer search, with the
    new code each should use
-2. **Delete old files** — list every file/module being removed
-3. **Verification commands:**
+3. **Delete old files/config/registrations** — list every scoped item being removed and assign
+   runtime registration deletion to the deployment guide
+4. **Negative-inventory verification commands:**
    ```bash
    # Verify zero imports of old system remain
    grep -r "OldSystem\|old_module" src/ --include="*.py" | grep -v __pycache__
@@ -414,12 +418,14 @@ for the elimination step. This is NOT optional — it is as mandatory as a migra
    # Run type checker — catches any remaining broken references
    uv run pyright  # or project's type checker
    ```
-4. **Position in build order:** Elimination comes AFTER all new code is wired up but BEFORE
+   Also include the authoritative post-deploy inventory command/query that must show every retired
+   runtime item absent, plus a smoke command for the sole surviving path.
+5. **Position in build order:** Elimination comes AFTER all new code is wired up but BEFORE
    writing tests. Never leave elimination as the last step — it must be verified before the
    build is considered complete.
 
 **Rule:** If a plan replaces system X with system Y, and the build todos don't include an
-elimination step for X, the build todos are incomplete.
+elimination step plus before/after negative inventory for X, the build todos are incomplete.
 
 ## Polling / Storage Build Todos (CRITICAL)
 
