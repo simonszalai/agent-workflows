@@ -26,7 +26,11 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         retro = (ROOT / "skills/session-retro/SKILL.md").read_text()
         self.assertIn("get_ticket_contexts", goal)
         self.assertIn("mutate_ticket_workflows", goal)
+        self.assertIn("tree-and-lifecycle audit cluster", goal)
+        self.assertIn("per-operation ledger", goal)
         self.assertIn('fork_turns: "none"', economy)
+        self.assertIn("Conductor enforcement", economy)
+        self.assertIn("must not poll the parent session itself", economy)
         self.assertIn("plain review starts native-only", review)
         self.assertNotIn("/review mode:cross", lfg)
         self.assertIn("workflow-efficiency-report --before-retro", retro)
@@ -53,6 +57,9 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("verify-visible-surfaces.md", ticket_verify)
         self.assertIn("verify-lifecycle-actions.md", ticket_verify)
         self.assertIn("mark the prior artifact `superseded`", ticket_verify)
+        self.assertIn("Reusable query packs", ticket_verify)
+        self.assertIn(".agents/verification-query-packs/", ticket_verify)
+        self.assertIn("schema-fingerprint query", ticket_verify)
         for name in (
             "verify-scope-dispatch.md", "verify-visible-surfaces.md",
             "verify-lifecycle-actions.md", "verify-staging-promotion.md",
@@ -350,6 +357,47 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(report["tool_elapsed_ms"]["exec_command"], {
                 "total": 750, "max": 500, "measured_calls": 2,
             })
+
+    def test_before_retro_uses_latest_request_in_long_lived_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = {"input_tokens": 100, "cached_input_tokens": 50,
+                     "output_tokens": 10, "reasoning_output_tokens": 1,
+                     "total_tokens": 110}
+            between = {"input_tokens": 300, "cached_input_tokens": 150,
+                       "output_tokens": 30, "reasoning_output_tokens": 3,
+                       "total_tokens": 330}
+            after = {"input_tokens": 500, "cached_input_tokens": 250,
+                     "output_tokens": 50, "reasoning_output_tokens": 5,
+                     "total_tokens": 550}
+            retro = {"type": "response_item", "payload": {
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "[session-retro](x)"}],
+            }}
+            self.write_session(root / "root.jsonl", {"id": "root"}, [
+                {"timestamp": "2026-01-01T00:00:00Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": first, "last_token_usage": first}}},
+                retro,
+                {"timestamp": "2026-01-01T00:00:01Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": between, "last_token_usage": between}}},
+                {"type": "response_item", "payload": {
+                    "type": "function_call", "name": "between_retros", "arguments": "{}"}},
+                retro,
+                {"timestamp": "2026-01-01T00:00:02Z", "type": "event_msg",
+                 "payload": {"type": "token_count", "info": {
+                     "total_token_usage": after, "last_token_usage": after}}},
+            ])
+
+            result = run_script(
+                "workflow-efficiency-report", str(root / "root.jsonl"),
+                "--sessions-root", str(root), "--before-retro",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["codex_tree_usage_unique"], between)
+            self.assertEqual(report["tool_histogram"], {"between_retros": 1})
 
     def test_report_marks_missing_fork_baseline_uncertain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
