@@ -40,10 +40,19 @@ by cutting necessary verification has failed.
    *system* cause — the skill section, agent frontmatter, bin default, or settings entry
    that made the behavior happen. A finding without a file to change is an observation,
    not a recommendation.
-3. **Report.** Ranked list (worst first, max ~10): finding → measured evidence (numbers
+3. **Report.** Give every recommendation a stable ID (`R1`, `R2`, …), then provide a ranked list
+   (worst first, max ~10): finding → measured evidence (numbers
    from step 1) → file:line to change → expected saving → quality risk and how it stays
    covered. Close with what the run did *well*, so good patterns don't get "optimized"
-   away. Offer `/compound` or a ticket for accepted items; apply nothing yourself.
+   away. Offer `/retro-apply R1,R3` for accepted workflow changes, `/compound` for knowledge-only
+   findings, or a ticket for deferred items; apply nothing yourself.
+
+## Accepted recommendations
+
+`session-retro` remains propose-only. If the user accepts any recommendation in a later turn, route
+the request to `/retro-apply`; do not implement it in this session's accumulated context. Preserve
+the stable recommendation IDs so the handoff can unambiguously distinguish accepted, rejected, and
+already-implemented findings.
 
 ## Rubric
 
