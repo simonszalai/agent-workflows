@@ -92,7 +92,8 @@ them into the parent's `deferred_cleanup` artifact before changing status.
 Cleanup holding lifecycle (same item, new status; see `ticket-lifecycle.md`):
 
 - `to_verify_prod` production PASS + pending cleanup → `prod_verified_needs_cleanup`.
-- An explicit `/ticket-verify production <ID>` on `prod_verified_needs_cleanup` evaluates the
+- `/ticket-verify production` includes `prod_verified_needs_cleanup` in its default queue; an
+  explicit `/ticket-verify production <ID>` may target one holder. Either path evaluates the
   cleanup trigger/approval/soak from blocker metadata and the `deferred_cleanup` artifact.
 - Trigger false: the §3 blocker-metadata refresh is the **only** permitted write.
 - Trigger true + automatically eligible (§10): clear any stale approval/trigger blocker → run

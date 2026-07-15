@@ -1,6 +1,10 @@
 ---
 name: ticket-verify
-description: Timer-friendly evidence collection for tickets and epic/milestone gates in staging or production. Default queue includes both to_verify and verify_failed statuses plus pending epic gates. Read-only while verifying; standalone staging PASS promotes unless disabled.
+description: >-
+  Timer-friendly evidence collection for tickets and epic/milestone gates in staging or
+  production. The default queue includes pending verification, failed verification, production
+  cleanup holders, and pending epic gates. Read-only while verifying; standalone staging PASS
+  promotes unless disabled.
 max_turns: 200
 ---
 
@@ -77,10 +81,12 @@ If `--epic` is provided:
    when the parent epic/milestone is the requested scope.
 
 If explicit ticket IDs are provided, load those. Otherwise the default queue selects, for the
-target environment, the **union of both verify statuses** plus **pending epic gates**:
+target environment, the **union of verification/cleanup statuses** plus **pending epic gates**:
 
 - `staging` -> `list_tickets(status="to_verify_staging")` ∪ `list_tickets(status="verify_staging_failed")`
-- `production` -> `list_tickets(status="to_verify_prod")` ∪ `list_tickets(status="verify_prod_failed")`
+- `production` -> `list_tickets(status="to_verify_prod")` ∪
+  `list_tickets(status="verify_prod_failed")` ∪
+  `list_tickets(status="prod_verified_needs_cleanup")`
 
 Including the `verify_*_failed` status means a ticket that previously failed verification is
 re-attempted automatically on the next queue run instead of being stranded. A re-selected failed
@@ -88,6 +94,12 @@ ticket still runs the full evidence collection (§5); if its activation boundary
 newly-landed fix commit since the recorded failure, say so in the report — a re-run without a new
 fix will usually just re-confirm the `FAIL`, and that should be stated rather than presented as a
 fresh result.
+
+Including `prod_verified_needs_cleanup` means a normal `/ticket-verify production` run also
+finishes due cleanup holders. Re-check blocker metadata per §3: stale approval blockers on
+automatically eligible noncritical cleanup are cleared and executed per §10; genuinely critical,
+trigger-blocked, or soaking items remain blocked without mutation beyond the allowed blocker
+refresh.
 
 Also auto-include **pending epic gates** for the target environment, each verified exactly as if
 `--epic <ID>` had been passed (the epic branch above, aggregated per §7). An epic has a pending

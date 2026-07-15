@@ -83,8 +83,9 @@ to_verify_prod
 Approval, trigger, and soak are blocker metadata per the existing blocker policy above, not
 separate statuses. Bounded noncritical destructive cleanup (including terminal Prefect flow-run
 history) is automatically eligible and does not require approval; critical/unknown destructive
-cleanup still does. Normal pickup queues skip blocked items (`next_ticket` excludes them); cleanup
-holders advance only via explicit `/ticket-verify production <ID>` invocations. See
+cleanup still does. Normal work pickup queues skip blocked items (`next_ticket` excludes them),
+but `/ticket-verify production` includes cleanup holders in its default verification queue; an
+explicit ticket ID can target one holder. See
 `ticket-verify` §10/§10a for the artifact contract and execution rules. Legacy
 `cleanup=true` child tickets may be read for historical context, but new cleanup work stays on
 the parent item.
