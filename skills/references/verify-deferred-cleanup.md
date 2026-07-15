@@ -20,6 +20,7 @@ name is retired; flow-run deletion is now just a `deferred_cleanup` with
   "cleanup_command": "<command; run with --artifact <temp-file> --fix-time <activation boundary §4> --execute plus any documented non-interactive flags (e.g. --yes)>",
   "scope_manifest": ["<exactly what the command may touch: tables, deployments, paths, ids>"],
   "reversibility": "reversible | destructive (missing/unknown => destructive)",
+  "data_criticality": "noncritical | critical (missing/unknown => critical)",
   "cleanup_kind": "<e.g. flow_run_cleanup, deployment_retirement, table_drop>",
   "trigger_condition": {"check_command": "<read-only; exit 0 = trigger true, non-zero = not yet>", "description": "<when this becomes safe>"},
   "soak_window": "<duration the effect must soak before final verification>",
@@ -41,15 +42,29 @@ Execution rules:
    against `scope_manifest` AND corroborate with the out-of-band read-only checks from
    `evidence_contract` (before/after inventory) rather than trusting the command's own counts.
    Any out-of-scope effect → ABORT/blocked, capture the diff into `blocked_context`, do not
-   re-run. A command whose executed effects cannot be independently observed is treated as
-   destructive (approval-gated), whatever its label says.
+   re-run. A command whose executed effects cannot be independently observed is not eligible for
+   automatic destructive cleanup, whatever its label says.
 5. Fold the command's reported counts into the verdict output.
 
-**Same-cycle path:** no `trigger_condition` and `reversibility="reversible"` → the orchestrator
-runs the cleanup immediately after the production PASS is recorded (preserving prior behavior).
-`reversible` is not accepted on assertion alone: the artifact must carry a non-empty
-`revert_ref`/`revert_command`; absent a concrete revert, treat as destructive and move to the
-§10a approval-gated cleanup-holding path regardless of the label.
+**Automatic same-cycle path:** after production PASS, the orchestrator runs cleanup without
+operator approval when either condition holds:
+
+- it is concretely reversible (`revert_ref` or `revert_command` is present); or
+- it is destructive but `data_criticality="noncritical"`, its dry-run yields an exact bounded
+  target set wholly inside `scope_manifest`, and the before/after `evidence_contract` can
+  independently observe every effect.
+
+`flow_run_cleanup` that deletes only terminal Prefect flow-run history (run metadata/logs, not
+deployments, schedules, blocks, artifacts, or application rows) is a built-in noncritical cleanup
+kind. It is automatically eligible even when a legacy artifact omits `data_criticality`. Before
+executing a legacy artifact, normalize it in place with `cleanup_kind="flow_run_cleanup"`,
+`data_criticality="noncritical"`, the dry-run's exact run IDs as `scope_manifest`, and read-only
+before/after checks as its `evidence_contract`. The command must enforce the ticket selector and
+activation/fix-time boundary; otherwise leave the item blocked as an invalid cleanup contract.
+
+Missing/unknown criticality remains critical for every other destructive cleanup kind. Those
+items use the §10a approval-gated path. A `noncritical` label never bypasses dry-run, exact scope,
+activation-boundary, or independent before/after enforcement.
 Anything else is deferred in-place (§10a). A ticket/epic without a `deferred_cleanup`
 artifact has no cleanup step, and a non-PASS verdict never triggers one.
 
@@ -69,8 +84,8 @@ them into the parent's `deferred_cleanup` artifact before changing status.
 3. Set blocker metadata on the parent when appropriate:
    - `blocked_by="trigger_condition"` with `blocked_context.check_command` when the trigger is
      not yet true;
-   - `blocked_by="approval"` for destructive cleanup or when reversibility lacks a concrete
-     `revert_ref`/`revert_command`;
+   - `blocked_by="approval"` for destructive cleanup that is critical/unknown or is not eligible
+     for the bounded noncritical automatic path in §10;
    - `blocked_by="soak"` with `blocked_context={"soak_until": ...}` after cleanup execution if a
      soak window must elapse before final cleanup verification.
 
@@ -80,12 +95,12 @@ Cleanup holding lifecycle (same item, new status; see `ticket-lifecycle.md`):
 - An explicit `/ticket-verify production <ID>` on `prod_verified_needs_cleanup` evaluates the
   cleanup trigger/approval/soak from blocker metadata and the `deferred_cleanup` artifact.
 - Trigger false: the §3 blocker-metadata refresh is the **only** permitted write.
-- Trigger true + reversible: clear trigger blocker → run `cleanup_command` with scope
-  enforcement (§10) → keep `prod_verified_needs_cleanup` with `blocked_by="soak"` if soaking is
-  required, otherwise grade the cleanup `evidence_contract`.
-- Destructive: `blocked_by="approval"` is an ABSOLUTE no-run gate regardless of trigger state.
-  Approval = an operator clears the blocker (optionally recording
-  `blocked_context.approved_by`).
+- Trigger true + automatically eligible (§10): clear any stale approval/trigger blocker → run
+  `cleanup_command` with scope enforcement → keep `prod_verified_needs_cleanup` with
+  `blocked_by="soak"` if soaking is required, otherwise grade the cleanup `evidence_contract`.
+- Destructive critical/unknown cleanup, or destructive cleanup that fails any automatic-safety
+  precondition, remains `blocked_by="approval"`; this is an absolute no-run gate. Approval = an
+  operator clears the blocker (optionally recording `blocked_context.approved_by`).
 - Post-soak/final cleanup verification grades the artifact's `evidence_contract` — it IS the
   FINALIZED cleanup contract (§2) → `completed` | `verify_prod_failed` (revert =
   `revert_ref`/`revert_command`). A verify before `soak_until` must refuse completion

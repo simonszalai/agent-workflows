@@ -44,7 +44,8 @@ unverified.** Only `/ticket-verify production` moves a ticket from `to_verify_pr
 `completed`, `prod_verified_needs_cleanup`, or `verify_prod_failed`.
 
 `prod_verified_needs_cleanup` means: **production behavior passed verification, but deferred
-cleanup still needs trigger/approval/execution/soak/final evidence on the same ticket/epic.**
+cleanup still needs trigger/execution/soak/final evidence, or approval for critical/unknown
+destructive cleanup, on the same ticket/epic.**
 Only `/ticket-verify production` moves it to `completed` (cleanup evidence passed) or
 `verify_prod_failed` (cleanup evidence failed/out-of-scope/revert required).
 
@@ -80,7 +81,9 @@ to_verify_prod
 ```
 
 Approval, trigger, and soak are blocker metadata per the existing blocker policy above, not
-separate statuses. Normal pickup queues skip blocked items (`next_ticket` excludes them); cleanup
+separate statuses. Bounded noncritical destructive cleanup (including terminal Prefect flow-run
+history) is automatically eligible and does not require approval; critical/unknown destructive
+cleanup still does. Normal pickup queues skip blocked items (`next_ticket` excludes them); cleanup
 holders advance only via explicit `/ticket-verify production <ID>` invocations. See
 `ticket-verify` §10/§10a for the artifact contract and execution rules. Legacy
 `cleanup=true` child tickets may be read for historical context, but new cleanup work stays on

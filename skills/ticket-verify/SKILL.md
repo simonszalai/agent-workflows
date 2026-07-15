@@ -57,7 +57,11 @@ First argument must be `staging`, `prod`, or `production`.
 - Blocker metadata is **not** a skip signal. If a selected ticket/gate has an active blocker,
   first re-check the recorded blocking condition against source-of-truth systems. If the blocker
   has cleared, continue verification in the same run.
-- Verification stays read-only except for two narrow cases: (1) the bounded on-demand canary/shadow run exception above, and (2) on **production PASS**, a ticket may carry a deferred post-verification cleanup that runs only after the PASS verdict is recorded (see §10).
+- Verification stays read-only except for two narrow cases: (1) the bounded on-demand
+  canary/shadow run exception above, and (2) on **production PASS**, a ticket may carry a deferred
+  post-verification cleanup that runs only after the PASS verdict is recorded. Bounded
+  noncritical cleanup may run automatically even when irreversible; critical/unknown destructive
+  cleanup remains approval-gated (see §10).
 
 ## Process
 
