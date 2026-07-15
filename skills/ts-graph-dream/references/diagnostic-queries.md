@@ -655,6 +655,28 @@ ORDER BY entities DESC, canonical_key
 LIMIT 100;
 ```
 
+## Ingestion temp entities (R0053 — resolve/merge forward, not contamination)
+
+The new graph-ingestion writer marks unresolved model-proposed placeholder entities with
+`additional_data->>'origin' = 'ingestion_temp_entity'` plus `additional_data->>'source_record_id'`.
+These are expected-transient and should be prioritized for reconciliation/merge into their canonical
+node — they are NOT contamination and NOT false-merge candidates.
+
+```sql
+SELECT
+  e.id,
+  e.name,
+  e.ticker,
+  e.additional_data->>'source_record_id' AS source_record_id,
+  e.created_at,
+  e.merged_into_id
+FROM graph_entity e
+WHERE e.additional_data->>'origin' = 'ingestion_temp_entity'
+  AND e.merged_into_id IS NULL   -- still unresolved: candidates for merge-forward
+ORDER BY e.created_at DESC
+LIMIT 200;
+```
+
 ## Provenance and import-family health
 
 ```sql

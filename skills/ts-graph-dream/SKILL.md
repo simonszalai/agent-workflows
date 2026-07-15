@@ -48,6 +48,15 @@ merged to ts-prefect `main` **and** `staging` 2026-07-02), ingestion is hardened
 - **Entity guards:** numeric/low-information names are quarantined at insert
   (`should_quarantine_entity_name`), garbage aliases (`N/A`, empty, none/null) are sanitized, and a
   cross-ticker conflict guard blocks auto-merging two distinct ticker'd companies.
+- **Ingestion temp entities (R0053 new route — NOT contamination):** the new graph-ingestion
+  writer mints model-proposed placeholder entities that could not be resolved to an existing node
+  at decision time, tagging them with `additional_data.origin = 'ingestion_temp_entity'` plus
+  `additional_data.source_record_id` (the originating record). These are **expected-transient** —
+  they should be **prioritized for reconciliation/merge into their canonical entity**, not treated
+  as contamination and not counted as false-merge candidates. When you see an entity carrying this
+  marker still unresolved, the action is "resolve/merge it forward", never "quarantine as garbage".
+  The marker is a JSONB key (`GraphEntity` has no `origin` column) — filter on
+  `additional_data->>'origin' = 'ingestion_temp_entity'`.
 
 Consequence: **before proposing any I-channel (importer) fix, check whether F0216 already implements
 it and whether the code is deployed to the environment you're cleaning.** Findings in old rows may
