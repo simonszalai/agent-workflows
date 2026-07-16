@@ -1,8 +1,49 @@
 # Verify: Deferred post-verification cleanup
 
-On-demand reference for `ticket-verify/SKILL.md`. Load this **only when a `deferred_cleanup`
-artifact exists** on the ticket/epic being verified. Section numbers (§2, §3, §4, §5, §9a)
-refer to sections in `ticket-verify/SKILL.md`.
+On-demand reference for `ticket-verify/SKILL.md`. Load this when a `deferred_cleanup` artifact
+exists, a legacy flow-run-cleanup artifact exists, or a production bug ticket structurally
+attributes Prefect incident flow runs. Section numbers (§2, §3, §4, §5, §9a) refer to sections in
+`ticket-verify/SKILL.md`.
+
+## Ticket-attributed Prefect incident cleanup preflight
+
+On a production bug-ticket verification, inspect the already-loaded artifact manifest plus the
+bounded source/investigation context for Prefect flow runs explicitly attributed to the incident
+that created the ticket. Recognized structured attribution is limited to:
+
+- a legacy flow-run-cleanup artifact containing a ticket tag or triage cluster;
+- a ticket tag plus flow names, terminal failure states, and an error signature recorded by triage;
+- exact flow-run IDs explicitly labeled as the original incident/triggering failures.
+
+Do not regex every UUID from ticket prose. Exclude staging canary/evidence runs, production
+verification runs, post-fix failures, task-run IDs, deployment IDs, and any active/nonterminal run.
+The cleanup target is terminal Prefect **flow-run history only**; never delete flows, deployments,
+schedules, blocks, artifacts, or application rows under this cleanup kind.
+
+When structured attribution exists, ensure one parent `deferred_cleanup` artifact exists with
+`cleanup_kind="flow_run_cleanup"`. Normalize a legacy artifact in place rather than creating a
+duplicate. Preserve its ticket tag, flow names, states, error signature, triage time, and explicit
+run IDs. Set the production activation boundary from §4 as the fix-time ceiling so post-fix failures
+remain visible and fail verification instead of being swept away.
+
+Use the repository's maintained ticket-scoped cleanup command. It must support dry-run, an artifact
+input, fix-time enforcement, exact target reporting, and non-interactive execution. Example for
+ts-prefect:
+
+```text
+uv run python -m scripts.prefect_ops.delete_ticket_flow_runs --ticket <ID>
+```
+
+The verifier appends `--artifact`, `--fix-time`, `--execute`, and the documented non-interactive
+flag only after production behavior has recorded exact `PASS`. Persist the incident membership,
+dry-run target IDs/count, and before state in verification evidence before deletion because Prefect
+logs and run metadata disappear with the run.
+
+If structured incident attribution exists but the cleanup command, signature/scope, fix-time, or
+independent before/after check is missing, do not silently treat the ticket as cleanup-free. Record
+production behavior PASS, move it to `prod_verified_needs_cleanup`, and block on the exact cleanup
+contract repair. If there is no structured incident-run attribution, do not invent cleanup from
+unrelated run IDs.
 
 ## 10. Deferred post-verification cleanup (production PASS only)
 
@@ -65,8 +106,8 @@ activation/fix-time boundary; otherwise leave the item blocked as an invalid cle
 Missing/unknown criticality remains critical for every other destructive cleanup kind. Those
 items use the §10a approval-gated path. A `noncritical` label never bypasses dry-run, exact scope,
 activation-boundary, or independent before/after enforcement.
-Anything else is deferred in-place (§10a). A ticket/epic without a `deferred_cleanup`
-artifact has no cleanup step, and a non-PASS verdict never triggers one.
+Anything else is deferred in-place (§10a). A ticket/epic without a `deferred_cleanup` artifact or
+structured incident-run attribution has no cleanup step, and a non-PASS verdict never triggers one.
 
 ## 10a. In-place cleanup holding status (production PASS only)
 

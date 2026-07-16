@@ -54,7 +54,8 @@ resumable process session or re-sample the parent model while the external run i
 
 ### 1. Resolve and resume safely
 
-Load the standalone ticket once with `detail="light", include_events=false`. Refuse epic members,
+Load the standalone ticket once with `detail="light", include_events=false`. Cache the artifact
+manifest, including any `deferred_cleanup` or legacy flow-run-cleanup artifact. Refuse epic members,
 source tickets, abandoned tickets, and ambiguous repository scope.
 
 Resume from lifecycle truth rather than repeating completed phases:
@@ -106,7 +107,39 @@ Stop on every outcome except exact `PASS`:
 - `PASS (contract-missing)`: stop; a derived contract is not production-promotion evidence.
 - exact `PASS`: require the persisted staging evidence artifact and continue.
 
-### 4. Promote, deploy, verify, and complete production
+### 4. Preserve ticket-attributed incident cleanup
+
+Before production promotion, inspect the cached bug-ticket source/investigation and cleanup artifact
+manifest for Prefect flow runs explicitly attributed to the incident that created the ticket. Follow
+`ticket-verify`'s `verify-deferred-cleanup.md` preflight and ensure those original incident runs are
+represented by one normalized `deferred_cleanup` with `cleanup_kind="flow_run_cleanup"`.
+
+Fetch only the bodies required by the manifest: normally `source`, `investigation`, and
+`deferred_cleanup`; fetch a legacy cleanup body directly by its artifact ID. Do not reload every
+ticket artifact or event.
+
+Accept only structured attribution: an existing ticket tag/triage cluster, explicit run IDs labeled
+as the original incident failures, or a legacy flow-run-cleanup artifact. Do not collect arbitrary
+UUIDs from prose, and do not include the staging evidence run, production verification runs,
+post-fix failures, deployments, schedules, task runs, blocks, or application rows.
+
+The cleanup command must be project-owned, dry-run-first, fix-time bounded, and independently
+verifiable. For ts-prefect, use the maintained ticket-scoped command documented by the repository:
+
+```text
+uv run python -m scripts.prefect_ops.delete_ticket_flow_runs --ticket <ID>
+```
+
+That ts-prefect command requires the ticket tag/triage cluster recorded by its investigation path.
+An explicit-ID-only ticket needs a project command that enforces exactly those IDs; do not pretend
+the tag-based command covers untagged IDs.
+
+`ticket-verify production` appends the artifact, activation boundary, execution, and non-interactive
+arguments. If incident runs are attributed but no safe cleanup contract can be normalized, stop
+before promotion with the exact contract repair; full-auto must not silently complete while the
+ticket's resolved Prefect failures remain on the failure board.
+
+### 5. Promote, deploy, verify, clean, and complete production
 
 After exact staging `PASS`, run:
 
@@ -117,12 +150,15 @@ After exact staging `PASS`, run:
 This explicit wrapper invocation satisfies the human authorization requirement for production, but
 does not waive `/ticket-promote`'s schema, migration, deploy, auth, parity, CI, or rollback gates.
 `/ticket-promote` lands the verified work on `main`, runs production deploy steps, sets
-`to_verify_prod`, and invokes `/ticket-verify production <ID>`.
+`to_verify_prod`, and invokes `/ticket-verify production <ID>`. After production behavior records an
+exact `PASS`, that verifier dry-runs, scope-checks, and deletes the terminal pre-fix Prefect incident
+runs attributed to the ticket. Cleanup never runs before production PASS.
 
 Stop immediately if promotion, a production deploy step, or production verification fails or blocks.
-Success requires a production verification artifact with exact `PASS` and final `completed` status.
-If production passes but deferred cleanup remains, report `prod_verified_needs_cleanup` rather than
-claiming completion; its cleanup contract owns the next run.
+Success requires a production verification artifact with exact `PASS`, independently verified
+incident cleanup when the ticket attributed Prefect runs, and final `completed` status. If production
+passes but deferred cleanup remains, report `prod_verified_needs_cleanup` rather than claiming
+completion; its cleanup contract owns the next run.
 
 ## Terminal report
 
