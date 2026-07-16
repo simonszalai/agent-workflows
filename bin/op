@@ -77,7 +77,31 @@ if [[ -z "$sensitive_vault" && -n "$env_file" && -r "$env_file" ]]; then
   fi
 fi
 
-if [[ -n "$sensitive_vault" && "${OP_SENSITIVE_NOTIFICATION_SENT:-0}" != "1" ]]; then
+# Reuse direct sensitive reads within one Conductor session. Values live only
+# in the memory of a per-session helper process (0700 directory / 0600 socket),
+# never in a file, argv, audit log, or ambient environment. A cache hit returns
+# before notification/authentication, so repeated reads do not trigger Touch ID.
+cacheable_sensitive_read=0
+cache_key=""
+has_read_command=0
+for a in "$@"; do
+  [[ "$a" == "read" ]] && has_read_command=1
+done
+if [[ -n "$sensitive_vault" && "$has_read_command" == "1" && -n "${CONDUCTOR_SESSION_ID:-}" ]]; then
+  cacheable_sensitive_read=1
+  cache_key="$(printf '%s\0' "$@" | shasum -a 256 | awk '{print $1}')"
+  if "$HERE/sensitive-session-cache" get "$cache_key"; then
+    printf '%s pid=%s parent=%s<-%s auth=session-cache vault=%s item=%s :: op read <cached>\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$sensitive_vault" "$sensitive_item" \
+      >> "$LOG" 2>/dev/null
+    exit 0
+  fi
+fi
+
+# A cache miss can cause Touch ID, so it always notifies. The legacy
+# OP_SENSITIVE_NOTIFICATION_SENT escape hatch is intentionally ignored here;
+# it previously allowed an unattributed fingerprint prompt.
+if [[ -n "$sensitive_vault" ]]; then
   reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
   if [[ -z "$reason" ]]; then
     printf '%s pid=%s parent=%s<-%s status=BLOCKED missing-reason vault=%s item=%s\n' \
@@ -116,5 +140,15 @@ reason_log="$(printf '%s' "$reason_log" | tr '\r\n\t' '   ' | cut -c1-220)"
 printf '%s pid=%s parent=%s<-%s auth=%s%s :: op %s\n' \
   "$(date '+%F %T')" "$$" "$parent" "$gparent" "$auth" \
   "${reason_log:+ reason=[$reason_log]}" "${sanitized[*]}" >> "$LOG" 2>/dev/null
+
+if [[ "$cacheable_sensitive_read" == "1" ]]; then
+  # `op read` callers use --no-newline, so command substitution is lossless.
+  # The resolved value stays in process memory and is sent over the 0600 socket.
+  sensitive_value="$("$REAL_OP" "$@")" || exit $?
+  printf %s "$sensitive_value" | "$HERE/sensitive-session-cache" put "$cache_key"
+  printf %s "$sensitive_value"
+  sensitive_value=""
+  exit 0
+fi
 
 exec "$REAL_OP" "$@"

@@ -13,8 +13,7 @@ WHERE table_schema = 'public' AND table_name LIKE 'graph_%'
 GROUP BY table_name
 ORDER BY table_name;
 
--- Environments diverge (e.g. graph_quant was dropped from staging but lives on in prod).
--- Probe existence first and only query tables that exist:
+-- Production schema evolves. Probe existence first and only query tables that exist:
 SELECT t AS table_name, to_regclass(t) IS NOT NULL AS present
 FROM unnest(ARRAY['graph_entity','graph_edge','graph_claim','graph_quant','graph_mention',
                   'graph_document','graph_source','graph_taxonomy','graph_note','graph_audit',
@@ -607,7 +606,7 @@ WHERE id = ANY(:minority_edge_ids) AND object_entity_id  = :orig_id;
 ## Uninterpretable quants (legacy — only when graph_quant exists)
 
 Feeds the SKILL's **Legacy quant pass**. Run `SELECT to_regclass('graph_quant')` first — the table
-was dropped from staging in 2026-07 (quant layer decommissioned; FMP is the financials source). If it
+was decommissioned in 2026-07 (FMP is the financials source). If it
 exists AND is still being written, the finding is environment drift (pre-decommission code), not row
 hygiene. For in-place cleanup of legacy rows, measure the generic-fallback metrics and whether
 any are salvageable (context / unit / period / provenance):
@@ -731,6 +730,6 @@ If the system should prevent recurrence, propose one of these code/schema fixes 
    - map predicate synonyms to a canonical predicate;
    - sort endpoint IDs for symmetric predicates;
    - compute content/upsert identity from normalized predicate + normalized endpoints + scope, not generated edge text.
-2. Add a DB-supported guard, for example generated normalized endpoint columns or a functional unique index for active symmetric assertions. Validate on staging first.
+2. Add a DB-supported guard, for example generated normalized endpoint columns or a functional unique index for active symmetric assertions. Validate with a read-only production plan, transaction rollback, and a narrowly scoped production canary before broad apply.
 3. Keep source mentions as evidence rows and aggregate `support_count`; do not duplicate assertion rows for every source.
 4. In the dashboard, display symmetric edges as `A ↔ B competes_with` or omit arrow semantics in the inspector.

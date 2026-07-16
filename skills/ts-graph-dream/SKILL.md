@@ -1,6 +1,6 @@
 ---
 name: ts-graph-dream
-description: Whole-system knowledge graph consolidation for ts-graph style databases. Use when asked to audit, clean, deduplicate, canonicalize, or "dream" over graph data; investigate duplicate graph_edge rows, predicate explosion, co-occurrence / mentioned_with noise edges dominating the graph or viz layout, low-signal predicate pruning, entity aliases/merges, stale/superseded graph assertions, graph maintenance runs, Grok/import backfill contamination, or graph dashboard inspector noise. Produces evidence-bound cleanup plans and can apply safe audited graph_* mutations only when explicitly approved.
+description: Production-only whole-system knowledge graph consolidation for ts-graph style databases. Use when asked to audit, clean, deduplicate, canonicalize, or "dream" over production graph data; investigate duplicate graph_edge rows, predicate explosion, co-occurrence / mentioned_with noise edges dominating the graph or viz layout, low-signal predicate pruning, entity aliases/merges, stale/superseded graph assertions, graph maintenance runs, Grok/import backfill contamination, or graph dashboard inspector noise. Never queries or cleans non-production graph databases. Produces evidence-bound cleanup plans and can apply safe audited production graph_* mutations only when explicitly approved.
 ---
 
 # TS Graph Dream
@@ -8,6 +8,11 @@ description: Whole-system knowledge graph consolidation for ts-graph style datab
 `ts-graph-dream` is the graph-data analogue of `deep-dream`: it audits a knowledge graph for duplicate assertions, predicate drift, entity fragmentation, stale rows, and bad importer patterns, then proposes safe consolidation actions.
 
 Default stance: **read-only report first**. Mutate only after explicit user approval or an explicit apply request.
+
+**Scope boundary: production only.** Every run targets the canonical production TS database
+`ts_znde_hu05` (Render Postgres `dpg-d1rh6dmmcj7s73e4qigg-a`). Never query, compare, audit, clean,
+or report on any non-production graph database. If the production database cannot be
+positively identified, stop rather than falling back to another environment.
 
 ## Safety rules
 
@@ -29,7 +34,7 @@ Verify the following before proposing anything (they were true as of 2026-07-03;
 
 **Population (ts-prefect `src/graph/`).** Edges/claims come only from the two-pass LLM assimilator
 (`assimilate_record` → entities → assertions → `write_assimilation`). Since **F0216** (PR #526/#527,
-merged to ts-prefect `main` **and** `staging` 2026-07-02), ingestion is hardened at write time:
+merged to ts-prefect `main` 2026-07-02), ingestion is hardened at write time:
 
 - **Predicate canonicalization at write:** `canonicalize_predicate()` folds synonym variants using an
   in-code map PLUS a **DB-backed override map from `graph_taxonomy`** (`taxonomy_type IN
@@ -113,21 +118,19 @@ The /graph map renders **`graph_edge` only** (claims/documents/notes never draw 
 
 ### Phase 0 - Scope and baselines
 
-1. Identify the graph DB and environment:
-   - Prefer the current repo `.env` `DATABASE_URL` when the user points at a local/staging dashboard.
+1. Positively identify the canonical production graph DB:
+   - Use database `ts_znde_hu05` on Render Postgres `dpg-d1rh6dmmcj7s73e4qigg-a`.
+   - Do not use a current-repo `.env` as a fallback; it may point elsewhere.
+   - Never query or compare any non-production database, even when the user mentions one.
    - If linked `ts-prefect` is relevant, inspect importer/backfill code there too.
    - Print only database host/db name, never credentials.
-   - **Environments diverge — check both.** Staging (`ts_duoh`) holds the large graph (~9k entities);
-     production has had live `graph_*` tables and a running assimilator since the 2026-07 promotion,
-     and its schema can differ from staging (e.g. `graph_quant` exists in prod but was dropped from
-     staging). Never assume the graph is staging-only, and never assume table parity.
 2. Probe which graph tables exist (`to_regclass`), rather than asserting a fixed list: `graph_entity`,
    `graph_edge`, `graph_claim`, `graph_mention`, `graph_document`, `graph_source`, `graph_taxonomy`,
    `graph_note`, `graph_audit`, `graph_maintenance_run`, `graph_maintenance_change`, and (legacy,
    possibly dropped) `graph_quant`. Skip passes whose tables are absent instead of erroring.
 3. Record baseline counts: total vs active rows, superseded counts, recent maintenance runs, and imported source families.
-4. Check write-time guard deployment for this environment (see the System contract above): does the
-   assimilator here canonicalize predicates / tag co-occurrence / quarantine junk names? This decides
+4. Check write-time guard deployment in production (see the System contract above): does the
+   production assimilator canonicalize predicates / tag co-occurrence / quarantine junk names? This decides
    whether each finding is a recurring problem or a one-time historical backlog.
 5. If the user named an entity/ticker, scope diagnostics to that node first, then decide whether global cleanup is needed.
 
@@ -137,13 +140,13 @@ Load `references/diagnostic-queries.md` when writing SQL. Gather compact evidenc
 
 - **Edge duplicates:** repeated `(subject, predicate, object)` active edges; reverse/symmetric duplicates; same content hashes. Since F0216 the edge `content_hash` is `(subject, canonical predicate, object)` with symmetric endpoints normalized — new writes cannot duplicate, so any nonzero count is either pre-F0216 backlog (one-time collapse) or a writer regression (investigate, don't just clean).
 - **Predicate drift (mandatory):** always enumerate the full set of distinct predicate values and their active counts, then cluster them into synonym/variant families (see the **Predicate canonicalization pass** below). Free-text LLM predicates fragment into a long tail of one-off strings (`benefits` vs `benefits_from`, `drives` vs `drives_demand_for`, `partnered_with` vs `partners_with`) that must be collapsed to a canonical predicate.
-- **Co-occurrence noise (mandatory to measure, often already resolved):** measure the share of pure co-occurrence predicates (`mentioned_with` and siblings) among active edges, their average `support_count`/`truth_probability`, and — critically — how many of their unordered entity pairs *also* have a real causal edge vs. are co-occurrence-only. This ratio decides the action mix (see the **Co-occurrence & low-signal noise pass**). Check whether edges already carry `additional_data.signal_class` (F0216 writes it) — on staging the historical co-occurrence backlog was bulk-removed in 2026-07 (`reason_code='cooccurrence_removed'`), so a near-zero count means "verify the write-time guard, then move on", not "invent work".
+- **Co-occurrence noise (mandatory to measure, often already resolved):** measure the share of pure co-occurrence predicates (`mentioned_with` and siblings) among active edges, their average `support_count`/`truth_probability`, and — critically — how many of their unordered entity pairs *also* have a real causal edge vs. are co-occurrence-only. This ratio decides the action mix (see the **Co-occurrence & low-signal noise pass**). Check whether edges already carry `additional_data.signal_class` (F0216 writes it); a near-zero production count means "verify the write-time guard, then move on", not "invent work".
 - **Predicate directionality:** classify predicates as directed, symmetric, inverse-paired, temporal/event-scoped, or unknown before consolidation. Inverse pairs (`supplies`/`purchases_from`, `sells_to`/`buys_from`, `owns`/`owned_by`, plus hand-reviewed pairs like `acquires`/`acquired_by`) must never be flat-merged — canonicalizing one onto the other requires swapping subject/object.
 - **Entity fragmentation:** same ticker/canonical key/name across several entities; alias overlap; merged_into chains; orphan nodes.
 - **Display-name hygiene (mandatory):** entities whose `name` is not a human-readable label — opaque internal identifiers (`PROD_MACRO_STORY:<UUID>`, bare UUIDs, `<KEY>:<uuid>` importer keys) and companies whose `name` is just a **ticker symbol** rather than the real company name (especially Asian listings: `005930.KS`, `6758.T`, `0700.HK`, `600519.SS`, `2330.TW`). These read as garbage in the map, inspector, and cluster labels. See the **Entity name hygiene pass**.
 - **Non-entity & mistyped nodes (mandatory):** `company` (or other typed) nodes that are not entities at all — a bare number/money/unit literal (`400`, `1.3`, `100B`, `2.2`) that the extractor captured as an "entity", or nodes typed `company` whose `name` is clearly a **narrative/headline/theme** ("Shutdown Pressure Ahead of Senate Recess"), a person, a sector, or an event. See the **Non-entity & mistyped node pass**.
 - **Geopolitical / location nodes (when present):** countries, regions, blocs, and cities (`Iran`, `China`, `United States`, `Middle East`, `Hong Kong`) mis-filed under `company`/`organization`/`sector`/`macro_indicator`, usually **fragmented** across those types and name-variants (`US`/`USA`/`U.S.`/`United States`), and often **conflating two senses** — the state/government actor vs. the country as a place/market. See the **Geopolitical vs location entity pass**.
-- **Uninterpretable quants (conditional — only if `graph_quant` exists):** the quant layer was deleted from staging + the dashboard in 2026-07 (~86% garbage; FMP is the financials source). If the environment still has the table and live writers, see the **Legacy quant pass** — the headline finding there is code/schema drift, not row hygiene.
+- **Uninterpretable quants (conditional — only if `graph_quant` exists):** the quant layer was removed from current graph code and the dashboard in 2026-07 (~86% garbage; FMP is the financials source). If production still has the table and live writers, see the **Legacy quant pass** — the headline finding there is code/schema drift, not row hygiene.
 - **Alias contamination & false merges (mandatory):** enumerate alias strings that appear on more than one active entity. For each, decide whether the entities are the same real-world thing (fragmentation → merge) or different things (→ one alias is wrong). Flag as contamination any case where a ticker'd company carries another ticker'd company's name/ticker as an alias, an entity fuses two distinct tickers, or an alias is garbage (`N/A`, empty, a bare number). Also inspect `merged_into_id` targets: a merge whose survivor is a *different* real company than the merged row (e.g. "SK Hynix" merged into "Huawei") is a false merge to unwind. Cite the entity ids and the offending alias/merge.
 - **Assertion staleness:** low-confidence rows, contradictions, outdated valid windows, superseded rows still shown as active.
 - **Provenance health:** mentions per assertion, duplicate source refs, Grok/import capture paths, source trust tiers.
@@ -223,8 +226,7 @@ Final report format:
 ## Predicate canonicalization pass (mandatory)
 
 Every ts-graph-dream run MUST include an explicit predicate-canonicalization pass. Historically the
-LLM wrote free-text predicates verbatim, so the vocabulary exploded (staging 2026-07-03: **4,054
-distinct predicates over ~10.4k active edges**, a huge singleton tail) — this backlog is the largest
+LLM wrote free-text predicates verbatim, creating a large singleton tail — this backlog is a major
 remaining consolidation opportunity. Since F0216, *new* writes are canonicalized through the in-code
 synonym map plus `graph_taxonomy` overrides, so the pass has two jobs: (a) rewrite the historical
 tail, and (b) **grow the write-time vocabulary** (T-channel `EXTEND_PREDICATE_VOCAB`) so the same
@@ -279,20 +281,19 @@ prefer canonical targets already known to `graph-valence.ts` / `graph-predicate-
 any new canonicals so the dashboard maps can be extended (U-channel).
 
 **Recurrence prevention (already largely done).** Write-time canonicalization + the prompt-injected
-vocabulary shipped in F0216 (ts-prefect main + staging, 2026-07-02). Verify it is deployed to the
-environment being cleaned; the remaining durable lever is exactly Step 6 (taxonomy data). Only if the
-environment runs pre-F0216 code is a code-side proposal warranted — and then it is "promote F0216",
+vocabulary shipped in F0216 (ts-prefect main, 2026-07-02). Verify it is deployed to production; the
+remaining durable lever is exactly Step 6 (taxonomy data). Only if production runs pre-F0216 code is
+a code-side proposal warranted — and then it is "promote F0216",
 not "build canonicalization".
 
 ## Co-occurrence & low-signal noise pass (mandatory to measure — often already clean)
 
-Every ts-graph-dream run MUST measure co-occurrence, but the historical crisis is largely resolved:
-the staging backlog (`mentioned_with` was once ~2.2k edges, the largest predicate ~7×) was
-bulk-removed in the 2026-07 dream runs, and F0216 now (a) tags any new co-occurrence edge
+Every ts-graph-dream run MUST measure co-occurrence, but the historical crisis is largely resolved.
+F0216 now (a) tags any new co-occurrence edge
 `additional_data.signal_class='co_occurrence'` at write, and (b) instructs the extractor never to
 emit `mentioned_with` between entities with a real relationship (only a fallback seed edge remains,
 and it arrives tagged). So the pass is now: **measure → if near zero, verify the write-time guard is
-deployed here and stop; if a backlog exists (e.g. an environment running pre-F0216 code), apply the
+deployed in production and stop; if a production backlog exists, apply the
 ladder below.** The original hazard still holds where a backlog exists: undirected co-mention volume
 collapses the force layout into a hairball and inflates `degree`, drowning the causal backbone. Make
 co-occurrence cheaply separable **without losing evidence**.
@@ -308,7 +309,7 @@ check whether `additional_data.signal_class` is already set. See `references/dia
 
 **Step 2 — Choose the action mix from the redundancy ratio (do not default to prune).** The measured
 reality is that the vast majority of co-occurrence pairs are the *only* link between those two
-entities (~95% co-occurrence-only in the staging sample), so pruning them outright deletes the sole
+entities, so pruning them outright can delete the sole
 edge for a pair and loses information. Pick per subset:
   - **TAG_SIGNAL_CLASS (safe default, always do this):** set `additional_data.signal_class =
     'co_occurrence'` on every edge in the set. Reversible, touches no topology, and gives the
@@ -337,7 +338,7 @@ active edges rose.
 
 **Recurrence prevention (mostly shipped — verify, don't re-propose).** F0216 already tags
 co-occurrence `signal_class='co_occurrence'` at write time and suppresses it in the extraction
-prompt. Verify deployment to this environment; the still-open items are (a) the dashboard actually
+prompt. Verify deployment to production; the still-open items are (a) the dashboard actually
 *filtering/down-weighting* tagged edges in degree/layout (U-channel — as of 2026-07 the map counts
 every rendered edge), and (b) whether the hardcoded fallback that seeds one `mentioned_with` edge
 when extraction yields none should be dropped entirely (I-channel, small).
@@ -444,13 +445,11 @@ edges/mentions, re-collapse duplicates, get explicit approval; never bulk-auto. 
 merge isn't clearly safe: a readable-but-still-separate node beats a UUID on the map even if the
 underlying duplication is deferred.
 
-**Recurrence prevention (STILL OPEN — this one recurs).** F0216 does **not** fix ticker-as-name:
-staging re-accumulated 273 ticker-named companies after the 2026-07 run relabeled 259, so every dream
-run will find fresh ones until ingestion changes. The durable I-channel fix remains unshipped:
-(a) reject an opaque `<KEY>:<uuid>` or bare-UUID string as a `name` at write time (fall back to a
-resolved label or the readable twin); and (b) in entity resolution, populate `company.name` from the
-security master's long name and keep the ticker only in `ticker`, so `005930.KS`-style symbols never
-land in `name`. Prioritize filing/deploying this over repeated relabel sweeps.
+**Recurrence prevention (shipped; verify).** PR #536 populates `company.name` from the security
+master's long name and keeps the exchange symbol in `ticker`; production evidence should show no new
+ticker-as-name entities after activation. Opaque `<KEY>:<uuid>` / bare-UUID names remain a separate
+guard to verify at write time. Treat older ticker-named rows as historical cleanup, not proof of a
+recurring importer defect.
 
 ## Non-entity & mistyped node pass (mandatory)
 
@@ -573,12 +572,12 @@ senses into one node. File this against the assimilate/entity-resolution code (s
 **The quant layer was decommissioned in 2026-07**: ~86% of rows were garbage (5,028 metric names for
 ~9.7k rows, generic fallbacks, mis-attributed values), FMP already provides trustworthy financials by
 ticker, so the decision was: *the graph is for relationships, not a second-rate metrics store*. The
-table was dropped from staging and all quant UI/extraction code removed from the dashboard and the
-current ts-prefect graph code. Check `to_regclass('graph_quant')` first — if absent, skip this pass.
+table and all quant UI/extraction code were removed from the dashboard and current ts-prefect graph
+code. Check `to_regclass('graph_quant')` in production first — if absent, skip this pass.
 
 If the table still exists **and is still being written** (production was in this state as of
 2026-07-03: 21 rows, `reported_numeric_value` fallbacks arriving from a live assimilator), the
-headline finding is **environment drift** — that environment runs pre-decommission code — and the
+headline finding is **production drift** — production runs pre-decommission code — and the
 right action is promoting the decommission (code + table drop; note ts-prefect's Atlas policy is
 additive-only, so the DROP is manual), not metric-by-metric row hygiene. Only when the user wants the
 legacy rows cleaned in place does the original procedure below apply, targeting **generic-fallback
@@ -603,7 +602,7 @@ absent all of those there is literally nothing to infer the real metric from.
     dashboard hide it (quant surfaces already filter `superseded_at IS NULL`).
 
 **Recurrence prevention.** Already decided and implemented on the current code line: quant
-extraction was deleted outright. If an environment still emits quants, the fix is promoting the
+extraction was deleted outright. If production still emits quants, the fix is promoting the
 decommission, not patching the fallback.
 
 ## Model selection for semantic judgments
