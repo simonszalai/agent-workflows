@@ -24,6 +24,7 @@ completed. Use this instead of legacy `/auto-verify`.
 /ticket-verify staging F0123 B0042
 /ticket-verify production F0123 --lookback 24h
 /ticket-verify staging --no-promote # report staging PASS but do not call ticket-promote
+/ticket-verify staging F0123 --produce-evidence # run one bounded idle-staging producer if needed
 
 /ticket-verify staging --epic E0007 --milestone M2 --no-promote
 /ticket-verify production --epic E0007
@@ -32,11 +33,14 @@ completed. Use this instead of legacy `/auto-verify`.
 
 First argument must be `staging`, `prod`, or `production`.
 
+`--produce-evidence` is staging-only and must be explicitly supplied by a human-authorized wrapper
+such as `/ticket-full-auto` or by the user. It does not authorize production flow triggers.
+
 ## Boundaries
 
 - Verification evidence collection is read-only by default: no data mutation, no flow triggers, no deploys.
-  Exception: if the selected scope's evidence contract/deployment guide explicitly requires a bounded on-demand canary/shadow run in the target environment, and the deployment is already registered with safe parameters (for example `enqueue_mode=off`, capped `max_items`, no schedule change), `/ticket-verify` may trigger exactly that on-demand run and then grade its durable outputs. Record the command, run id, parameters, and terminal state in the evidence artifact. Do not use this exception for backfills, unbounded/full enqueue, schedule creation, deploys, migrations, manual Render deploys, or external-service mutations.
-  A triggered canary is not free to leave behind: **any canary/shadow run this verification triggers must be cleaned up after it is graded.** That includes the canary flow run itself, any temporary deployment/schedule registered to produce it, and any throwaway rows/records it wrote purely to generate evidence. Real production data the canary happened to process is left alone — only the artifacts that exist *because* the canary ran are removed. Do the cleanup through the §10 `deferred_cleanup` path (record it as a `deferred_cleanup` on the item and run it once the PASS is recorded), or inline immediately after grading when the canary's output is trivially and fully reversible; either way record what was removed in the evidence artifact. A canary run left registered/running after verification (e.g. an orphaned Prefect deployment or flow run kept alive only for the check) is a defect, not a PASS.
+  Exception: if the selected scope's evidence contract/deployment guide explicitly requires a bounded on-demand canary/shadow run in the target environment, or staging `--produce-evidence` resolves one unambiguous bounded producer under §3a, and the deployment is already registered with safe parameters (for example `enqueue_mode=off`, capped `max_items`, no schedule change), `/ticket-verify` may trigger exactly that on-demand run and then grade its durable outputs. Record the command, run id, parameters, and terminal state in the evidence artifact. Do not use this exception for backfills, unbounded/full enqueue, schedule creation, deploys, migrations, manual Render deploys, or external-service mutations.
+  A triggered canary is not free to leave behind: **successful canary/shadow runs and their temporary artifacts must be cleaned up after grading.** That includes the successful canary flow run itself, any temporary deployment/schedule registered to produce it, and any throwaway rows/records it wrote purely to generate evidence. Real production data the canary happened to process is left alone — only the artifacts that exist *because* the canary ran are removed. In staging, clean up inline after grading and before recording PASS. For a production contract-triggered canary, use the §10 `deferred_cleanup` path or inline cleanup when it is trivially and fully reversible. Record what was removed in the evidence artifact. A canary left registered or running after verification is a defect, not a PASS. On terminal failure, preserve the failed flow-run history and logs so the user can inspect the failure; clean temporary registrations and throwaway data that are not needed for diagnosis, record the retained run id in failure evidence, and stop.
 - Treat local `.context` files as **temporary scratch only**, not as verification artifacts or
   durable evidence. The canonical verification report must be persisted to autodev as a ticket
   or epic artifact. After the artifact is created or updated, delete any local scratch files this
@@ -51,6 +55,10 @@ First argument must be `staging`, `prod`, or `production`.
   skill allows — the bounded on-demand canary/shadow trigger and the deferred post-PASS
   cleanup command (§10) — are executed by the ORCHESTRATOR (the ticket-verify runner itself),
   never by a spawned verifier agent.
+- With staging `--produce-evidence`, the bounded on-demand canary/shadow exception is expected when
+  the required staging producer is intentionally idle. Trigger exactly one unambiguous registered
+  producer, wait for that run once with the bounded waiter contract, grade its durable outputs, and
+  clean up only artifacts created for verification. The flag never weakens the trigger safety rules.
 - In `--epic`/`--milestone` mode — **including epics auto-included by the default queue (§1)** —
   do **not** auto-promote. The parent `/epic-flow` controls milestone progression and production
   promotion.
@@ -138,6 +146,49 @@ recorded blocker is still true.
    - do not promote, complete, or run deferred cleanup.
 
 Ground-truth blocker checks must remain read-only except for the bounded on-demand canary/shadow run exception in §Boundaries. Do not perform a missing deploy, backfill, unbounded flow trigger, schedule change, or external manual action yourself unless another skill explicitly owns that step.
+
+### 3a. Produce evidence in an intentionally idle staging environment
+
+This section applies only when all of these are true:
+
+- environment is staging;
+- `--produce-evidence` was supplied;
+- a required evidence row lacks post-activation activity because its producer is intentionally
+  unscheduled or idle;
+- waiting without a trigger cannot change that fact.
+
+Resolve the producer from the FINALIZED deployment guide first. If the guide omits it, an existing
+registered Prefect deployment may be inferred only when ticket scope, deployment name, entrypoint,
+and safe parameters identify exactly one candidate. Multiple candidates, missing bounded parameters,
+or uncertainty about side effects is `BLOCKED`, never a guessed trigger.
+
+Before triggering, prove and record:
+
+1. the deployment/object is already registered in staging and points at the activated revision;
+2. the invocation is bounded (for example one record/source, capped items, or shadow/canary mode);
+3. it cannot enable or alter a schedule, run a backfill, perform a deploy/migration, enqueue an
+   unbounded workload, or mutate an external production service;
+4. cleanup is defined for temporary run/deployment/throwaway data artifacts.
+
+Trigger exactly once and capture the run id and parameters. For Prefect, wait with one bounded
+process:
+
+```text
+bin/wait-prefect-flow <run-id> --command-prefix '<project-approved prefect command>' --timeout 540
+```
+
+Follow `execution-economy.md`: in Conductor the wait runs in one fresh `fork_turns: "none"` leaf,
+not in the parent. A `failure` terminal result makes the evidence row and verdict `FAIL`; persist the
+run id/state and stop the caller. A timeout may become `NEEDS_MORE_TIME` only when the same run is
+`RUNNING`, its worker is healthy, and fresh state/log evidence shows progress. A run still
+`PENDING`/`SCHEDULED` after the bounded startup wait is `BLOCKED` with its missing worker or queue
+precondition, not a timing wait. Include the waiter's exact resume command only for genuine timing
+waits. A successful terminal run is not itself a verification PASS: collect and grade every durable
+output row after it completes.
+
+If the triggered run completes but required downstream evidence is still absent, use
+`NEEDS_MORE_TIME` only after proving a live downstream producer will create it. Otherwise the verdict
+is `BLOCKED` with the missing producer/action; do not claim passive waiting will help.
 
 ### 4. Determine activation boundary
 

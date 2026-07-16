@@ -212,6 +212,7 @@ When the user mentions these activities, proactively use the corresponding skill
 | User says                               | Action            |
 | --------------------------------------- | ----------------- |
 | "auto-build", "build this ticket end to end", "auto-flow", "ticket flow" | Run `/ticket-flow` |
+| "full auto ticket", "staging through production", "entire ticket dance" | Run `/ticket-full-auto` |
 | "/goal", "multi-ticket", "batch these related tickets", "hands-off" with multiple tickets | Run `/goal-flow` |
 | "milestone flow", "run this milestone"  | Run `/milestone-flow` |
 | "epic flow", "run this epic"            | Run `/epic-flow` |
@@ -381,6 +382,9 @@ create_ticket(
 ### Autonomous Workflows
 
 - `/ticket-flow`: Autonomous single-ticket execution — context -> route staging vs production -> plan/critique -> build -> review -> local verify -> deploy via `/auto-deploy`; no behavior verification
+- `/ticket-full-auto`: Explicit single-ticket staging-first wrapper — ticket-flow -> bounded staging
+  evidence production/verification -> production promotion/deploy -> production verification ->
+  completed; stops on failures, blockers, or genuine timing waits
 - `/goal-flow`: Autonomous related-ticket execution — shared context/plan, clustered write scopes,
   integrated review/test/deploy, and coalesced verification with per-ticket lifecycle truth
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior

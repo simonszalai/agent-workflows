@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Wait for one Prefect flow run in one bounded invocation."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import signal
+import subprocess
+import time
+
+
+SUCCESS_STATES = {"COMPLETED"}
+FAILURE_STATES = {"CANCELLED", "CRASHED", "FAILED"}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="wait-prefect-flow")
+    parser.add_argument("run_id", help="Prefect flow-run id")
+    parser.add_argument("--timeout", type=float, default=540)
+    parser.add_argument("--initial-delay", type=float, default=5)
+    parser.add_argument("--max-delay", type=float, default=30)
+    parser.add_argument(
+        "--command-prefix",
+        default="prefect",
+        help="command before 'flow-run inspect', for example 'uv run prefect'",
+    )
+    args = parser.parse_args()
+    if args.timeout < 0 or args.initial_delay < 0 or args.max_delay < 0:
+        parser.error("timeouts and delays must be non-negative")
+    command_prefix = shlex.split(args.command_prefix)
+    if not command_prefix:
+        parser.error("--command-prefix must not be empty")
+
+    started = time.monotonic()
+    deadline = started + args.timeout
+    delay = args.initial_delay
+    polls = 0
+    state_type = ""
+    state_name = ""
+    status = "timeout"
+    error = None
+
+    def resume_command() -> str:
+        elapsed = time.monotonic() - started
+        remaining = max(1, round(args.timeout - elapsed))
+        quoted_prefix = shlex.quote(args.command_prefix)
+        return (
+            f"bin/wait-prefect-flow {shlex.quote(args.run_id)} "
+            f"--command-prefix {quoted_prefix} --timeout {remaining}"
+        )
+
+    def summary() -> dict[str, object]:
+        value: dict[str, object] = {
+            "status": status,
+            "kind": "prefect_flow_run",
+            "run_id": args.run_id,
+            "polls": polls,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+            "state_type": state_type or None,
+            "state_name": state_name or None,
+            "error": error,
+        }
+        if status == "timeout":
+            value["resume_command"] = resume_command()
+        return value
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        nonlocal status, error
+        status = "timeout"
+        error = f"interrupted by signal {signum} before a terminal Prefect state"
+        try:
+            print(json.dumps(summary(), separators=(",", ":")), flush=True)
+        except Exception:
+            pass
+        os._exit(124)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    while True:
+        command = [*command_prefix, "flow-run", "inspect", args.run_id]
+        remaining = max(0.1, deadline - time.monotonic())
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=min(30, remaining),
+            )
+        except subprocess.TimeoutExpired:
+            status, error = "timeout", "Prefect poll exceeded the remaining deadline"
+            break
+        except OSError as exception:
+            status, error = "error", str(exception)[-1000:]
+            break
+        polls += 1
+        if result.returncode:
+            status = "error"
+            error = (result.stderr or "Prefect flow-run inspect failed").strip()[-1000:]
+            break
+        try:
+            parsed = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            status, error = "error", "Prefect emitted invalid JSON"
+            break
+        state = parsed.get("state") if isinstance(parsed, dict) else None
+        state = state if isinstance(state, dict) else {}
+        state_type = str(state.get("type") or "").upper()
+        state_name = str(state.get("name") or "")
+        if state_type in SUCCESS_STATES:
+            status = "success"
+            break
+        if state_type in FAILURE_STATES:
+            status = "failure"
+            break
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        time.sleep(min(delay, max(0, deadline - now)))
+        delay = min(args.max_delay, max(delay * 1.7, 0.1))
+
+    print(json.dumps(summary(), separators=(",", ":")))
+    raise SystemExit({"success": 0, "failure": 1, "error": 2, "timeout": 124}[status])
+
+
+if __name__ == "__main__":
+    main()
