@@ -57,6 +57,8 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   resumable session from an accidental CI wait must terminate that parent session and restart the
   exact bounded wait command in the leaf; it must not poll the parent session itself.
 - `bin/wait-ci <pr>` waits for PR checks. `bin/wait-ci --run <run-id>` waits for one Actions run.
+  `bin/wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'` waits for one
+  Prefect flow run. Each emits one terminal JSON result and a resume command on timeout.
   On interruption or timeout it returns `status="timeout"` plus an exact `resume_command`.
 - If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,
   and full log on disk. Return once on completion or once at the cap with the exact resume command.

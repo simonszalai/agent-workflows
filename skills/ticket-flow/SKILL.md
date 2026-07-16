@@ -51,6 +51,10 @@ Read before acting:
 /ticket-flow F0123 --skip-local-verify
 ```
 
+For an explicitly authorized single command that continues through staging behavior verification,
+production promotion/deploy, production verification, and completion, use
+`/ticket-full-auto F0123`. Normal ticket-flow intentionally stops before behavior verification.
+
 Legacy alias: `/auto-flow` should delegate to this skill.
 
 ## Delivery target selection
