@@ -181,6 +181,74 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(summary["polls"], 2)
             self.assertEqual(summary["run"]["conclusion"], "success")
 
+    def test_wait_prefect_flow_polls_with_backoff_and_emits_one_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / "prefect"
+            fake.write_text(
+                "#!/bin/sh\n"
+                f"n=$(cat '{root / 'count'}' 2>/dev/null || echo 0); n=$((n+1)); "
+                f"echo $n > '{root / 'count'}'\n"
+                "if [ $n -eq 1 ]; then t=RUNNING; n=Running; "
+                "else t=COMPLETED; n=Completed; fi\n"
+                "printf '{\"state\":{\"type\":\"%s\",\"name\":\"%s\"}}' \"$t\" \"$n\"\n"
+            )
+            fake.chmod(0o755)
+            result = run_script(
+                "wait-prefect-flow",
+                "run-123",
+                "--command-prefix",
+                str(fake),
+                "--timeout",
+                "1",
+                "--initial-delay",
+                "0",
+                "--max-delay",
+                "0",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertEqual(summary["status"], "success")
+            self.assertEqual(summary["state_type"], "COMPLETED")
+            self.assertEqual(summary["polls"], 2)
+            self.assertEqual(result.stdout.count("\n"), 1)
+
+    def test_wait_prefect_flow_fails_loudly_on_failed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "prefect"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "printf '{\"state\":{\"type\":\"FAILED\",\"name\":\"Failed\"}}'\n"
+            )
+            fake.chmod(0o755)
+            result = run_script(
+                "wait-prefect-flow",
+                "run-failed",
+                "--command-prefix",
+                str(fake),
+                "--timeout",
+                "1",
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertEqual(summary["status"], "failure")
+            self.assertEqual(summary["state_type"], "FAILED")
+
+    def test_ticket_full_auto_owns_the_complete_fail_stop_chain(self) -> None:
+        wrapper = (ROOT / "skills/ticket-full-auto/SKILL.md").read_text()
+        verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+
+        self.assertIn("/ticket-flow <ID> --target staging", wrapper)
+        self.assertIn("--no-promote --produce-evidence", wrapper)
+        self.assertIn("/ticket-promote <ID>", wrapper)
+        self.assertIn("Stop on every outcome except exact `PASS`", wrapper)
+        self.assertIn("final `completed` status", wrapper)
+        self.assertIn("bin/wait-prefect-flow", verify)
+        self.assertIn("preserve the failed flow-run history", verify)
+        self.assertIn("/ticket-full-auto F0123", ticket_flow)
+        self.assertTrue(os.access(ROOT / "bin/wait-prefect-flow", os.X_OK))
+
     def test_redacted_exec_never_emits_environment_or_labeled_secrets(self) -> None:
         environment = os.environ.copy()
         environment["PREFECT_API_AUTH_STRING"] = "operator:actual-production-secret"

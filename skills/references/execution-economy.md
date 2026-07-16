@@ -51,6 +51,8 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   reads. If neither a blocking call nor a fresh waiter is available, stop with the resume command
   rather than model-polling.
 - `bin/wait-ci <pr>` waits for PR checks. `bin/wait-ci --run <run-id>` waits for one Actions run.
+  `bin/wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'` waits for one
+  Prefect flow run. Each emits one terminal JSON result and a resume command on timeout.
   On interruption or timeout it returns `status="timeout"` plus an exact `resume_command`.
 - If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,
   and full log on disk. Return once on completion or once at the cap with the exact resume command.
