@@ -165,6 +165,14 @@ inline reversible teardown) that removes the canary flow run, any temporary depl
 registered for it, and any rows it wrote purely as evidence. A canary is not FINALIZED-ready until
 its teardown is specified — leaving one registered/running after `/ticket-verify` is a defect.
 
+For a **bug ticket created from Prefect failures**, also inspect the ticket's structured triage
+context. When it attributes original incident runs by ticket tag/cluster or explicit labeled run IDs,
+the guide must require a parent `deferred_cleanup` with `cleanup_kind="flow_run_cleanup"`. It runs
+only after production behavior PASS and deletes only terminal pre-fix flow-run history selected by
+the ticket attribution. It must exclude verification/canary runs, post-fix failures, deployments,
+schedules, task runs, blocks, and application rows. Do not finalize a guide that would leave known
+resolved incident runs on the failure board without a safe cleanup contract.
+
 ### 5. Write/update the artifact
 
 Find the existing draft in the `get_ticket` response (the artifact with

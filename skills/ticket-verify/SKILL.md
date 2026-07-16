@@ -117,6 +117,10 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   `deployment_guide` is synthesized for cleanup-only verification;
 - find PR/commit/landing branch from ticket tags and loaded artifacts first; request event history
   only when those bounded sources cannot establish the activation boundary;
+- for a production bug ticket whose manifest has a cleanup artifact, or whose loaded source
+  structurally identifies Prefect incident runs, fetch only the matching `investigation`,
+  `deferred_cleanup`, or legacy cleanup body needed by §10; do not load unrelated artifacts or event
+  history to discover cleanup;
 - read `.claude/environments/{env}.md` when present.
 
 ### 3. Re-check active blockers from ground truth
@@ -451,11 +455,13 @@ Load `references/verify-failure-capture.md` only after a staging or production `
 
 ### 10 / 10a. Deferred post-verification cleanup (production PASS only)
 
-Load `references/verify-deferred-cleanup.md` **only when a `deferred_cleanup` artifact exists**
-on the ticket/epic being verified. It defines §10 (the `deferred_cleanup` contract, dry-run/scope
-enforcement, same-cycle path) and §10a (the `prod_verified_needs_cleanup` holding status and
-cleanup-holding lifecycle). A ticket/epic without a `deferred_cleanup` artifact has no cleanup
-step, and a non-PASS verdict never triggers one.
+Load `references/verify-deferred-cleanup.md` when a `deferred_cleanup` artifact exists, when the
+artifact manifest contains a legacy flow-run-cleanup artifact, or when a production bug-ticket
+source/investigation structurally attributes Prefect incident flow runs. It defines the
+ticket-attributed flow-run normalization preflight, §10 (the `deferred_cleanup` contract,
+dry-run/scope enforcement, same-cycle path), and §10a (the `prod_verified_needs_cleanup` holding
+status and cleanup-holding lifecycle). A ticket/epic without a cleanup artifact or structured
+incident-run attribution has no cleanup step, and a non-PASS verdict never triggers one.
 
 ## Output
 

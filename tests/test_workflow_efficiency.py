@@ -267,10 +267,26 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("/ticket-promote <ID>", wrapper)
         self.assertIn("Stop on every outcome except exact `PASS`", wrapper)
         self.assertIn("final `completed` status", wrapper)
+        self.assertIn("ticket-attributed incident cleanup", wrapper)
+        self.assertIn("scripts.prefect_ops.delete_ticket_flow_runs", wrapper)
         self.assertIn("bin/wait-prefect-flow", verify)
         self.assertIn("preserve the failed flow-run history", verify)
+        self.assertIn("structurally attributes Prefect incident flow runs", verify)
         self.assertIn("/ticket-full-auto F0123", ticket_flow)
         self.assertTrue(os.access(ROOT / "bin/wait-prefect-flow", os.X_OK))
+
+    def test_ticket_cleanup_contract_preserves_post_fix_failures(self) -> None:
+        cleanup = (ROOT / "skills/references/verify-deferred-cleanup.md").read_text()
+        guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
+
+        self.assertIn("exact flow-run IDs explicitly labeled", cleanup)
+        self.assertIn("Do not regex every UUID", cleanup)
+        self.assertIn("terminal Prefect **flow-run history only**", cleanup)
+        self.assertIn("post-fix failures", cleanup)
+        self.assertIn("remain visible and fail verification", cleanup)
+        self.assertIn("prod_verified_needs_cleanup", cleanup)
+        self.assertIn('cleanup_kind="flow_run_cleanup"', guide)
+        self.assertIn("only after production behavior PASS", guide)
 
     def test_redacted_exec_never_emits_environment_or_labeled_secrets(self) -> None:
         environment = os.environ.copy()
