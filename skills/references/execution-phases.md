@@ -30,13 +30,20 @@ its existing ticketless `.context` behavior and is not changed by this reference
    for their envelopes before the single synthesis; never simulate them. The main runner resolves
    actionable findings.
 
-   **Autonomous gated_auto rule.** In an autonomous run there is no user to answer
-   `resolve-review`'s "Apply?" question for `gated_auto` findings. The runner may
-   self-approve a `gated_auto` fix ONLY when the finding is corroborated — skeptic-upheld
-   (`requires_verification: false` after verify) or multi-reviewer consensus; otherwise
-   defer it to the follow-up report instead of applying or stalling. `manual` findings are
-   never self-approved: defer them to the follow-up report. (Interactive runs keep
-   `resolve-review`'s ask-first behavior.)
+   **Autonomous decision-ownership rule.** Severity and decision ownership are independent:
+   a p1 finding is not `manual` merely because the affected surface is sensitive or destructive.
+   Use `manual` only when a genuine human choice remains (product intent, destructive scope
+   expansion, materially different tradeoffs, new secrets/schema/infrastructure/cost, or unresolved
+   reviewer conflict). A concrete deterministic fix that preserves the approved plan is
+   `gated_auto`, even when it changes behavior or hardens a sensitive path.
+
+   In an autonomous run, the runner may self-approve a `gated_auto` fix when it is both
+   plan-conformant and corroborated — skeptic-upheld (`requires_verification: false` after verify)
+   or supported by multi-reviewer consensus. An explicit `/ticket-full-auto` invocation is standing
+   approval for those fixes and for bounded resolve/re-review rounds; do not stop merely to ask the
+   user to approve an agent-found deterministic correctness fix. Defer an uncorroborated or
+   scope-expanding fix. A `manual` finding still requires the missing human decision, unless that
+   decision is already recorded in the ticket or current conversation.
 
    **Conditional coverage gate.** A routine light round is complete with its one native envelope.
    When the review skill records a peer-escalation trigger, the round is not complete until both
@@ -49,7 +56,8 @@ its existing ticketless `.context` behavior and is not changed by this reference
    findings remain, **or when a round's actionable findings were resolved and the adversarial
    verify produced no contested findings** (a second round is spent only to resolve genuine
    adversarial disagreement, not to re-confirm agreed fixes). Stop on unresolved design
-   decisions and surface any remaining `gated_auto`/`manual` findings for a human.
+   decisions and surface any remaining unapproved `gated_auto` findings or genuinely undecided
+   `manual` findings for a human.
 9. **Local verification** — run targeted checks and project health commands.
 10. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
     the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny

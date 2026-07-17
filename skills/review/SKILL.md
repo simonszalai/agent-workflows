@@ -52,7 +52,7 @@ Two orthogonal axes:
 
 | Mode | When | Behavior |
 | --- | --- | --- |
-| **Interactive** | No synthesis token | Review, apply safe fixes, present gated/manual findings |
+| **Interactive** | No synthesis token | Review, apply safe fixes, route gated/manual findings by decision ownership |
 | **Autofix** | `mode:autofix` | Apply safe fixes, write unresolved artifacts, never commit/push |
 | **Report-only** | `mode:report-only` | Read-only; no edits or artifacts |
 | **Headless** | `mode:headless` | Structured skill-to-skill result |
@@ -151,9 +151,11 @@ with no code in the diff — is still a missing-scope finding.
 Its charter is the Scope Completeness Check (see the section at the end of this skill for
 the method/table): every source deliverable must map to a plan step and to code in the diff;
 every plan elimination must actually be deleted; every builder deviation must be sound
-against the plan's intent. Missing scope items are **p1 `manual` findings with
-`absence: true`** (anchor to the closest related file, evidence = the grep commands that
-should find the missing code). Unsound deviations are p1/p2 per impact. Findings flow
+against the plan's intent. Missing scope items are **p1 findings with `absence: true`**
+(anchor to the closest related file, evidence = the grep commands that should find the missing
+code). Classify them `gated_auto` when the approved plan determines the implementation; use
+`manual` only when completing the scope requires a genuine unresolved human choice. Unsound
+deviations are p1/p2 per impact. Findings flow
 through the same schema, dedup, gate, and partitions as every other reviewer.
 
 In ticketless mode (lfg) the inputs come from `.context/source.md`, `.context/plan.md`, and
@@ -628,9 +630,10 @@ construction. The method:
 1. **Read the source artifact** from the ticket — enumerate every deliverable it lists
 2. **Read the plan artifact** — verify every source item has a plan step
 3. **Diff against implementation** — for each planned item, verify code exists
-4. **Flag missing items as P1 `manual` with `absence: true`** — scope items that were
-   planned but not implemented are correctness issues, not style nits. Anchor to the
-   closest related file and put the grep commands that should find the missing code in
+4. **Flag missing items as P1 with `absence: true`** — scope items that were planned but not
+   implemented are correctness issues, not style nits. Use `gated_auto` when the plan determines
+   the fix and `manual` only when product/scope/tradeoff intent is genuinely unresolved. Anchor to
+   the closest related file and put the grep commands that should find the missing code in
    `evidence` (skeptics verify absences by searching)
 5. **Audit builder deviations** — every Deviations entry from the build must be sound
    against the plan's intent; unsound deviations are findings

@@ -275,6 +275,20 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("/ticket-full-auto F0123", ticket_flow)
         self.assertTrue(os.access(ROOT / "bin/wait-prefect-flow", os.X_OK))
 
+    def test_full_auto_review_contract_separates_severity_from_decision_ownership(self) -> None:
+        wrapper = (ROOT / "skills/ticket-full-auto/SKILL.md").read_text()
+        phases = (ROOT / "skills/references/execution-phases.md").read_text()
+        resolver = (ROOT / "skills/resolve-review/SKILL.md").read_text()
+        review = (ROOT / "skills/review/SKILL.md").read_text()
+
+        self.assertIn("standing approval", wrapper)
+        self.assertIn("plan-conformant, deterministic, corroborated", wrapper)
+        self.assertIn("Severity and decision ownership are independent", phases)
+        self.assertIn("p1 finding is not `manual`", phases)
+        self.assertIn("Reclassify an incorrectly labeled `manual` finding", resolver)
+        self.assertIn("Do not interrupt full-auto", resolver)
+        self.assertNotIn("Missing scope items are **p1 `manual`", review)
+
     def test_ticket_cleanup_contract_preserves_post_fix_failures(self) -> None:
         cleanup = (ROOT / "skills/references/verify-deferred-cleanup.md").read_text()
         guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()

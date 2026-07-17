@@ -10,7 +10,7 @@ skills:
 
 Spawn a `builder` agent to work through review findings and implement accepted fixes.
 Routes findings by autofix classification — safe fixes are applied automatically, gated
-fixes need approval, manual findings are handed off.
+fixes use the caller's approval scope, and genuinely undecided manual findings are handed off.
 
 ## Usage
 
@@ -61,17 +61,21 @@ resolution path:
 | autofix_class | Default owner | Resolution |
 | ------------- | ------------- | ---------- |
 | `safe_auto` | `review-fixer` | **Auto-apply.** Builder implements fix without asking. Local, deterministic changes. |
-| `gated_auto` | `downstream-resolver` | **Ask first.** Present the fix and ask for approval. Changes behavior/contracts. |
-| `manual` | `downstream-resolver` | **Hand off.** Requires design decisions. Present options, wait for user choice. |
+| `gated_auto` | `downstream-resolver` | **Check approval scope.** Concrete deterministic fix that changes behavior/contracts or a sensitive surface. |
+| `manual` | `downstream-resolver` | **Hand off only while undecided.** A genuine product, scope, tradeoff, secret/schema/infrastructure/cost, or conflict decision remains. |
 | `advisory` | `human` | **Skip.** Already reported during review. No code fix needed. |
 
-**Autonomous runs (ticket-flow / lfg).** The ask-first rows above assume an interactive
-user. When resolve-review runs inside an autonomous orchestrator, there is nobody to ask —
-do NOT stall on a question, and do NOT blanket-self-approve either. The rule (same as
-`references/execution-phases.md`): a `gated_auto` fix may be self-approved only when the
-finding is corroborated — skeptic-upheld (`requires_verification: false` after the verify
-pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-up report.
-`manual` findings are never self-approved in autonomous runs — always `deferred`.
+**Autonomous runs (ticket-flow / lfg / ticket-full-auto).** Severity does not determine
+decision ownership. Reclassify an incorrectly labeled `manual` finding as `gated_auto` when the
+approved plan and repository rules determine one concrete fix. An autonomous runner may apply a
+`gated_auto` fix when it is plan-conformant and corroborated — skeptic-upheld
+(`requires_verification: false` after the verify pass) or multi-reviewer consensus. An explicit
+`/ticket-full-auto` invocation is standing approval for that queue and for bounded
+resolve/re-review rounds. Do not interrupt full-auto for another approval merely because the
+finding is p1, behavioral, destructive-path, or security-sensitive. Defer uncorroborated or
+scope-expanding work. Stop for `manual` only when the human choice is genuinely absent from the
+ticket and current conversation; a recorded user decision moves the finding into the approved
+builder queue.
 
 ## Process
 
@@ -83,8 +87,8 @@ pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-u
    Read all review_todo artifacts. Group by autofix_class:
 
    - **safe_auto queue:** Implement immediately (no approval needed)
-   - **gated_auto queue:** Present for approval before implementing
-   - **manual queue:** Present with options, user decides
+   - **gated_auto queue:** Apply when covered by the caller's approval scope; otherwise present it
+   - **manual queue:** First check whether the decision is already recorded; otherwise present options
    - **advisory:** Mark as skipped (already reported)
 
 3. **Spawn builder for safe_auto fixes** (model `sonnet` — safe_auto stays cheap):
@@ -125,9 +129,11 @@ pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-u
    )
    ```
 
-4. **Present gated_auto findings for approval:**
+4. **Resolve gated_auto approval:**
 
-   For each gated_auto finding, present the fix and ask:
+   In `/ticket-full-auto`, add each plan-conformant corroborated finding directly to the approved
+   builder queue. In other modes, use any explicit approval already present in the ticket or current
+   conversation. Only when neither applies, present the fix and ask:
 
    ```
    Gated fix: {title}
@@ -143,9 +149,10 @@ pass) or multi-reviewer consensus; otherwise mark it `deferred` for the follow-u
    - **no:** Mark as skipped with reason
    - **modify:** User provides alternative fix, add to builder queue
 
-5. **Present manual findings:**
+5. **Resolve genuine manual decisions:**
 
-   For each manual finding, present options:
+   First check the ticket and current conversation for a recorded decision. If it supplies the
+   missing choice, add the finding to the approved builder queue. Otherwise present options:
 
    ```
    Manual finding: {title}

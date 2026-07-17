@@ -121,7 +121,9 @@ WHERE new_column = '<expected_value>';
 3. **Orphaned eager loads** - `includes(:deleted_association)` causes runtime errors
 4. **Incomplete dual-write** - New records only write new column, breaking rollback
 
-**File a p1 `manual` finding if no written verification + rollback plan exists.**
+**File a p1 finding if no written verification + rollback plan exists.** Use `gated_auto` when
+repository policy and the approved plan determine the missing contract; use `manual` only when a
+genuine rollback/scope tradeoff still requires a human decision.
 
 
 ### Post-Merge Head Check (Branch Merges)

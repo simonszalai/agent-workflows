@@ -34,6 +34,13 @@ Use only when the user explicitly asks for the full staging-to-production dance 
 skill. That invocation authorizes the production promotion/deploy after an exact staging `PASS`.
 Never infer this authorization from a normal `/ticket-flow` request.
 
+It also grants standing approval for plan-conformant, deterministic, corroborated `gated_auto`
+review fixes and bounded resolve/re-review rounds. This does not authorize product-intent changes,
+destructive scope expansion, materially different tradeoffs, new secrets/schema/infrastructure/cost,
+or choosing between unresolved reviewer recommendations. Stop only when such a genuine decision is
+not already answered by the ticket/current conversation, required infrastructure or authorization is
+unavailable, the fix would expand scope, or required evidence cannot safely be produced.
+
 This skill is standalone-ticket only. Route related ticket sets to `/goal-flow` and epics to
 `/epic-flow --full-auto`.
 
@@ -82,8 +89,10 @@ Run:
 ```
 
 Require its normal persisted plan/build/review/deployment artifacts, local health gate, staging PR,
-successful staging deployment mechanics, and final `to_verify_staging` status. If any phase fails or
-reports a manual blocker, stop immediately and return its evidence and next action.
+successful staging deployment mechanics, and final `to_verify_staging` status. During review, apply
+the standing-approval contract above instead of stopping on a misclassified p1/sensitive finding.
+If a phase fails or reports a genuine manual/external blocker, stop immediately and return its
+evidence and next action.
 
 ### 3. Produce and verify staging evidence
 
