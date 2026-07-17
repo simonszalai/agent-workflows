@@ -119,8 +119,8 @@
     },
     "autofix_classes": {
       "safe_auto": "Local, deterministic fix. Examples: add missing nil check, fix off-by-one, remove dead code, add missing import. Do not default to advisory when a concrete safe fix exists.",
-      "gated_auto": "Concrete fix exists, but changes behavior, contracts, or sensitive areas needing approval. Examples: change API response shape, add auth to endpoint, modify data flow.",
-      "manual": "Actionable issue requiring design decisions or cross-cutting changes. Examples: redesign data model, add pagination strategy, architectural choice.",
+      "gated_auto": "Concrete deterministic fix exists, but changes behavior, contracts, or sensitive areas. Severity is independent. In an explicitly authorized autonomous run, a plan-conformant corroborated fix may proceed under standing approval.",
+      "manual": "Actionable issue with a genuinely unresolved human choice: product intent, destructive scope expansion, materially different tradeoffs, new secrets/schema/infrastructure/cost, or reviewer conflict. Cross-cutting or p1 alone does not make a finding manual.",
       "advisory": "Informational — surfaced in report only. Examples: design asymmetry, residual risk notes, deployment considerations."
     },
     "owners": {
