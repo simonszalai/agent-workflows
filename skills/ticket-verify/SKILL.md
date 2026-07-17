@@ -166,10 +166,24 @@ registered Prefect deployment may be inferred only when ticket scope, deployment
 and safe parameters identify exactly one candidate. Multiple candidates, missing bounded parameters,
 or uncertainty about side effects is `BLOCKED`, never a guessed trigger.
 
+**Boundedness is a mechanical precondition, not a prose claim.** A guide saying "one run" limits
+invocation count only; it does not bound records, due items, backlog, external calls, writes, cost,
+or duration. Before triggering, inspect the actual parameter schema and entrypoint selection loop.
+Require a code-enforced selector/cap (for example one explicit entity, `max_items`, dry-run/shadow
+mode, or a dedicated canary with a fixed maximum inventory). Default-empty parameters, full-table
+or due-work scans, dynamic backlog consumers, and uncapped sequential loops are unbounded even when
+on-demand. A FINALIZED guide cannot waive this gate.
+
+Record a conservative maximum for selected units, external calls, durable writes, estimated cost,
+and wall-clock duration, including retry/scraper/provider worst cases. The duration must fit inside
+the producer's outer timeout with headroom. If any maximum is unknown or depends on current database
+cardinality, return `BLOCKED` before triggering and name the missing cap/canary plus the deployment-
+guide repair. Never run first and infer boundedness from what happened.
+
 Before triggering, prove and record:
 
 1. the deployment/object is already registered in staging and points at the activated revision;
-2. the invocation is bounded (for example one record/source, capped items, or shadow/canary mode);
+2. the invocation has the mechanically verified work/cost/write/duration bounds above;
 3. it cannot enable or alter a schedule, run a backfill, perform a deploy/migration, enqueue an
    unbounded workload, or mutate an external production service;
 4. cleanup is defined for temporary run/deployment/throwaway data artifacts.

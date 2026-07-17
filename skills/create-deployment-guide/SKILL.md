@@ -165,6 +165,15 @@ inline reversible teardown) that removes the canary flow run, any temporary depl
 registered for it, and any rows it wrote purely as evidence. A canary is not FINALIZED-ready until
 its teardown is specified — leaving one registered/running after `/ticket-verify` is a defect.
 
+The guide must prove "bounded" from the producer's actual parameter schema and entrypoint, not from
+phrases such as "one run" or "on-demand." For every trigger-only evidence producer, record the exact
+code-enforced selector/cap and conservative maxima for selected units, external calls, durable
+writes, estimated cost, and wall-clock duration (including retry/provider worst cases). The maximum
+duration must fit within the outer flow/job timeout with headroom. Default-empty parameters,
+full-table or due-work scans, dynamic backlog consumers, and uncapped sequential loops are not
+canaries. If any maximum depends on live database cardinality or cannot be established before the
+trigger, keep the guide unfinalized and require a bounded parameter or dedicated canary instead.
+
 For a **bug ticket created from Prefect failures**, also inspect the ticket's structured triage
 context. When it attributes original incident runs by ticket tag/cluster or explicit labeled run IDs,
 the guide must require a parent `deferred_cleanup` with `cleanup_kind="flow_run_cleanup"`. It runs

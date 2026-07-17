@@ -83,6 +83,21 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         ):
             self.assertTrue((ROOT / "skills/references" / name).is_file())
 
+    def test_verification_canaries_require_mechanical_work_bounds(self) -> None:
+        verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
+        guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
+
+        for contract in (verify, guide):
+            self.assertIn('"one run"', contract)
+            self.assertIn("actual parameter schema", contract)
+            self.assertIn("external calls", contract)
+            self.assertRegex(contract, r"durable\s+writes")
+            self.assertIn("wall-clock duration", contract)
+            self.assertIn("Default-empty parameters", contract)
+            self.assertIn("uncapped sequential loops", contract)
+        self.assertIn("return `BLOCKED` before triggering", verify)
+        self.assertIn("keep the guide unfinalized", guide)
+
     def test_sensitive_and_memory_guidance_use_safe_callable_routes(self) -> None:
         sensitive = (ROOT / "skills/sensitive-vault-access/SKILL.md").read_text()
         memory = (ROOT / "skills/autodev-search/SKILL.md").read_text()
