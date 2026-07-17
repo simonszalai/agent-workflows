@@ -8,6 +8,8 @@ max_turns: 100
 
 Follow `../references/execution-economy.md` for bounded output, run-local caching, batching, and
 non-model-driven waits. Its economy rules never relax deployment or fail-loud gates below.
+Also follow `../references/ci-self-heal.md`: routine CI failures are repaired autonomously rather
+than returned as terminal deploy failures.
 
 Autonomous deployment that picks up a unit ready to deploy, deploys its PR to the target
 environment, and advances its status. **Both standalone tickets and epics can use the staging
@@ -87,7 +89,7 @@ unit must exist but can be in any active status (not `completed` or `abandoned`)
 2.  Find or Create PR -> Locate existing PR; if none, create it via /create-pr
 3.  Load Deploy    -> Read project-specific /deploy command (if exists)
 4.  Check CI       -> Verify CI checks are passing
-5.  Rebase         -> Rebase PR onto target branch (linear history, avoid conflicts)
+5.  Update branch  -> Rebase PR onto target branch when the repository permits it
 6.  Detect Changes -> Analyze what changed for deployment decisions
 7.  Merge PR       -> Merge PR to target branch
 8.  Deploy Steps   -> Run project-specific deployment steps for target environment
@@ -179,18 +181,24 @@ bin/wait-ci {pr_number} --timeout 540
 
 - Invoke that as one blocking foreground tool call with an outer timeout above 540 seconds; consume
   its one JSON result. Do not background it and poll process output from model turns.
-- If checks failing: STOP - "CI checks failing, cannot deploy"
+- If checks fail: wait for the check set to become terminal, inspect the failed GitHub Actions logs,
+  and run the `ci-self-heal.md` loop. Mechanical failures are fixed, locally verified, reviewed,
+  committed, pushed, and waited on again. Resume Phase 5 only after the current tree is green.
+- Stop only when CI repair reaches `ci-self-heal.md`'s human-judgment gate. Record the exact failed
+  check, evidence, and decision needed; do not label an ordinary red unit/dependency/lint check as
+  a deploy blocker.
 - If still pending at the cap: STOP - report pending checks and the returned `resume_command`
 - If PR already merged: skip CI check (already passed)
 
-### Phase 5: Rebase onto Target Branch (CRITICAL)
+### Phase 5: Update the PR onto Target Branch (CRITICAL)
 
 Determine the target branch based on environment:
 - **Staging**: rebase onto `staging`
 - **Production**: rebase onto `main`
 
-Rebase the PR branch onto the target to ensure linear history and avoid schema/deploy
-conflicts. Database schema changes depend on the repo's active migration system. For
+Use the repository's documented branch-update policy to bring the PR branch onto the target. The
+default is rebase; do not use it when the repository requires another strategy. Database schema
+changes depend on the repo's active migration system. For
 ts-prefect after E0017, that system is Atlas reviewed-plan/additive-only gates, not Alembic;
 for legacy migration repos, merging a PR whose base is behind the target can still cause
 migration graph conflicts.
@@ -214,10 +222,11 @@ git push --force-with-lease
 ```
 
 Wait for CI to re-run after rebase (checks must pass again) with one new
-`bin/wait-ci {pr_number} --timeout 540` invocation. If it times out, return its resume command;
-never turn GitHub polling into repeated model turns.
+`bin/wait-ci {pr_number} --timeout 540` invocation. Repair mechanical failures through the same CI
+self-heal loop. If it times out, return its resume command; never turn GitHub polling into repeated
+model turns.
 
-If rebase has conflicts: STOP - "Rebase conflicts, manual resolution needed"
+If the repository-approved branch update has conflicts: STOP and report the exact conflict.
 
 ### Phase 6: Detect Changes
 
@@ -235,7 +244,7 @@ git diff origin/{target_branch}..{branch} --name-only
 | ------------ | --------------------------------------------------- |
 | Schema       | ts-prefect Atlas paths (`ts_schemas/models/`, `atlas.hcl`, `atlas/plans/`, `cli_tools/atlas/`, `migrations/db_object_manifest.py`) or legacy migration dirs (`alembic/`, `migrations/versions/`, Prisma migrations) |
 | Config       | Deployment config files (YAML, env, etc.)           |
-| Dependencies | `pyproject.toml`, `Dockerfile`, `requirements.txt`  |
+| Dependencies | Package manifests, lockfiles, `Dockerfile`, and requirements files |
 
 **Project-specific categories** (from `/deploy` command if loaded):
 
@@ -299,10 +308,12 @@ lands.
 ### Phase 7: Merge PR
 
 ```bash
-gh pr merge {pr_number} --rebase
+gh pr merge {pr_number} {repository-approved merge flag}
 ```
 
-Using `--rebase` for linear history (no merge commits).
+Determine the merge flag from the repository's authoritative instructions and GitHub merge-policy
+settings. Use `--rebase` only when rebase merges are permitted; use `--squash` for squash-only
+repositories. Never guess a disallowed merge strategy.
 
 Note: If the PR is already merged, skip this phase entirely.
 
@@ -494,9 +505,9 @@ mcp__autodev-memory__update_epic(
 | Validate       | Ticket not found     | STOP, report                        |
 | Validate       | Wrong status         | STOP, report                        |
 | Find PR        | No PR found          | STOP, report                        |
-| Check CI       | Checks failing       | STOP, report (don't change status)  |
+| Check CI       | Checks failing       | Self-heal; STOP only at human-judgment gate |
 | Rebase         | Conflicts            | STOP, report (manual resolution)    |
-| Rebase         | CI fails after rebase| STOP, report                        |
+| Rebase         | CI fails after rebase| Self-heal; STOP only at human-judgment gate |
 | Detect         | Detection error      | STOP, report                        |
 | Merge          | Merge failure        | STOP, report (don't change status)  |
 | Deploy Steps   | Step failure         | STOP at failed step, report         |
