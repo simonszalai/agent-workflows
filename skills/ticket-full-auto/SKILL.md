@@ -3,7 +3,8 @@ name: ticket-full-auto
 description: >-
   Explicit single-ticket wrapper that runs ticket-flow to staging, produces and verifies bounded
   staging evidence, promotes a clean PASS to production, verifies production, and completes the
-  ticket. Stops on every failure, blocker, unsafe evidence trigger, or genuine timing wait.
+  ticket. Self-heals routine CI failures and stops only for behavior-verification failures,
+  blockers, unsafe evidence triggers, genuine timing waits, or human-judgment decisions.
 max_turns: 300
 ---
 
@@ -51,11 +52,17 @@ Read and follow:
 - `../references/execution-economy.md`
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
+- `../references/ci-self-heal.md`
 - the called skills' own boundaries
 
 All CI and Prefect waits must use one bounded waiter process. In Conductor, dispatch only the wait
 to one fresh leaf with `fork_turns: "none"`, then block once for its terminal result. Never poll a
 resumable process session or re-sample the parent model while the external run is pending.
+
+`/ticket-full-auto` authorizes autonomous repair of mechanical CI failures throughout staging and
+production delivery. Follow `ci-self-heal.md`: inspect terminal logs, fix routine repository
+failures, re-run focused + final-tree validation and review, commit/push, wait on the new tree, and
+resume automatically. A red CI check alone is never a terminal full-auto outcome.
 
 ## Process
 
@@ -91,8 +98,9 @@ Run:
 Require its normal persisted plan/build/review/deployment artifacts, local health gate, staging PR,
 successful staging deployment mechanics, and final `to_verify_staging` status. During review, apply
 the standing-approval contract above instead of stopping on a misclassified p1/sensitive finding.
-If a phase fails or reports a genuine manual/external blocker, stop immediately and return its
-evidence and next action.
+If ticket-flow or auto-deploy returns because CI is red, enter the shared CI self-heal loop and
+resume ticket-flow at the interrupted deploy phase after CI passes. Stop only if classification
+reaches the human-judgment gate or another non-CI phase reports a real blocker/failure.
 
 ### 3. Produce and verify staging evidence
 
@@ -163,7 +171,9 @@ does not waive `/ticket-promote`'s schema, migration, deploy, auth, parity, CI, 
 exact `PASS`, that verifier dry-runs, scope-checks, and deletes the terminal pre-fix Prefect incident
 runs attributed to the ticket. Cleanup never runs before production PASS.
 
-Stop immediately if promotion, a production deploy step, or production verification fails or blocks.
+Apply the same CI self-heal loop to promotion PR checks. Stop immediately only if a production
+deploy step or production behavior verification fails/blocks, or CI repair reaches the explicit
+human-judgment gate.
 Success requires a production verification artifact with exact `PASS`, independently verified
 incident cleanup when the ticket attributed Prefect runs, and final `completed` status. If production
 passes but deferred cleanup remains, report `prod_verified_needs_cleanup` rather than claiming
