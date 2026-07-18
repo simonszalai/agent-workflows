@@ -227,7 +227,7 @@ Before creating a plan, verify:
 
 ## Output
 
-Return the complete markdown plan (following the auto-plan skill's `templates/plan.md`
+Return the complete markdown plan (following the ticket-plan skill's `templates/plan.md`
 structure) as your **final message**. Do NOT persist it yourself — the orchestrator validates
 the plan, runs cross-provider convergence, persists the artifact via MCP, and reports next
 steps to the user.

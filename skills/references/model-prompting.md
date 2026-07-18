@@ -73,8 +73,8 @@ Place these where they apply (Anthropic-recommended wording; keep it stable so
 
 ## Drift rules
 
-- Shared reference files (`skills/review/references/*`, `skills/auto-plan/references/*`,
-  `skills/auto-plan/templates/*`, `skills/references/*`) are single-sourced; skills point
+- Shared reference files (`skills/review/references/*`, `skills/ticket-plan/references/*`,
+  `skills/ticket-plan/templates/*`, `skills/references/*`) are single-sourced; skills point
   at the originals rather than carrying copies.
 - `/heal-workflows`: a skill that re-grows per-model forks, unconditional multi-provider
   fan-out, or prescriptive reasoning scaffolding in the shared tree IS a finding.

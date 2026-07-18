@@ -184,7 +184,7 @@ Related entries from memory service:
 
 ## Usage Guidelines
 
-### When Planning (`/auto-plan`)
+### When Planning (`/ticket-plan`)
 
 Focus on:
 

@@ -148,7 +148,7 @@ For each approved fix, apply it:
 | Gap Found | Fix Target |
 |---|---|
 | Rule violated repeatedly | Project `CLAUDE.md` (Claude) / starred memory rule (both tools) |
-| Plan didn't research area | `skills/auto-plan/SKILL.md` |
+| Plan didn't research area | `skills/ticket-plan/SKILL.md` |
 | Build todos missed pattern | `skills/create-build-todos/SKILL.md` |
 | Review didn't catch | `skills/review/references/*.md` |
 | Test missing | Test scenario documented for implementation |
@@ -208,7 +208,7 @@ mcp__autodev-memory__create_artifact(
 ## Common Patterns
 
 **"No plan" pattern:**
-- Work was done ad-hoc without /auto-plan
+- Work was done ad-hoc without /ticket-plan
 - Fix: Enforce planning for non-trivial changes
 
 **"Silent scope reduction" pattern:**

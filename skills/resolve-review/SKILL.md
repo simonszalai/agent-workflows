@@ -65,12 +65,12 @@ resolution path:
 | `manual` | `downstream-resolver` | **Hand off only while undecided.** A genuine product, scope, tradeoff, secret/schema/infrastructure/cost, or conflict decision remains. |
 | `advisory` | `human` | **Skip.** Already reported during review. No code fix needed. |
 
-**Autonomous runs (ticket-flow / lfg / ticket-full-auto).** Severity does not determine
+**Autonomous runs (ticket-flow / lfg / ticket-deploy).** Severity does not determine
 decision ownership. Reclassify an incorrectly labeled `manual` finding as `gated_auto` when the
 approved plan and repository rules determine one concrete fix. An autonomous runner may apply a
 `gated_auto` fix when it is plan-conformant and corroborated — skeptic-upheld
 (`requires_verification: false` after the verify pass) or multi-reviewer consensus. An explicit
-`/ticket-full-auto` invocation is standing approval for that queue and for bounded
+`/ticket-flow prod` (or `/ticket-deploy prod|full`) invocation is standing approval for that queue and for bounded
 resolve/re-review rounds. Do not interrupt full-auto for another approval merely because the
 finding is p1, behavioral, destructive-path, or security-sensitive. Defer uncorroborated or
 scope-expanding work. Stop for `manual` only when the human choice is genuinely absent from the
@@ -131,7 +131,7 @@ builder queue.
 
 4. **Resolve gated_auto approval:**
 
-   In `/ticket-full-auto`, add each plan-conformant corroborated finding directly to the approved
+   In full-auto runs (`/ticket-flow prod`, `/ticket-deploy full`), add each plan-conformant corroborated finding directly to the approved
    builder queue. In other modes, use any explicit approval already present in the ticket or current
    conversation. Only when neither applies, present the fix and ask:
 
@@ -234,7 +234,7 @@ builder queue.
    | ------------------------------- | ------------------------------------------------------ |
    | Project-specific pitfall        | Memory service via `mcp__autodev-memory__create_entry` |
    | Reusable pattern                | Memory service via `mcp__autodev-memory__create_entry` |
-   | Plan research requirement       | `skills/auto-plan/SKILL.md`                             |
+   | Plan research requirement       | `skills/ticket-plan/SKILL.md`                             |
    | Build todo research requirement | `skills/create-build-todos/SKILL.md`                    |
    | Build verification step         | `skills/build/SKILL.md`                                 |
 
@@ -378,7 +378,7 @@ not PR creation.
 - `deployment_guide` artifact with deployment instructions
 - Optional memory entries via `/compound`
 - Process improvements applied to:
-  - `skills/auto-plan/SKILL.md` (plan research requirements)
+  - `skills/ticket-plan/SKILL.md` (plan research requirements)
   - `skills/create-build-todos/SKILL.md` (build todo research requirements)
   - `skills/build/SKILL.md` (verification steps)
   - Memory service via MCP (project-specific pitfalls, reusable patterns)

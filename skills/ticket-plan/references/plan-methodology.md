@@ -1,6 +1,6 @@
 # Plan Methodology
 
-Standards for creating high-level architecture plans. Loaded by the auto-plan orchestrator and
+Standards for creating high-level architecture plans. Loaded by the ticket-plan orchestrator and
 passed (in relevant part) to planner agents.
 
 ## Workflow by Work Type
@@ -17,7 +17,7 @@ designing.
 ## Output Template
 
 Use the template at `templates/plan.md` for plan output. Plan artifacts are markdown stored via
-MCP `create_artifact`/`update_artifact`, written by the auto-plan orchestrator.
+MCP `create_artifact`/`update_artifact`, written by the ticket-plan orchestrator.
 
 (keep lines ≤100 chars; tables exempt)
 

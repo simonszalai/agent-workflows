@@ -29,7 +29,7 @@ next?"
 
 Present only the options that apply:
 
-- **Proceed to planning (Recommended)** - Run `/auto-plan {TICKET_ID}` for structured
+- **Proceed to planning (Recommended)** - Run `/ticket-plan {TICKET_ID}` for structured
   implementation planning
 - **Proceed directly to work** - Only offer this when scope is lightweight, success criteria
   are clear, scope boundaries are clear, and no meaningful technical or research questions
@@ -43,7 +43,7 @@ If the direct-to-work gate is not satisfied, omit that option entirely.
 
 **If user selects "Proceed to planning (Recommended)":**
 
-Immediately run `/auto-plan {TICKET_ID}` in the current session. The requirements live in the
+Immediately run `/ticket-plan {TICKET_ID}` in the current session. The requirements live in the
 ticket's source artifact. Do not print the closing summary first.
 
 **If user selects "Proceed directly to work":**
@@ -73,7 +73,7 @@ Key decisions:
 - [Decision 1]
 - [Decision 2]
 
-Recommended next step: /auto-plan {TICKET_ID}
+Recommended next step: /ticket-plan {TICKET_ID}
 ```
 
 If the user pauses with `Resolve Before Planning` still populated, display:

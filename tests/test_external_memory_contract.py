@@ -86,7 +86,7 @@ class ExternalMemoryContractTest(unittest.TestCase):
 
     def test_every_executable_external_recipe_creates_a_packet_and_fallback(self) -> None:
         recipes = [
-            "skills/auto-plan/SKILL.md", "skills/review/SKILL.md",
+            "skills/ticket-plan/SKILL.md", "skills/review/SKILL.md",
             "skills/investigate/SKILL.md", "skills/research/SKILL.md",
             "skills/build/SKILL.md", "skills/resolve-review/SKILL.md",
             "skills/epic-plan/SKILL.md",

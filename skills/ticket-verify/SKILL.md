@@ -14,7 +14,7 @@ Follow `../references/execution-economy.md`; coalescing execution never coalesce
 or waives an evidence row.
 
 Verify tickets, or an explicit epic/milestone gate, after code has landed and deployment has
-completed. Use this instead of legacy `/auto-verify`.
+completed.
 
 ## Usage
 
@@ -34,7 +34,7 @@ completed. Use this instead of legacy `/auto-verify`.
 First argument must be `staging`, `prod`, or `production`.
 
 `--produce-evidence` is staging-only and must be explicitly supplied by a human-authorized wrapper
-such as `/ticket-full-auto` or by the user. It does not authorize production flow triggers.
+such as `/ticket-deploy` (targets `staging`/`full`) or by the user. It does not authorize production flow triggers.
 
 ## Boundaries
 

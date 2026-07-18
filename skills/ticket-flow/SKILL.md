@@ -1,13 +1,23 @@
 ---
 name: ticket-flow
-description: Autonomous single-ticket execution with MCP ticket tracking. Gathers context, chooses staging-first vs direct-production delivery, plans, critiques, builds, reviews, resolves, locally verifies, and deploys via auto-deploy. No environment behavior verification.
+description: >-
+  Autonomous single-ticket execution with MCP ticket tracking: runs ticket-plan, ticket-build,
+  and ticket-deploy in sequence. Default stops after staging verification; the optional `prod`
+  argument continues through production promotion, verification, and completion.
 max_turns: 300
 ---
 
 # Ticket Flow
 
 Autonomously execute **one ticket** from GitHub issue, existing F/B/R ticket, or conversation
-context. This is the renamed/coherent successor to legacy `/auto-flow`.
+context, by sequencing the three phase skills:
+
+```text
+/ticket-plan <ID>
+/ticket-build <ID>
+/ticket-deploy <ID> staging      # default
+/ticket-deploy <ID> full         # when invoked as /ticket-flow <ID> prod
+```
 
 Ticket Flow is ticket-level only. It is not an epic orchestrator, but if the ticket is an epic
 step it must load the parent epic context and honor the milestone contracts.
@@ -16,13 +26,14 @@ step it must load the parent epic context and honor the milestone contracts.
 
 - May create/resume exactly one ticket.
 - Owns the standalone ticket delivery decision: **staging-first** for complex/risky/uncertain
-  work, **direct-production** only for tiny safe work.
-- Must deploy standalone tickets by invoking/following `/auto-deploy`; treat auto-deploy as the
-  deployment subroutine for PR creation, merge, deploy steps, deployment-mechanics checks,
-  manual blockers, and status updates.
-- Must not perform ad-hoc deployment commands itself outside `/auto-deploy`.
-- Must not perform staging/production **behavior verification**; `/ticket-verify` owns the
-  post-deploy evidence/testing gate.
+  work, **direct-production** only for tiny safe work (and then only via `/ticket-deploy`'s
+  direct-production gate, which asks for confirmation when the diff is not tiny/safe).
+- Delegates all phase execution: planning to `/ticket-plan`, implementation to `/ticket-build`,
+  deployment and environment verification to `/ticket-deploy` (which owns `/auto-deploy`,
+  `/ticket-verify`, and `/ticket-promote`). Must not perform ad-hoc planning, build, deployment,
+  or verification work outside those skills.
+- Without the `prod` argument, stops after the staging verify leg — production promotion
+  requires an explicit `/ticket-flow <ID> prod` or `/ticket-deploy <ID> prod|full`.
 - Must not advance an epic/milestone gate; epic skills own that.
 - Must not use `.context/` for ticket artifacts; use MCP artifacts.
 - `/lfg` remains the ticketless/current-branch workflow and is not changed by this skill.
@@ -42,20 +53,23 @@ Read before acting:
 ## Usage
 
 ```text
-/ticket-flow F0123
-/ticket-flow B0042 --target staging
-/ticket-flow F0123 --target production
-/ticket-flow #123
+/ticket-flow F0123                 # plan -> build -> deploy staging -> verify staging, stop
+/ticket-flow F0123 prod            # ...continue: promote -> deploy prod -> verify prod -> completed
+/ticket-flow #123                  # from GitHub issue
 /ticket-flow                       # create ticket from conversation
 /ticket-flow F0123 --no-land       # build/review only; do not merge or deploy
 /ticket-flow F0123 --skip-local-verify
 ```
 
-For an explicitly authorized single command that continues through staging behavior verification,
-production promotion/deploy, production verification, and completion, use
-`/ticket-full-auto F0123`. Normal ticket-flow intentionally stops before behavior verification.
+Invoking with `prod` is the explicit human authorization for production promotion/deploy after
+an exact staging `PASS` (it maps to `/ticket-deploy <ID> full`). It also grants standing approval
+for plan-conformant, deterministic, corroborated `gated_auto` review fixes and bounded
+resolve/re-review rounds. This does not authorize product-intent changes, destructive scope
+expansion, materially different tradeoffs, new secrets/schema/infrastructure/cost, or choosing
+between unresolved reviewer recommendations.
 
-Legacy alias: `/auto-flow` should delegate to this skill.
+Legacy names: `/auto-flow`, `/ticket-full-auto` (≈ `/ticket-flow <ID> prod`), and `/goal-flow`
+are retired; route related ticket sets to per-ticket `/ticket-flow` runs or an epic.
 
 ## Delivery target selection
 
@@ -69,9 +83,13 @@ deployment guide, and risk controls match the path:
 
 Target meanings:
 
-- `staging` = merge/deploy to staging first, then `/ticket-verify staging` tests it before any
-  production promotion.
-- `production`, `prod`, or `main` = merge/deploy straight to production/main.
+- `staging` (default) = merge/deploy to staging first; `/ticket-verify staging` tests it before
+  any production promotion. Note the *target* is distinct from the `prod` *argument*: target
+  describes where the code lands first; the `prod` argument decides whether the flow continues
+  through production after staging passes.
+- `--target production`/`prod`/`main` = direct-to-production for tiny safe standalone work only;
+  executed via `/ticket-deploy <ID> prod`, whose direct-production gate re-checks the risk
+  classification and asks for confirmation when the diff is not tiny/safe.
 - `none` / `--no-land` = build/review/local-verify only.
 
 The Conductor workspace target branch is a hint, not permission to bypass risk classification.
@@ -94,20 +112,23 @@ ticket to staging automatically** unless the user explicitly requested direct pr
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
   source text. If found, load `get_epic` once and cache its version plus the step's
   milestone/contracts; delegated phases receive bounded extracts rather than reloading it.
-- Decide and record the delivery target using `landing-policy.md`: staging-first for
-  complex/risky/uncertain standalone work, direct-production only for tiny safe standalone work.
+- Decide and record the delivery target using `landing-policy.md`.
+- **Resume from lifecycle truth**: skip phases whose artifacts and status already exist (a
+  `planned` ticket with a plan artifact enters at build; a built, locally verified ticket enters
+  at deploy). Do not resume past a `verify_*_failed` status without a new explicit user
+  instruction.
 
 ### 1. Gather context
 
-**Single retrieval owner.** When §2 will invoke `/auto-plan` (the standalone path), ticket-flow
-must **not** run its own codebase research or memory/similar-ticket searches here — `/auto-plan`
+**Single retrieval owner.** When §2 will invoke `/ticket-plan` (the standalone path), ticket-flow
+must **not** run its own codebase research or memory/similar-ticket searches here — `/ticket-plan`
 Phases 3-4 own knowledge retrieval (memory search across risk boundaries, codebase research,
 similar-ticket search) and are the single source of truth for it. Duplicating those searches in
-§1 wastes tokens and risks divergent context. `/auto-plan` returns a **prior-knowledge blob**
-(the applicable rules/patterns it retrieved); carry that blob forward into the build and review
-packets (§3) so builders and reviewers inherit the same knowledge without re-searching.
+§1 wastes tokens and risks divergent context. `/ticket-plan` returns a **prior-knowledge blob**
+(the applicable rules/patterns it retrieved); carry that blob forward into `/ticket-build` so
+builders and reviewers inherit the same knowledge without re-searching.
 
-§1 keeps only the context work that `/auto-plan` does not do:
+§1 keeps only the context work that `/ticket-plan` does not do:
 
 - Bug: investigate root cause first; for production incidents use hypothesis evaluation. (This
   triage feeds the plan; it is not the plan's knowledge retrieval.)
@@ -115,94 +136,54 @@ packets (§3) so builders and reviewers inherit the same knowledge without re-se
   and the repo/path/branch mapping from `conductor-multi-repo.md` in the context passed to
   planning/build agents.
 
-If a ticket takes a path that does **not** invoke `/auto-plan`, run the memory/knowledge
+If a ticket takes a path that does **not** invoke `/ticket-plan`, run the memory/knowledge
 retrieval here instead (search `mcp__autodev-memory__search` across the ticket's actual risk
 boundaries — schema/defaults/raw SQL, decrypt-proxy/tailnet/auth, Prefect deployment/runtime,
 encryption/plaintext fields, external API contracts — not just `search_tickets` /
 `get_similar_tickets`), because the single owner must always run exactly once.
 
-### 2. Plan and criticize
+### 2. Plan
 
-- Run `/auto-plan` (the single planning skill) with its complexity-based light/heavy gate
-  for standalone tickets.
-- Force deep planning when the ticket is an epic step, cross-repo contract consumer/provider,
-  schema/data change, or otherwise high risk.
-- Heavy path only: run adversarial plan critique until no critical unresolved findings remain.
-  The light path uses one native planner; peer planning follows `/auto-plan`'s explicit
-  risk/uncertainty/disagreement escalation gate.
-- Store the final plan as an MCP `plan` artifact.
-- Set `summary_bullets` on the ticket (compact what/why/approach) so the dashboard header is not blank.
-- There is no `approved` status; leaving `planned` means setting `in_progress`.
-- **Honor dashboard review comments.** Before moving to build, refresh only the changed planning
-  context with `get_ticket(detail="full", artifact_types=["source", "plan"],
-  include_events=false)` and check `open_comment_count` (also surfaced per-artifact). If the user
-  left open review comments on the plan/source,
-  fetch them with `list_artifact_comments`, revise the plan via `update_artifact`, and close each with
-  `resolve_artifact_comment` (or `reply_artifact_comment` if out of scope). Do not build past
-  unresolved feedback.
+Run `/ticket-plan <ID>` (the single planning skill) with its complexity-based light/heavy gate.
+Force deep planning when the ticket is an epic step, cross-repo contract consumer/provider,
+schema/data change, or otherwise high risk. Heavy path only: adversarial plan critique until no
+critical unresolved findings remain; peer planning follows `/ticket-plan`'s explicit
+risk/uncertainty/disagreement escalation gate. The plan lands as an MCP `plan` artifact with
+`summary_bullets` set on the ticket.
 
-### 3. Build, test, review, resolve
+### 3. Build, review, locally verify
 
-Follow `execution-phases.md`:
+Run `/ticket-build <ID>`. It honors open dashboard review comments before building, creates
+build todos via `/create-build-todos`, implements via `/build`, reviews via `/review`, resolves
+via `/resolve-review`, enforces the artifact persistence gate, runs the local health gate, and
+pushes the feature branch. With `--skip-local-verify`, pass that through (the health gate is
+skipped only on explicit user instruction). Stop for unresolved design decisions.
 
-- create MCP `build_todo` artifacts;
-- implement each step;
-- keep unrelated lint/type/review fixes in a separate commit;
-- write focused tests;
-- invoke the `review` skill (do not hand-roll it): the skill chooses the light/heavy native path,
-  conditionally escalates peers for explicit risk/uncertainty/disagreement, performs one
-  synthesis, and resolves actionable findings. Apply the conditional coverage gate in
-  `execution-phases.md` only when peer escalation fired;
-- stop for unresolved design decisions.
+### 4. Deploy and verify
 
-**Persistence gate (before landing).** Confirm via `get_ticket(detail="light",
-artifact_types=["build_todo", "review_todo"], include_events=false)` that this step now carries its
-`build_todo` artifacts and the `review_todo` artifacts the adaptive review wrote — building and
-reviewing in-session is **not** enough; those artifacts are the durable, auditable record and must
-be on the ticket. If a `create_artifact` call silently no-op'd (common on cross-provider/Codex MCP
-paths), re-issue it now. A step must not land or merge with only a `source` artifact — that leaves
-it unauditable and makes later `/retrospect` / `/autodev-wtf` misread it as "no workflow ran".
+If `--no-land` or target `none`, stop after `/ticket-build` and report remaining commands.
 
-### 4. Local verification
+**Standalone, staging target (default):**
 
-Reuse `/build`'s full health-gate PASS when it is keyed to the current tree SHA and exact command;
-run only focused checks added after review resolution. If review/fixes changed the tree, run the
-full health gate once for that new final SHA. Do not query staging/prod as verification and do not
-trigger flows/processes. Local verification failure blocks landing unless the user explicitly
-chooses a no-land partial result.
+```text
+/ticket-deploy <ID> staging        # without the prod argument
+/ticket-deploy <ID> full           # with the prod argument
+```
 
-### 5. Deploy / Land
+`/ticket-deploy` owns the entire leg: `/auto-deploy` staging deploy, staging evidence
+verification, and — `full` only, gated on exact staging `PASS` — promotion, production deploy,
+production verification, incident cleanup, and `completed`. Relay its terminal report and stop
+conditions verbatim; do not retry past a `FAIL`/`BLOCKED` verdict.
 
-If `--no-land` or target `none`, stop after local verification and report remaining commands.
+**Standalone, direct-production target:** `/ticket-deploy <ID> prod` (its §4a gate re-checks
+risk and asks for confirmation when the diff is not tiny/safe).
 
-For standalone tickets, invoke `/auto-deploy {ticket_id} {target}` as the canonical path for PR
-creation, merge, deployment steps, deployment-mechanics checks, manual deployment blockers, and
-status updates. This is not an optional handoff: a normal `/ticket-flow` run includes deployment
-unless `--no-land`/`target none` was selected.
-
-Use `/auto-deploy` target arguments:
-
-- ticket-flow target `staging` -> `/auto-deploy {ticket_id} staging`;
-- ticket-flow target `production`/`prod`/`main` -> `/auto-deploy {ticket_id} production`.
-
-Do not duplicate auto-deploy's status logic in ticket-flow.
-
-Use these target mappings:
-
-- `production`/`main` only for tiny safe direct-production standalone tickets;
-- `staging` for risky/uncertain/complex standalone tickets;
-- target selected by the epic milestone orchestrator for epic-step tickets.
-
-For standalone tickets, if auto-deploy is unavailable, explicitly disabled, or blocked by a manual
-deploy dependency, stop and report the blocker. Do not silently downgrade a deploy-required
-standalone ticket-flow run to a land-only result unless the user explicitly approves that fallback.
-
-Epic step: land/merge the step into the milestone integration branch and set the step to
-`merged`. A milestone may contain multiple steps whose runtime surfaces must be deployed
-**together**, so the deploy + cross-step gate is a **milestone-level operation owned by
-`/milestone-flow`**, never a per-step one. ticket-flow does not deploy a single step's runtime
-surface in isolation (that could expose a half-built milestone) and does not run the milestone
-gate itself.
+**Epic step:** epic steps do not use `/ticket-deploy`. Land/merge the step into the milestone
+integration branch and set the step to `merged`. A milestone may contain multiple steps whose
+runtime surfaces must be deployed **together**, so the deploy + cross-step gate is a
+**milestone-level operation owned by `/milestone-flow`**, never a per-step one. ticket-flow does
+not deploy a single step's runtime surface in isolation and does not run the milestone gate
+itself.
 
 The deploy must still happen, though — a direct `/ticket-flow` run on an epic step must **not**
 dead-end at `merged` with the milestone left undeployed:
@@ -229,107 +210,53 @@ Epic-specific invariants (hold on both paths):
   above. ticket-flow never runs them directly.
 
 A `merged` epic step alone is not proof the milestone is deployed or verified; only the
-`/milestone-flow` gate PASS proves that. The direct-run hand-off exists so a human who runs
-`/ticket-flow` on a milestone's final step still gets the deploy + gate, instead of a silently
-undeployed `merged` step.
+`/milestone-flow` gate PASS proves that.
 
-### 6. Status update
+### 5. Status truth
 
-After successful landing/deployment, trust the owning workflow's status update:
+Statuses are set by the owning phase skills, never duplicated here:
 
-| Ticket kind | Target | Status |
+| Ticket kind | Path | Terminal status of this run |
 |---|---|---|
-| Standalone | `production`/`main` via `/auto-deploy` | `to_verify_prod` |
-| Standalone | `staging` via `/auto-deploy` | `to_verify_staging` |
-| Epic step | milestone integration branch | `merged` |
+| Standalone, default | `/ticket-deploy staging` | `staging_verified` (exact PASS) or the verify verdict's status |
+| Standalone, `prod` argument | `/ticket-deploy full` | `completed` (or `prod_verified_needs_cleanup`) |
+| Standalone, direct production | `/ticket-deploy prod` | `completed` |
+| Epic step | integration branch landing | `merged` (or per `/milestone-flow` on the direct-run hand-off) |
 
-For epic steps, `merged` means the step is landed on the integration branch and ready for the
-parent milestone deploy+verify gate. Do not run that milestone gate from ticket-flow;
-`/milestone-flow` invokes `/auto-deploy <EPIC_ID> staging` and
-`/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote` once the whole
-milestone has landed. A standalone `/ticket-verify` of the step does not substitute for the
-authoritative milestone gate and may have no runtime evidence before milestone-flow deploys.
-
-When a **direct** `/ticket-flow` run completes the milestone and hands off to `/milestone-flow`
-(§5), the milestone deploy + gate run inside that same invocation and statuses advance per
-`/milestone-flow` (gate PASS → steps `staging_verified`); ticket-flow does not set those itself.
-The step still passes through `merged` first.
-
-If auto-deploy reports an external/manual deploy dependency (for example a Thomas-only
-`ts-decrypt-proxy` production deploy), the ticket status should still reflect the next verification
-state (`to_verify_prod` for production) and the blocker should be captured in the ticket's
-independent blocker metadata, not as a lifecycle status.
-
-The staging verification statuses (`to_verify_staging`, `verify_staging_failed`) exist on the
-ticket lifecycle enum as of migration 025, so a standalone staging landing advances the ticket
-to `to_verify_staging` directly — no epic required.
+If `/ticket-deploy` reports an external/manual deploy dependency, the ticket status reflects the
+next verification state and the blocker lives in the ticket's independent blocker metadata, not
+as a lifecycle status.
 
 ## Output
 
 **Evidence rules (apply to every variant below):** each PASS/complete line must be traceable
 to concrete evidence — the command run, test counts, PR link, deploy output, artifact id.
 End every report with an explicit "Not verified:" line listing anything claimed but not
-exercised in this run (behavior verification is always listed there for standalone tickets,
-since ticket-flow never runs it). The user must never have to ask "did you actually do X?" —
-if X lacks evidence, the report says so first.
+exercised in this run. The user must never have to ask "did you actually do X?" — if X lacks
+evidence, the report says so first.
 
-Standalone ticket:
+Standalone ticket, default (stops after staging verify):
 
 ```text
 Ticket flow complete: F0123
-Target: staging
+Phases: /ticket-plan PASS -> /ticket-build PASS -> /ticket-deploy staging
 Landed: PR #456 -> staging
-Status: to_verify_staging
+Staging verification: PASS (evidence artifact <id>)
+Status: staging_verified
 
-Summary:
-- planned, critiqued, built, tested, reviewed, and resolved findings
-- local verification: PASS
-- deploy: PASS via /auto-deploy staging
-- behavior verification: not run
-- screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
-
-Next:
-- /ticket-verify staging F0123
+Not verified: production behavior (run /ticket-flow F0123 prod or /ticket-deploy F0123 prod)
 ```
 
-Epic step, **direct run that completes the milestone** — ticket-flow lands the step, then hands
-off to `/milestone-flow`, which deploys + runs the gate, so the run includes the deploy:
+Standalone ticket, `prod`:
 
 ```text
-Ticket flow complete: F0178 (epic step of E0014/M2 — final step)
-Target: staging integration branch
-Landed: PR #430 -> staging  (step set to merged)
-Milestone: E0014/M2 now fully merged -> handed off to /milestone-flow
-
-/milestone-flow E0014 M2:
-- deployed milestone to staging via /auto-deploy (prefect deploy + migrations/blocks/DAG)
-- staging milestone gate: {PASS|FAIL|NEEDS_MORE_TIME|BLOCKED}
-
-Summary:
-- planned, critiqued, built, tested, reviewed, resolved findings; local verification: PASS
-- step landed (merged) + milestone deployed + gate run via /milestone-flow
-
-Next:
-- {gate PASS} /epic-flow E0014 to continue remaining milestones / production promotion
-- {gate not PASS} address the gate findings, then re-run /milestone-flow E0014 M2
+Ticket flow COMPLETE: F0123
+Phases: /ticket-plan -> /ticket-build -> /ticket-deploy full
+Staging: PR #456, verify PASS (artifact <id>)
+Production: promoted via /ticket-promote (PR #457), verify PASS (artifact <id>)
+Status: completed
 ```
 
-Epic step, **partial milestone or delegated run** (`--epic-context`, or sibling steps still open)
-— land only; do not deploy a half-built milestone. Make the incompleteness loud so `merged` is
-not mistaken for "shipped":
-
-```text
-Ticket flow complete: F0181 (epic step of E0020/M1)
-Target: staging integration branch
-Landed: PR #999 -> staging
-Status: merged
-Milestone: E0020/M1 has 2 of 3 steps merged — NOT deployed yet
-
-Summary:
-- local verification: PASS; landed to staging integration branch: PASS
-- milestone DEPLOY + gate: NOT run — owned by /milestone-flow, runs once all M1 steps are merged
-
-Next:
-- land the remaining M1 step(s); /milestone-flow E0020 M1 then deploys + verifies the milestone
-- a standalone /ticket-verify of this step returns BLOCKED until the milestone is deployed
-```
+Epic step reports follow the §4 epic variants: state loudly whether the milestone was deployed
+and gated (direct run completing the milestone) or is still partial (`merged`, NOT deployed yet),
+so `merged` is never mistaken for "shipped".

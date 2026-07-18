@@ -46,6 +46,6 @@ When the conversation has enough material to narrow — reflect back what you've
 **Always synthesize a summary in the chat.** Before offering any next steps, reflect back what emerged: key decisions, the direction chosen, open threads, and any assumptions made. This is the primary output of the brainstorm — the user should be able to read the summary and know what they landed on.
 
 **Then offer next steps** using the platform's question tool (`AskUserQuestion` in Claude Code, `request_user_input` in Codex, `ask_user` in Gemini):
-- **Create a plan** → hand off to `/auto-plan` with the decided goal and constraints
+- **Create a plan** → hand off to `/ticket-plan` with the decided goal and constraints
 - **Save summary to disk** → write the summary as a markdown file in the current working directory
 - **Done** → the conversation was the value, no artifact needed
