@@ -53,6 +53,21 @@ Use `staging` when any of these are true:
 - any epic step or cross-repo contract;
 - any ambiguity about safety.
 
+### Intentional staging-ahead schema is not a production-parity blocker
+
+For a PR whose base is `staging`, a CI check that compares the committed schema to the
+**production** database may be expected to fail when a reviewed additive upstream schema change
+has already been applied to staging. Do not stop the staging-first workflow or request an early
+production schema apply solely to make that production-parity check green.
+
+The staging merge may use the repository's authorized bypass/override path when all of these are
+proven: the upstream schema is live on staging; the repo's branch-aware schema pull targeted
+staging (never raw introspection or a hand edit); the diff is limited to the reviewed additive
+change; and validation, generation, typecheck, tests, build, and other applicable safety checks
+pass. Record the production-parity failure as expected staging-ahead evidence, then merge/deploy/
+verify staging normally. This exception applies only to the production-parity check on a staging
+target; unexplained drift and failures on `main`/production targets remain blockers.
+
 ## Deployment and verification boundaries
 
 This policy chooses the route; it does not define project-specific deploy commands.
