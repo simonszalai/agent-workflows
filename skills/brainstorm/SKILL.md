@@ -8,7 +8,7 @@ argument-hint: "[feature idea or problem to explore]"
 
 **Note: The current year is 2026.** Use this when dating requirements documents.
 
-Brainstorming helps answer **WHAT** to build through collaborative dialogue. It precedes `/auto-plan`, which answers **HOW** to build it.
+Brainstorming helps answer **WHAT** to build through collaborative dialogue. It precedes `/ticket-plan`, which answers **HOW** to build it.
 
 The durable output of this workflow is a **requirements document**, stored as the description
 (source artifact) of a new ticket created via `mcp__autodev-memory__create_ticket`. In other

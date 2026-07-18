@@ -1,5 +1,5 @@
 ---
-name: auto-plan
+name: ticket-plan
 description: Autonomous planning for backlog tickets. Researches, investigates, creates plan artifact, sets status to planned. Re-run on a planned ticket to incorporate and resolve the user's dashboard review comments.
 max_turns: 100
 memory:
@@ -44,15 +44,15 @@ standards (audits, checklists, synthesis guidelines) live in
 ## Usage
 
 ```
-/auto-plan F0009                    # Plan existing backlog/up_next ticket
-/auto-plan B0003                    # Plan bug ticket (includes investigation)
-/auto-plan #123                     # Find or create ticket from GitHub issue
-/auto-plan                          # Create ticket from conversation context
-/auto-plan F0009 additional context # Ticket with extra context
-/auto-plan F0009 --deep             # Force heavy path (plan-fanout workflow)
-/auto-plan F0009 --light            # Force one-planner light path
-/auto-plan F0009 --solo             # Disable conditional peer-provider escalation
-/auto-plan F0009                    # Re-run on a planned ticket: revise the plan to address
+/ticket-plan F0009                    # Plan existing backlog/up_next ticket
+/ticket-plan B0003                    # Plan bug ticket (includes investigation)
+/ticket-plan #123                     # Find or create ticket from GitHub issue
+/ticket-plan                          # Create ticket from conversation context
+/ticket-plan F0009 additional context # Ticket with extra context
+/ticket-plan F0009 --deep             # Force heavy path (plan-fanout workflow)
+/ticket-plan F0009 --light            # Force one-planner light path
+/ticket-plan F0009 --solo             # Disable conditional peer-provider escalation
+/ticket-plan F0009                    # Re-run on a planned ticket: revise the plan to address
                                     #   the user's open dashboard review comments, then resolve them
 ```
 
@@ -137,7 +137,7 @@ ticket = mcp__autodev-memory__get_ticket(
 - Any other status (or `planned` with no open comments): STOP - "Ticket status is {status},
   nothing to plan"
 
-**Record `STARTING_STATUS`** (the status the ticket had when auto-plan began — `backlog`,
+**Record `STARTING_STATUS`** (the status the ticket had when ticket-plan began — `backlog`,
 `up_next`, or `planned`). On any later failure, revert to this status, not unconditionally to
 `backlog`.
 
@@ -166,7 +166,7 @@ ticket = mcp__autodev-memory__create_ticket(
   description="<formatted description from issue or conversation>",
   status="backlog",
   tags={"github_issue": issue_number, "source": "conversation"},  # as applicable
-  command="/auto-plan"
+  command="/ticket-plan"
 )
 # ticket_id is auto-generated (e.g., F0043, B0012); STARTING_STATUS is "backlog"
 ```
@@ -188,7 +188,7 @@ ticket while planning proceeds. All subsequent output follows after this line.
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
   status="in_progress",
-  command="/auto-plan"
+  command="/ticket-plan"
 )
 ```
 
@@ -411,7 +411,7 @@ mcp__autodev-memory__create_artifact(
   project=PROJECT, ticket_id=ID, repo=REPO,
   artifact_type="plan",
   content="<rendered plan markdown>",
-  command="/auto-plan"
+  command="/ticket-plan"
 )
 ```
 
@@ -433,7 +433,7 @@ existing one:
      project=PROJECT, artifact_id=<plan artifact id>,
      content="<revised plan>",
      change_note="address review comments",
-     command="/auto-plan"
+     command="/ticket-plan"
    )
    ```
 3. Close each addressed thread with a one-line note pointing at what changed:
@@ -441,7 +441,7 @@ existing one:
    mcp__autodev-memory__resolve_artifact_comment(
      project=PROJECT, comment_id=<id>,
      resolution_note="<how the revised plan addresses this>",
-     command="/auto-plan"
+     command="/ticket-plan"
    )
    ```
    If a comment is out of scope or you disagree, use `reply_artifact_comment` and leave it open
@@ -481,7 +481,7 @@ mcp__autodev-memory__create_artifact(
   project=PROJECT, ticket_id=ID, repo=REPO,
   artifact_type="deployment_guide",
   content="<DRAFT filled from the template in the create-deployment-guide skill, Status: DRAFT>",
-  command="/auto-plan"
+  command="/ticket-plan"
 )
 ```
 
@@ -513,7 +513,7 @@ mcp__autodev-memory__update_ticket(
     "<the chosen approach>",
     "<key risk or dependency, if any>"
   ],
-  command="/auto-plan"
+  command="/ticket-plan"
 )
 ```
 
@@ -566,7 +566,7 @@ Reason: {error description}
 Status reverted to: {STARTING_STATUS}
 ```
 
-On failure, revert status to the status the ticket had when auto-plan started
+On failure, revert status to the status the ticket had when ticket-plan started
 (`STARTING_STATUS` from Phase 1 — `backlog`, `up_next`, or `planned`), **not** unconditionally
 to `backlog`:
 
@@ -574,7 +574,7 @@ to `backlog`:
 mcp__autodev-memory__update_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
   status=STARTING_STATUS,
-  command="/auto-plan"
+  command="/ticket-plan"
 )
 ```
 
@@ -594,7 +594,7 @@ mcp__autodev-memory__update_ticket(
 | Command              | Relationship                                         |
 | -------------------- | ---------------------------------------------------- |
 | `/create-build-todos`| Next step after user approves the plan               |
-| `/ticket-flow`       | Calls auto-plan as part of end-to-end execution      |
+| `/ticket-flow`       | Calls ticket-plan as part of end-to-end execution      |
 | `/investigate`       | Called internally for bug tickets                    |
 | `/research`          | Called internally for feature tickets                |
-| `/epic-plan`         | Epic-level analogue; step tickets still use auto-plan |
+| `/epic-plan`         | Epic-level analogue; step tickets still use ticket-plan |

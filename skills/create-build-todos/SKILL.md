@@ -47,7 +47,7 @@ ticket = mcp__autodev-memory__get_ticket(
 
 # 2. Check plan artifact exists
 # Look for artifact with type="plan" in ticket response
-# If missing: STOP - run /auto-plan first
+# If missing: STOP - run /ticket-plan first
 ```
 
 **If any prerequisite fails:**
@@ -55,7 +55,7 @@ ticket = mcp__autodev-memory__get_ticket(
 | Missing             | Action                                 |
 | ------------------- | -------------------------------------- |
 | Ticket not found    | **STOP** - create ticket first         |
-| No plan artifact    | **STOP** - run `/auto-plan [id]` first |
+| No plan artifact    | **STOP** - run `/ticket-plan [id]` first |
 | Plan not reviewed   | **WARN** - suggest user review plan    |
 
 **Additional requirements:**
@@ -144,7 +144,7 @@ ticket = mcp__autodev-memory__get_ticket(
 ## Process
 
 1. **Locate work item:**
-   - Same ID resolution as `/auto-plan`
+   - Same ID resolution as `/ticket-plan`
    - Error if the plan artifact doesn't exist
 
 2. **Read context** from `get_ticket` response:
@@ -177,10 +177,10 @@ ticket = mcp__autodev-memory__get_ticket(
 
 5. **Finalize the deployment_guide artifact (MANDATORY):**
 
-   `/auto-plan` left a DRAFT `deployment_guide` with the deploy *shape* and a first-cut
+   `/ticket-plan` left a DRAFT `deployment_guide` with the deploy *shape* and a first-cut
    verification evidence contract. The deep research you just did is exactly what turns that
    draft into actionable mechanics — do not leave it as a draft. Update it (`update_artifact`;
-   create it if the ticket skipped `/auto-plan`) so the deploy steps name the **concrete**
+   create it if the ticket skipped `/ticket-plan`) so the deploy steps name the **concrete**
    objects this build produced:
 
    - the actual **schema artifact**: for ts-prefect, Atlas/model/DB-only manifest changes and
@@ -213,7 +213,7 @@ ticket = mcp__autodev-memory__get_ticket(
    producing deployment/command**; otherwise leave the unknown rows as `TBD` and note them.
 
    Find the draft's `artifact_id` in the `get_ticket` response (the `deployment_guide` artifact)
-   and update by id; if the ticket skipped `/auto-plan` and none exists, create one instead.
+   and update by id; if the ticket skipped `/ticket-plan` and none exists, create one instead.
 
    ```
    mcp__autodev-memory__update_artifact(

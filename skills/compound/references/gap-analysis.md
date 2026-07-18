@@ -31,7 +31,7 @@ and determine the correct fix target.
 
 **Fix targets:**
 
-- `skills/auto-plan/SKILL.md` - Add research requirement
+- `skills/ticket-plan/SKILL.md` - Add research requirement
 - Memory service — store the missed constraint as a gotcha
 
 ## 3. Build Todos Gap

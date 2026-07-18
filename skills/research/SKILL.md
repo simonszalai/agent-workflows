@@ -29,7 +29,7 @@ findings as a ticket artifact.
 | Finding inconsistencies              | Yes              | -              |
 | Research to inform a feature/bug     | Yes              | -              |
 | Bug/incident investigation           | **No**           | `/investigate` |
-| Planning a new feature               | **No**           | `/auto-plan`        |
+| Planning a new feature               | **No**           | `/ticket-plan`        |
 | Checking specific file/function      | **No**           | Read directly  |
 
 ## Context Resolution

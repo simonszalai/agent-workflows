@@ -179,7 +179,7 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                                      | Action                    |
 | ---------------------------------------------- | ------------------------- |
-| "plan", "design", "architect", "how should we" | Run `/auto-plan`                   |
+| "plan", "design", "architect", "how should we" | Run `/ticket-plan`                   |
 | "build", "implement", "start working on"       | Use the `build` skill              |
 | "create build todos", "break this down"        | Use the `create-build-todos` skill |
 
@@ -211,9 +211,10 @@ When the user mentions these activities, proactively use the corresponding skill
 
 | User says                               | Action            |
 | --------------------------------------- | ----------------- |
-| "auto-build", "build this ticket end to end", "auto-flow", "ticket flow" | Run `/ticket-flow` |
-| "full auto ticket", "staging through production", "entire ticket dance" | Run `/ticket-full-auto` |
-| "/goal", "multi-ticket", "batch these related tickets", "hands-off" with multiple tickets | Run `/goal-flow` |
+| "auto-build", "build this ticket end to end", "ticket flow" | Run `/ticket-flow` (stops after staging verify) |
+| "full auto ticket", "staging through production", "entire ticket dance" | Run `/ticket-flow <ID> prod` |
+| "just deploy/verify this built ticket" | Run `/ticket-deploy <ID> staging|prod|full` |
+| "multi-ticket", "batch these related tickets" | Run `/ticket-flow` per ticket, or an epic when coordinated |
 | "milestone flow", "run this milestone"  | Run `/milestone-flow` |
 | "epic flow", "run this epic"            | Run `/epic-flow` |
 | "auto-fix", "fix this bug autonomously" | Run `/lfg`         |
@@ -381,19 +382,20 @@ create_ticket(
 
 ### Autonomous Workflows
 
-- `/ticket-flow`: Autonomous single-ticket execution — context -> route staging vs production -> plan/critique -> build -> review -> local verify -> deploy via `/auto-deploy`; no behavior verification
-- `/ticket-full-auto`: Explicit single-ticket staging-first wrapper — ticket-flow -> bounded staging
-  evidence production/verification -> production promotion/deploy -> production verification ->
+- `/ticket-flow`: Autonomous single-ticket execution — `/ticket-plan` -> `/ticket-build` ->
+  `/ticket-deploy staging`; stops after staging verification by default. With the `prod` argument
+  it runs `/ticket-deploy full` instead: production promotion/deploy -> production verification ->
   completed; stops on failures, blockers, or genuine timing waits
-- `/goal-flow`: Autonomous related-ticket execution — shared context/plan, clustered write scopes,
-  integrated review/test/deploy, and coalesced verification with per-ticket lifecycle truth
+- `/ticket-build`: Implementation phase — build todos -> build -> review -> resolve -> local health gate
+- `/ticket-deploy`: Deploy+verify phase — `staging` (deploy + verify staging), `prod`
+  (status-aware production leg; direct-production asks confirmation unless tiny/safe), or `full`
+  (staging then production, gated on exact staging PASS)
 - `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
 - `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production
   deploy steps, then invokes `/ticket-verify production`. Modes: single ticket (default,
   auto-invoked by a gate-passing staging PASS), `--all` batch, `--epic <ID>`, `--all-staging`
 - `/epic-plan`, `/epic-split`, `/milestone-flow`, `/epic-flow`: Epic/milestone orchestration over ticket-flow; `/milestone-flow` deploys/verifies each staging milestone gate, and `/epic-flow` sequences milestones plus final prod after all gates pass
-- `/auto-flow` and `/auto-verify`: Legacy aliases for `/ticket-flow` and `/ticket-verify`
 
 ## Knowledge System
 

@@ -86,7 +86,7 @@ pipeline **without leaving artifacts on the ticket**. Confirm from primary evide
 2. **The ticket events** (if a ticket exists):
    `get_ticket(detail="full", artifact_types=null, include_events=true)`, then read each event's
    `actor.command` / `actor.agent` / `actor.session_id` / `actor.machine`. These are the
-   authoritative record of which workflow commands actually ran (`/auto-plan`, `/build`, `/review`,
+   authoritative record of which workflow commands actually ran (`/ticket-plan`, `/build`, `/review`,
    `/milestone-flow`, …) and by which agent. **The command is nested under `actor`, not
    top-level** — a jq of `.events[].command` returns nothing and will fool you into "no workflow";
    use `.events[].actor.command`. Missing artifacts ≠ skipped workflow.
@@ -100,7 +100,7 @@ pipeline **without leaving artifacts on the ticket**. Confirm from primary evide
    # Codex sessions
    grep -rlE "<commit-subject>|<TICKET>|def <new_symbol>" ~/.codex/sessions/ 2>/dev/null
    ```
-   Inside the winning session, grep for the workflow commands it ran (`/auto-plan`, `/build`,
+   Inside the winning session, grep for the workflow commands it ran (`/ticket-plan`, `/build`,
    `/create-build-todos`, `/review`, `/resolve-review`, `/milestone-flow`, `/ticket-flow`,
    `/ticket-flow`, …) to see what the pipeline actually did.
 

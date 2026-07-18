@@ -18,16 +18,11 @@ def run_script(name: str, *args: str, env: dict[str, str] | None = None) -> subp
 
 
 class WorkflowEfficiencyTest(unittest.TestCase):
-    def test_skill_contracts_keep_routine_goal_and_lfg_paths_bounded(self) -> None:
-        goal = (ROOT / "skills/goal-flow/SKILL.md").read_text()
+    def test_skill_contracts_keep_routine_and_lfg_paths_bounded(self) -> None:
         review = (ROOT / "skills/review/SKILL.md").read_text()
         lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
         retro = (ROOT / "skills/session-retro/SKILL.md").read_text()
-        self.assertIn("get_ticket_contexts", goal)
-        self.assertIn("mutate_ticket_workflows", goal)
-        self.assertIn("tree-and-lifecycle audit cluster", goal)
-        self.assertIn("per-operation ledger", goal)
         self.assertIn('fork_turns: "none"', economy)
         self.assertIn("Conductor enforcement", economy)
         self.assertIn("must not poll the parent session itself", economy)
@@ -53,7 +48,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
 
     def test_ticket_context_and_plan_fanout_inputs_are_bounded(self) -> None:
         conventions = (ROOT / "CLAUDE.md").read_text()
-        auto_plan = (ROOT / "skills/auto-plan/SKILL.md").read_text()
+        auto_plan = (ROOT / "skills/ticket-plan/SKILL.md").read_text()
         fanout = (ROOT / "workflows/plan-fanout.js").read_text()
         ticket_verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
 
@@ -113,7 +108,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
         promote = (ROOT / "skills/ticket-promote/SKILL.md").read_text()
         create_pr = (ROOT / "skills/create-pr/SKILL.md").read_text()
-        methodology = (ROOT / "skills/auto-plan/references/plan-methodology.md").read_text()
+        methodology = (ROOT / "skills/ticket-plan/references/plan-methodology.md").read_text()
 
         self.assertIn("bin/wait-ci {pr_number}", deploy)
         self.assertNotIn("gh pr checks {pr_number} --watch", deploy)
@@ -272,26 +267,28 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(summary["status"], "failure")
             self.assertEqual(summary["state_type"], "FAILED")
 
-    def test_ticket_full_auto_owns_the_complete_fail_stop_chain(self) -> None:
-        wrapper = (ROOT / "skills/ticket-full-auto/SKILL.md").read_text()
+    def test_ticket_deploy_owns_the_complete_fail_stop_chain(self) -> None:
+        wrapper = (ROOT / "skills/ticket-deploy/SKILL.md").read_text()
         verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
         ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
 
-        self.assertIn("/ticket-flow <ID> --target staging", wrapper)
         self.assertIn("--no-promote --produce-evidence", wrapper)
         self.assertIn("/ticket-promote <ID>", wrapper)
         self.assertIn("Stop on every outcome except exact `PASS`", wrapper)
         self.assertIn("final `completed` status", wrapper)
         self.assertIn("ticket-attributed incident cleanup", wrapper)
         self.assertIn("scripts.prefect_ops.delete_ticket_flow_runs", wrapper)
+        self.assertIn("stop and ask the user for\nconfirmation", wrapper)
         self.assertIn("bin/wait-prefect-flow", verify)
         self.assertIn("preserve the failed flow-run history", verify)
         self.assertIn("structurally attributes Prefect incident flow runs", verify)
-        self.assertIn("/ticket-full-auto F0123", ticket_flow)
+        self.assertIn("/ticket-deploy <ID> staging", ticket_flow)
+        self.assertIn("/ticket-deploy <ID> full", ticket_flow)
+        self.assertIn("stops after the staging verify leg", ticket_flow)
         self.assertTrue(os.access(ROOT / "bin/wait-prefect-flow", os.X_OK))
 
     def test_full_auto_review_contract_separates_severity_from_decision_ownership(self) -> None:
-        wrapper = (ROOT / "skills/ticket-full-auto/SKILL.md").read_text()
+        wrapper = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
         phases = (ROOT / "skills/references/execution-phases.md").read_text()
         resolver = (ROOT / "skills/resolve-review/SKILL.md").read_text()
         review = (ROOT / "skills/review/SKILL.md").read_text()
