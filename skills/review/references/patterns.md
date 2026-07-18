@@ -31,6 +31,17 @@ Scan for code smells and anti-patterns:
   tight loop. **Fix:** Update the scheduling timestamp AFTER the try/except, unconditionally.
   Separate "last checked" (always update) from "last cursor position" (update on success).
 
+- **Deadline over heterogeneous work**: A shared deadline/timeout/coordinator wrapping work
+  units with different internal time budgets. For each work type actually executed inside the
+  bounded construct, compare its legitimate worst-case duration (internal retry/strategy
+  budgets, provider timeouts) against the shared deadline. Flag as p1 when a work type's budget
+  exceeds the deadline, or when a comment/plan claims a work type is "outside this policy" /
+  "terminal, non-retryable" but the code still runs it inside the wrapper — comment-level
+  exemptions are not exemptions. Also flag when deadline cancellation replaces the underlying
+  work's diagnostic exception with a generic `TimeoutError`/`CancelledError`, masking the
+  actionable root cause (B0306/B0312: 55s coordinator cancelled 150s browser acquisition,
+  hiding bot-protection diagnostics for 106 failures).
+
 ### 2. Naming Convention Analysis
 
 Evaluate consistency in naming across:

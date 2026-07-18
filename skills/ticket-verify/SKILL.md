@@ -365,6 +365,16 @@ latest matching environment artifact when repeating the same verdict). If the ve
 create a new correctly titled artifact first, then mark the prior artifact `superseded` and link it
 to the new artifact ID. Never overwrite a verdict-bearing title with contradictory metadata.
 
+**FAIL→PASS supersession requires signature comparison (CRITICAL, B0312/B0306):** Before
+superseding a FAIL with a PASS on "pre-existing failure / baseline noise" grounds, compare the
+**failure diagnostic signature**, not just the failing source, category, or failure rate. If the
+pre-activation baseline failed with a specific, actionable error (e.g., bot-protection/browser/
+proxy diagnostics after a 150s stall) and post-activation failures show a *different* error for
+the same source (e.g., generic `TimeoutError("retry coordinator deadline exceeded")` at the new
+55s deadline), that is a **new regression that masks diagnostics** — the FAIL stands even if the
+failure count is similar and a later run recovered. "Same source, same rate, now bounded" is not
+sufficient evidence of no regression; the error text/class and its actionability must also match.
+
 For explicit epic/milestone verification, evidence must be persisted across all applicable
 scopes (canonical gate artifact on the epic, full per-step ticket artifacts, and a compact epic
 summary). This is **only** relevant in `--epic`/`--milestone` mode — see the "§6 (epic/milestone)"

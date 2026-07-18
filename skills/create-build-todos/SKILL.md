@@ -449,6 +449,30 @@ other repeated writer, at least one build todo must own the storage-shape proof:
 **Rule:** Build todos are incomplete if polling frequency can linearly multiply redundant
 stored data and no step proves that this is required, bounded, and verified.
 
+## Shared Deadline / Timeout Budget Todos (CRITICAL)
+
+When the plan introduces or reuses a shared deadline, coordinator, timeout wrapper, semaphore,
+or batch executor that heterogeneous work runs under, at least one build todo must own the
+**budget-fit proof**:
+
+1. **Enumerate every work type** that will execute inside the bounded construct — including ones
+   the plan declares "outside this policy". If work physically executes inside the coordinator
+   (even only on pass 1), it inherits the deadline regardless of what comments or plan
+   assumptions say. A "remains outside this policy" claim must be enforced structurally
+   (excluded from the `work` dict / run outside the wrapper), never by comment.
+2. **Compute worst-case duration per work type** from its own internal budgets (e.g., browser
+   strategy budgets, provider read timeouts, internal retries) and assert each fits under the
+   shared deadline — or explicitly exempt/partition that work type.
+3. **Require a test per slow work type**: a test that runs the slowest legitimate variant (e.g.,
+   a `use_browser=True` config with a 150s strategy budget under a 55s coordinator) and asserts
+   it is either exempted or fails with its **original diagnostic preserved**, not a generic
+   deadline `TimeoutError` that masks the real error.
+
+**Rule (B0312/B0306):** Build todos are incomplete if any work type's legitimate worst-case
+duration exceeds a shared deadline it runs under and no todo proves exemption or diagnostic
+preservation. B0306 put browser-based Truth Social (150s budget) inside a 55s coordinator,
+replacing actionable bot-protection diagnostics with `TimeoutError` for 106 masked failures.
+
 ## External Data / Cache Finality Build Todos (CRITICAL)
 
 When the plan touches provider-backed data, shared caches, market/reference data,
