@@ -80,7 +80,7 @@ mcp__autodev-memory__get_ticket(
   detail="full", artifact_types=["plan", "build_todo"], include_events=false
 )
 # Check for build_todo artifacts — if none: STOP - run /create-build-todos first
-# Check for plan artifact — if missing: STOP - run /auto-plan first
+# Check for plan artifact — if missing: STOP - run /ticket-plan first
 ```
 
 ### Branch Mode (Cloud)
@@ -98,7 +98,7 @@ mcp__autodev-memory__get_ticket(
   detail="full", artifact_types=["plan", "build_todo"], include_events=false
 )
 # Check for build_todo artifacts — if none: STOP - run /create-build-todos first
-# Check for plan artifact — if missing: STOP - run /auto-plan first
+# Check for plan artifact — if missing: STOP - run /ticket-plan first
 ```
 
 **If any prerequisite fails:**
@@ -108,7 +108,7 @@ mcp__autodev-memory__get_ticket(
 | Not in worktree | Instruct user to create worktree (see below)    |
 | On main (cloud) | Create branch with `git checkout -b build/{id}` |
 | No build_todos  | **STOP** - run `/create-build-todos [id]` first |
-| No plan         | **STOP** - run `/auto-plan [id]` first          |
+| No plan         | **STOP** - run `/ticket-plan [id]` first          |
 
 ### Ticketless Mode (lfg)
 
@@ -223,7 +223,7 @@ self-repair (≤2 retries), and the final health gate.
    | --------------- | ----------------------------------------------------------------------------------- |
    | `complete`      | Checkpoint (step 6), then dispatch the next todo                                     |
    | `failed`        | **Bounded self-repair** — see below                                                  |
-   | `needs_replan`  | **STOP** the loop, hand back to `/auto-plan` with the builder's `error`; do not build on |
+   | `needs_replan`  | **STOP** the loop, hand back to `/ticket-plan` with the builder's `error`; do not build on |
 
    **Bounded self-repair (on `failed`):** dispatch a *fresh* builder for the **same** todo with
    the previous `error` and `verification_output` prepended as context, always at
@@ -398,7 +398,7 @@ Build halted at step {N}: {title} — plan needs revision
 
 Reason: {error from the builder's structured result}
 
-Next: /auto-plan {ID} (revise the plan), then /create-build-todos, then /build {ID}
+Next: /ticket-plan {ID} (revise the plan), then /create-build-todos, then /build {ID}
 ```
 
 ## Completion Notes

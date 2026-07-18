@@ -7,11 +7,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
 1. **Resolve scope** — ticket/issue/conversation input, project, repo, branch, target.
 2. **Gather context** — bug investigation / triage and epic-context loading only. When Phase 3
-   invokes `/auto-plan`, do **not** run codebase research or memory/similar-ticket searches here:
-   `/auto-plan` Phases 3-4 are the single owner of knowledge retrieval. Only run that retrieval in
-   this phase when the path does not invoke `/auto-plan`.
-3. **Plan** — run `/auto-plan` (the single planning skill; complexity-based light/heavy
-   gate) to create/update the plan artifact. Carry `/auto-plan`'s returned prior-knowledge blob
+   invokes `/ticket-plan`, do **not** run codebase research or memory/similar-ticket searches here:
+   `/ticket-plan` Phases 3-4 are the single owner of knowledge retrieval. Only run that retrieval in
+   this phase when the path does not invoke `/ticket-plan`.
+3. **Plan** — run `/ticket-plan` (the single planning skill; complexity-based light/heavy
+   gate) to create/update the plan artifact. Carry `/ticket-plan`'s returned prior-knowledge blob
    (the applicable rules/patterns it retrieved) forward into the build and review packets so
    downstream agents inherit the same knowledge without re-searching.
 4. **Critic loop (heavy path only)** — adversarially review the plan for complex/cross-cutting
@@ -39,7 +39,7 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
    In an autonomous run, the runner may self-approve a `gated_auto` fix when it is both
    plan-conformant and corroborated — skeptic-upheld (`requires_verification: false` after verify)
-   or supported by multi-reviewer consensus. An explicit `/ticket-full-auto` invocation is standing
+   or supported by multi-reviewer consensus. An explicit `/ticket-flow prod` (or `/ticket-deploy prod|full`) invocation is standing
    approval for those fixes and for bounded resolve/re-review rounds; do not stop merely to ask the
    user to approve an agent-found deterministic correctness fix. Defer an uncorroborated or
    scope-expanding fix. A `manual` finding still requires the missing human decision, unless that
@@ -69,7 +69,7 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
 The loop is bounded and evidence-driven:
 
-- use `/auto-plan`'s complexity-based light/heavy gate for single tickets (critics are a
+- use `/ticket-plan`'s complexity-based light/heavy gate for single tickets (critics are a
   heavy-path step);
 - always use deep mode for epics;
 - have critics check completeness, correctness, YAGNI/scope, contracts, data safety, and

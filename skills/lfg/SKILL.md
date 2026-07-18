@@ -266,7 +266,7 @@ queue/webhook), or research found no existing pattern to follow — spawn ONE cr
 it should read the code to check the
 plan's assumptions) and revise the plan once for its must-address findings. Skip the
 critique for work matching none of the signals. This is deliberately lighter than
-`/auto-plan`: no peer providers, no convergence — LFG stays fast and never pushes, so the
+`/ticket-plan`: no peer providers, no convergence — LFG stays fast and never pushes, so the
 review loop remains the backstop.
 
 **In LFG mode, the (critiqued) plan is then auto-approved** — proceed immediately to build.

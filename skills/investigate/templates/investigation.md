@@ -93,7 +93,7 @@ evidence_sources: []
 ## Recommended Fix Directions
 
 > **Note:** These are high-level directions based on root cause analysis. Detailed solution
-> design (architecture, tradeoffs, verification) happens in `/auto-plan`.
+> design (architecture, tradeoffs, verification) happens in `/ticket-plan`.
 
 ### Priority 1: Critical
 
@@ -121,7 +121,7 @@ evidence_sources: []
 ## Hypotheses for Verification
 
 > **Note:** Hypotheses are generated when root cause is uncertain and needs experimental
-> verification. Required for BNNN work items (autonomous bug fixes via `/lfg` or `/auto-flow`).
+> verification. Required for BNNN work items (autonomous bug fixes via `/lfg` or `/ticket-flow`).
 
 | ID  | Hypothesis             | Confidence | Status  |
 | --- | ---------------------- | ---------- | ------- |
@@ -170,8 +170,8 @@ evidence_sources: []
 
 ## Next Steps
 
-After investigation is complete, run `/auto-plan {id}` to design the solution.
+After investigation is complete, run `/ticket-plan {id}` to design the solution.
 
 - [ ] Review root causes with stakeholders
-- [ ] Run `/auto-plan` to create architecture plan
+- [ ] Run `/ticket-plan` to create architecture plan
 - [ ] [Additional action items if needed]

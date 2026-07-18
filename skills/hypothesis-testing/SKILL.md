@@ -20,7 +20,7 @@ Bug investigations often identify multiple possible causes. This methodology ens
 ## When to Use
 
 - After `/investigate` generates initial hypotheses
-- Before `/auto-plan` to confirm the root cause
+- Before `/ticket-plan` to confirm the root cause
 - In autonomous `/lfg` workflows (bug path)
 
 ## Hypothesis Quality Criteria
@@ -318,7 +318,7 @@ For each hypothesis, create evaluation document:
 
 After all evaluations:
 
-1. **One confirmed:** Use as root cause for `/auto-plan`
+1. **One confirmed:** Use as root cause for `/ticket-plan`
 2. **Multiple confirmed:** Document all, prioritize for fix
 3. **None confirmed:** Use highest-confidence INCONCLUSIVE
 4. **All refuted:** Return to investigation phase
@@ -330,7 +330,7 @@ In `/lfg` bug path:
 ```
 /investigate -> generates hypotheses -> hypothesis-evaluator agent -> verdicts
                                                                       |
-                    /auto-plan uses confirmed hypothesis <- synthesis <-----+
+                    /ticket-plan uses confirmed hypothesis <- synthesis <-----+
 ```
 
 ## Templates

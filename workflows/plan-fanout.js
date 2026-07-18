@@ -1,4 +1,4 @@
-// plan-fanout — heavyweight orchestrator for /auto-plan when the work is substantial.
+// plan-fanout — heavyweight orchestrator for /ticket-plan when the work is substantial.
 //
 // Plans contain both subjective tradeoffs and factual/architectural claims. The tradeoffs
 // need panel-with-counterweight; the factual claims need cross-provider disagreement

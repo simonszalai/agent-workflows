@@ -24,7 +24,7 @@ fi
 
 Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investigate`.
 
-**For new features:** Skip this command and use `/auto-plan` directly.
+**For new features:** Skip this command and use `/ticket-plan` directly.
 
 ## Usage
 
@@ -43,8 +43,8 @@ Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investig
 | ----------------------------- | ------------------- | ----------------------- |
 | Bug: something is broken      | Yes                 | -                       |
 | Incident: unexpected behavior | Yes                 | -                       |
-| New feature                   | **No**              | `/auto-plan` directly        |
-| Understanding existing code   | **No**              | `/auto-plan` (will research) |
+| New feature                   | **No**              | `/ticket-plan` directly        |
+| Understanding existing code   | **No**              | `/ticket-plan` (will research) |
 
 ## Context Resolution
 
@@ -76,7 +76,7 @@ mcp__autodev-memory__get_ticket(
 
 **If starts with `F`:** **STOP** — features don't use `/investigate`. Tell the user:
 
-> "Features don't need investigation - use `/auto-plan F0009` directly."
+> "Features don't need investigation - use `/ticket-plan F0009` directly."
 
 **If description given** (no ID): Create a new bug ticket:
 
@@ -279,7 +279,7 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
    | Pattern | Diagnosis | Next move |
    | ------- | --------- | --------- |
-   | Hypotheses point to different subsystems | Architecture/design problem | Present findings, suggest `/auto-plan` for redesign |
+   | Hypotheses point to different subsystems | Architecture/design problem | Present findings, suggest `/ticket-plan` for redesign |
    | Evidence contradicts itself | Wrong mental model of the code | Re-read the code path without assumptions |
    | Works locally, fails in prod/staging | Environment problem | Focus on env differences, config, timing |
    | Fix works but prediction was wrong | Symptom fix, not root cause | Keep investigating — real cause still active |
@@ -356,7 +356,7 @@ After collecting the selected path's evidence, generate testable hypotheses:
 
 ### When to Generate Hypotheses
 
-- **Always for B-prefix tickets** (autonomous bug fixes via `/lfg` or `/auto-flow`)
+- **Always for B-prefix tickets** (autonomous bug fixes via `/lfg` or `/ticket-flow`)
 - **Optional for other bugs** - generate when root cause is uncertain
 - **Never for F-prefix tickets** (features don't use investigation)
 
@@ -419,7 +419,7 @@ After writing the artifact, your last message MUST be a short summary in this sh
 - If `root_cause` is null (unconfirmed), say so plainly and frame the fixes as
   "next diagnostic steps" rather than fixes — do not invent a fix for an unconfirmed cause.
 - Keep it tight: this is a pointer to the artifact, not a duplicate of it. The full
-  **solution design** still happens in `/auto-plan`, not here.
+  **solution design** still happens in `/ticket-plan`, not here.
 
 ---
 
@@ -495,7 +495,7 @@ When combining findings from multiple sources:
 5. **Assess impact** - Quantify what was affected
 6. **Recommend fixes** - High-level fix directions (not solution design)
 
-**Note:** Investigation answers "what happened and why". Solution design happens in `/auto-plan`.
+**Note:** Investigation answers "what happened and why". Solution design happens in `/ticket-plan`.
 
 ## Closing Investigations
 

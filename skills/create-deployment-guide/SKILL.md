@@ -22,7 +22,7 @@ a file on disk. Its downstream consumers (`/milestone-flow`, `/auto-deploy`, `/c
 When invoked with **no ticket** (i.e. from `/lfg`), write the filled template to
 `.context/deployment-guide.md` instead of the MCP artifact, and skip every
 `get_ticket`/`create_artifact`/`update_artifact` call (read the plan and todos from
-`.context/auto-plan.md` and `.context/build_todos/` instead). This is the sanctioned lfg exception
+`.context/ticket-plan.md` and `.context/build_todos/` instead). This is the sanctioned lfg exception
 to the File Storage Rules — lfg has no ticket to write to. Everything else in this skill
 (diff analysis, project-specific deploy mechanics, the evidence contract, the template)
 applies unchanged. Ticketed behavior is unchanged.
@@ -31,12 +31,12 @@ applies unchanged. Ticketed behavior is unchanged.
 
 | Stage | Command | What it does to the artifact |
 | ----- | ------- | ---------------------------- |
-| Plan  | `/auto-plan` | Creates a **DRAFT** — deploy *shape* + first-cut evidence contract, from architecture only |
+| Plan  | `/ticket-plan` | Creates a **DRAFT** — deploy *shape* + first-cut evidence contract, from architecture only |
 | Build-todos | `/create-build-todos` | **Finalizes mechanics** — concrete migration revision/file, exact commands, block names, env vars, cross-repo order |
 | Post-build | `/create-deployment-guide` | **Reconciles against the real diff** — what was actually changed, fills any gaps, marks FINALIZED |
 
 So this command usually **updates** an existing draft, not creates from scratch. If no draft
-exists (e.g. ticket skipped `/auto-plan`), create one.
+exists (e.g. ticket skipped `/ticket-plan`), create one.
 
 ## Usage
 
@@ -57,7 +57,7 @@ exists (e.g. ticket skipped `/auto-plan`), create one.
 
 - Code changes are complete and reviewed
 - A `plan` artifact exists (read via `get_ticket`)
-- A draft `deployment_guide` artifact usually exists from `/auto-plan` (update it; create if absent)
+- A draft `deployment_guide` artifact usually exists from `/ticket-plan` (update it; create if absent)
 
 ## Process
 
@@ -197,7 +197,7 @@ mcp__autodev-memory__update_artifact(
 )
 ```
 
-If none exists (ticket skipped `/auto-plan`), create it:
+If none exists (ticket skipped `/ticket-plan`), create it:
 
 ```
 mcp__autodev-memory__create_artifact(
@@ -213,7 +213,7 @@ mcp__autodev-memory__create_artifact(
 ````markdown
 # Deployment & Verification Guide: {ticket-id}
 
-**Status:** DRAFT (from /auto-plan) | FINALIZED
+**Status:** DRAFT (from /ticket-plan) | FINALIZED
 **Feature/Fix:** {title}
 **Branch:** {branch}
 **Repos touched:** {repo-a, repo-b, ...}
