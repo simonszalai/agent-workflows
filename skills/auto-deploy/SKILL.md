@@ -286,7 +286,12 @@ project-memory note. When one applies, record blocker metadata (`blocked_by`, `b
 entry `216431b0`). Set `blocked_by="Thomas"`,
 `blocked_reason="Waiting for Thomas to deploy ts-decrypt-proxy to production"`,
 `blocked_context={"repo":"ts-decrypt-proxy","target":"production","manual_deploy_owner":"Thomas"}`,
-and do not deploy `ts-decrypt-proxy` production yourself.
+and do not deploy `ts-decrypt-proxy` production yourself. The agent-owned boundary ends after a
+verified commit is pushed/merged to the proxy repo's `main`: never create/clone/reconnect/
+reauthorize/reconfigure a proxy service in an accessible Render workspace, never ask Simon to
+reauthorize its GitHub integration, and never infer that production does not exist because it is
+absent from the selected account. Production is intentionally in Thomas's separate security
+boundary; persist the required commit SHA and hand deployment to Thomas.
 
 ### Phase 6b: Preflight every deploy command before merge
 

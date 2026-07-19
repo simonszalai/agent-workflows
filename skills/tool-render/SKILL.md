@@ -70,6 +70,12 @@ safe. `get_service` and `list_deploys` work without a selected workspace;
 `list_logs`, `list_services`, `get_selected_workspace`, and
 `update_environment_variables` require it.
 
+Render inventory is account-scoped, not global. In particular, `ts-decrypt-proxy` production is
+intentionally owned in Thomas's separate security boundary and may be absent from the accessible
+workspace. Never infer that it does not exist, create a substitute, reconnect/reauthorize its
+private repository, or attempt its deployment. Agents may land verified proxy code on `main` and
+must hand the exact commit SHA to Thomas for deployment (project memory `216431b0`).
+
 ## Available Tools
 
 | Tool                                 | Purpose                          |
