@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -67,6 +68,7 @@ def main() -> None:
         "duration_ms": duration_ms,
         "output_bytes": size,
         "output_file": str(output_path.resolve()),
+        "rerun_command": f"cd {shlex.quote(str(Path.cwd()))} && {shlex.join(command)}",
         "tail_truncated": size > args.tail_bytes,
         "tail": tail,
     }

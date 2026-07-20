@@ -111,7 +111,18 @@ ticket to staging automatically** unless the user explicitly requested direct pr
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
   source text. If found, load `get_epic` once and cache its version plus the step's
-  milestone/contracts; delegated phases receive bounded extracts rather than reloading it.
+  milestone/contracts. Consume the milestone's active shared packet from
+  `.context/epic-flow/<EPIC_ID>/<MILESTONE>/current.json`; verify the referenced immutable packet's
+  SHA-256 and record its version/hash in every phase result. Delegated phases receive only that
+  packet path/version/hash plus their exact step scope, not copied epic history.
+- On a direct epic-step entry, if the packet is absent, create the initial immutable version and
+  atomic manifest from the bounded `get_epic` snapshot before planning. A delegated
+  `--epic-context` run treats a missing packet as a caller-contract failure and returns to
+  milestone-flow; it must not invent a sibling packet.
+- If an epic-step phase identifies a specifically missing fact, request a new packet version from
+  the owning milestone orchestrator. Reload MCP/source context only when the atomic current
+  manifest advances or that exact missing fact is required. Never edit a published packet or let
+  sibling ticket-flows create divergent milestone packets.
 - Decide and record the delivery target using `landing-policy.md`.
 - **Resume from lifecycle truth**: skip phases whose artifacts and status already exist (a
   `planned` ticket with a plan artifact enters at build; a built, locally verified ticket enters
@@ -151,6 +162,11 @@ critical unresolved findings remain; peer planning follows `/ticket-plan`'s expl
 risk/uncertainty/disagreement escalation gate. The plan lands as an MCP `plan` artifact with
 `summary_bullets` set on the ticket.
 
+After planning, persist the plan artifact and prior-knowledge checkpoint. End the planning phase
+agent and start build in a fresh `fork_turns: "none"` agent with only the plan/build packet. A
+history fork is allowed only when a self-contained packet is genuinely impossible: record the
+reason and use the smallest explicit numeric count of recent turns, never all history.
+
 ### 3. Build, review, locally verify
 
 Run `/ticket-build <ID>`. It honors open dashboard review comments before building, creates
@@ -158,6 +174,10 @@ build todos via `/create-build-todos`, implements via `/build`, reviews via `/re
 via `/resolve-review`, enforces the artifact persistence gate, runs the local health gate, and
 pushes the feature branch. With `--skip-local-verify`, pass that through (the health gate is
 skipped only on explicit user instruction). Stop for unresolved design decisions.
+
+After build, persist the final-tree SHA, health evidence, build/review artifacts, and delivery
+checkpoint. Start deploy/verify in another fresh no-history agent with only that checkpoint and the
+active epic packet reference when applicable.
 
 ### 4. Deploy and verify
 
@@ -211,6 +231,14 @@ Epic-specific invariants (hold on both paths):
 
 A `merged` epic step alone is not proof the milestone is deployed or verified; only the
 `/milestone-flow` gate PASS proves that.
+
+### 4a. Phase rotation budget
+
+Planning, build/review/local verification, and deploy/environment verification are durable phase
+boundaries. Choose and record a fixed context/token budget for each phase owner. Force a checkpoint
+and fresh `fork_turns: "none"` replacement after the first compaction or when the budget is reached,
+whichever comes first. The replacement receives only the durable checkpoint and phase packet.
+Never continue an indefinitely growing agent merely because it still responds.
 
 ### 5. Status truth
 

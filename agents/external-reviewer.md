@@ -36,10 +36,9 @@ providers instead of using this Claude-specific subagent wrapper.
    base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)   # unless a base was given
    ```
 
-2. **Launch the adapter in the background** (`run_in_background: true`). Do NOT run it
-   foreground — a single Codex attempt at xhigh reasoning takes ~9 minutes, which exceeds the
-   Bash tool's hard timeout cap. Background execution has no such cap and the harness re-invokes
-   you when it exits:
+2. **Run the adapter once as a blocking foreground command.** Set the outer tool timeout above the
+   adapter's bounded timeout so the model receives one terminal result rather than waking on
+   intermediate state:
 
    ```bash
    external-agent --task review --provider <provider> --base "$base" \
@@ -49,13 +48,13 @@ providers instead of using this Claude-specific subagent wrapper.
 
    The adapter is self-bounded (internal default timeout 900s, 2-attempt retry, always writes a
    valid envelope — even on failure it writes `{reviewer_key, findings: [], residual_risks: [...],
-   testing_gaps: []}` and exits 2). So you never need your own timeout.
+   testing_gaps: []}` and exits 2).
 
-3. **Wait for the background command to finish.** When notified it has exited, continue. If you
-   must wait actively, poll the output file rather than sleeping in the foreground — do not return
-   until the adapter process has exited.
+3. If the harness cannot hold the blocking call, return a valid empty envelope whose
+   `residual_risks` names the exact adapter resume command. Never background the command, poll its
+   output file/process, or repeatedly call a wait/status tool from model turns.
 
-4. **Read the output file** (`.context/review/<provider>.json`).
+4. **Read the output file once** (`.context/review/<provider>.json`) after the command exits.
 
 5. **Return the file's JSON content verbatim** as your final message — nothing else, no prose,
    no markdown fence. It is already a valid reviewer-output envelope

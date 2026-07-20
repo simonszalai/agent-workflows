@@ -5,10 +5,13 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 
 ## Dispatch contract
 
-- Default delegated calls to `fork_turns: "none"`. Send a bounded, self-contained task packet
-  containing the objective, exact scope, relevant paths/artifact IDs, constraints, expected return
-  shape, and validation command. Fork conversation history only when the task cannot be made
-  self-contained, and state why.
+- Every delegated call defaults to and should use `fork_turns: "none"`. Send a bounded,
+  self-contained task packet containing the objective, exact scope, relevant paths/artifact IDs,
+  constraints, expected return shape, and validation command. A history fork is allowed only when
+  a self-contained packet is genuinely impossible. Before dispatch, record why it is impossible
+  and use the smallest explicit numeric count of recent turns that supplies the missing fact.
+  `fork_turns: "all"` is prohibited; convenience or an already-long conversation is not an
+  exception.
 - Give each agent one role and one write scope. No role drift: a researcher does not implement, a
   reviewer does not silently fix, and a verifier does not deploy or mutate lifecycle state.
 - Cluster work by shared context and non-overlapping write scope. Do not create one agent per tiny
@@ -18,11 +21,12 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 
 ## Output and retrieval bounds
 
-- Set explicit output caps on commands and tools. For long-output commands (test suites,
-  builds, migrations), run them through `bin/compact-exec -- <command>` — it writes full
-  stdout/stderr to a run-local log and returns only the exit status plus a bounded tail.
-  Inspect targeted excerpts from the log path on demand instead of repeatedly returning
-  the full output.
+- Set explicit output caps on commands and tools. Tests, builds, migrations, large diffs,
+  deployment output, and every other potentially noisy command must run through
+  `bin/compact-exec -- <command>` or an established equally compact repository wrapper when the
+  command needs a stricter boundary. Preserve complete output in the wrapper's log and return only
+  its bounded summary/tail. A failure report must include the wrapper's absolute `output_file` and
+  precise `rerun_command`. Inspect only targeted excerpts instead of returning the full log.
 - Bound code search by paths/globs and byte or result caps. Narrow broad searches after the first
   capped sample; never dump an entire repository or generated artifact into model context.
 - Bound every SQL/data query by time window, selected columns, row limit, and payload size. Start
@@ -38,32 +42,46 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 
 ## Waiting and polling
 
-- Prefer a blocking tool with a bounded timeout or one timer-friendly resume command. Do not spend
-  model turns repeatedly asking whether a job is finished. For GitHub PR checks and Actions runs,
-  use `bin/wait-ci` — one bounded, backoff-controlled process that returns one terminal JSON result.
-  Invoke it as **one foreground tool call** with the outer tool timeout set slightly above
-  `wait-ci --timeout`; do not background it and then poll task/process output from model turns.
-  The process may poll GitHub many times, but the model is sampled once, after the process exits.
-- When the tool harness cannot hold a foreground call for the expected duration, delegate only the
-  wait to a fresh leaf with no inherited conversation (`fork_turns: "none"`). Its packet contains
-  only repo, PR/run ID, timeout, and the exact `bin/wait-ci` command; it returns the final JSON once.
-  The parent uses the platform's blocking agent-wait/wake mechanism once — never repeated status
-  reads. If neither a blocking call nor a fresh waiter is available, stop with the resume command
-  rather than model-polling.
-- **Conductor enforcement:** unified exec yields long-running foreground commands as resumable
-  sessions, which would force the parent to sample again for every `write_stdin`/`wait` poll. In
-  Conductor, do not start `bin/wait-ci` in the parent at all. Always dispatch the wait immediately
-  to one fresh `fork_turns: "none"` leaf and block once on that agent. A parent that receives a
-  resumable session from an accidental CI wait must terminate that parent session and restart the
-  exact bounded wait command in the leaf; it must not poll the parent session itself.
-- `bin/wait-ci <pr>` waits for PR checks. `bin/wait-ci --run <run-id>` waits for one Actions run.
-  `bin/wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'` waits for one
-  Prefect flow run. Each emits one terminal JSON result and a resume command on timeout.
-  On interruption or timeout it returns `status="timeout"` plus an exact `resume_command`.
-- If polling is unavoidable, use a shell/tool loop with a fixed interval, hard attempt/deadline cap,
-  and full log on disk. Return once on completion or once at the cap with the exact resume command.
+**Model-driven polling is absolutely prohibited.** A model must never repeatedly wake to inspect
+the same pending condition. This includes repeated `wait`, `write_stdin`, or `wait_agent` calls;
+GitHub status/check API reads, `gh run view`, or `gh pr checks`; Prefect inspect API/CLI calls;
+Render deployment reads; and equivalent status checks. Background-command-plus-repeated-read loops
+are prohibited, including as a fallback. A process may poll; the model is sampled only after one
+terminal result or one timeout.
+
+- GitHub PR checks and Actions runs use `bin/wait-ci <pr>` or `bin/wait-ci --run <run-id>`.
+  Prefect flow runs use
+  `bin/wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'`. Each is one
+  bounded process with explicit terminal success/failure predicates, one compact JSON result, and
+  `status="timeout"` plus an exact `resume_command` when its hard deadline expires.
+- If no purpose-built waiter exists, write a deterministic bounded poller under the run's scratch
+  directory. It must use a fixed interval, a hard deadline or attempt cap, explicit success and
+  failure terminal predicates, a full log on disk, and one compact terminal result. Timeout exits
+  nonzero and prints the exact resume/retry command. The script, never the model, performs the
+  repeated status reads.
+- Run the waiter or poller as one blocking foreground tool call whenever the harness supports it.
+  Resume model reasoning only after the process reaches a terminal predicate or its deadline.
+- If the harness yields a resumable command session, do not build a model loop around the session.
+  Use one supported long blocking wait. If that is unavailable, delegate only the deterministic
+  waiter process to one fresh `fork_turns: "none"` leaf whose packet contains the identifiers,
+  deadline, and exact command. The parent blocks once for the leaf's terminal result. If neither
+  route exists, stop with the exact resume command instead of polling.
+- **Conductor enforcement:** do not start a wait in a parent when unified exec will yield a
+  resumable session. Dispatch the deterministic waiter immediately to the fresh no-history leaf
+  and block once. If an accidental parent wait yields, terminate it and restart the exact command
+  in the leaf; the parent must not poll the parent session itself.
 - Never trade away a required test, review, deployment check, or verification row to save tokens.
   Missing evidence remains missing; failures remain loud.
+
+## Durable checkpoints and phase rotation
+
+- Before each durable phase boundary, persist the phase result to its canonical MCP artifact or
+  workflow checkpoint. Start the next phase in a fresh `fork_turns: "none"` agent with only the
+  checkpoint and bounded packet required for that phase.
+- Choose and record a fixed context/token budget for every phase owner. Force replacement after
+  the first context compaction or when that budget is reached, whichever happens first. Persist the
+  checkpoint before replacement. Never keep an indefinitely growing agent merely because it still
+  responds.
 
 ## Secret-safe operations
 

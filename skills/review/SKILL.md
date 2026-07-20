@@ -256,6 +256,12 @@ memory/context packet; it does not launch a separate broad history search.
 
 **All reviewer instances** return structured JSON per `references/findings-schema.json`.
 
+Every native, Workflow, and provider reviewer dispatch uses `fork_turns: "none"` with a bounded,
+self-contained packet. A history fork is allowed only when that packet is genuinely impossible;
+record the reason before dispatch and use the smallest explicit numeric count of recent turns that
+contains the missing fact. Never use an all-history fork, and never treat convenience or a large
+existing conversation as an exception.
+
 ### Conditional cross-provider reviewers
 
 External peers are not a default reviewer set. Escalate to the other two providers only when:

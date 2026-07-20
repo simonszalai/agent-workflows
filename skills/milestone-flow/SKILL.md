@@ -53,6 +53,16 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 - This first response and its version are the run cache. Reuse it through wave construction and
   pass bounded milestone/step extracts to delegated ticket-flows; reload only after a workflow in
   this run mutates epic structure or gate artifacts.
+- Resolve the milestone's active shared packet from
+  `.context/epic-flow/<EPIC_ID>/<MILESTONE>/current.json`. If direct entry has no packet, create it
+  from this bounded response using the `epic-flow` packet contract: immutable `packets/v<NNN>.md`,
+  SHA-256 of its exact bytes, and an atomically renamed current manifest. Verify the hash before
+  use. This milestone-flow is the sole packet writer while it owns the milestone.
+- Give children only the active packet path, version, and SHA-256. Require every result/checkpoint
+  to record that version/hash. Reload MCP/source data only when the manifest version changed or a
+  child identifies one specifically missing fact. Update by publishing a new immutable version and
+  atomically advancing the manifest; never mutate the active packet or duplicate epic history in a
+  child prompt.
 - Resolve milestone by display id (`M2`) or choose the first incomplete milestone for `--next`.
 - Load all step tickets in that milestone.
 - Read parent epic plan, milestone acceptance criteria, blockers, and contracts.
@@ -94,13 +104,19 @@ handoff so later audits can distinguish "searched and none found" from "Codex/Gr
 - same-repo steps default to serial unless their write scopes are demonstrably disjoint;
 - if unsure, serialize.
 
+Every ticket-flow dispatch uses `fork_turns: "none"` plus the active shared packet and its exact
+step scope. A history fork is permitted only when a self-contained packet is genuinely impossible;
+record the reason first and use the smallest explicit numeric count of recent turns. Never use an
+all-history fork.
+
 ### 4. Execute each wave
 
 For each step ticket that is **not already `merged`**, run `/ticket-flow <ID> --epic-context
 --target staging` (or the milestone's configured integration target). Skip steps already
 `merged` (e.g. when entered via the ticket-flow hand-off). The `--epic-context` flag is required:
 it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand back into
-`/milestone-flow`. Each non-skipped ticket-flow must:
+`/milestone-flow`. The dispatch packet carries the active shared-packet path/version/hash rather
+than copied parent context. Each non-skipped ticket-flow must:
 
 - load the parent epic plan and milestone contract;
 - build/review/local-verify the step;
@@ -160,6 +176,12 @@ If project artifacts specify a milestone-scoped deploy selector, pass that selec
 project's deployment command, but keep status/evidence ownership on the parent epic milestone. Do
 not skip this because a PR is merged: merged code is not deployed runtime evidence.
 
+Tests, builds, migrations, large diffs, deployment output, and other noisy commands in this flow or
+its children must use `bin/compact-exec` (or an established equally compact stricter wrapper).
+Preserve the full log on disk and read only bounded summaries/tails. Every failure must report the
+wrapper's absolute `output_file` and exact `rerun_command`; never paste a full deployment log into
+the milestone context.
+
 Treat deployment as incomplete until the deployment mechanics are verified by `/auto-deploy`
 (migrations/blocks/scheduler/worker/Prefect registrations/service deploys as applicable). If
 deployment fails, record the blocker/failure on the epic or affected step ticket and stop; do not
@@ -187,15 +209,18 @@ re-run/fix the evidence write rather than marking the milestone complete.
 - `PASS`: confirm all evidence artifacts exist, confirm `/ticket-verify` updated the included
   step ticket statuses per the lifecycle (single owner — do not update them here), and return
   milestone success.
-- `NEEDS_MORE_TIME`: do not make the milestone-flow parent wake and reread its full conversation for
-  each timer. Spawn one fresh waiter with `fork_turns: "none"`; its self-contained packet contains
-  only epic/milestone IDs, environment, the persisted awaited condition/timestamp, the exact verifier
-  resume command, and the cap. The waiter performs at most 3 re-runs with increasing intervals
-  (~5m, ~15m, ~30m) and returns once with `PASS`/`FAIL`/`BLOCKED` or a capped
-  `NEEDS_MORE_TIME`. The parent uses one blocking agent-wait/wake call, not repeated status reads.
-  At the cap, persist the gate state and exact resume command and report it; never claim milestone
-  success. If the platform cannot block on a fresh waiter, stop after the first
-  `NEEDS_MORE_TIME` with that resume command instead of model-polling.
+- `NEEDS_MORE_TIME`: persist the exact awaited condition, source-of-truth query, fixed interval,
+  deadline/attempt cap, explicit success/failure predicates, and verifier resume command. Use
+  `bin/wait-prefect-flow` for a Prefect run; otherwise write one deterministic bounded poller under
+  the run scratch directory. The poller alone performs repeated status reads and emits one compact
+  terminal result. It must exit nonzero at the cap with the exact resume/retry command. Do not
+  periodically re-run the model-driven verifier.
+  Run that poller in one blocking foreground call. If the harness would yield, send only the poller
+  to one fresh `fork_turns: "none"` leaf and make the parent block once for its terminal result.
+  After a successful predicate, start one fresh verifier agent and grade once. On timeout, persist
+  the gate state and resume command and report it; never claim milestone success. Repeated `wait`,
+  `write_stdin`, `wait_agent`, GitHub/Prefect/Render reads, or other model status checks are
+  prohibited.
 - `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
   Stop only for a genuine external/manual blocker or the same unresolved failure repeating after
@@ -203,6 +228,15 @@ re-run/fix the evidence write rather than marking the milestone complete.
 
 Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
 milestone it was asked to execute.
+
+### 9. Durable phase checkpoints and rotation
+
+Treat readiness, each execution wave, the gate package, staging deploy, and staging verification as
+durable phase boundaries. At each boundary, persist the canonical step/epic artifact and active
+packet manifest, then start the next phase in a fresh `fork_turns: "none"` agent with only its
+packet/checkpoint. Choose and record a fixed context/token budget before each phase. Force rotation
+after the first compaction or when that budget is reached, whichever happens first; never continue
+an indefinitely growing agent merely because it still responds.
 
 ## Output
 

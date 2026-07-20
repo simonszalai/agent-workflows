@@ -59,6 +59,20 @@ Follow `../references/execution-phases.md` and `../references/execution-economy.
 8. **Push.** Ensure the feature branch is pushed to the remote (no PR — `/auto-deploy` creates
    the PR at deploy time).
 
+### Phase checkpoints, rotation, and command output
+
+- Build-todo creation, implementation, review, review resolution, and final health are durable
+  phase boundaries. Persist the current MCP artifacts and tree SHA at each boundary, then start the
+  next phase in a fresh `fork_turns: "none"` agent with only its bounded checkpoint/packet.
+- Choose and record a fixed context/token budget for every phase owner. Force replacement after the
+  first compaction or when the budget is reached, whichever happens first. A replacement receives
+  only the persisted checkpoint and phase-specific packet; never continue an indefinitely growing
+  agent merely because it still responds.
+- Tests, builds, migrations, large diffs, and other noisy commands must use `bin/compact-exec` or an
+  established equally compact stricter wrapper. Full output stays in the log; the model receives
+  only the bounded summary/tail. On failure, report the absolute `output_file` and exact
+  `rerun_command` before routing the fix.
+
 ## Output
 
 ```text
