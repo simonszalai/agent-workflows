@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import subprocess
 import tempfile
 import time
@@ -11,6 +13,54 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+FORBIDDEN_POLLING_FRAGMENTS = (
+    "run_in_background`, then wait",
+    "poll the output file rather than",
+    "wait for the background command to finish",
+    "waiter performs at most 3 re-runs",
+    "background it and repeatedly read",
+)
+MODEL_POLLING_DIRECTIVES = (
+    re.compile(
+        r"(?:call|invoke|use|run|read|check)\s+`?"
+        r"(?:wait_agent|write_stdin|wait)\b.{0,120}"
+        r"(?:again|until|every|repeat|periodic|loop)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:again|until|every|repeat|periodic|loop)\w*.{0,120}"
+        r"(?:wait_agent|write_stdin|wait)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:call|invoke|use|run|read|check)\s+`?"
+        r"(?:gh pr checks|gh run view|prefect.{0,40}inspect|"
+        r"flow-run inspect|render.{0,40}(?:status|deploy|read)).{0,120}"
+        r"(?:again|until|every|repeat|periodic|loop)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:run|launch|start).{0,100}background.{0,160}"
+        r"(?:then|and).{0,60}(?:wait|poll|read|check)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def model_polling_guidance_violations(text: str) -> list[str]:
+    violations = [fragment for fragment in FORBIDDEN_POLLING_FRAGMENTS
+                  if fragment.lower() in text.lower()]
+    for paragraph in re.split(r"\n\s*\n", text):
+        normalized = " ".join(paragraph.split())
+        lowered = normalized.lower()
+        if any(marker in lowered for marker in (
+            "never", "do not", "must not", "prohibited", "rather than", "instead of"
+        )):
+            continue
+        if any(pattern.search(normalized) for pattern in MODEL_POLLING_DIRECTIVES):
+            violations.append(normalized[:240])
+    return violations
+
 
 def run_script(name: str, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     return subprocess.run([str(ROOT / "bin" / name), *args], capture_output=True,
@@ -18,6 +68,83 @@ def run_script(name: str, *args: str, env: dict[str, str] | None = None) -> subp
 
 
 class WorkflowEfficiencyTest(unittest.TestCase):
+    def test_e0026_retro_contracts_are_present_and_consistent(self) -> None:
+        economy = (ROOT / "skills/references/execution-economy.md").read_text()
+        guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
+        verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
+        epic = (ROOT / "skills/epic-flow/SKILL.md").read_text()
+        milestone = (ROOT / "skills/milestone-flow/SKILL.md").read_text()
+        review = (ROOT / "skills/review/SKILL.md").read_text()
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        ticket_build = (ROOT / "skills/ticket-build/SKILL.md").read_text()
+        build = (ROOT / "skills/build/SKILL.md").read_text()
+
+        for contract in (guide, verify):
+            self.assertIn("every long-lived reader", contract)
+            self.assertIn("zero new undefined-object failures", contract)
+            self.assertIn("zero new infrastructure quarantines", contract)
+            self.assertIn("schema truth", contract.lower())
+            self.assertIn("FAILED-state observability", contract)
+
+        for contract in (epic, milestone, review):
+            self.assertIn('fork_turns: "none"', contract)
+            self.assertIn("smallest explicit numeric count", contract)
+            self.assertNotIn('fork_turns: "all"', contract)
+
+        for contract in (ticket_flow, ticket_build, milestone):
+            self.assertIn("first compaction", contract)
+            self.assertIn("fixed context/token budget", contract)
+            self.assertIn('fork_turns: "none"', contract)
+
+        self.assertIn("Model-driven polling is absolutely prohibited", economy)
+        self.assertIn("bin/wait-ci", economy)
+        self.assertIn("bin/wait-prefect-flow", economy)
+        self.assertIn("deterministic bounded poller", economy)
+        self.assertIn("one blocking foreground", economy)
+        self.assertIn("deterministic bounded poller", milestone)
+        self.assertNotIn("run_in_background`, then wait", build)
+
+        for contract in (economy, ticket_build, milestone):
+            self.assertIn("bin/compact-exec", contract)
+            self.assertIn("output_file", contract)
+            self.assertIn("rerun_command", contract)
+
+        for contract in (epic, milestone, ticket_flow):
+            self.assertIn("current.json", contract)
+            self.assertIn("SHA-256", contract)
+            self.assertIn("packet path", contract)
+            self.assertIn("version/hash", contract)
+        self.assertIn("16 KiB", epic)
+
+    def test_workflow_guidance_has_no_model_driven_polling_instructions(self) -> None:
+        roots = (ROOT / "skills", ROOT / "agents", ROOT / "workflows")
+        paths = [path for root in roots for path in root.rglob("*")
+                 if path.is_file() and path.suffix in {".md", ".toml"}]
+        violations: list[str] = []
+        for path in paths:
+            text = path.read_text(errors="replace")
+            for violation in model_polling_guidance_violations(text):
+                violations.append(f"{path.relative_to(ROOT)}: {violation}")
+        self.assertEqual([], violations)
+
+    def test_model_polling_guidance_linter_rejects_common_instruction_shapes(self) -> None:
+        prohibited = (
+            "Call wait_agent every 30 seconds until the agent is done.",
+            "Run gh pr checks, sleep, and run it again until CI passes.",
+            "Invoke Prefect flow-run inspect periodically while the flow is pending.",
+            "Launch the command in the background, then read its output until it exits.",
+            "Use Render deployment status reads every minute until the deploy is live.",
+        )
+        for sample in prohibited:
+            self.assertTrue(model_polling_guidance_violations(sample), sample)
+        allowed = (
+            "Run bin/wait-ci once as one blocking foreground command.",
+            "Never call wait_agent repeatedly for the same pending condition.",
+            "The deterministic script, not the model, polls until its hard deadline.",
+        )
+        for sample in allowed:
+            self.assertEqual([], model_polling_guidance_violations(sample), sample)
+
     def test_skill_contracts_keep_routine_and_lfg_paths_bounded(self) -> None:
         review = (ROOT / "skills/review/SKILL.md").read_text()
         lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
@@ -155,6 +282,9 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(summary["output_bytes"], 9)
             self.assertEqual(summary["tail"], "56789")
             self.assertEqual(Path(summary["output_file"]).read_text(), "123456789")
+            expected = f"cd {shlex.quote(str(ROOT))} && "
+            expected += shlex.join(["/bin/sh", "-c", "printf 123456789; exit 3"])
+            self.assertEqual(summary["rerun_command"], expected)
 
     def test_compact_exec_timeout_kills_descendant_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

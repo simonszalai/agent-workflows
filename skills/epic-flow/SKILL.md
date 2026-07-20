@@ -54,6 +54,22 @@ Read before acting:
 - Cache that response/version as the orchestration snapshot and pass bounded milestone extracts to
   milestone-flow. Reload only after `/epic-plan`, `/epic-split`, or a completed milestone mutates
   the epic; do not re-read the unchanged full epic between routing decisions.
+- Create one active bounded, versioned shared packet per milestone under
+  `.context/epic-flow/<EPIC_ID>/<MILESTONE>/`. Store immutable packet bodies as
+  `packets/v<NNN>.md` and atomically replace `current.json`, which names the version, relative path,
+  and SHA-256 of the exact packet bytes. Write a temporary packet, hash it, move it to its immutable
+  versioned path, then write and atomically rename the manifest. Never edit a published version.
+- The packet contains only the parent plan/acceptance contract, step/DAG summary, repo/path/branch
+  map, relevant knowledge, activation/deploy constraints, and required return/checkpoint schemas.
+  Cap the packet body at 16 KiB; summarize or reference immutable artifact IDs/paths rather than
+  exceeding the cap. Delegated work receives the active packet path, version, and SHA-256, not
+  duplicated epic history. Every consumer verifies the hash and records the version/hash it used in
+  its terminal result.
+- Advance the packet version only when a source artifact, epic structure, contract, relevant
+  knowledge, or completed milestone checkpoint changes. Consumers reload MCP/source context only
+  after the manifest advances or when a specifically named missing fact is required. Route a
+  missing-fact request to the orchestrator for a bounded packet update; do not independently reload
+  the whole epic.
 - If the epic spans multiple repos, resolve every involved repo to an actual Conductor workspace
   path or linked directory using `conductor-multi-repo.md`. If any required repo is missing, stop
   before invoking milestone-flow and report the missing repo/path requirement.
@@ -76,7 +92,8 @@ For each milestone in dependency order:
 2. Run `/milestone-flow <EPIC_ID> <MILESTONE>` to execute the step-ticket DAG **and the staging
    gate**. That skill owns ticket parallelism, gate package creation, `/auto-deploy <EPIC_ID>
    staging`, `/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote`, and
-   any milestone-local fix/redeploy/reverify loop.
+   any milestone-local fix/redeploy/reverify loop. Dispatch it with `fork_turns: "none"` and only
+   the active milestone packet path/version/hash plus the exact command and expected result schema.
 3. Accept milestone success only when `/milestone-flow` reports a staging `PASS` and artifact ids
    for all required evidence destinations:
 
@@ -124,6 +141,20 @@ passes.
 
 Parallelism is delegated to `/milestone-flow`, which uses dependency waves and repo write
 scope analysis. Never parallelize same-repo overlapping work just to save time.
+
+Every delegated epic/milestone call uses `fork_turns: "none"` and the shared packet above. A
+history fork is allowed only when a self-contained packet is genuinely impossible: record the
+reason before dispatch and use the smallest explicit numeric count of recent turns. Never use an
+all-history fork.
+
+## Phase checkpoints and rotation
+
+Treat normalized plan/split, each milestone gate, and final production promotion/verification as
+durable phase boundaries. Persist the current epic artifact/checkpoint and active packet manifest,
+then start the next phase in a fresh no-history agent with only that phase's packet. Record a fixed
+context/token budget for the phase owner and force rotation after its first compaction or when the
+budget is reached, whichever occurs first. A responsive but indefinitely growing agent is not a
+reason to skip rotation.
 
 ## Output
 

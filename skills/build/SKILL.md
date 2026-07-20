@@ -8,7 +8,8 @@ max_turns: 100
 
 Execute a plan by spawning a `builder` agent to work through build_todos.
 
-For any multi-repo or linked-workspace context, read `../references/conductor-multi-repo.md`.
+Follow `../references/execution-economy.md`. For any multi-repo or linked-workspace context, read
+`../references/conductor-multi-repo.md`.
 
 ## Usage
 
@@ -56,8 +57,11 @@ retrying a todo that failed at lower effort. Requirements specific to this mode:
     --out .context/build/result-{NN}.json
   ```
 
-  Run it in the background (Bash `run_in_background`, then wait and read the `--out`
-  file) — an escalated-reasoning todo can exceed the foreground shell timeout.
+  Run the adapter as one blocking foreground tool call with the tool timeout above the adapter's
+  bounded timeout, then read `--out` once after the process exits. If the harness cannot hold that
+  call, delegate only this exact bounded command to one fresh `fork_turns: "none"` leaf and block
+  once for its terminal result. Never background the adapter and repeatedly read its process or
+  output file from model turns; if neither route can block, stop with the exact resume command.
 - Validate the returned JSON against the build-mode contract before checkpointing;
   a run with no valid JSON counts as `failed` for the self-repair loop.
 - Everything the orchestrator owns stays identical: MCP artifact statuses, the health
@@ -260,6 +264,10 @@ self-repair (≤2 retries), and the final health gate.
    2. The project **health command passes** — run the project's full **test + typecheck + lint**
       (commands from the project's CLAUDE.md / conventions) against the whole working tree, not
       just per-todo touched files.
+
+   Tests, builds, migrations, large diffs, and other noisy commands use `bin/compact-exec` or an
+   established equally compact stricter wrapper. Preserve the full log and consume only its bounded
+   summary/tail. A failure report includes the absolute `output_file` and exact `rerun_command`.
 
    If the health command fails even though every todo self-reported complete, the build is
    **not** done — a cross-file interaction broke. Dispatch one builder scoped to the specific

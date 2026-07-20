@@ -222,6 +222,28 @@ Do not use naive wall-clock lookback when a commit boundary is available.
   external service release), use the later of the code-deploy boundary and blocker-resolution
   evidence as the activation boundary for post-activation checks.
 
+### 4a. Grade destructive-cutover runtime readiness
+
+When the deployed change removes or renames a schema/runtime object, schema truth alone is
+insufficient evidence. Before PASS, grade every destructive-cutover row in the deployment guide and
+independently require:
+
+1. inventory every long-lived reader, consumer, worker, scheduler, and job that can touch the
+   removed object, including cached-query and indirect configuration paths;
+2. prove each inventoried process restarted or otherwise loaded post-cutover code/config after the
+   activation boundary, using instance/run/revision evidence rather than registration alone;
+3. run or observe the guide's bounded, representative real-input soak after the destructive
+   cutover is active;
+4. query runtime failures and infrastructure quarantine stores for the soak window and require
+   zero new undefined-object failures and zero new infrastructure quarantines;
+5. preserve intentional FAILED-state observability and failure history. Never suppress, relabel,
+   catch-and-ignore, or delete failures to obtain a clean result.
+
+Missing inventory or activation proof is `BLOCKED` before a destructive step and `FAIL` once the
+cutover is active. Any new undefined-object failure or infrastructure quarantine is `FAIL` and its
+evidence remains visible. A clean Atlas/schema-truth result or matching schema fingerprint cannot
+substitute for running-reader activation and soak evidence.
+
 ### 5a. Deployment precondition (check before grading runtime-evidence rows)
 
 Before grading any evidence item that depends on runtime output from a deployed object (Prefect

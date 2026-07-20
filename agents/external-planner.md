@@ -48,10 +48,9 @@ remaining providers instead of using this Claude-specific subagent wrapper.
    immediately with `notes: "adapter contract mismatch: <expected flag> not in
    external-agent --help"` so the orchestrator reports the drift loudly.
 
-2. **Launch the adapter in the background** (`run_in_background: true`). Do NOT run it
-   foreground — a Codex/Grok planning pass can be slow enough to exceed foreground tool
-   timeout caps. Background execution has no such cap and the harness re-invokes you when it
-   exits:
+2. **Run the adapter once as a blocking foreground command.** Set the outer tool timeout above the
+   adapter's bounded timeout so the model receives one terminal result rather than waking on
+   intermediate state:
 
    ```bash
    external-agent --task plan --provider <provider> \
@@ -66,13 +65,13 @@ remaining providers instead of using this Claude-specific subagent wrapper.
    The adapter is self-bounded (internal default timeout 900s, 2-attempt retry, always writes
    a valid envelope — even on failure it writes
    `{planner_key, plan: null, assumptions: [], disagreements: [], evidence: [],
-   open_questions: [], notes: ...}` and exits 2). So you never need your own timeout.
+   open_questions: [], notes: ...}` and exits 2).
 
-3. **Wait for the background command to finish.** When notified it has exited, continue. If you
-   must wait actively, poll the output file rather than sleeping in the foreground — do not
-   return until the adapter process has exited.
+3. If the harness cannot hold the blocking call, return a valid empty envelope whose `notes` names
+   the exact adapter resume command. Never background the command, poll its output file/process, or
+   repeatedly call a wait/status tool from model turns.
 
-4. **Read the output file** (`.context/plan/<provider>.json`).
+4. **Read the output file once** (`.context/plan/<provider>.json`) after the command exits.
 
 5. **Return the file's JSON content verbatim** as your final message — nothing else, no prose,
    no markdown fence. It is already a valid planner-output envelope

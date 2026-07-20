@@ -151,6 +151,26 @@ Also record the **activation boundary**: how a verifier knows the new code is ac
 flow/job run that started after the land — measure fill rates from the first post-land row, not
 from merge time).
 
+For any permitted **destructive schema cutover** (drop/rename of a table, column, view, function,
+queue, topic, or other runtime object), static schema truth is insufficient runtime-readiness
+evidence. The guide must sequence the compatibility-code activation and all reader restarts before
+the destructive step, then require all of this evidence:
+
+1. a complete inventory of every long-lived reader, consumer, worker, scheduler, and job that can
+   touch the removed object, including indirectly through cached queries or configuration;
+2. per-reader proof that the process restarted or otherwise loaded the post-cutover code/config,
+   tied to an instance/run/revision and later than the activation boundary;
+3. a bounded representative real-input soak after the destructive cutover is active, with the
+   input mix, duration or run cap, and observation window recorded;
+4. zero new undefined-object failures and zero new infrastructure quarantines during that soak,
+   measured from a pre-cutover baseline and checked in both runtime failures and quarantine stores;
+5. explicit preservation of intentional FAILED-state observability: do not catch, suppress, delete,
+   or relabel failures to make the cutover pass.
+
+If any reader cannot be inventoried, activated, or observed, the destructive step is not permitted.
+An Atlas/schema-truth no-op or matching database fingerprint proves only schema state; it never
+proves that long-lived runtime readers loaded compatible code.
+
 If any evidence row expects runtime behavior (canary run, observer, flow, deployment, stored rows,
 polling, scheduler, worker, Prefect, supervisor, webhook, or live readback), the guide must name
 the producing deploy object/command in the Deployment Steps. Do not leave a guide FINALIZED when
@@ -253,6 +273,8 @@ Process step 3), not placeholders.
 - [ ] Tests + type check pass
 - [ ] Branch rebased on target (linear history; avoids migration-graph conflicts)
 - [ ] Migration is order-independent / idempotent (if any)
+- [ ] Destructive cutover reader inventory, activation/restart proofs, and post-cutover soak are
+      defined (if any object is removed)
 - [ ] {change-type-specific checks}
 
 ### Rollback
@@ -270,6 +292,16 @@ PASS only if all rows and all listed edge cases pass.
 
 {How to know the new code is live: commit on origin/{main|staging}; or first flow/job run after
 the land for runtime-git-pull projects. Measure from the first post-land evidence row.}
+
+### Destructive cutover runtime readiness (if applicable)
+
+- Removed object(s): {exact names}
+- Reader inventory: {reader/consumer/job -> deployment/process identity}
+- Activation proof: {reader -> restarted/reloaded revision and timestamp/run id}
+- Representative soak: {real inputs, fixed duration/run cap, post-cutover observation window}
+- Failure predicates: zero new undefined-object failures; zero new infrastructure quarantines
+- Observability: preserve intentional FAILED states and failure history
+- Schema truth: {schema evidence}, explicitly recorded as insufficient without the runtime proofs
 
 ### Staging
 
