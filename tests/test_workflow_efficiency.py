@@ -417,6 +417,37 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("stops after the staging verify leg", ticket_flow)
         self.assertTrue(os.access(ROOT / "bin/wait-prefect-flow", os.X_OK))
 
+    def test_terminal_workflows_share_visible_outcome_and_closeout_contract(self) -> None:
+        outcome = (ROOT / "skills/references/terminal-outcomes.md").read_text()
+        workflow_names = (
+            "auto-deploy",
+            "ticket-deploy",
+            "ticket-verify",
+            "ticket-flow",
+            "ticket-promote",
+            "milestone-flow",
+            "epic-flow",
+            "encryption-verify",
+            "migration-parity-check",
+        )
+
+        for workflow_name in workflow_names:
+            workflow = (ROOT / f"skills/{workflow_name}/SKILL.md").read_text()
+            self.assertIn("skills/references/terminal-outcomes.md", workflow, workflow_name)
+
+        self.assertIn("# ✅ COMPLETED — READY TO CLOSE", outcome)
+        self.assertIn("# ❌ STAGING VERIFICATION FAILED", outcome)
+        self.assertIn("# ❌ PRODUCTION DEPLOY FAILED", outcome)
+        self.assertIn("Lifecycle truth:", outcome)
+        self.assertIn("Repository and release state:", outcome)
+        self.assertIn("Ticket hygiene:", outcome)
+        self.assertIn("Closeout check: <READY|NOT READY", outcome)
+        self.assertIn("Not verified:", outcome)
+        self.assertIn("raw ANSI escape sequences", outcome)
+        self.assertIn("worst terminal state", outcome)
+        self.assertIn("do not repeat the child's banner", outcome)
+        self.assertIn("# ⚠️ STOPPED — ACTION REQUIRED", outcome)
+
     def test_full_auto_review_contract_separates_severity_from_decision_ownership(self) -> None:
         wrapper = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
         phases = (ROOT / "skills/references/execution-phases.md").read_text()

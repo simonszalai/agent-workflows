@@ -240,6 +240,12 @@ an indefinitely growing agent merely because it still responds.
 
 ## Output
 
+Load and apply `skills/references/terminal-outcomes.md` after the milestone verifier and final
+artifact/status re-read. Run the shared post-check and put one large banner plus details block
+before the format below. A passed milestone gate uses `# ✅ STAGING VERIFIED` with the later
+milestone/production work called out under `Not verified`; a failed deploy or verification uses
+the matching red-X banner and includes partial step/ticket changes and the safest resume action.
+
 ```text
 Milestone flow complete: E0007 M2
 Steps: 3/3 merged

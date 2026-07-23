@@ -185,6 +185,13 @@ run includes immediate reconciliation.
 
 ## Output
 
+Load and apply `skills/references/terminal-outcomes.md`. After the read-only comparison, run the
+shared post-check for any ticket/artifact updates made by the run and put one large banner plus
+details block before the parity report. Because this is a read-only promotion precheck, never
+claim deployment or final ticket closure: use `# ✅ PROMOTION PRECHECK PASSED` only when the
+comparison is clean, or `# ❌ PROMOTION PRECHECK FAILED`/the blocked heading when reconciliation
+or missing evidence prevents promotion, with the exact debt and next action underneath.
+
 ```text
 Repo:      ts-prefect
 Lane:      Atlas schema lane | legacy Alembic lane | Prisma lane | no schema lane

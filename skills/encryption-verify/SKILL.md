@@ -46,3 +46,13 @@ Default required checks:
 - `FAIL`: required local check failed; fix before asking Thomas to run manual staging testing.
 
 Always summarize failures, warnings, and the exact command used.
+
+## Terminal report
+
+Load and apply `skills/references/terminal-outcomes.md`. Run its post-check for the files and ticket
+artifacts touched by this run, then put one large banner and details block before individual check
+results. This is local/readiness verification, not environment verification: use
+`# ✅ STAGING VERIFIED` only if staging was actually exercised; otherwise use a truthful
+`# ✅ READINESS CHECK PASSED` heading that does not claim deployment or final closure, set
+`Closeout check: NOT READY`, and list the manual staging work under `Not verified`. Required-check
+failure uses `# ❌ READINESS CHECK FAILED`.
