@@ -158,6 +158,13 @@ reason to skip rotation.
 
 ## Output
 
+Load and apply `skills/references/terminal-outcomes.md` at each terminal stop of the requested
+epic run. After the final milestone or production action, run the shared post-check, re-read the
+epic and affected step tickets, and put exactly one large outcome banner plus details block before
+the report below. A clean final production PASS with canonical completed state uses
+`# ✅ COMPLETED — READY TO CLOSE`; staging-only success uses `# ✅ STAGING VERIFIED`; gate-stop,
+blocked, and failed runs use their accurate non-complete banner.
+
 Always report:
 
 - epic id and current mode (`full-auto` or `gate-stop`);

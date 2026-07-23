@@ -524,6 +524,12 @@ to `/ticket-verify` after behavior/evidence verification.
 
 ## Output
 
+Before emitting either terminal report, load and apply
+`skills/references/terminal-outcomes.md`. Run its post-check after the final deploy/status action,
+then put the environment-specific deploy success/failure banner and confirmation block before the
+existing details. A successful deploy is not final ticket closure: its closeout result stays
+`NOT READY` until `/ticket-verify` proves behavior and cleanup.
+
 ### On Success
 
 ```
