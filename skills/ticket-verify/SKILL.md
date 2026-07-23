@@ -191,6 +191,13 @@ Before triggering, prove and record:
    unbounded workload, or mutate an external production service;
 4. cleanup is defined for temporary run/deployment/throwaway data artifacts.
 
+If the producer fans out across multiple external calls, records, SSH sessions, browser sessions,
+or similar units, first run one real unit through the exact final producer transport and parsing
+path. The canary must use the same argv/options, credentials mechanism, target mapping, timeout,
+protocol, and cleanup as the full run; a dry-run or separate health probe is insufficient. Require
+one gradeable result and retain a bounded credential-free error classification before spending the
+remaining budget. A failed exact-path canary is `BLOCKED`/`FAIL` as appropriate and stops fan-out.
+
 Trigger exactly once and capture the run id and parameters. For Prefect, wait with one bounded
 process:
 

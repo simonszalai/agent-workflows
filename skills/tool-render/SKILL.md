@@ -172,6 +172,42 @@ list_deploys(serviceId="srv-xxx", limit=5)
 get_deploy(serviceId="srv-xxx", deployId="dep-xxx")
 ```
 
+## Render SSH access and host-key diagnostics
+
+Render service SSH uses the normal OpenSSH client:
+
+```text
+ssh <service-id>@ssh.<region>.render.com
+```
+
+On Simon's Mac, `~/.ssh/config` routes client authentication through the 1Password SSH agent.
+Do not `op read` or copy a private key into a file/argv. Confirm only the public agent inventory
+when needed. A successful remote command or any application output proves the client key
+authenticated; do not relabel a later protocol failure as "missing 1Password access."
+
+Render's gateway may fail OpenSSH's **post-authentication** host-key rotation extension with:
+
+```text
+client_global_hostkeys_prove_confirm: server gave bad signature ... incorrect signature
+```
+
+That error concerns Render's proof for an additional **server** host key, not the client's
+1Password identity. Use both of these options for the retry:
+
+```text
+-o StrictHostKeyChecking=yes -o UpdateHostKeys=no
+```
+
+This retains strict checking of the existing `known_hosts` entry and disables only automatic
+post-auth key rotation. Never "fix" it with `StrictHostKeyChecking=no` or
+`UserKnownHostsFile=/dev/null`. For ts-scraper Docker services, invoke the known interpreter
+`/app/.venv/bin/python` rather than depending on the remote SSH PATH.
+
+Before any cohort/fan-out/bulk operation, run **one real canary through the exact final SSH argv,
+remote interpreter, stdin/protocol path, and cleanup path**. A separate ad-hoc identity command or
+dry-run does not qualify. Preserve a bounded, credential-free failure class/stderr excerpt. Do not
+spend the full connection/work budget until that canary returns gradeable evidence.
+
 ## Common Patterns
 
 **OOM Detection:**

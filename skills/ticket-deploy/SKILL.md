@@ -54,6 +54,15 @@ All CI and Prefect waits must use one bounded waiter process. In Conductor, disp
 to one fresh leaf with `fork_turns: "none"`, then block once for its terminal result. Never poll a
 resumable process session or re-sample the parent model while the external run is pending.
 
+Before any high-cardinality external producer required by a deployment guide (cohort, soak,
+per-record verifier, repeated SSH/API session, or equivalent), run one real unit through the
+**exact final transport and execution path**: same argv/options, identity source, remote
+interpreter, request/protocol framing, target mapping, timeouts, and cleanup. A dry-run, a different
+ad-hoc health command, or a canary that bypasses the producer transport does not satisfy this gate.
+Require gradeable output and preserve a bounded credential-free failure class/stderr excerpt before
+spending the full work/connection budget. If the canary fails, stop before fan-out; never infer that
+client authentication failed merely because a later SSH host-key/update phase failed.
+
 This skill authorizes autonomous repair of mechanical CI failures throughout staging and
 production delivery. Follow `ci-self-heal.md`: inspect terminal logs, fix routine repository
 failures, re-run focused + final-tree validation and review, commit/push, wait on the new tree,
