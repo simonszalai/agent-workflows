@@ -389,7 +389,7 @@ git worktree remove "$WT"
 For every success or failure handoff, load and apply
 `skills/references/terminal-outcomes.md`. Run its post-check after status update/worktree cleanup
 and put the production-deploy or failure banner plus details block before the batch table or
-failure details. Promotion success uses `# ✅ PRODUCTION DEPLOYED` with `Closeout check: NOT READY`
+failure details. Promotion success uses `## ✅ PRODUCTION DEPLOYED` with `Closeout check: NOT READY`
 because this skill never owns final behavior verification or `completed`; a partial/failed
 promotion uses the accurate red-X, blocked, or stopped banner.
 

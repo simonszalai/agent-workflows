@@ -262,7 +262,7 @@ owning deploy/verification workflow. Run the shared post-check once at the outer
 then put its single large outcome banner and details block before the format below. Preserve the
 distinction between staging success, production success, partial epic landing, and final
 closeability; only a clean production closeout with canonical `completed` status is
-`# ✅ COMPLETED — READY TO CLOSE`.
+`## ✅ COMPLETED — READY TO CLOSE`.
 
 **Evidence rules (apply to every variant below):** each PASS/complete line must be traceable
 to concrete evidence — the command run, test counts, PR link, deploy output, artifact id.

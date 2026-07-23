@@ -528,7 +528,7 @@ Load and apply `skills/references/terminal-outcomes.md` after verdict persistenc
 actions, and deferred cleanup. Its post-check is part of the verdict handoff: re-read the canonical
 item, confirm evidence/ticket updates and run-owned cleanup, then put exactly one large,
 environment-specific banner and details block before the table below. Production PASS may use
-`# ✅ COMPLETED — READY TO CLOSE` only when the item re-reads as `completed` and the closeout audit
+`## ✅ COMPLETED — READY TO CLOSE` only when the item re-reads as `completed` and the closeout audit
 is clean; otherwise report the accurate successful stage, blocker, cleanup hold, or red-X failure.
 
 Report one table for all selected tickets or gate scopes:
