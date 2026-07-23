@@ -188,7 +188,7 @@ Load and apply `skills/references/terminal-outcomes.md` before reporting. Run th
 after the last lifecycle action and put exactly one large banner plus its confirmation/failure
 block before the lifecycle-gate rows below. Only an exact production PASS, completed required
 cleanup, a re-read canonical `completed` status, and a clean closeout audit may use
-`# ✅ COMPLETED — READY TO CLOSE`. Staging-only success uses `# ✅ STAGING VERIFIED`; a deploy or
+`## ✅ COMPLETED — READY TO CLOSE`. Staging-only success uses `## ✅ STAGING VERIFIED`; a deploy or
 verification failure uses the environment-specific red-X banner.
 
 Report one row for each lifecycle gate with command, result, PR/commit or flow-run identifier,
