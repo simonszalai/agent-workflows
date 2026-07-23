@@ -292,6 +292,33 @@ When a feature replaces, supersedes, or eliminates an existing system:
 call sites AND X is deleted from code, config, and live registrations. If the plan only covers
 adding Y, or has no before/after inventory commands, it is incomplete — send it back for revision.
 
+### Shared-Primitive Rollout Audit (CRITICAL)
+
+When a plan introduces or extends a shared primitive that fixes a **failure class** —
+retry/backoff helpers, timeout wrappers, error classification, rate limiting, auth/cookie
+handling, logging/redaction, encoding at a boundary — the deliverable is the failure class,
+not just the flows named in the ticket:
+
+- [ ] **Enumerate ALL call sites of the class, repo-wide:** grep for the underlying
+      operation (e.g., every `httpx`/`requests`/`aiohttp` GET/POST, every raw fetch), not
+      just the modules the incident named. Dedicated/bespoke siblings (one-off pollers,
+      probes, monitors) are the ones most often missed.
+- [ ] **Put the enumeration table in the plan:** every call site listed with a disposition —
+      `in scope`, or `out of scope: <reason>`. An unlisted call site is a plan defect, not
+      an acceptable omission.
+- [ ] **Audit existing bespoke equivalents:** any pre-existing local retry/classification
+      logic (e.g., a hand-rolled retryable-error predicate) must be checked for coverage of
+      the same failure class (full transient status set: 408/425/429/5xx incl. Cloudflare
+      520–526, timeouts, transport errors) — migrate it to the shared primitive or
+      explicitly justify keeping it, with its gaps closed.
+- [ ] **State the sweep so review can re-run it:** the plan names the grep pattern(s) used,
+      so the reviewer can independently re-enumerate and diff against the plan's table.
+
+**Why:** B0278/B0306 added bounded transient retry to the generic RSS/API pollers only.
+The dedicated Bloomberg sitemap and FT RSS pollers (bare `client.get`, no retry) were never
+enumerated, and the Discord monitor's bespoke retry predicate was never audited (missed
+Cloudflare 522). All three later failed in production on transients (B0322/B0323/B0324).
+
 ### Database Changes
 
 - [ ] New tables or columns needed? - Include migration step and migration-lane decision

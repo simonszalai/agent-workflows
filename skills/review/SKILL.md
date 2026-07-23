@@ -643,6 +643,16 @@ construction. The method:
    `evidence` (skeptics verify absences by searching)
 5. **Audit builder deviations** — every Deviations entry from the build must be sound
    against the plan's intent; unsound deviations are findings
+6. **Re-run the call-site sweep for shared-primitive rollouts** — if the ticket rolls out
+   or extends a cross-cutting primitive for a failure class (retry/backoff, timeouts,
+   error classification, rate limiting, redaction, boundary encoding), independently
+   re-enumerate ALL call sites of the underlying operation repo-wide (e.g., grep every
+   `httpx`/`requests` GET/POST) and diff against the plan's enumeration table. Any call
+   site absent from the table, and any pre-existing bespoke equivalent (e.g., a local
+   retryable-error predicate) not audited for the same failure class, is a P1 `absence`
+   finding. Do not trust the plan's sweep — B0278/B0306 scoped retry to the generic
+   pollers only; the unenumerated Bloomberg sitemap and FT RSS pollers and the unaudited
+   Discord 522 predicate all failed in prod (B0322/B0323/B0324).
 
 | Source Item | Plan Step | Implemented? | Finding |
 |---|---|---|---|
