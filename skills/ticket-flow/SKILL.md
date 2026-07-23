@@ -257,6 +257,13 @@ as a lifecycle status.
 
 ## Output
 
+Load and apply `skills/references/terminal-outcomes.md` to the terminal result returned by the
+owning deploy/verification workflow. Run the shared post-check once at the outer workflow boundary,
+then put its single large outcome banner and details block before the format below. Preserve the
+distinction between staging success, production success, partial epic landing, and final
+closeability; only a clean production closeout with canonical `completed` status is
+`# ✅ COMPLETED — READY TO CLOSE`.
+
 **Evidence rules (apply to every variant below):** each PASS/complete line must be traceable
 to concrete evidence — the command run, test counts, PR link, deploy output, artifact id.
 End every report with an explicit "Not verified:" line listing anything claimed but not
