@@ -336,6 +336,8 @@ Rules:
 - Suppress speculative noise: confidence < 0.60 should not be reported (p1 may go to 0.50).
 - "evidence" must be non-empty for every finding.
 - You MAY read other files in the repository for context, but DO NOT modify any files.
+- Review the diff and supplied evidence only. DO NOT run test suites, validation, typecheck, lint,
+  builds, schema pulls/migrations, browser verification, or health commands.
 """
 
 

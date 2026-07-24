@@ -291,9 +291,12 @@ confidence gates, skeptic checks, ownership, and fail-loud behavior still apply.
 
 Autonomous callers run one review/fix round by default. A second (maximum third on heavy scope) is
 allowed only when an adversarial verdict or independent peer materially disagreed, not merely to
-re-confirm fixes. Re-run affected tests after every fix. Carry only contested findings, unresolved
-advisories, and residual risks into the next bounded packet. Use a blocking bounded wait or a
-single resume command; never model-drive provider polling.
+re-confirm fixes. Reviewers never rerun validation; they review the bounded diff and recorded
+orchestrator evidence only. Resolution builders also do not validate. After all fixes, the main
+orchestrator reuses the pre-review PASS if the tree is unchanged or runs one final full gate on the
+changed tree. Carry only contested findings, unresolved advisories, and residual risks into the
+next bounded packet. Use a blocking bounded wait or a single resume command; never model-drive
+provider polling.
 
 ## Process
 
@@ -336,7 +339,8 @@ single resume command; never model-drive provider polling.
    to `.context/review/diff.patch` and `.context/review/files.txt`, includes intent, plan
    conformance/deviations, required schema, relevant project rules, and exact test evidence. It
    reviews correctness, plan conformance, security, and testing within that bounded diff; it does
-   not recruit specialists or peers.
+   not recruit specialists or peers and must not run test suites, validation, typecheck, lint,
+   builds, schema pulls/migrations, browser verification, or health commands.
 
    Validate findings, exact/semantic deduplicate within the single envelope, confidence-gate,
    segregate pre-existing findings, normalize ownership, and partition. Zero-fill skeptic/peer

@@ -219,7 +219,9 @@ When reporting test coverage or claiming tests pass:
 
 1. **Cite specific file paths**: "Tests in `tests/pdf.test.ts` cover..." not "comprehensive
    tests were written"
-2. **Show test output**: Include actual test runner output, not just "all tests pass"
+2. **Show owner-correct test evidence**: A standalone `/write-tests` run includes actual test
+   output. In an orchestrated ticket/lfg run, the test-writer names the exact command as pending
+   and the main orchestrator attaches its pre-review gate output; the subagent never runs it.
 3. **Distinguish test types**: Unit tests of a client don't verify the integration works.
    Testing that `renderPdf()` makes a fetch call doesn't prove the PDF service accepts it.
 
@@ -227,9 +229,9 @@ When reporting test coverage or claiming tests pass:
 
 For any feature involving two services:
 
-1. **Both services must be running** during verification
-2. **The full flow must be executed** (not just each half independently)
-3. **The result must be observed** (e.g., a PDF file is actually downloaded, not just "no
-   errors in the log")
+1. **Both services must be running** during orchestrator-owned verification
+2. **The full flow must be executed by the main orchestrator** (not just each half independently)
+3. **The result must be observed by the main orchestrator** (e.g., a PDF file is actually
+   downloaded, not just "no errors in the log")
 4. **Contract compatibility must be verified** by reading the receiving service's validation
    schema (Pydantic model, Zod schema) and confirming all required fields are sent

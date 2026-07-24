@@ -70,10 +70,11 @@ Fan-out and effort:
 
 Repeated work:
 
-- Validation has one owner per layer: builders run targeted checks, reviewers judge the
-  diff without rerunning suites, the orchestrator runs exactly one full health gate after
-  the last change. Count full-suite executions; more than one on an unchanged tree is a
-  finding.
+- Validation has one owner: builder chains, orchestrated test-writers, reviewers, and resolvers
+  do not run it. The main orchestrator owns one pre-review full gate and conditionally one final
+  gate after resolutions when the tree changed. Count full-suite executions; more than one for the
+  same `(tree SHA, exact command)` is a finding unless it is the recorded rerun after a failing
+  gate and changed-tree repair.
 - Identical MCP reads (same tool, same args) mean the run ignored its cache contract:
   ticket context is fetched once, bounded (`detail`, `artifact_types`,
   `include_events=false`), and passed to children as a packet.

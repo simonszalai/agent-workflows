@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""external-build — run the Codex CLI (GPT 5.6) as a WRITE-ENABLED builder for one unit of
+"""external-build — run the Codex CLI (GPT 5.6) as a WRITE-ENABLED builder for one bounded unit of
 implementation work, and return the structured JSON the build/resolve orchestrators expect.
 
 This is the builder counterpart of `external-agent`. It is deliberately a SEPARATE binary:
@@ -8,22 +8,24 @@ contract is load-bearing for review safety. external-build is the one sanctioned
 to a peer provider.
 
 Used by `/build --builder codex` and `/resolve-review --builder codex`. The dispatching
-orchestrator — not this builder — owns all MCP artifact status updates, the health gate,
+orchestrator — not this builder — owns all MCP artifact status updates, validation gates,
 and every commit. The Codex side gets no MCP access and is forbidden from committing, so
-dispatched todos must be self-contained (see skills/create-build-todos).
+each dispatched chain packet must be self-contained (see skills/create-build-todos).
 
 Tasks (--task):
 
-  build    Implement ONE build_todo. Prints a single JSON object matching the build-mode
+  build    Implement one coherent sequential build_todo chain. Prints one JSON object matching
+           the build-mode
            contract in agents/builder.md:
-               { "todo_id", "status": "complete|failed|needs_replan",
-                 "files_changed":[...], "verification_output",
-                 "visual_evidence":[...], "deviations":[...], "error" }
+               { "chain_status": "complete|failed|needs_replan",
+                 "todo_results":[...], "files_changed":[...], "deviations":[...],
+                 "risks_unverified":[...], "error" }
 
   resolve  Apply a batch of review findings. Prints a JSON array, one entry per finding,
            matching the resolve-mode contract in agents/builder.md:
                [ { "finding_id", "status": "resolved|skipped|deferred",
-                   "files_changed":[...], "verification_output", "regression_test" } ]
+                   "files_changed":[...], "risks_unverified":[...],
+                   "suggested_validation":[...], "regression_test" } ]
 
 Model and reasoning effort default here (gpt-5.6 / medium) so runs do not drift with the
 user's ~/.codex/config.toml. Escalate per dispatch via --reasoning: `high` for
@@ -36,9 +38,10 @@ Usage:
   common: [--repo DIR] [--model gpt-5.6] [--reasoning medium|high|xhigh] [--timeout SECS]
           [--out FILE] [--sandbox workspace-write|danger-full-access]
 
---context-file carries orchestrator-supplied context: plan summary, project health commands,
-relevant memory-service gotchas (the Codex side cannot search memory itself), and — on a
-self-repair retry — the previous attempt's error and verification output.
+--context-file carries bounded orchestrator-supplied context: relevant plan/contract excerpt,
+affected paths/interfaces, predecessor tree SHA, named orchestrator validation commands, relevant
+memory-service gotchas (the Codex side cannot search memory itself), and — on a self-repair retry —
+the previous attempt's error and unverified risks.
 
 Exit codes: 0 ok; 2 codex produced no valid output (a valid `failed` result is still
 printed so the caller's retry loop stays uniform); 1 usage/setup error.
@@ -64,16 +67,37 @@ DEFAULT_TIMEOUT = 3600  # escalated reasoning on a real todo can take tens of mi
 BUILD_SCHEMA = {
     "type": "object",
     "properties": {
-        "todo_id": {"type": "string"},
-        "status": {"type": "string", "enum": ["complete", "failed", "needs_replan"]},
+        "chain_status": {
+            "type": "string", "enum": ["complete", "failed", "needs_replan"],
+        },
+        "todo_results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "todo_id": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["complete", "failed", "needs_replan"],
+                    },
+                    "files_changed": {"type": "array", "items": {"type": "string"}},
+                    "deviations": {"type": "array", "items": {"type": "string"}},
+                    "risks_unverified": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "todo_id", "status", "files_changed", "deviations", "risks_unverified",
+                ],
+                "additionalProperties": False,
+            },
+        },
         "files_changed": {"type": "array", "items": {"type": "string"}},
-        "verification_output": {"type": "string"},
-        "visual_evidence": {"type": "array", "items": {"type": "string"}},
         "deviations": {"type": "array", "items": {"type": "string"}},
+        "risks_unverified": {"type": "array", "items": {"type": "string"}},
         "error": {"type": ["string", "null"]},
     },
-    "required": ["todo_id", "status", "files_changed", "verification_output",
-                 "visual_evidence", "deviations", "error"],
+    "required": [
+        "chain_status", "todo_results", "files_changed", "deviations", "risks_unverified", "error",
+    ],
     "additionalProperties": False,
 }
 
@@ -83,11 +107,14 @@ RESOLVE_ENTRY_SCHEMA = {
         "finding_id": {"type": "string"},
         "status": {"type": "string", "enum": ["resolved", "skipped", "deferred"]},
         "files_changed": {"type": "array", "items": {"type": "string"}},
-        "verification_output": {"type": "string"},
+        "risks_unverified": {"type": "array", "items": {"type": "string"}},
+        "suggested_validation": {"type": "array", "items": {"type": "string"}},
         "regression_test": {"type": ["string", "null"]},
     },
-    "required": ["finding_id", "status", "files_changed", "verification_output",
-                 "regression_test"],
+    "required": [
+        "finding_id", "status", "files_changed", "risks_unverified", "suggested_validation",
+        "regression_test",
+    ],
     "additionalProperties": False,
 }
 
@@ -99,7 +126,7 @@ RESOLVE_SCHEMA = {
     "additionalProperties": False,
 }
 
-# The Codex builder contract: hard invariants, validation requirements, and honest-output
+# The Codex builder contract: hard invariants, validation ownership, and honest-output
 # rules only. Keep it lean per skills/references/model-prompting.md — GPT-5.6 performs
 # better without step-by-step scaffolding; add prescriptive checklists only in a legacy
 # (gpt-5.5) dispatch, not here.
@@ -121,33 +148,37 @@ HARD RULES (never violate):
 QUALITY LOOP (each change):
 1. Read the target files and the closest analogous module named in the task before writing.
 2. Implement the change.
-3. Run the verification commands listed in the task, plus the type checker and linter on
-   the files you touched. Fix failures before moving on.
-4. Count-verify bulk changes (grep to confirm the expected number of occurrences).
+3. Inspect the edited code and interfaces before moving on.
+4. Count-inspect bulk changes (grep to confirm the expected number of occurrences).
+
+VALIDATION OWNERSHIP:
+- NEVER run test suites, validation commands, typecheck, lint, builds, schema pulls,
+  migrations, browser verification, or health commands.
+- Report unverified risks and exact suggested commands for the orchestrator; do not execute them.
 
 SCHEMA PARITY: if you modify model/schema files, the repo's active schema-deploy artifact
 must exist (Atlas plan / Prisma / Alembic migration — check the repo's CLAUDE.md for which
-system is active). If you cannot produce it, return status "failed" with the missing-schema
-reason in `error` — omitting it means the column/object may not exist at runtime.
+system is active). You may write the artifact but must not execute schema or migration commands.
+If you cannot produce it, return chain_status "failed" with the missing-schema reason in `error` —
+omitting it means the column/object may not exist at runtime.
 
 Your FINAL message must be exactly the JSON object required by the output schema — no prose.
-Report honestly: only claim a verification passed if you ran it and saw it pass; put real
-command output summaries in `verification_output`.
+Report honestly: implementation completion is not validation evidence; put unverified items in
+`risks_unverified`.
 """
 
 BUILD_TASK_RULES = """\
-TASK: implement ONE build_todo (given below). Do not work ahead on other todos.
+TASK: implement ONLY the coherent sequential build_todo chain given below, in order.
 
 - If the todo itself is wrong — it contradicts the code you find, or the design does not
-  hold — STOP and return status "needs_replan" with the reason in `error`. Do not improvise
-  a different design to force the todo closed.
+  hold — STOP at that todo and return chain_status "needs_replan" with the reason in `error`.
+  Do not improvise a different design to force the chain closed.
 - If this todo implements a repeated writer (poller, observer, scheduler, queue, webhook,
   scraper) and the design would persist duplicate unchanged source data proportional to
-  polling frequency, return "needs_replan" unless the todo names the downstream consumer,
-  volume budget, dedupe/change-gating behavior, and retention/TTL for that history.
-- status "complete" requires every verification command, the type checker, and the linter
-  to pass for this todo; otherwise "failed" with the concrete failure in `error`.
-- `todo_id` is the sequence number or artifact id named in the todo.
+  polling frequency, return chain_status "needs_replan" unless the todo names the downstream
+  consumer, volume budget, dedupe/change-gating behavior, and retention/TTL for that history.
+- Return one `todo_results` mapping for every todo reached in the chain. A "complete" mapping means
+  its implementation is present and inspected; validation remains orchestrator-owned.
 """
 
 RESOLVE_TASK_RULES = """\
@@ -155,13 +186,12 @@ TASK: apply the review-finding fixes given below. One result entry per finding.
 
 - Implement each fix exactly as specified (the orchestrator already made the accept/modify
   decisions). Do not re-litigate the finding.
-- Run linter + type checker after each fix, and re-run the tests covering each touched
-  file — a finding is NOT "resolved" until they pass.
-- For every p1 correctness fix: add a regression test (demonstrate failing-then-passing)
+- Do not run validation. Report unverified risks and exact suggested orchestrator commands.
+- For every p1 correctness fix: add a regression test
   and name it in `regression_test`, or state an explicit reason the fix is untestable.
   Use null for non-p1 findings.
 - If a fix cannot be applied safely, return that entry as "deferred" and say why in its
-  `verification_output`.
+  `risks_unverified`.
 """
 
 
@@ -191,84 +221,13 @@ def read_memory_context(path: str | None) -> str:
 
 def failed_result(task: str, reason: str):
     if task == "build":
-        return {"todo_id": "unknown", "status": "failed", "files_changed": [],
-                "verification_output": "", "visual_evidence": [], "deviations": [],
-                "error": reason}
+        return {"chain_status": "failed", "todo_results": [], "files_changed": [],
+                "deviations": [], "risks_unverified": [reason], "error": reason}
     return []  # resolve: empty array — every finding stays pending, caller re-dispatches
 
 
-# Codex --json emits a JSONL event stream; the session id appears under one of these keys
-# (name varies by CLI version), which we recover to resume the session for the next todo.
-_SESSION_ID_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId",
-                    "thread_id", "threadId")
-
-
-def _find_session_id(obj: object) -> str | None:
-    if isinstance(obj, dict):
-        for key in _SESSION_ID_KEYS:
-            value = obj.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        for value in obj.values():
-            found = _find_session_id(value)
-            if found:
-                return found
-    elif isinstance(obj, list):
-        for value in obj:
-            found = _find_session_id(value)
-            if found:
-                return found
-    return None
-
-
-def session_id_from_json_lines(text: str) -> str | None:
-    for line in text.splitlines():
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        found = _find_session_id(record)
-        if found:
-            return found
-    return None
-
-
-def read_session_id(session_file: str | None, repo: Path) -> str | None:
-    """Return a valid session id recorded for THIS repo, or None (fall back to full run)."""
-    if not session_file:
-        return None
-    path = Path(session_file)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    session_id = data.get("session_id")
-    if not isinstance(session_id, str) or not session_id.strip():
-        return None
-    if len(session_id) > 200 or any(c.isspace() for c in session_id):
-        return None
-    if data.get("repo") != str(repo):
-        return None
-    return session_id.strip()
-
-
-def write_session_id(session_file: str | None, repo: Path, session_id: str) -> None:
-    if not session_file or not session_id:
-        return
-    try:
-        Path(session_file).write_text(
-            json.dumps({"session_id": session_id, "repo": str(repo)}), encoding="utf-8")
-    except OSError as error:
-        print(f"external-build: could not write session file: {error}", file=sys.stderr)
-
-
-def run_codex(full_prompt: str, delta_prompt: str, schema: dict, model: str, reasoning: str,
-              sandbox: str, repo: Path, timeout: int, session_file: str | None = None,
-              is_retry: bool = False) -> str:
+def run_codex(full_prompt: str, schema: dict, model: str, reasoning: str, sandbox: str,
+              repo: Path, timeout: int) -> str:
     with tempfile.TemporaryDirectory() as td:
         schema_file = Path(td) / "schema.json"
         last_file = Path(td) / "last.json"
@@ -289,43 +248,15 @@ def run_codex(full_prompt: str, delta_prompt: str, schema: dict, model: str, rea
                 return last_file.read_text(encoding="utf-8")
             return ""
 
-        # Resume a prior session (same repo) with a delta-only prompt when allowed. Never on
-        # a self-repair retry — that must re-send the full contract to avoid compounding a
-        # confused session.
-        resume_id = None if is_retry else read_session_id(session_file, repo)
-        if resume_id:
-            cmd = (["codex", "exec", "resume", resume_id, "--skip-git-repo-check",
-                    "-C", str(repo)] + common)
-            try:
-                subprocess.run(cmd, input=delta_prompt, text=True, timeout=timeout, env=env,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                out = read_last()
-                if out:
-                    return out
-            except subprocess.TimeoutExpired:
-                print(f"external-build: codex resume timed out after {timeout}s",
-                      file=sys.stderr)
-            print("external-build: codex resume produced no output; "
-                  "starting a fresh full session", file=sys.stderr)
-
-        # Fresh full session. Capture the session id (needs --json) only when a session file
-        # was requested, so the default (no --session-file) path stays byte-identical.
-        capture_session = bool(session_file)
         cmd = ["codex", "exec", "--skip-git-repo-check", "-C", str(repo)] + common
-        if capture_session:
-            cmd.append("--json")
         try:
             res = subprocess.run(
                 cmd, input=full_prompt, text=True, timeout=timeout, env=env,
-                stdout=(subprocess.PIPE if capture_session else subprocess.DEVNULL),
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE)
         except subprocess.TimeoutExpired:
             print(f"external-build: codex timed out after {timeout}s", file=sys.stderr)
             return ""
-        if capture_session:
-            session_id = session_id_from_json_lines(res.stdout or "")
-            if session_id:
-                write_session_id(session_file, repo, session_id)
         out = read_last()
         if out:
             return out
@@ -339,12 +270,12 @@ def run_codex(full_prompt: str, delta_prompt: str, schema: dict, model: str, rea
 def main() -> None:
     ap = argparse.ArgumentParser(prog="external-build", add_help=True)
     ap.add_argument("--task", required=True, choices=["build", "resolve"])
-    ap.add_argument("--todo-file", help="file containing the ONE build_todo (task build)")
+    ap.add_argument("--todo-file", help="file containing one coherent build_todo chain (task build)")
     ap.add_argument("--findings-file",
                     help="file containing the findings batch to fix (task resolve)")
     ap.add_argument("--context-file",
-                    help="orchestrator context: plan summary, health commands, memory "
-                         "gotchas, prior-attempt error on retry")
+                    help="bounded orchestrator context: relevant contract, paths/interfaces, "
+                         "tree SHA, named validation commands, gotchas, prior-attempt error")
     ap.add_argument("--memory-context-file", required=True,
                     help="one explicit <=3K memory task packet; suppresses ambient hooks")
     ap.add_argument(
@@ -359,13 +290,6 @@ def main() -> None:
                     choices=["workspace-write", "danger-full-access"])
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     ap.add_argument("--out", help="also write the result JSON to this file")
-    ap.add_argument("--session-file",
-                    help="path used to persist/reuse a Codex session id across sequential "
-                         "todos for the same repo; first dispatch records it, later "
-                         "dispatches resume it with a delta-only prompt")
-    ap.add_argument("--self-repair-retry", action="store_true",
-                    help="this dispatch is a self-repair retry; forces a fresh full session "
-                         "even when --session-file holds a resumable id")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -378,7 +302,7 @@ def main() -> None:
         work = read_file(args.todo_file, "todo file")
         task_rules = BUILD_TASK_RULES
         schema = BUILD_SCHEMA
-        work_header = "BUILD TODO (implement exactly this):"
+        work_header = "BUILD TODO CHAIN (implement only these todos, in order):"
     else:
         if not args.findings_file:
             die("--findings-file is required for --task resolve")
@@ -392,27 +316,16 @@ def main() -> None:
 
     parts = [COMMON_RULES, task_rules]
     if context.strip():
-        parts.append("ORCHESTRATOR CONTEXT (plan summary, health commands, known gotchas, "
-                     "prior attempt if retrying):\n" + context)
+        parts.append("BOUNDED ORCHESTRATOR CONTEXT (relevant contract, paths/interfaces, "
+                     "tree SHA, named validation commands, known gotchas, prior attempt):\n"
+                     + context)
     if memory_context:
         parts.append("EXPLICIT MEMORY TASK CONTEXT (bounded; expand/search only when needed):\n"
                      + memory_context)
     parts.append(work_header + "\n" + work)
     prompt = "\n\n---\n\n".join(parts)
 
-    # Delta-only prompt for a resumed session: the prior session already carries COMMON_RULES,
-    # task rules, and the stable orchestrator context; only the new work (and its fresh memory
-    # packet) need to be sent.
-    delta_parts = []
-    if memory_context:
-        delta_parts.append("EXPLICIT MEMORY TASK CONTEXT (bounded; expand/search only when "
-                           "needed):\n" + memory_context)
-    delta_parts.append(work_header + "\n" + work)
-    delta_prompt = "\n\n---\n\n".join(delta_parts)
-
-    raw = run_codex(prompt, delta_prompt, schema, args.model, args.reasoning, args.sandbox,
-                    repo, args.timeout, session_file=args.session_file,
-                    is_retry=args.self_repair_retry)
+    raw = run_codex(prompt, schema, args.model, args.reasoning, args.sandbox, repo, args.timeout)
 
     exit_code = 0
     result = None
@@ -425,7 +338,8 @@ def main() -> None:
         valid_shape = (
             isinstance(result, dict)
             and (
-                args.task == "build" and result.get("status") in {"complete", "failed", "needs_replan"}
+                args.task == "build"
+                and result.get("chain_status") in {"complete", "failed", "needs_replan"}
                 or args.task == "resolve" and isinstance(result.get("results"), list)
             )
         )

@@ -251,7 +251,7 @@ Each step MUST include:
 2. **Files to Modify** - Specific files and line estimates
 3. **Implementation Details** - Code following discovered patterns
 4. **Tests** - Based on existing test patterns
-5. **Verification** - Commands to verify step worked
+5. **Verification** - Commands for the orchestrator to verify the step; builders must not execute them
 
 ## Quality Requirements
 
