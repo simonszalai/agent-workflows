@@ -1,5 +1,5 @@
 {
-  "_comment": "Path prefix -> upstream MCP. prefix = <project>/<server> (project carried in the URL = project-awareness). TWO route kinds: (1) remote HTTP upstreams have `target` (a real remote URL, never a localhost proxy) + `authEnv` (env var name the launchd wrapper exports from 1Password; tokens are NEVER stored here). (2) `spawn` routes are dbhub children the daemon supervises itself — one long-lived Streamable-HTTP process per project on 127.0.0.1:<port>, serving that project's DB tiers as TOML sources (dbhub/<project>.toml; tools execute_sql_<tier> / search_objects_<tier>, prod tiers readonly). Render routes: the gateway auto-selects the workspace per MCP session (`renderWorkspace` pins the owner id) so clients never see 'no workspace set'. Legacy per-tier crystaldba postgres-mcp routes (ports 8811-8841) were retired 2026-07-12 after the dbhub migration.",
+  "_comment": "Path prefix -> upstream MCP. prefix = <project>/<server> (project carried in the URL = project-awareness). THREE route kinds: (1) remote HTTP upstreams have `target` (a real remote URL, never a localhost proxy) + `authEnv` (env var name the launchd wrapper exports from 1Password; tokens are NEVER stored here). (2) `spawn kind=dbhub` routes are dbhub children the daemon supervises itself — one long-lived Streamable-HTTP process per project on 127.0.0.1:<port>, serving that project's DB tiers as TOML sources (dbhub/<project>.toml; tools execute_sql_<tier> / search_objects_<tier>, prod tiers readonly). (3) `spawn kind=generic` routes supervise any MCP server binary that speaks Streamable HTTP on a loopback port; argv comes verbatim from `args`, secrets reach the child only via env (`env` values interpolate ${VAR} from the daemon env; `requiresEnv` names inherited vars validate() must see). Render routes: the gateway auto-selects the workspace per MCP session (`renderWorkspace` pins the owner id) so clients never see 'no workspace set'. Legacy per-tier crystaldba postgres-mcp routes (ports 8811-8841) were retired 2026-07-12 after the dbhub migration.",
   "routes": {
     "shared/autodev-memory": {
       "target": "https://autodev-memory.onrender.com/mcp",
@@ -23,6 +23,22 @@
     "workflow/render": {
       "target": "https://mcp.render.com/mcp",
       "authEnv": "WORKFLOW_RENDER_API_KEY"
+    },
+
+    "ts/tailscale": {
+      "authEnv": "MCP_GATEWAY_TOKEN",
+      "spawn": {
+        "kind": "generic",
+        "bin": "/Users/simon/.nvm/versions/node/v24.14.1/bin/npx",
+        "args": ["-y", "--package=@hexsleeves/tailscale-mcp-server", "tailscale-mcp-server", "--http", "--port", "8855", "--host", "127.0.0.1"],
+        "port": 8855,
+        "reapPattern": "tailscale-mcp-server.*--port 8855 ",
+        "env": {
+          "MCP_HTTP_BEARER_TOKEN": "${MCP_GATEWAY_TOKEN}",
+          "TAILSCALE_TAILNET": "-"
+        },
+        "requiresEnv": ["TAILSCALE_OAUTH_CLIENT_ID", "TAILSCALE_OAUTH_CLIENT_SECRET"]
+      }
     },
 
     "ts/postgres": {

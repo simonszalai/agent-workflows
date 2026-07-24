@@ -27,22 +27,30 @@ function procLooksAlive(entry) {
 	}
 }
 
-// Reap stray children from a previously-crashed daemon so their ports are free. The
-// pattern anchors the port with a TRAILING SPACE (macOS pgrep is BSD ERE — no \b; our
-// argv always has another flag after --port), so 8851 never matches 88510 and we never
-// touch unrelated processes.
-function reapStrays(ports) {
-	for (const port of ports) {
+// pgrep -f pattern that finds a spawn route's stray children. Patterns anchor the port
+// with a TRAILING SPACE (macOS pgrep is BSD ERE — no \b; argv must always have another
+// flag after --port), so 8851 never matches 88510 and we never touch unrelated
+// processes. Generic routes declare their own pattern in routes.json (validate() checks
+// it exists and keeps the trailing-space anchor discipline).
+export function reapPatternFor(s) {
+	return s.kind === "generic" ? s.reapPattern : `dbhub.*--port ${s.port} `
+}
+
+// Reap stray children from a previously-crashed daemon so their ports are free.
+function reapStrays(spawns) {
+	for (const s of spawns) {
+		const pattern = reapPatternFor(s)
+		if (!pattern) continue
 		let out = ""
 		try {
-			out = execFileSync("pgrep", ["-f", `dbhub.*--port ${port} `], { encoding: "utf8" })
+			out = execFileSync("pgrep", ["-f", pattern], { encoding: "utf8" })
 		} catch {
 			continue // pgrep exits non-zero when nothing matches
 		}
-		for (const pid of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
+		for (const pid of out.split("\n").map((p) => p.trim()).filter(Boolean)) {
 			try {
 				process.kill(Number(pid), "SIGTERM")
-				log(`reaped stray dbhub pid=${pid} (:${port})`)
+				log(`reaped stray child pid=${pid} (:${s.port})`)
 			} catch {}
 		}
 	}
@@ -70,18 +78,38 @@ function normalizeDbEnv(env) {
 	return env
 }
 
+// Resolve a spawn route to the exact { bin, args, env } to launch. Two kinds:
+//   dbhub   — fixed arg template around the route's TOML config (DSNs interpolated by
+//             dbhub itself from the child env, SSL guaranteed centrally).
+//   generic — argv taken verbatim from routes.json; spawn.env values may reference
+//             daemon env vars as ${VAR} (secrets resolved once at daemon start, same
+//             contract as dbhub's TOML interpolation — values never appear in argv).
+// Children of either kind are npm bin scripts (`#!/usr/bin/env node`) and the launchd
+// PATH has no node, so the directory of the node running this daemon is prepended.
+export function buildSpawnCommand(route) {
+	const s = route.spawn
+	const env = { ...process.env, PATH: `${join(process.execPath, "..")}:${process.env.PATH || ""}` }
+	if (s.kind === "generic") {
+		for (const [k, v] of Object.entries(s.env || {})) {
+			env[k] = String(v).replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => process.env[name] || "")
+		}
+		return { bin: s.bin, args: [...(s.args || [])], env }
+	}
+	return {
+		bin: s.bin || process.env.DBHUB_BIN || "dbhub",
+		args: ["--transport", "http", "--host", "127.0.0.1", "--port", String(s.port), "--config", join(BASE_DIR, s.config)],
+		env: normalizeDbEnv(env),
+	}
+}
+
 function start(route) {
 	const s = route.spawn
 	const key = route.prefix
 	const existing = children.get(key)
 	if (procLooksAlive(existing)) return existing
-	reapStrays([s.port])
+	reapStrays([s])
 
-	// dbhub is an npm bin script (`#!/usr/bin/env node`); the launchd PATH has no node,
-	// so prepend the directory of the node running this daemon.
-	const bin = s.bin || process.env.DBHUB_BIN || "dbhub"
-	const args = ["--transport", "http", "--host", "127.0.0.1", "--port", String(s.port), "--config", join(BASE_DIR, s.config)]
-	const env = normalizeDbEnv({ ...process.env, PATH: `${join(process.execPath, "..")}:${process.env.PATH || ""}` })
+	const { bin, args, env } = buildSpawnCommand(route)
 	const proc = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] })
 
 	const entry = children.get(key) || { restarts: 0 }
@@ -114,7 +142,7 @@ function start(route) {
 		if (children.get(key) === entry) children.delete(key)
 		log(`spawn ${key} failed: ${String(err.message || err)}`)
 	})
-	log(`spawned ${key} -> dbhub http 127.0.0.1:${s.port}`)
+	log(`spawned ${key} -> ${s.kind} http 127.0.0.1:${s.port}`)
 	return entry
 }
 
@@ -130,7 +158,7 @@ export function ensureRunning(route) {
 export function startAll(routes) {
 	const spawnRoutes = routes.filter((r) => r.spawn)
 	if (!spawnRoutes.length) return
-	reapStrays(spawnRoutes.map((r) => r.spawn.port))
+	reapStrays(spawnRoutes.map((r) => r.spawn))
 	for (const r of spawnRoutes) start(r)
 }
 
@@ -140,7 +168,7 @@ export function startAll(routes) {
 export function startNew(routes) {
 	const fresh = routes.filter((r) => r.spawn && !children.has(r.prefix))
 	if (!fresh.length) return
-	reapStrays(fresh.map((r) => r.spawn.port))
+	reapStrays(fresh.map((r) => r.spawn))
 	for (const r of fresh) start(r)
 }
 

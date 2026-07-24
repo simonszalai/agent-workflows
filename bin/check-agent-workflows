@@ -47,7 +47,9 @@ def main() -> None:
     print("==> python syntax", flush=True)
     validate_python_syntax()
     run("python tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
-    node_tests = [str(path.relative_to(ROOT)) for path in sorted((ROOT / "workflows").glob("*.test.mjs"))]
+    node_tests = [str(path.relative_to(ROOT))
+                  for root in (ROOT / "workflows", ROOT / "mcp-gateway")
+                  for path in sorted(root.glob("*.test.mjs"))]
     if node_tests:
         run("node tests", ["node", "--test", *node_tests])
     run("unstaged whitespace", ["git", "diff", "--check"])
