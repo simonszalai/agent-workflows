@@ -7,6 +7,12 @@
 //       — the daemon launches one long-lived dbhub per entry on 127.0.0.1:<port> and
 //       proxies to it; `target` is derived. DB DSNs come from ${ENV_VAR} interpolation
 //       inside the dbhub TOML (see dbhub/*.toml), so they stay out of argv and this file.
+//   (3) a generic supervised child: { spawn: { kind: "generic", bin, args, port,
+//       reapPattern, env?, requiresEnv? } } — any MCP server that can serve Streamable
+//       HTTP on 127.0.0.1:<port> (e.g. ts/tailscale). Secrets reach the child only via
+//       env: inherited daemon env plus spawn.env entries whose ${VAR} refs interpolate
+//       from it — never argv. This is why ANY MCP needing 1Password secrets must route
+//       through the gateway instead of running `op read` per session in a .mcp.json.
 import { readFileSync, existsSync, accessSync, constants } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
@@ -66,13 +72,35 @@ export function validate() {
 	for (const r of routes) {
 		if (r.spawn) {
 			const s = r.spawn
-			if (s.kind !== "dbhub") problems.push(`${r.prefix}: unknown spawn kind '${s.kind}'`)
+			if (s.kind !== "dbhub" && s.kind !== "generic") problems.push(`${r.prefix}: unknown spawn kind '${s.kind}'`)
 			if (!s.port) problems.push(`${r.prefix}: spawn.port missing`)
 			else if (ports.has(s.port)) problems.push(`${r.prefix}: port ${s.port} already used by ${ports.get(s.port)}`)
 			else ports.set(s.port, r.prefix)
-			const bin = s.bin || process.env.DBHUB_BIN || "dbhub"
-			if (bin.includes("/")) {
+			const bin = s.kind === "generic" ? s.bin : (s.bin || process.env.DBHUB_BIN || "dbhub")
+			if (!bin) problems.push(`${r.prefix}: spawn.bin missing`)
+			else if (bin.includes("/")) {
 				try { accessSync(bin, constants.X_OK) } catch { problems.push(`${r.prefix}: spawn.bin not executable: ${bin}`) }
+			}
+			if (s.kind === "generic") {
+				// Generic children take argv verbatim; the child must serve Streamable HTTP on
+				// 127.0.0.1:<port>, so the port must appear in argv (followed by another flag —
+				// the reap pattern anchors on the trailing space).
+				if (!Array.isArray(s.args) || !s.args.length) problems.push(`${r.prefix}: spawn.args missing`)
+				else if (!s.args.includes(String(s.port))) problems.push(`${r.prefix}: spawn.args must pass port ${s.port} to the child`)
+				if (!s.reapPattern) problems.push(`${r.prefix}: spawn.reapPattern missing (pgrep -f pattern for stray children)`)
+				else if (!s.reapPattern.endsWith(" ")) problems.push(`${r.prefix}: spawn.reapPattern must end with a space (port anchor)`)
+				// ${VAR} references in spawn.env and every requiresEnv var must be exported by
+				// start-gateway.sh (gateway.env) — same contract as dbhub TOML interpolation.
+				for (const v of Object.values(s.env || {})) {
+					for (const [, name] of String(v).matchAll(/\$\{([A-Z0-9_]+)\}/g)) {
+						if (!process.env[name]) problems.push(`${r.prefix}: env ${name} (used by spawn.env) is unset`)
+					}
+				}
+				for (const name of s.requiresEnv || []) {
+					if (!process.env[name]) problems.push(`${r.prefix}: env ${name} (spawn.requiresEnv) is unset`)
+				}
+				if (r.authEnv && !process.env[r.authEnv]) problems.push(`${r.prefix}: env ${r.authEnv} is unset`)
+				continue
 			}
 			if (!s.config) {
 				problems.push(`${r.prefix}: spawn.config missing`)

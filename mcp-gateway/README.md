@@ -39,7 +39,7 @@ Zero runtime dependencies; plain Node ≥ 20.
 
 ## Routes
 
-`routes.json` maps `<project>/<server>` prefixes to one of two kinds:
+`routes.json` maps `<project>/<server>` prefixes to one of three kinds:
 
 - **remote**: `{ target, authEnv, authHeader?, authScheme? }` — proxied to a real remote
   URL with the client's credential swapped for the route's.
@@ -49,6 +49,19 @@ Zero runtime dependencies; plain Node ≥ 20.
   are `execute_sql_<tier>` / `search_objects_<tier>` and prod tiers carry
   `readonly = true`. DSNs reach the child via `${ENV_VAR}` interpolation in the TOML —
   never argv, never this repo.
+- **generic spawn**: `{ spawn: { kind: "generic", bin, args, port, reapPattern, env?,
+  requiresEnv? } }` — any MCP server binary that serves Streamable HTTP on
+  `127.0.0.1:<port>` (e.g. `ts/tailscale`). `args` is the child argv verbatim (must pass
+  the port, never a secret); secrets reach the child only via env — inherited daemon env
+  plus `env` entries whose `${VAR}` refs interpolate from it. `reapPattern` is the
+  `pgrep -f` pattern for stray children and must end with the port + a space.
+
+**Rule: any MCP server that needs a 1Password secret goes through this gateway** —
+either as a remote route (token in `gateway.env`) or a spawn child. Never put
+`op read` in a repo `.mcp.json` launcher: it runs per workspace session, resolves `op`
+outside the audited shim (e.g. under `/bin/sh`), and each sandboxed process re-prompts
+Touch ID/TCC — that is exactly the four-prompts-per-new-workspace storm this daemon
+exists to prevent.
 
 `SIGHUP` reloads routes.json live (additively for spawn routes: new children start,
 running ones and their sessions are untouched).
