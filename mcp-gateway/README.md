@@ -76,7 +76,10 @@ Everything is native `type: http`; no client spawns any bridge process.
                "headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" } },
 "render":    { "type": "http", "url": "http://127.0.0.1:8765/ts/render",
                "headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" } }
-// userland ~/.claude.json: shared/autodev-memory, shared/context7, shared/postgres_global
+"slack":     { "type": "http", "url": "http://127.0.0.1:8765/shared/slack",
+               "headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" } }
+// userland ~/.claude.json: shared/autodev-memory, shared/context7,
+// shared/postgres_global, shared/slack
 ```
 
 ```toml
@@ -89,6 +92,56 @@ env_http_headers = { "x-mcp-gateway-token" = "MCP_GATEWAY_TOKEN" }
 Clients read the local token from `MCP_GATEWAY_TOKEN` (exported from `.gateway-token`,
 0600, by shell rc / `launchctl setenv`). The token gate exists because the 127.0.0.1 bind
 alone doesn't stop browser-borne requests (DNS rebinding).
+
+### Slack (shared across Claude, Codex, and Grok)
+
+Slack uses the official hosted Streamable HTTP server at
+`https://mcp.slack.com/mcp`, but clients never connect to it directly. They all use
+`http://127.0.0.1:8765/shared/slack`; the gateway removes client credentials and injects
+`SLACK_MCP_USER_TOKEN` from 1Password. This gives every local agent provider the same
+tool surface without putting the Slack token in Claude, Codex, Grok, shell history, or a
+repository.
+
+One-time setup:
+
+1. In Slack's app management UI, create an internal app **from an app manifest** using
+   `slack-app-manifest.yaml`, select the workspace, and install it as Simon. The manifest
+   is intentionally read-only: message/channel/thread search and history plus user lookup;
+   it has no file access, `chat:write`, or conversation-management scopes.
+2. Copy the resulting **User OAuth Token** (`xoxp-...`, not the bot token) into the
+   service-account-readable 1Password item `op://MCP/SLACK_MCP_USER_TOKEN/value`.
+   A user token is required because bot identity cannot search Simon's DMs/private
+   conversations with Thomas.
+3. Validate and restart the gateway once so `gateway.env` is resolved:
+
+   ```bash
+   cd ~/dev/agent-workflows/mcp-gateway
+   node gateway.mjs --validate
+   launchctl kickstart -k gui/$(id -u)/com.simon.mcp-gateway
+   ```
+
+4. Add the same local route to each user-level client:
+
+   ```json
+   // ~/.claude.json, inside top-level "mcpServers"
+   "slack": {
+     "type": "http",
+     "url": "http://127.0.0.1:8765/shared/slack",
+     "headers": { "x-mcp-gateway-token": "${MCP_GATEWAY_TOKEN}" }
+   }
+   ```
+
+   ```toml
+   # ~/.codex/config.toml and ~/.grok/config.toml
+   [mcp_servers.slack]
+   url = "http://127.0.0.1:8765/shared/slack"
+   env_http_headers = { "x-mcp-gateway-token" = "MCP_GATEWAY_TOKEN" } # Codex
+   headers = { "x-mcp-gateway-token" = "${MCP_GATEWAY_TOKEN}" }      # Grok
+   ```
+
+   The TOML example shows the provider-specific header line alternatives; do not put
+   both lines in the same file. Existing sessions do not reload a newly added server,
+   so start fresh Claude/Codex sessions and refresh or restart Grok after activation.
 
 ## Operate
 

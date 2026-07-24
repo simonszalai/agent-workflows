@@ -11,6 +11,10 @@
       "authScheme": "",
       "authEnv": "CONTEXT7_API_KEY"
     },
+    "shared/slack": {
+      "target": "https://mcp.slack.com/mcp",
+      "authEnv": "SLACK_MCP_USER_TOKEN"
+    },
     "ts/render": {
       "target": "https://mcp.render.com/mcp",
       "authEnv": "TS_RENDER_API_KEY",
