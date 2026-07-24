@@ -1,0 +1,23 @@
+display_information:
+  name: Simon Agent MCP
+  description: Read-only Slack context for Simon's local coding agents
+  background_color: "#1d1c1d"
+
+oauth_config:
+  scopes:
+    user:
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - search:read.im
+      - search:read.mpim
+      - search:read.private
+      - search:read.public
+      - search:read.users
+      - users:read
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
