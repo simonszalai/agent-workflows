@@ -1,6 +1,6 @@
 ---
 name: build
-description: Execute an implementation plan. Dispatches one builder agent per build_todo in dependency order, checkpoints each to MCP on success, self-repairs failures (bounded), and finishes only when every todo is complete and the project health command passes.
+description: Execute an implementation plan through coherent sequential builder chains, checkpoint every covered build_todo individually, and leave validation to the orchestrator.
 max_turns: 100
 ---
 
@@ -23,22 +23,23 @@ Follow `../references/execution-economy.md`. For any multi-repo or linked-worksp
 
 ### External builder (`--builder codex`)
 
-Same loop, different engine: each todo is dispatched through `bin/external-build --task
+Same loop, different engine: each chain is dispatched through `bin/external-build --task
 build` (defaults gpt-5.6 / `medium` reasoning) instead of a native builder agent. Pass
-`--reasoning high` for a cross-cutting or migration-heavy todo, and `xhigh` only when
-retrying a todo that failed at lower effort. Requirements specific to this mode:
+`--reasoning high` for a cross-cutting or migration-heavy chain, and `xhigh` only when
+retrying a chain that failed at lower effort. Requirements specific to this mode:
 
-- The Codex side has **no MCP or memory access**: todos must be self-contained
-  (`/create-build-todos` enforces this when told the builder is external) and the
-  orchestrator writes a context blob (plan summary, health commands, relevant
+- The Codex side has **no MCP or memory access**: the chain packet must be self-contained
+  (`/create-build-todos` deepens each todo when told the builder is external) and the
+  orchestrator writes a bounded context blob (relevant plan/contract excerpt, affected
+  paths/interfaces, predecessor tree SHA, named orchestrator health command, relevant
   memory-service gotchas, prior-attempt errors on retry) to a file passed via
-  `--context-file` — what isn't in the todo or that file does not exist for the builder.
+  `--context-file` — what is not in the chain or that file does not exist for the builder.
 - Create the bounded memory packet before each dispatch:
 
   ```bash
   mkdir -p .context/build
-  # write the todo artifact content to .context/build/todo-{NN}.md, then:
-  if ! cat .context/build/todo-{NN}.md | \
+  # write only this chain's todo bodies to .context/build/chain-{NN}.md, then:
+  if ! cat .context/build/chain-{NN}.md | \
       autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
         --agent-type builder --provider codex --mechanism external_build \
         --task-prompt-stdin --allow-unavailable > .context/build/memory-{NN}.md; then
@@ -50,8 +51,8 @@ retrying a todo that failed at lower effort. Requirements specific to this mode:
   EOF
   fi
   external-build --task build \
-    --todo-file .context/build/todo-{NN}.md \
-    --context-file .context/build/context.md \
+    --todo-file .context/build/chain-{NN}.md \
+    --context-file .context/build/context-{NN}.md \
     --memory-context-file .context/build/memory-{NN}.md \
     --repo "$(pwd)" \
     --out .context/build/result-{NN}.json
@@ -64,8 +65,8 @@ retrying a todo that failed at lower effort. Requirements specific to this mode:
   output file from model turns; if neither route can block, stop with the exact resume command.
 - Validate the returned JSON against the build-mode contract before checkpointing;
   a run with no valid JSON counts as `failed` for the self-repair loop.
-- Everything the orchestrator owns stays identical: MCP artifact statuses, the health
-  gate, and every commit.
+- Everything the orchestrator owns stays identical: per-todo MCP artifact statuses, validation,
+  and every commit.
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 
@@ -126,8 +127,8 @@ When invoked by `/lfg` (no ticket exists), the filesystem replaces MCP:
   state is the resume story.
 - **No MCP writes:** skip every `update_ticket` / `update_artifact` call in this skill.
 
-Everything else is identical: one fresh builder per todo, dependency order, bounded
-self-repair (≤2 retries), and the final health gate.
+Everything else is identical: coherent sequential chains, dependency order, granular per-todo
+checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-owned validation.
 
 ## Process
 
@@ -167,27 +168,40 @@ self-repair (≤2 retries), and the final health gate.
    - If build_todos contradict plan, update via `update_artifact` to resolve
    - Check memory service for relevant gotchas and patterns
 
-5. **Build loop — one builder per todo:**
+5. **Build loop — coherent sequential builder chains:**
 
    Build the execution order from the **pending** build_todos: process in `step`/`sequence`
    order, but if a todo's `depends_on` names a todo that would otherwise sort later, move that
-   dependency ahead so prerequisites always run first. This is **sequential** — never dispatch
-   builders in parallel. Two builders sharing one working tree race the git index and typecheck
-   a half-written tree; the cost (write conflicts) outweighs any speedup. Cross-repo concurrency
-   is `/milestone-flow`'s job (separate repo workspaces/worktrees), not `/build`'s. If a build
-   todo requires editing a different repo, stop and send the work back to epic splitting; do not
-   edit linked repos from a single-repo `/build` run.
+   dependency ahead so prerequisites always run first. Partition that ordered DAG into the
+   **smallest reasonable set of coherent sequential chains**:
+
+   - Group adjacent dependent todos only when they share repository subsystem/context and
+     sequential write scope.
+   - Split before a materially different subsystem, independent branch, distinct specialist/risk
+     boundary, or any addition that would make the packet broad.
+   - Same-worktree chains and chains with overlapping writes are **sequential**. Cross-repo
+     concurrency is `/milestone-flow`'s job (separate repo workspaces/worktrees), not `/build`'s.
+   - If a todo requires editing a different repo, stop and send the work back to epic splitting;
+     do not edit linked repos from a single-repo `/build` run.
 
    If `--step N` was passed, the execution set is just todo N.
 
-   For each pending todo, in order, dispatch a **fresh** builder for that ONE todo.
+   For each chain, in order, dispatch one **fresh** builder that owns only that chain. Its packet
+   contains only:
 
-   **Per-todo model routing (mirror `resolve-review`'s cheap/strong split):** read the
-   `complexity` tag the build-planner attached to each build_todo and pick the builder model:
+   - the full bodies and IDs of the todos in the chain;
+   - the relevant plan/contract excerpt, affected paths/interfaces, and targeted risk notes;
+   - the predecessor checkpoint/tree SHA; and
+   - the structured return contract.
 
-   - `model="sonnet"` when the todo is scoped to **<=2 files**, touches **no**
+   Do not include the whole ticket/epic history, unrelated todos/artifacts, or a broad plan dump.
+
+   **Per-chain model routing (mirror `resolve-review`'s cheap/strong split):** use the maximum
+   complexity/risk among the chain's todos:
+
+   - `model="sonnet"` when the entire chain is bounded to **<=2 files**, touches **no**
      schema/migration/auth/deploy-config paths, and makes **no** cross-module contract change.
-   - `model="opus"` for cross-cutting or schema-bearing todos, and for **any retry** after a
+   - `model="opus"` for cross-cutting or schema-bearing chains, and for **any retry** after a
      failed sonnet attempt (bounded self-repair below always escalates to opus).
    - **DEFAULT TO OPUS** whenever the `complexity` tag is missing, ambiguous, or you are
      uncertain — opus is the fail-safe; never downgrade to sonnet on a guess.
@@ -201,51 +215,61 @@ self-repair (≤2 retries), and the final health gate.
        MODE: build
        Ticket: {ticket_id}  Project: {PROJECT}  Repo: {REPO}
 
-       Implement ONLY this build_todo:
-       #{sequence} {title}
-       {build_todo artifact content}
+       Implement ONLY this coherent sequential chain, in order:
+       {for each chain todo: #{sequence} {title} + full build_todo body}
 
-       Plan summary: {plan artifact summary}
-       Project health commands — test: {…}  typecheck: {…}  lint: {…}
+       Relevant plan/contract excerpt: {bounded excerpt}
+       Affected paths/interfaces: {bounded list}
+       Predecessor checkpoint/tree SHA: {sha}
+       Targeted risks/unverified items: {bounded list}
+       Orchestrator validation command (name only; DO NOT run it): {exact command}
+
+       Validation ownership:
+       Implement and inspect code only. Do NOT run test suites, validation commands, typecheck,
+       lint, builds, schema pulls, migrations, browser verification, or health commands. Report
+       anything that remains unverified for the orchestrator.
 
        Hard-stop / needs_replan rule:
        If this todo implements a repeated writer (poller, observer, scheduler, queue,
        webhook, scraper, supervisor flow) and the design would persist duplicate unchanged
        source data proportional to polling frequency, do NOT blindly implement it. Return
-       status=needs_replan unless the todo names the downstream consumer, volume budget,
+       chain_status=needs_replan unless the todo names the downstream consumer, volume budget,
        dedupe/change-gating behavior, and retention/TTL for that append-only history.
 
        Return the structured build-result JSON per the builder Output (Build Mode) contract:
-       { todo_id, status, files_changed, verification_output, visual_evidence, deviations, error }
+       { chain_status, todo_results[], files_changed, deviations, risks_unverified, error }
      "
    )
    ```
 
-   Read the builder's structured result and branch on `status`:
+   Read the builder's structured result and branch on `chain_status`:
 
-   | `status`        | Orchestrator action                                                                 |
-   | --------------- | ----------------------------------------------------------------------------------- |
-   | `complete`      | Checkpoint (step 6), then dispatch the next todo                                     |
-   | `failed`        | **Bounded self-repair** — see below                                                  |
-   | `needs_replan`  | **STOP** the loop, hand back to `/ticket-plan` with the builder's `error`; do not build on |
+   | `chain_status`   | Orchestrator action                                                                    |
+   | ---------------- | -------------------------------------------------------------------------------------- |
+   | `complete`       | Validate every per-todo mapping, checkpoint each covered todo, then dispatch next chain |
+   | `failed`         | **Bounded chain-local self-repair** — see below                                         |
+   | `needs_replan`   | **STOP** and hand back to `/ticket-plan` with the builder's `error`; do not build on     |
 
-   **Bounded self-repair (on `failed`):** dispatch a *fresh* builder for the **same** todo with
-   the previous `error` and `verification_output` prepended as context, always at
-   `model="opus"` (any retry escalates regardless of the todo's `complexity` tag). Retry at
-   most **2** times. If it still fails, **STOP** the loop and report which todo blocked — do **not** attempt
-   downstream todos on a broken foundation.
+   **Bounded self-repair (on `failed`):** first checkpoint any leading todos whose completion
+   mappings are structurally valid. Dispatch a *fresh* builder for the remainder of the **same
+   chain**, starting at its first incomplete todo, with the previous `error` and unverified risks
+   as bounded context. Never rerun an already checkpointed todo. Retry at most **2** times and
+   escalate a failed sonnet chain to `model="opus"`. If it still fails, **STOP** and report the
+   first incomplete todo; do **not** attempt downstream chains on a broken foundation.
 
 6. **Checkpoint (only on `complete`):**
 
-   The orchestrator — not the builder — owns this write, so a todo is marked complete only after
-   its result was validated here:
+   The orchestrator — not the builder — owns this write. Validate that every dispatched todo has
+   exactly one completion mapping, its claimed files fit the chain scope, and no todo reports
+   `failed`/`needs_replan`. Then checkpoint every covered todo individually so resume truth remains
+   granular:
 
    ```
    mcp__autodev-memory__update_artifact(
      project=PROJECT, repo=REPO,
      artifact_id={todo artifact id},
      status="complete",
-     content={todo content + Completion Notes from files_changed, deviations, verification_output, visual_evidence}
+     content={todo content + Completion Notes from files_changed, deviations, risks_unverified}
    )
    ```
 
@@ -256,23 +280,26 @@ self-repair (≤2 retries), and the final health gate.
    `pending`. No journal, no scratch file — the MCP artifact (ticketed) or the
    `.context/build_todos/` file (ticketless) is the source of truth.
 
-7. **Stopping condition — the health gate (the predicate owns "done", not the todo list):**
+7. **Stopping condition and validation handoff:**
 
-   The build is complete ONLY when **both** hold:
+   The implementation phase converges when every build_todo is individually checkpointed
+   `complete`. Builder-chain results are implementation evidence, **not validation evidence**.
 
-   1. Every build_todo is `complete`, **and**
-   2. The project **health command passes** — run the project's full **test + typecheck + lint**
-      (commands from the project's CLAUDE.md / conventions) against the whole working tree, not
-      just per-todo touched files.
+   - When called by `/ticket-build` or `/lfg`, return without running tests, typecheck, lint,
+     builds, schema pulls, migrations, browser checks, or the project health command. The parent
+     orchestrator writes tests, then owns the pre-review and conditional final full gates.
+   - For a standalone `/build`, this skill's main/orchestrator (never a builder) runs one canonical
+     full health command against the completed tree, keyed by `(tree SHA, exact command)`.
 
    Tests, builds, migrations, large diffs, and other noisy commands use `bin/compact-exec` or an
    established equally compact stricter wrapper. Preserve the full log and consume only its bounded
    summary/tail. A failure report includes the absolute `output_file` and exact `rerun_command`.
 
-   If the health command fails even though every todo self-reported complete, the build is
-   **not** done — a cross-file interaction broke. Dispatch one builder scoped to the specific
-   failure (treat it like a `failed` todo, bounded to 2 retries), then re-run the health command.
-   If it still fails, STOP and report.
+   If the standalone orchestrator health command fails, it may dispatch one narrowly scoped repair
+   chain. That builder still does not run validation. After the changed tree returns, the
+   orchestrator reruns the failed gate once, records the failure-driven rerun, and stops if it
+   still fails. Focused diagnostics used to isolate a gate failure are also orchestrator-owned and
+   keyed to `(tree SHA, exact command)`.
 
    Then run the **migration parity sweep** (repo-wide, orchestrator-owned): diff the branch
    against main for the repo's model/schema/migration paths.
@@ -296,16 +323,14 @@ self-repair (≤2 retries), and the final health gate.
      Do not leave the build artifact implying that normal selective ticket promotion is safe for
      migration-bearing work.
 
-   If the plan removes/decommissions an old structure, close its negative inventory after the final
-   tree health gate: re-run the plan's bounded old-entrypoint/writer/config search and require zero
-   unexplained matches. Runtime registrations are verified later by deploy/verify, but the build
-   cannot report complete while scoped legacy code/config remains.
+   If the plan removes/decommissions an old structure, the orchestrator closes its negative
+   inventory after its applicable full gate: re-run the plan's bounded old-entrypoint/writer/config
+   search and require zero unexplained matches. Runtime registrations are verified later by
+   deploy/verify, but the build cannot report complete while scoped legacy code/config remains.
 
 8. **After the loop converges:**
-   - Do NOT re-run the full suite here — the health gate in step 7 already ran it against
-     the final tree. Re-run only the affected checks if anything changed the tree after
-     that gate (a parity fix, a late edit); never repeat an identical command against an
-     unchanged tree.
+   - Do not run validation after an orchestrated handoff. In standalone mode, do not repeat the
+     same full command against an unchanged tree; reuse the PASS keyed by `(tree SHA, command)`.
    - Record the Completion Summary: ticketed runs update the plan **artifact** via
      `update_artifact`; ticketless runs append it to `.context/plan.md`
    - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow`, `/lfg`) owns
@@ -363,30 +388,29 @@ runs; `.context/plan.md` for ticketless runs):
 
 ## Output
 
-On convergence (every todo `complete` **and** the health gate passed):
+On convergence:
 
 ```
 Build complete for {ID}: {title}
 
 Steps: {N}/{N} completed
-Health gate: PASS (test {p}/{t}, typecheck OK, lint OK)
-Screenshots: {absolute paths to actual-browser screenshots, required if work is UI/visual; otherwise "not applicable"}
+Validation: PENDING parent orchestrator | PASS ({command} @ {tree SHA}, standalone only)
+Visual verification: PENDING parent orchestrator | {absolute screenshot paths, standalone only}
 
-Evidence:
-- {todo NN}: {one line: what changed} — verified by {command/test + result}
+Implementation:
+- {todo NN}: {one line: what changed} — checkpointed from chain {chain id}
 - {todo NN}: ...
 
-Not verified: {anything claimed done but not exercised by a command/test in this run, with
-the reason — or "nothing; every step above has evidence"}
+Risks/unverified: {union of builder reports, or "none reported"; never claim validation from a
+builder result}
 
 Next: /write-tests {ID}, then /review {ID} (review implementation against the plan)
 ```
 
-**Evidence rules for the final report (trust contract):** every "done" claim must name the
-evidence that backs it — the command run and its result, the test that passed, the artifact
-written. Anything you did not actually exercise goes under "Not verified", explicitly. Never
-report a bare "complete"; session audits show users repeatedly having to ask "did you
-actually verify?" — the report must answer that question before it is asked.
+**Evidence rules for the final report (trust contract):** implementation claims name their
+per-todo checkpoint; validation claims name the orchestrator-owned command, result, and tree SHA.
+Anything not exercised by the owning orchestrator stays under "Risks/unverified". Never turn a
+builder's completion mapping into a validation claim.
 
 If a todo is **blocked** (returned `failed` and self-repair exhausted its 2 retries):
 

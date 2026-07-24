@@ -117,9 +117,9 @@ builder queue.
        For each fix:
        - CRITICAL: Before removing any export/class/function, search ALL usages first
        - Implement the suggested fix exactly as written
-       - Run linter and type checker after each fix
-       - Re-run the tests covering each touched file — a finding is not resolved
-         until they pass
+       - Do NOT run tests, validation, typecheck, lint, builds, schema pulls/migrations,
+         browser verification, or health commands
+       - Report risks and exact suggested orchestrator validation commands without executing them
        - For each p1 correctness fix: add a regression test (failing-then-passing)
          or state an explicit reason why it is untestable
        - Do NOT set review_todo artifact status — return structured JSON instead
@@ -193,9 +193,9 @@ builder queue.
        For each fix:
        - CRITICAL: Before removing any export/class/function, search ALL usages first
        - Implement the fix as specified
-       - Run linter and type checker after each fix
-       - Re-run the tests covering each touched file — a finding is not resolved
-         until they pass
+       - Do NOT run tests, validation, typecheck, lint, builds, schema pulls/migrations,
+         browser verification, or health commands
+       - Report risks and exact suggested orchestrator validation commands without executing them
        - For each p1 correctness fix: add a regression test (failing-then-passing)
          or state an explicit reason why it is untestable
        - Do NOT set review_todo artifact status — return structured JSON instead
@@ -209,17 +209,19 @@ builder queue.
 
    The builder does NOT set review_todo artifact status. For each builder that returns,
    parse its resolve-mode JSON array (`{finding_id, status, files_changed,
-   verification_output, regression_test}` per entry) and validate it:
+   risks_unverified, suggested_validation, regression_test}` per entry) and validate it:
 
    - every dispatched finding has an entry;
    - `status` is `resolved`, `skipped`, or `deferred`;
-   - `resolved` entries have passing `verification_output` for the touched files;
+   - `resolved` entries identify changed files plus risks/unverified items and suggested
+     orchestrator validation;
    - `resolved` p1 entries have a `regression_test` (or an explicit untestable reason).
 
    Only then set each review_todo artifact's status via `update_artifact` (`resolved` /
    `skipped`). Entries that fail validation stay `pending` and are re-dispatched or surfaced
    to the user. Same trust model as build mode: an artifact is never marked resolved on the
-   builder's say-so alone.
+   builder's say-so alone. These statuses record that the accepted fix was applied; the caller's
+   final health gate owns validation truth for the changed tree.
 
 7. **After builder returns — capture learnings:**
    - Run `/compound` to analyze the fixes

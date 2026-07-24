@@ -18,13 +18,21 @@ its existing ticketless `.context` behavior and is not changed by this reference
    work and stop if open questions require user decisions. The light path skips the critic
    panel and uses one bounded native planner unless a peer-escalation trigger fires.
 5. **Build todos** — create detailed implementation steps with discovered patterns/gotchas.
-6. **Build** — invoke the `build` skill: one builder per todo in dependency order, checkpoint
-   each to MCP on success, bounded self-repair (≤2 retries) on a failed todo, and finish only
-   when every todo is `complete` **and** the project health command (test + typecheck + lint)
-   passes. A builder that finds the plan wrong returns `needs_replan` → stop and revise the plan.
-   Keep unrelated fixes in a separate commit.
-7. **Write tests** — add focused tests for the changed behavior.
-8. **Review + resolve** — invoke the `review` skill rather than hand-rolling review. It chooses a
+6. **Build** — invoke the `build` skill: partition the pending todo dependency DAG into the
+   smallest reasonable set of coherent sequential chains, assign one fresh builder per chain, and
+   checkpoint each covered todo individually. Builder chains implement and inspect code only; they
+   do not run tests, validation, typecheck, lint, builds, schema pulls/migrations, browser
+   verification, or health commands. Bounded self-repair is chain-local and resumes at the first
+   incomplete todo.
+   A builder that finds the plan wrong returns `needs_replan` → stop and revise the plan. Keep
+   unrelated fixes in a separate commit.
+7. **Write tests** — add focused tests for the changed behavior. In a ticket/lfg orchestrated run,
+   the test-writing subagent writes tests but does not execute them.
+8. **Pre-review health + review/resolve** — after initial implementation and test-writing are
+   complete, the main orchestrator runs the canonical full health command once and records the PASS
+   by `(tree SHA, exact command)`. Then invoke the `review` skill rather than hand-rolling review.
+   Reviewers judge the diff and recorded evidence only; resolution builders implement accepted
+   fixes only. Neither reviewer nor resolver subagents run validation. Review chooses a
    genuinely light one-reviewer path or a heavy native specialist path and conditionally adds peer
    providers only for explicit risk, uncertainty, or disagreement. When peers are required, wait
    for their envelopes before the single synthesis; never simulate them. The main runner resolves
@@ -58,7 +66,10 @@ its existing ticketless `.context` behavior and is not changed by this reference
    adversarial disagreement, not to re-confirm agreed fixes). Stop on unresolved design
    decisions and surface any remaining unapproved `gated_auto` findings or genuinely undecided
    `manual` findings for a human.
-9. **Local verification** — run targeted checks and project health commands.
+9. **Final local verification** — if review resolution changed the tree since the pre-review PASS,
+   the main orchestrator runs the canonical full health command exactly once on the new final tree.
+   If the tree is unchanged, reuse the prior PASS. A failing gate may trigger one narrow repair
+   chain and one rerun on its changed tree; focused diagnostics remain orchestrator-owned.
 10. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
     the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny
     safe work). Epic-step landing remains parent-owned by the milestone/epic orchestrator.

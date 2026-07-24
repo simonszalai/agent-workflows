@@ -82,7 +82,7 @@ How to prevent similar issues in future work items:
 ### Build Phase
 
 **What verification was missing:**
-[e.g., "Should have run integration tests against staging data before marking complete"]
+[e.g., "The main orchestrator's recorded pre-review gate omitted the integration suite"]
 
 **Suggested check to add:**
 [e.g., "Verify type hints match Pydantic model fields"]

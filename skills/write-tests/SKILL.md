@@ -140,11 +140,11 @@ bun run test:e2e
 
 All tests must pass. If a test is flaky on first run, fix it - don't retry and hope.
 
-Run the new test files plus the suites covering the touched modules — NOT the whole
-repository suite. The single full-suite run is owned by the orchestrator's final health
-gate after the last code/test change; adding another one here duplicates it. Only run the
-full suite yourself when no orchestrator gate will follow (standalone invocation) or the
-new tests touch shared fixtures/config that could interfere beyond their modules.
+For a standalone invocation, run the new test files plus the suites covering the touched modules —
+NOT the whole repository suite. Only run the full suite yourself when no orchestrator gate will
+follow and the new tests touch shared fixtures/config that could interfere beyond their modules.
+For an orchestrated ticket/lfg invocation, skip this execution step entirely: the main
+orchestrator owns the pre-review full gate and the conditional final changed-tree gate.
 
 ### 6. Validate Test Quality
 
@@ -215,8 +215,12 @@ If the MCP tool is unavailable, skip this step silently.
 This skill is invoked by orchestrators **after** the `/build` loop completes, scoped to the
 **whole change set** from the build phase — not per-todo. Classify all changed code and write
 tests at the appropriate level. Don't test unrelated code; match test scope to change scope.
-Run the new tests plus affected suites; the orchestrator's single final health gate owns
-the full-suite regression run.
+**Stop after writing the tests. Do not execute them or run any test suite, validation, typecheck,
+lint, build, schema pull/migration, browser verification, or health command.** Return the exact
+commands the main orchestrator should include in its pre-review gate or failure diagnostics.
+
+The normal self-validation behavior in Steps 5-7 applies only to a standalone `/write-tests`
+invocation with no ticket/lfg orchestrator.
 
 **Ticketless note (lfg):** when running under `/lfg` there is no ticket — make no MCP writes
 (no ticket or artifact updates). Report results back to the orchestrator only.

@@ -285,17 +285,18 @@ Run `/create-build-todos` internally:
 
 ### Phase 5: Build
 
-Run `/build` internally. `/build` owns the loop: one builder per todo in dependency order,
-checkpoint each on success, bounded self-repair (≤2 retries) on a failed todo, and finish only
-when every todo is complete **and** the project health command (test + typecheck + lint) passes.
+Run `/build` internally. `/build` owns the implementation loop: partition the pending todo DAG
+into coherent sequential chains, assign one fresh builder per chain, checkpoint every covered todo
+individually, and use bounded chain-local self-repair (≤2 retries) from the first incomplete todo.
+Builder-chain subagents implement and inspect code only; they do not run validation commands.
 Because `lfg` is ticketless, the per-todo checkpoint lands in `.context/build_todos/` status
 (not MCP) — that is `lfg`'s source of truth for resume.
 
 React to how the loop terminates:
 
-1. **Converged** (all todos complete, health gate PASS) → continue to write tests.
-2. **Blocked** (a todo failed and exhausted its 2 retries) → STOP, report which todo blocked;
-   do not build downstream on a broken tree.
+1. **Converged** (all todos individually checkpointed complete) → continue to write tests.
+2. **Blocked** (a chain failed and exhausted its 2 retries) → STOP, report the first incomplete
+   todo; do not build downstream on a broken tree.
 3. **needs_replan** (a builder found the plan wrong) → STOP and revise before continuing.
 
 **On unrelated type/lint errors** (pre-existing failures in files this work
@@ -310,9 +311,13 @@ Run `/write-tests` internally:
 
 1. Analyze all code changes from the build phase
 2. Write tests at the appropriate level (unit, integration, e2e)
-3. Run all new tests to verify they pass, plus the suites covering touched modules
-4. Do not run the whole repository suite here — the single full-suite health gate runs
-   once, after the last change of the run (post-review-fixes)
+3. Do not execute tests or any other validation command; return exact suggested commands to the
+   main lfg orchestrator
+
+After the test-writing subagent returns, the **main lfg orchestrator** runs the canonical full
+health command exactly once before review and records the PASS by `(tree SHA, exact command)`.
+A failing gate may dispatch one narrow repair chain; that builder still does not validate, and the
+main orchestrator reruns the failed gate once on the changed tree.
 
 **On failure:** Log details, continue to review phase (non-blocking).
 
@@ -328,14 +333,17 @@ Run the adaptive iteration loop from the `review` skill. Each round:
 2. Resolve the actionable findings (runner fixes — `safe_auto` inline, `gated_auto`/`manual`
    via the `resolve-review` skill's **finding-routing logic only** — do NOT run its
    commit/push or deployment-guide steps; lfg owns its own commits in Phase 11 and never
-   pushes, and the deploy guide is Phase 10). Re-run affected tests, run the type checker.
+   pushes, and the deploy guide is Phase 10). Resolution builders implement only and do not
+   run validation.
 
 Repeat up to **3 rounds**, or stop earlier when no actionable
 (`safe_auto`/`gated_auto`/`manual`) findings remain. `advisory` and gate-suppressed nits do
 not re-trigger a round. When the loop ends AND review fixes changed the tree since the
-build health gate, run the full health gate (test + typecheck + lint) once — this is the
-run's single final full-suite pass. After round 3, record any remaining `gated_auto`/`manual` findings in
-the follow-up report.
+pre-review health PASS, the main lfg orchestrator runs the same full health command exactly once on
+the new final tree. If the tree did not change, reuse the pre-review PASS. This is at most two
+normal full gates. Focused diagnostics are allowed only to identify an orchestrator gate failure
+and are keyed by `(tree SHA, exact command)`. After round 3, record any remaining
+`gated_auto`/`manual` findings in the follow-up report.
 
 Reviewers may also flag problems that are **unrelated** to this work (pre-existing
 issues in untouched code). Fix the clear, low-risk ones and record them in

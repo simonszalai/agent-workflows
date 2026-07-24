@@ -137,7 +137,7 @@ ticket = mcp__autodev-memory__get_ticket(
    - Code examples following discovered patterns
    - Dependencies between steps
    - Test requirements per step
-   - Verification commands
+   - Orchestrator-owned verification commands (the builder must not execute them)
    - Edge cases to handle
    - **Complexity class tag (MANDATORY)** — see "Complexity Tagging" below
 
@@ -224,10 +224,11 @@ ticket = mcp__autodev-memory__get_ticket(
    )
    ```
 
-## Complexity Tagging (MANDATORY — drives per-todo builder model routing)
+## Complexity Tagging (MANDATORY — drives per-chain builder model routing)
 
-The build-planner MUST tag **every** build_todo with a `complexity` class. `/build` reads this
-tag to route each todo to the cheap (`sonnet`) or strong (`opus`) builder model:
+The build-planner MUST tag **every** build_todo with a `complexity` class. `/build` takes the
+maximum complexity/risk across each coherent chain to choose the cheap (`sonnet`) or strong
+(`opus`) builder model:
 
 - `complexity: simple` — the todo is scoped to **<=2 files**, touches **no**
   schema/migration/auth/deploy-config paths, and makes **no** cross-module contract change.
@@ -284,12 +285,13 @@ Todo depth follows who executes it, not a fixed rule:
 
 - **Native builder (default):** the builder has MCP and memory access and can read the
   repository. Give it objective, acceptance criteria, likely files plus one relevant
-  analogue, risk-specific gotchas, required validation, and hard boundaries. Pass paths
-  to longer artifacts instead of copying their contents.
+  analogue, risk-specific gotchas, named orchestrator-owned validation, and hard boundaries. Pass
+  paths to longer artifacts instead of copying their contents.
 - **External builder (`/build --builder codex`):** the Codex side has NO MCP or memory
   access and sees only the todo text plus a short context blob. Everything it needs must
   be IN the todo — discovered patterns with `file:line` references, the closest analogous
-  module, the exact verification commands, applicable CLAUDE.md rules. "None applicable"
+  module, the exact orchestrator-owned verification commands that it must not execute,
+  applicable CLAUDE.md rules. "None applicable"
   is a valid entry; silence is not.
 
 ## Output Template
@@ -315,7 +317,7 @@ Each build todo contains:
 - **Discovered Patterns** - Patterns found that must be followed
 - **Implementation Details** - Code snippets following patterns
 - **Tests** - Test cases based on similar code
-- **Verification** - Commands to verify step worked
+- **Verification** - Commands for the orchestrator to verify the step; builders do not execute them
 
 ## Agent Selection (if build-planner requests)
 
@@ -405,7 +407,8 @@ for the elimination step. This is NOT optional — it is as mandatory as a migra
    new code each should use
 3. **Delete old files/config/registrations** — list every scoped item being removed and assign
    runtime registration deletion to the deployment guide
-4. **Negative-inventory verification commands:**
+4. **Negative-inventory verification commands (record for the main orchestrator; builders do not
+   execute them):**
    ```bash
    # Verify zero imports of old system remain
    grep -r "OldSystem\|old_module" src/ --include="*.py" | grep -v __pycache__
@@ -421,8 +424,8 @@ for the elimination step. This is NOT optional — it is as mandatory as a migra
    Also include the authoritative post-deploy inventory command/query that must show every retired
    runtime item absent, plus a smoke command for the sole surviving path.
 5. **Position in build order:** Elimination comes AFTER all new code is wired up but BEFORE
-   writing tests. Never leave elimination as the last step — it must be verified before the
-   build is considered complete.
+   writing tests. Never leave elimination as the last implementation step. Its commands run in the
+   main orchestrator's pre-review gate after test-writing, not in the builder chain.
 
 **Rule:** If a plan replaces system X with system Y, and the build todos don't include an
 elimination step plus before/after negative inventory for X, the build todos are incomplete.

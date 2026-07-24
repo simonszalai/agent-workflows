@@ -7,15 +7,18 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 
 - Every delegated call defaults to and should use `fork_turns: "none"`. Send a bounded,
   self-contained task packet containing the objective, exact scope, relevant paths/artifact IDs,
-  constraints, expected return shape, and validation command. A history fork is allowed only when
+  constraints, expected return shape, and any orchestrator-owned validation command named for
+  handoff rather than child execution. A history fork is allowed only when
   a self-contained packet is genuinely impossible. Before dispatch, record why it is impossible
   and use the smallest explicit numeric count of recent turns that supplies the missing fact.
   `fork_turns: "all"` is prohibited; convenience or an already-long conversation is not an
   exception.
 - Give each agent one role and one write scope. No role drift: a researcher does not implement, a
   reviewer does not silently fix, and a verifier does not deploy or mutate lifecycle state.
-- Cluster work by shared context and non-overlapping write scope. Do not create one agent per tiny
-  file or ticket when one bounded packet can safely cover the cluster.
+- Cluster adjacent dependent work into coherent sequential chains when it shares subsystem/context
+  and write scope. Split at independent branches, materially different subsystems, specialist/risk
+  boundaries, or when the packet would become broad. Do not create one agent per tiny todo when
+  one bounded chain packet can safely cover it.
 - Batch independent tool calls in one turn. Parallelize only genuinely independent work; preserve
   dependency, schema, deploy, and promotion ordering.
 
@@ -99,10 +102,16 @@ terminal result or one timeout.
 
 ## Final-tree evidence ownership
 
-- Key expensive validation by `(tree SHA, command)`. Builders run targeted checks; the orchestrator
-  owns one full health gate for the final tree. Reuse that recorded PASS everywhere downstream while
-  the tree SHA is unchanged. A rebase, merge/conflict fix, generated-file change, or late edit creates
-  a new tree and invalidates the old gate; run the gate once for the new tree.
+- Key expensive validation by `(tree SHA, exact command)`. Builder chains, orchestrated
+  test-writers, reviewers, and review-resolution builders do not run validation commands. The main
+  ticket/lfg orchestrator owns one full health gate after initial implementation and test-writing,
+  before review. Reuse that recorded PASS when the final tree SHA is unchanged; if review
+  resolution changes the tree, run the full gate exactly once on that new final tree. This is at
+  most two normal full gates.
+- A failing orchestrator gate may dispatch one narrowly scoped repair chain. The repair builder
+  still does not validate; the orchestrator reruns the failed gate once on the changed tree and
+  records that failure-driven rerun. Focused diagnostics used to isolate a gate failure are also
+  orchestrator-owned and keyed by `(tree SHA, exact command)`.
 - Removal/decommission work closes with a **negative inventory**, not only passing tests: record the
   before inventory of old entrypoints/writers/config/deployments, then prove every scoped item is
   absent after the final deploy. Search code and config, query live registrations/routes/jobs where

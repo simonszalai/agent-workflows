@@ -68,6 +68,80 @@ def run_script(name: str, *args: str, env: dict[str, str] | None = None) -> subp
 
 
 class WorkflowEfficiencyTest(unittest.TestCase):
+    def test_e0003_r3_r5_builder_chains_and_validation_ownership(self) -> None:
+        build = (ROOT / "skills/build/SKILL.md").read_text()
+        create_todos = (ROOT / "skills/create-build-todos/SKILL.md").read_text()
+        ticket_build = (ROOT / "skills/ticket-build/SKILL.md").read_text()
+        phases = (ROOT / "skills/references/execution-phases.md").read_text()
+        economy = (ROOT / "skills/references/execution-economy.md").read_text()
+        lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
+        write_tests = (ROOT / "skills/write-tests/SKILL.md").read_text()
+        review = (ROOT / "skills/review/SKILL.md").read_text()
+        resolve = (ROOT / "skills/resolve-review/SKILL.md").read_text()
+        builder = (ROOT / "agents/builder.md").read_text()
+        reviewer = (ROOT / "agents/reviewer.md").read_text()
+        external_build = (ROOT / "bin/external-build").read_text()
+        external_agent = (ROOT / "bin/external-agent").read_text()
+        build_planner = (ROOT / "agents/build-planner.md").read_text()
+        test_strategy = (ROOT / "skills/write-tests/references/strategy.md").read_text()
+        review_template = (ROOT / "skills/review/templates/review-todo.md").read_text()
+
+        self.assertIn("coherent sequential builder chains", build)
+        self.assertIn("smallest reasonable set of coherent sequential chains", build)
+        self.assertIn("one **fresh** builder that owns only that chain", build)
+        self.assertIn("whole ticket/epic history", build)
+        self.assertIn("todo_results[]", build)
+        self.assertIn('"todo_results"', external_build)
+        self.assertIn('"chain_status"', external_build)
+        self.assertNotIn('"verification_output"', external_build)
+        self.assertNotIn("--session-file", external_build)
+        self.assertNotIn('"exec", "resume"', external_build)
+        self.assertIn("checkpoint every covered todo individually", build)
+        self.assertIn("first incomplete todo", build)
+        self.assertIn("maximum\n   complexity/risk", build)
+        self.assertIn("maximum complexity/risk across each coherent chain", create_todos)
+        self.assertIn("builders must not execute them", build_planner)
+
+        for contract in (build, phases, builder):
+            normalized = re.sub(r"[*_`]", "", contract.lower())
+            self.assertIn("do not run", normalized)
+            self.assertIn("typecheck", contract)
+            self.assertIn("schema pulls", contract)
+            self.assertIn("browser verification", " ".join(contract.split()))
+        self.assertIn("Do not execute them or run any test suite", write_tests)
+        self.assertIn("standalone `/write-tests`", write_tests)
+        self.assertIn("the subagent never runs it", test_strategy)
+        self.assertIn("Reviewers never rerun validation", review)
+        self.assertIn("Never run test", reviewer)
+        self.assertIn("Review the diff and supplied evidence only", external_agent)
+        self.assertIn("suggested orchestrator validation commands", resolve)
+
+        self.assertIn("Pre-review health gate (main orchestrator only)", ticket_build)
+        self.assertIn("Final health gate (main orchestrator only)", ticket_build)
+        self.assertIn("(tree SHA, exact command)", ticket_build)
+        self.assertIn("If unchanged, reuse that PASS", ticket_build)
+        self.assertIn("one narrowly scoped repair", ticket_build)
+        self.assertIn("at most two normal full gates", " ".join(ticket_build.split()))
+        self.assertIn("pre-review health PASS", lfg)
+        self.assertIn("Reuse that recorded PASS", economy)
+
+        active_contracts = "\n".join((
+            build, ticket_build, phases, lfg, economy, write_tests, review, resolve, builder,
+            reviewer, external_build, external_agent, create_todos, build_planner,
+            test_strategy, review_template,
+        ))
+        for obsolete in (
+            "one builder per todo",
+            "one fresh builder per todo",
+            "fresh builder for that ONE todo",
+            "builders run targeted checks",
+            "Run ALL verification commands",
+            "Run tests after each step",
+            "Run all new tests to verify they pass",
+            "Re-run affected tests after every fix",
+        ):
+            self.assertNotIn(obsolete.lower(), active_contracts.lower())
+
     def test_e0026_retro_contracts_are_present_and_consistent(self) -> None:
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
         guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
