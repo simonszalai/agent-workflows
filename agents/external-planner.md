@@ -54,6 +54,7 @@ remaining providers instead of using this Claude-specific subagent wrapper.
 
    ```bash
    external-agent --task plan --provider <provider> \
+     --orchestrator-thread-id <orchestrator_thread_id> \
      --question "<question>" \
      --source-artifact-file .context/plan/source.md \
      --codebase-research-file .context/plan/codebase-research.md \

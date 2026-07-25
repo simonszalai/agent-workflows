@@ -13,13 +13,16 @@ Follow `../references/execution-economy.md`; economy never permits an unconfirme
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
 ```bash
+ORCHESTRATOR_THREAD_ID="${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${SESSION_ID:-}}}"
+test -n "$ORCHESTRATOR_THREAD_ID" || exit 2
 cat .context/investigate/bug.txt .context/investigate/evidence.txt | \
-  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "$ORCHESTRATOR_THREAD_ID" \
     --agent-type investigator --provider "$provider" --mechanism external_peer \
     --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
 ```
 
-Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investigate`.
+Pass `--memory-context-file "$MEMORY_PACKET"` and
+`--orchestrator-thread-id "$ORCHESTRATOR_THREAD_ID"` to `external-agent --task investigate`.
 
 **For new features:** Skip this command and use `/ticket-plan` directly.
 
@@ -233,6 +236,8 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    parallel as independent hypothesis generators through `external-agent --task investigate`.
    Use `fork_turns: "none"` for provider subagents, pass bounded self-contained packets, write
    full output/logs under `.context/investigate/<run-id>/`, and read only their compact envelopes.
+   Pass the explicit root rollout identifier as
+   `--orchestrator-thread-id <orchestrator_thread_id>` on every adapter call.
    Merge by normalized statement/category, record agreement, and test new predictions exactly like
    native ones. A failed peer is surfaced; it is not silently simulated or replaced. If the gate
    does not fire, do not create provider packets or calls.

@@ -301,9 +301,14 @@ gh pr create --base main --head "$BRANCH" \
 bin/wait-ci <pr_number> --timeout 540
 ```
 
-Run `wait-ci` as one blocking foreground tool call and consume its single JSON result; do not poll
-the process from model turns. If CI fails, fix in the promotion worktree, push, wait once on the
-new tree. If it cannot be made green, STOP
+Under Conductor, dispatch that exact deterministic command immediately to exactly one fresh
+`fork_turns: "none"` waiter leaf with the PR number, 540-second deadline, terminal
+success/failure predicates, compact-result requirement, and timeout `resume_command`. The parent
+blocks once for the leaf's terminal result. It must not start the wait itself, poll
+`write_stdin`, poll the waiter agent, or substitute `gh`/GitHub status reads. Outside Conductor,
+run `wait-ci` as one blocking foreground tool call and consume its single JSON result. If CI
+fails, fix in the promotion worktree, push, and use one new waiter leaf for the new tree. If it
+cannot be made green, STOP
 (in batch mode: stop the whole batch).
 
 Merge with the method chosen in Preflight #5:

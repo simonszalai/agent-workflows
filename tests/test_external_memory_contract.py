@@ -155,6 +155,7 @@ class ExternalMemoryContractTest(unittest.TestCase):
             result = subprocess.run(
                 [str(ROOT / "bin/external-agent"), "--task", "research",
                  "--provider", "codex", "--question", "inspect code", "--repo", str(ROOT),
+                 "--orchestrator-thread-id", "root-rollout",
                  "--memory-context-file", str(packet), "--telemetry-file", str(telemetry)],
                 capture_output=True, text=True, env=env,
             )
@@ -187,6 +188,7 @@ class ExternalMemoryContractTest(unittest.TestCase):
             result = subprocess.run(
                 [str(ROOT / "bin/external-agent"), "--task", "research",
                  "--provider", "codex", "--question", "inspect code", "--repo", str(ROOT),
+                 "--orchestrator-thread-id", "root-rollout",
                  "--memory-context-file", str(packet), "--telemetry-file", str(telemetry)],
                 capture_output=True, text=True, env=env,
             )

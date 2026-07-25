@@ -104,6 +104,7 @@ explicitly asks for a full replan/from-scratch run.
    - Determine the current runner with `agent-workflow-provider`. The current runner is the native
      planner; the other two providers are peers.
    - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>
+     --orchestrator-thread-id <explicit-root-rollout-id>
      --memory-context-file <bounded-task-packet>` using the
      peer-planning packet as the source artifact. Claude peers must use the subscription-backed
      `claude -p` path provided by `external-agent`, never a direct API call.
@@ -120,13 +121,16 @@ explicitly asks for a full replan/from-scratch run.
 
    ```bash
    mkdir -p .context/epic-plan
+   ORCHESTRATOR_THREAD_ID="${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${SESSION_ID:-}}}"
+   test -n "$ORCHESTRATOR_THREAD_ID" || exit 2
    for provider in $(agent-workflow-provider --peers); do
      memory_packet=".context/epic-plan/${provider}-memory-task.md"
      cat .context/epic-plan/peer-source.md | \
-       autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+       autodev-memory-task-packet --cwd "$PWD" --session-id "$ORCHESTRATOR_THREAD_ID" \
          --agent-type planner --provider "$provider" --mechanism external_peer \
          --task-prompt-stdin --allow-unavailable > "$memory_packet"
-     # external-agent --task plan ... --memory-context-file "$memory_packet"
+     # external-agent --task plan ... --orchestrator-thread-id "$ORCHESTRATOR_THREAD_ID" \
+     #   --memory-context-file "$memory_packet"
    done
    ```
 6. Run cross-review and convergence:

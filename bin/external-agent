@@ -45,12 +45,16 @@ Codex via `-s read-only`, and Grok via a read/search-only tool allowlist
 (`--tools Read,Grep,Glob`, no Bash/Write/Edit). None can modify the repo.
 
 Usage:
-    external-agent --task plan        --provider claude|codex|grok --question STR
-    external-agent --task review      --provider claude|codex|grok [--base origin/main]
-    external-agent --task investigate --provider claude|codex|grok --bug STR [--evidence-file F] [--environment ENV]
-    external-agent --task research    --provider claude|codex|grok --question STR
+    external-agent --task plan --provider claude|codex|grok --question STR
+                   --orchestrator-thread-id ID
+    external-agent --task review --provider claude|codex|grok
+                   --orchestrator-thread-id ID [--base origin/main]
+    external-agent --task investigate --provider claude|codex|grok --bug STR
+                   --orchestrator-thread-id ID [--evidence-file F] [--environment ENV]
+    external-agent --task research --provider claude|codex|grok --question STR
+                   --orchestrator-thread-id ID
   common: [--model M] [--repo DIR] [--out FILE] [--timeout SECS] [--skill-dir DIR]
-          --memory-context-file F
+          --memory-context-file F --orchestrator-thread-id ID
 
 Exit codes: 0 ok; 2 provider produced no valid output (a valid empty envelope with a
 residual note is still printed); 1 usage/setup error.
@@ -1216,6 +1220,10 @@ def main() -> None:
     ap.add_argument("--memory-context-file", required=True,
                     help="one explicit <=3K task packet; suppresses ambient SessionStart")
     ap.add_argument(
+        "--orchestrator-thread-id", required=True,
+        help="explicit root rollout/session identifier persisted in the content-free usage sidecar",
+    )
+    ap.add_argument(
         "--telemetry-file", type=Path,
         default=Path.home() / ".cache/autodev-memory/telemetry.jsonl",
     )
@@ -1240,6 +1248,9 @@ def main() -> None:
     ap.add_argument("--prior-knowledge-file", default=None,
                     help="file with rendered memories / related tickets (plan)")
     args = ap.parse_args()
+    args.orchestrator_thread_id = args.orchestrator_thread_id.strip()
+    if not args.orchestrator_thread_id:
+        die("--orchestrator-thread-id must be a non-empty explicit identifier")
     memory_context = read_memory_context(args.memory_context_file)
 
     task = TASKS[args.task]
@@ -1319,11 +1330,6 @@ def main() -> None:
     adapter_outcome = "adapter_exception_or_exit"
 
     def persist_usage() -> None:
-        orchestrator_id_source = next(
-            (name for name in ("CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "SESSION_ID")
-             if os.environ.get(name)),
-            None,
-        )
         total = {key: 0 for key in USAGE_KEYS}
         available = False
         for provider_run in provider_runs:
@@ -1341,9 +1347,8 @@ def main() -> None:
             "model": args.model or "provider_default",
             "repo": str(repo.resolve()),
             "duration_ms": round((time.monotonic() - run_started) * 1000),
-            "orchestrator_thread_id": os.environ.get(orchestrator_id_source)
-            if orchestrator_id_source else None,
-            "orchestrator_id_source": orchestrator_id_source,
+            "orchestrator_thread_id": args.orchestrator_thread_id,
+            "orchestrator_id_source": "explicit_cli",
             "attempts": len(provider_runs),
             "attempt_statuses": [provider_run.status for provider_run in provider_runs],
             "usage_available": available,
