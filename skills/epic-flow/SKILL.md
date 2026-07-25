@@ -89,8 +89,12 @@ Read before acting:
   missing-fact request to the orchestrator for a bounded packet update; do not independently reload
   the whole epic.
 - If the epic spans multiple repos, resolve every involved repo to an actual Conductor workspace
-  path or linked directory using `conductor-multi-repo.md`. If any required repo is missing, stop
-  before invoking milestone-flow and report the missing repo/path requirement.
+  path or linked directory using `conductor-multi-repo.md`. Declare a repo missing only on
+  **positive evidence of absence**: check the Conductor workspace map, linked directories inside
+  the current workspace, and the sibling workspace paths named by `conductor-multi-repo.md`, and
+  record the exact paths checked. A failed first lookup is not "missing" — false positives here
+  have wrongly blocked milestones. Only after that full sweep still finds nothing, stop before
+  invoking milestone-flow and report the missing repo/path requirement plus the checked paths.
 - If no canonical epic plan exists, or milestone pass conditions are missing/vague/stale, run
   `/epic-plan`; that skill owns synchronizing milestone gate criteria from source tickets and
   artifacts.
