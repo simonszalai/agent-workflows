@@ -405,9 +405,10 @@ After all deployment steps complete, verify each one succeeded:
 
 **Bounded log reads (always):** never pull full unbounded logs into context. Constrain every
 log read to the time window since the deploy AND a generous tail cap (e.g. the last 2000
-lines). If the windowed log is still larger than that, spawn a haiku subagent with
-`fork_turns: "none"` and only the log path, time window, feature terms, and output cap; work from
-its relevant excerpts (errors and feature-specific lines).
+lines). Filter with grep for errors and feature terms rather than reading the tail whole. Only
+when the windowed log is genuinely too large to filter down (roughly >5k lines after grep) is it
+worth a haiku subagent with `fork_turns: "none"` and only the log path, time window, feature
+terms, and output cap; work from its relevant excerpts.
 
 **Project-specific verification** (from `/deploy` command):
 
@@ -526,9 +527,11 @@ to `/ticket-verify` after behavior/evidence verification.
 ## Output
 
 Before emitting either terminal report, load and apply
-`skills/references/terminal-outcomes.md`. Run its post-check after the final deploy/status action,
-then put the environment-specific deploy success/failure banner and confirmation block before the
-existing details. A successful deploy is not final ticket closure: its closeout result stays
+`skills/references/terminal-outcomes.md`. When `/auto-deploy` was invoked directly, run its
+post-check after the final deploy/status action and put the environment-specific deploy
+success/failure banner and confirmation block before the existing details. When a parent workflow
+invoked it, report the deploy result and let the parent own the post-check and outer banner.
+A successful deploy is not final ticket closure: its closeout result stays
 `NOT READY` until `/ticket-verify` proves behavior and cleanup.
 
 ### On Success

@@ -39,17 +39,10 @@ retrying a chain that failed at lower effort. Requirements specific to this mode
   ```bash
   mkdir -p .context/build
   # write only this chain's todo bodies to .context/build/chain-{NN}.md, then:
-  if ! cat .context/build/chain-{NN}.md | \
-      autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
-        --agent-type builder --provider codex --mechanism external_build \
-        --task-prompt-stdin --allow-unavailable > .context/build/memory-{NN}.md; then
-    cat > .context/build/memory-{NN}.md <<'EOF'
-  <autodev-memory-task-context>
-  Memory context is unavailable. Do not infer that critical or build-specific memories were loaded.
-  This external builder has no memory tool; proceed only from the approved todo and report the limitation.
-  </autodev-memory-task-context>
-  EOF
-  fi
+  cat .context/build/chain-{NN}.md | \
+    autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+      --agent-type builder --provider codex --mechanism external_build \
+      --task-prompt-stdin --allow-unavailable > .context/build/memory-{NN}.md
   external-build --task build \
     --todo-file .context/build/chain-{NN}.md \
     --context-file .context/build/context-{NN}.md \
@@ -70,50 +63,30 @@ retrying a chain that failed at lower effort. Requirements specific to this mode
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 
-Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
+Two conditions, validated before any work. Stop immediately if either fails.
 
-### Standard Mode (Worktree)
+**Off `main`.** Locally that means a worktree; in cloud branch mode (`CLAUDE_CODE_REMOTE=true`)
+worktrees are unavailable, so a feature branch is the equivalent.
 
 ```bash
-# 1. Check worktree (not main repo)
-git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
-git worktree list | grep "$(pwd)" | grep -v "bare"  # Must match current dir
+git rev-parse --abbrev-ref HEAD          # must NOT be "main"
+git worktree list | grep "$(pwd)" | grep -v bare   # local mode: must match current dir
+```
 
-# 2. Load ticket and check artifacts exist
+On `main` in cloud mode, create the branch (`git checkout -b build/{id}`) and continue. On `main`
+locally, stop and instruct the user to create a worktree.
+
+**Plan and build todos exist.**
+
+```bash
 mcp__autodev-memory__get_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
   detail="full", artifact_types=["plan", "build_todo"], include_events=false
 )
-# Check for build_todo artifacts — if none: STOP - run /create-build-todos first
-# Check for plan artifact — if missing: STOP - run /ticket-plan first
 ```
 
-### Branch Mode (Cloud)
-
-When `CLAUDE_CODE_REMOTE=true`:
-
-```bash
-# 1. Check we're on a feature branch (not main)
-git rev-parse --abbrev-ref HEAD  # Must NOT be "main"
-# If on main: Create branch first
-
-# 2. Load ticket and check artifacts exist
-mcp__autodev-memory__get_ticket(
-  project=PROJECT, ticket_id=ID, repo=REPO,
-  detail="full", artifact_types=["plan", "build_todo"], include_events=false
-)
-# Check for build_todo artifacts — if none: STOP - run /create-build-todos first
-# Check for plan artifact — if missing: STOP - run /ticket-plan first
-```
-
-**If any prerequisite fails:**
-
-| Missing         | Action                                          |
-| --------------- | ----------------------------------------------- |
-| Not in worktree | Instruct user to create worktree (see below)    |
-| On main (cloud) | Create branch with `git checkout -b build/{id}` |
-| No build_todos  | **STOP** - run `/create-build-todos [id]` first |
-| No plan         | **STOP** - run `/ticket-plan [id]` first          |
+No plan artifact → STOP, run `/ticket-plan [id]`. No build_todo artifacts → STOP, run
+`/create-build-todos [id]`.
 
 ### Ticketless Mode (lfg)
 
@@ -141,34 +114,29 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    )
    ```
 
-2. **Verify execution context (REQUIRED):**
-
-   **Standard Mode (Local Terminal):**
-   - Run `git rev-parse --is-inside-work-tree` and `git worktree list`
-   - **STOP if on main branch** - builds must run in a worktree
-   - Verify current directory is a worktree, not the main repo
-   - If not in worktree, instruct user to create one
-
-   **Branch Mode (Cloud):**
-   - Detected when `CLAUDE_CODE_REMOTE=true`
-   - In branch mode, worktrees are not available - use feature branches instead
-   - If on main: Create branch with `git checkout -b build/{id}`
-   - All operations happen in current directory on the feature branch
-   - This mode is used for cloud execution where worktrees aren't practical
-
-3. **Process user feedback:**
+2. **Process user feedback:**
    - Read plan artifact from `get_ticket` response — check Open Questions and Additional Notes
    - If answers or notes require changes to build_todos:
      - Update affected build_todo artifacts via `update_artifact`
      - Add/remove/modify steps as indicated
      - Document changes in work log
 
-4. **Validate build_todos against plan:**
+3. **Validate build_todos against plan:**
    - Verify build_todo artifacts align with plan artifact decisions
    - If build_todos contradict plan, update via `update_artifact` to resolve
    - Check memory service for relevant gotchas and patterns
 
-5. **Build loop — coherent sequential builder chains:**
+4. **Build loop — coherent sequential builder chains:**
+
+   Use `max_packet_bytes: 16384` and these validated hard per-generation budgets:
+
+   | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+   |---|---:|---:|---:|---:|
+   | whole implementation owner | 90 | 12 | 180 min | 160,000 |
+   | one builder chain | 50 | 8 | 50 min | 100,000 |
+
+   Run `bin/phase-contract dispatch` before every generation. A larger chain must be sliced at safe
+   todo boundaries; never enlarge the session allowance.
 
    Use `max_packet_bytes: 16384` and these validated hard per-generation budgets:
 
@@ -281,7 +249,7 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    escalate a failed sonnet chain to `model="opus"`. If it still fails, **STOP** and report the
    first incomplete todo; do **not** attempt downstream chains on a broken foundation.
 
-6. **Checkpoint (only on `complete`):**
+5. **Checkpoint (only on `complete`):**
 
    The orchestrator — not the builder — owns this write. Validate that every dispatched todo has
    exactly one completion mapping, its claimed files fit the chain scope, and no todo reports
@@ -309,7 +277,7 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    use the finite turn/checkpoint/elapsed backstop above. A rotation never reruns a checkpointed
    todo, breaks a coherent sequential chain, or transfers validation into the builder.
 
-7. **Stopping condition and validation handoff:**
+6. **Stopping condition and validation handoff:**
 
    The implementation phase converges when every build_todo is individually checkpointed
    `complete`. Builder-chain results are implementation evidence, **not validation evidence**.
@@ -357,7 +325,7 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    search and require zero unexplained matches. Runtime registrations are verified later by
    deploy/verify, but the build cannot report complete while scoped legacy code/config remains.
 
-8. **After the loop converges:**
+7. **After the loop converges:**
    - Do not run validation after an orchestrated handoff. In standalone mode, do not repeat the
      same full command against an unchanged tree; reuse the PASS keyed by `(tree SHA, command)`.
    - Record the Completion Summary: ticketed runs update the plan **artifact** via

@@ -2,6 +2,7 @@
 name: builder
 description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, /ticket-flow, and /lfg with task-specific prompts."
 model: inherit
+effort: medium
 max_turns: 60
 memory_types: [gotcha, pattern, architecture]
 skills:
@@ -94,10 +95,8 @@ exactly as shown above; there is no single `query` string parameter.
 
 - Follow discovered patterns from build todos exactly
 - Match existing code style in affected files
-- Inspect the edited code and interfaces before proceeding
-- Never run tests, validation, typecheck, lint, builds, schema pulls/migrations, browser
-  verification, or health commands
 - Name relevant validation commands for the orchestrator and report unverified risk honestly
+  (running them is the orchestrator's job — see Tool Protocol)
 
 ## Schema Artifact Responsibility (Build Mode)
 

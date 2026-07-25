@@ -27,17 +27,10 @@ blob — the Codex side has no MCP access. Create the bounded memory packet firs
 
 ```bash
 mkdir -p .context/resolve
-if ! cat .context/resolve/findings.md | \
-    autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
-      --agent-type builder --provider codex --mechanism external_build \
-      --task-prompt-stdin --allow-unavailable > .context/resolve/memory.md; then
-  cat > .context/resolve/memory.md <<'EOF'
-<autodev-memory-task-context>
-Memory context is unavailable. Do not infer that critical memories were loaded.
-This external builder has no memory tool; proceed only from the findings file and report the limitation.
-</autodev-memory-task-context>
-EOF
-fi
+cat .context/resolve/findings.md | \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+    --agent-type builder --provider codex --mechanism external_build \
+    --task-prompt-stdin --allow-unavailable > .context/resolve/memory.md
 external-build --task resolve --findings-file .context/resolve/findings.md \
   --context-file .context/resolve/context.md \
   --memory-context-file .context/resolve/memory.md \
@@ -68,9 +61,9 @@ resolution path:
 **Autonomous runs (ticket-flow / lfg / ticket-deploy).** Severity does not determine
 decision ownership. Reclassify an incorrectly labeled `manual` finding as `gated_auto` when the
 approved plan and repository rules determine one concrete fix. An autonomous runner may apply a
-`gated_auto` fix when it is plan-conformant and corroborated — skeptic-upheld
-(`requires_verification: false` after the verify pass) or multi-reviewer consensus. An explicit
-`/ticket-flow prod` (or `/ticket-deploy prod|full`) invocation is standing approval for that queue and for bounded
+`gated_auto` fix when it is plan-conformant and corroborated — multi-reviewer consensus, or a
+settled finding (`requires_verification: false`). An explicit `/ticket-flow prod` (or
+`/ticket-deploy prod|full`) invocation is standing approval for that queue and for bounded
 resolve/re-review rounds. Do not interrupt full-auto for another approval merely because the
 finding is p1, behavioral, destructive-path, or security-sensitive. Defer uncorroborated or
 scope-expanding work. Stop for `manual` only when the human choice is genuinely absent from the

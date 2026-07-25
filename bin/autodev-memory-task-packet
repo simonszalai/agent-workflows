@@ -36,6 +36,26 @@ def project_repo(cwd: Path) -> tuple[str, str]:
     return project, repo
 
 
+def emit_unavailable(args) -> int:
+    """Print a truthful bounded unavailable packet and record it in telemetry."""
+    delegation_id = secrets.token_hex(12)
+    unavailable = (
+        f'<autodev-memory-task-context status="unavailable" packet-version="unavailable" '
+        f'corpus-generation="unavailable" delivery-id="{delegation_id}">\n'
+        "Memory context is unavailable. Do not infer that critical or task-specific "
+        "memories were loaded. This delegated agent may have no memory tool; report the "
+        "limitation.\n</autodev-memory-task-context>"
+    )
+    _append_telemetry(
+        args.telemetry_file, event="packet_prepared", provider=args.provider,
+        mechanism=args.mechanism, status="unavailable", packet_version="unavailable",
+        corpus_generation="unavailable", render_hash="unavailable",
+        chars=len(unavailable), delegation_id=delegation_id,
+    )
+    print(unavailable)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", type=Path, default=Path.cwd())
@@ -64,24 +84,7 @@ def main() -> int:
     detected_project, detected_repo = project_repo(args.cwd.resolve())
     project, repo = args.project or detected_project, args.repo or detected_repo
     if not project or not repo or not args.session_id:
-        if args.allow_unavailable:
-            delegation_id = secrets.token_hex(12)
-            unavailable = (
-                f'<autodev-memory-task-context status="unavailable" packet-version="unavailable" '
-                f'corpus-generation="unavailable" delivery-id="{delegation_id}">\n'
-                "Memory context is unavailable. Do not infer that critical or task-specific "
-                "memories were loaded. This delegated agent may have no memory tool; report the "
-                "limitation.\n</autodev-memory-task-context>"
-            )
-            _append_telemetry(
-                args.telemetry_file, event="packet_prepared", provider=args.provider,
-                mechanism=args.mechanism, status="unavailable", packet_version="unavailable",
-                corpus_generation="unavailable", render_hash="unavailable",
-                chars=len(unavailable), delegation_id=delegation_id,
-            )
-            print(unavailable)
-            return 0
-        return 2
+        return emit_unavailable(args) if args.allow_unavailable else 2
     try:
         print(build_task_packet(
             cwd=args.cwd.resolve(), agent_type=args.agent_type, session_id=args.session_id,
@@ -90,7 +93,9 @@ def main() -> int:
             task_prompt=task_prompt,
         ))
     except (OSError, ValueError):
-        return 2
+        # --allow-unavailable means the caller wants a usable packet either way, so a build
+        # failure resolves the same as missing scope. Callers therefore need no shell fallback.
+        return emit_unavailable(args) if args.allow_unavailable else 2
     return 0
 
 

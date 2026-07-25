@@ -3,7 +3,7 @@ name: build-planner
 description: "Create detailed build todos with deep research into patterns and rules."
 # stay on opus — fable is not available on the subscription plan after 2026-07-07
 model: opus
-effort: xhigh
+effort: high
 max_turns: 50
 memory_types: [gotcha, pattern, architecture]
 skills:
@@ -253,25 +253,12 @@ Each step MUST include:
 4. **Tests** - Based on existing test patterns
 5. **Verification** - Commands for the orchestrator to verify the step; builders must not execute them
 
-## Quality Requirements
-
-Before submitting each build todo:
-
-- [ ] Searched memory service for relevant gotchas and patterns
-- [ ] Found codebase patterns for affected areas
-- [ ] Checked git history for context
-- [ ] Searched similar past work items for patterns and review findings
-- [ ] Verified CLAUDE.md compliance
-- [ ] Documented patterns with file:line references
-- [ ] Code examples follow discovered patterns
-- [ ] Tests match existing test patterns
-
 ## When to Request Additional Research
 
-If you need more information:
-
-- **Deeper pattern search** -> Request `researcher` agent
-- **Framework docs** -> Request `web-searcher` agent
+Research the codebase yourself — you have the tools and the context for it. Request a subagent
+only for a named unknown you could not resolve in roughly five of your own tool calls, at most
+one per plan: `researcher` for a pattern search that spans the repo, `web-searcher` for external
+framework documentation.
 
 ## Output
 

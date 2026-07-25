@@ -57,12 +57,13 @@ Follow `../references/execution-phases.md` and `../references/execution-economy.
    only when peer escalation fired. Reviewers inspect the diff and recorded evidence only, and
    resolution builders implement only; neither runs validation. Stop for unresolved design
    decisions.
-8. **Persistence gate.** Confirm via `get_ticket(detail="light", artifact_types=["build_todo",
-   "review_todo"], include_events=false)` that the ticket carries its `build_todo` artifacts and
-   the `review_todo` artifacts the adaptive review wrote — building and reviewing in-session is
-   not enough; those artifacts are the durable, auditable record. If a `create_artifact` call
-   silently no-op'd (common on cross-provider/Codex MCP paths), re-issue it now. A ticket must
-   not proceed to landing with only a `source` artifact.
+8. **Persistence gate (cross-provider MCP paths only).** On Codex or other cross-provider runs
+   `create_artifact` can silently no-op, so confirm via `get_ticket(detail="light",
+   artifact_types=["build_todo", "review_todo"], include_events=false)` that the ticket carries
+   its `build_todo` artifacts and the `review_todo` artifacts the adaptive review wrote, and
+   re-issue anything missing. On native runs, trust the `create_artifact` results — this guards a
+   known transport failure, it is not a re-read of your own work. Either way, a ticket must not
+   proceed to landing with only a `source` artifact.
 9. **Final health gate (main orchestrator only).** Compare the final tree SHA to the pre-review
    PASS. If unchanged, reuse that PASS. If review resolution changed the tree, run the same
    canonical full health command exactly once on the new final tree. This makes at most two normal

@@ -13,13 +13,10 @@ Follow `../references/execution-economy.md`; economy never permits an unconfirme
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
 ```bash
-if ! cat .context/investigate/bug.txt .context/investigate/evidence.txt | \
+cat .context/investigate/bug.txt .context/investigate/evidence.txt | \
   autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
     --agent-type investigator --provider "$provider" --mechanism external_peer \
-    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
-  printf '%s\n' '<autodev-memory-task-context>Memory context is unavailable.</autodev-memory-task-context>' \
-    > "$MEMORY_PACKET"
-fi
+    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
 ```
 
 Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investigate`.
@@ -32,7 +29,7 @@ Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task investig
 /investigate "Service failing with timeout error"
 /investigate B0003                             # Existing bug ticket
 /investigate 009                               # Legacy NNN format
-/investigate B0003 --deep                      # Force heavyweight workflow (multi-angle hypothesis + skeptics)
+/investigate B0003 --deep                      # Force heavy path (multi-angle + challenge)
 /investigate B0003 --light                     # Force single-investigator path
 /investigate B0003 --solo                      # Skip peer providers (current runner only)
 ```
@@ -163,8 +160,9 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 3. **Decide the execution path and provider escalation:**
 
    Light means genuinely light: one native investigator, one bounded task packet, no workflow
-   fanout, no peer provider, and no skeptic panel. Heavy means native multi-angle hypotheses and
-   skeptic/testing loops. Peer providers are a separate escalation, not a default tax.
+   fanout, no peer provider, and no challenge pass. Heavy means native multi-angle hypotheses,
+   evidence testing, and one challenge on the leading candidate. Peer providers are a separate
+   escalation, not a default tax.
 
    Use this path gate (top-to-bottom, first match wins):
 
@@ -183,9 +181,9 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    - the user explicitly requested cross-provider analysis;
    - the safety-critical condition above applies;
    - native evidence leaves two plausible root causes or a material causal-chain gap; or
-   - native agents/skeptics materially disagree about a prediction or verdict.
+   - native agents materially disagree about a prediction or verdict.
 
-   `--solo` disables peer escalation but never removes native skeptic/testing coverage required
+   `--solo` disables peer escalation but never removes native evidence-testing coverage required
    for safety-critical incidents. Announce path and escalation separately, for example:
 
    ```text
@@ -202,9 +200,9 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    to refute its leading hypothesis inline. A null root cause is valid.
 
    **Heavy:** run `investigate-fanout` with bounded native angles, or its inline equivalent when
-   the Workflow primitive is unavailable. Deduplicate hypotheses, test predictions, and run
-   skeptics on the strongest confirmed candidates. Do not downgrade safety coverage because a
-   host lacks the Workflow primitive.
+   the Workflow primitive is unavailable. Deduplicate hypotheses, test predictions, then
+   challenge the single strongest confirmed candidate — the one a fix would be built on. Do not
+   downgrade safety coverage because a host lacks the Workflow primitive.
 
    Both paths return the same object:
 
@@ -221,11 +219,12 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
      refuted_hypotheses, inconclusive_hypotheses, residual_unknowns,
      stats: { angles_attempted, raw_hypotheses, after_dedup, tested,
               confirmed, refuted_in_test, inconclusive_in_test,
-              skeptic_attempts, root_cause_found }
+              challenge_attempts, root_cause_found }
    }
    ```
 
-   Light zero-fills heavy-only stats and uses empty `skeptic_verdicts`. Downstream logic must
+   Light zero-fills heavy-only stats and uses empty `skeptic_verdicts` (only the challenged
+   hypothesis carries one on the heavy path). Downstream logic must
    honor `root_cause: null`; never draft a fix from an unconfirmed hypothesis.
 
 4a. **Peer-provider escalation (conditional only):**
@@ -240,7 +239,8 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
    Cross-provider agreement is corroboration, not confirmation. The honest-null and causal-chain
    gates still apply. For a safety-critical investigation, peer unavailability must appear as
-   residual risk; native skeptic coverage remains mandatory and the workflow must not claim the
+   residual risk; native evidence-testing coverage remains mandatory and the workflow must not
+   claim the
    missing independent review occurred.
 
    Before any evidence-gathering MCP call, apply **Tool-Skill Bootstrap** above. If the first MCP

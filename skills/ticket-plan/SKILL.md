@@ -22,13 +22,10 @@ to be hidden or a required critic/safety gate to be skipped.
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
 ```bash
-if ! cat .context/plan/question.txt .context/plan/source.md | \
+cat .context/plan/question.txt .context/plan/source.md | \
   autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
     --agent-type planner --provider "$provider" --mechanism external_peer \
-    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
-  printf '%s\n' '<autodev-memory-task-context>Memory context is unavailable.</autodev-memory-task-context>' \
-    > "$MEMORY_PACKET"
-fi
+    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
 ```
 
 Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task plan`.

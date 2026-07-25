@@ -4,6 +4,13 @@ Use this contract at the end of every staging, production, deployment, promotion
 run. It makes the terminal state unmistakable and prevents a successful command from being
 mistaken for a ticket that is safe to forget.
 
+**The post-check runs once per run, at the outermost boundary.** These workflows nest —
+`/ticket-flow` calls `/ticket-deploy`, which calls `/auto-deploy` and `/ticket-verify` — and each
+level loading this contract would otherwise re-read the same ticket and re-audit the same
+repository four times for one ticket. A skill invoked by another workflow relays the inner
+terminal report upward unchanged; only the skill the user or timer actually invoked runs the
+post-check and emits the outer banner.
+
 ## 1. Run the post-check before choosing the banner
 
 After the operation reaches a terminal result, inspect the scope once more:

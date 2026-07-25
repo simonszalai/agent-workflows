@@ -28,10 +28,18 @@ explicitly asks for a full replan/from-scratch run.
 
 ## Boundaries
 
-- Always deep: no light planning path.
-- A canonical epic plan is not valid from one model alone. Unless the user explicitly requests a
-  degraded solo run, gather independent planning judgment from the two providers that are not the
-  current runner (`claude`, `codex`, `grok`) and run a cross-review/convergence pass.
+- Always deep native planning: no light path for the native pass.
+- Peer providers are an escalation, not a standing panel. Escalate to the two providers that are
+  not the current runner (`claude`, `codex`, `grok`) when at least one trigger is recorded:
+  1. the user explicitly requested cross-provider planning or independent opinions;
+  2. the epic spans more than one repo, or declares a cross-repo compatibility contract;
+  3. any milestone touches security, auth, billing, destructive/schema migration, or another
+     project-declared high-blast-radius surface;
+  4. native critics leave a material factual or architectural uncertainty that repository
+     evidence cannot settle.
+  Announce the decision: `Peers: no trigger (single-repo, 2 milestones)` or
+  `Peers: escalated for cross-repo contract`. A single-repo epic with a couple of ordinary
+  milestones plans natively.
 - By default, also performs the `/epic-split` behavior after the plan is settled: create or update
   missing/stale step tickets, each step ticket's own `plan` artifact, milestone assignments, and
   dependency edges. Use `--plan-only` only when the user explicitly wants a human approval pause
@@ -91,7 +99,8 @@ explicitly asks for a full replan/from-scratch run.
    - current step tickets, milestone assignments, and dependency edges;
    - codebase and memory research;
    - known constraints, open questions, and explicit non-goals.
-5. Run cross-provider planning:
+5. Run cross-provider planning **when the peer gate in Boundaries fired**. If no trigger is
+   recorded, skip to step 6 with the native plan and say so in the announcement.
    - Determine the current runner with `agent-workflow-provider`. The current runner is the native
      planner; the other two providers are peers.
    - Run the two peers with `external-agent --task plan --provider <claude|codex|grok>
@@ -103,8 +112,8 @@ explicitly asks for a full replan/from-scratch run.
      peers.
    - Save peer envelopes under `.context/epic-plan/<provider>.json`. Do not summarize what a
      provider "would" say; actually run the providers and consume their JSON.
-   - Stop instead of accepting a one-provider plan if fewer than two providers return usable
-     plans.
+   - Once escalated, the escalation must actually happen: stop instead of accepting a
+     one-provider plan if fewer than two peers return usable plans. Never simulate a failed peer.
 
    Build each peer's required bounded packet before dispatch (the peer bundle contains the actual
    epic-planning task and therefore drives semantic selection):
@@ -113,16 +122,10 @@ explicitly asks for a full replan/from-scratch run.
    mkdir -p .context/epic-plan
    for provider in $(agent-workflow-provider --peers); do
      memory_packet=".context/epic-plan/${provider}-memory-task.md"
-     if ! cat .context/epic-plan/peer-source.md | \
-         autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
-           --agent-type planner --provider "$provider" --mechanism external_peer \
-           --task-prompt-stdin --allow-unavailable > "$memory_packet"; then
-       cat > "$memory_packet" <<'EOF'
-   <autodev-memory-task-context status="unavailable">
-   Memory context is unavailable. Do not infer that epic-planning memories were loaded.
-   </autodev-memory-task-context>
-   EOF
-     fi
+     cat .context/epic-plan/peer-source.md | \
+       autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+         --agent-type planner --provider "$provider" --mechanism external_peer \
+         --task-prompt-stdin --allow-unavailable > "$memory_packet"
      # external-agent --task plan ... --memory-context-file "$memory_packet"
    done
    ```
@@ -187,13 +190,16 @@ explicitly asks for a full replan/from-scratch run.
        - a deliberately revised gate that verifies repository behavior in a disposable
          integration DB instead of claiming staging runtime evidence.
      Do not push the runtime surface to a later milestone while the current gate depends on it.
-9. Run the bounded adversarial critic loop (≤3 rounds):
-   - spawn **parallel** critics covering completeness, correctness, YAGNI, sequencing, data
-     safety, deploy/verify gates, milestone independence, and cross-repo contracts;
+9. Run the bounded critic loop (≤3 rounds):
+   - the default panel is three parallel critics: completeness, correctness, YAGNI — the same
+     lenses as plan-fanout. Add a lens only when the plan has the surface it examines:
+     sequencing and cross-repo contracts when the epic spans more than one repo, data safety
+     when a milestone carries a migration, deploy/verify gates when a gate milestone is
+     declared, milestone independence when milestones share a repo write path;
    - each critic returns findings with the explicit schema
      `{title, severity: p1|p2|p3, area, issue, suggestion, lens}` (the same shape as
      plan-fanout's criticOutputSchema);
-   - an empty findings list is acceptable — do NOT invent issues to appear thorough;
+   - an empty findings list is a good outcome when the plan is sound — say so in the assessment;
    - after each round, revise the plan against the findings, then re-run the critics;
    - stop early when a round leaves no unresolved p1 findings; hard cap at 3 rounds.
 10. Unresolved p1 findings **block progression**. Stop for user decisions if critics expose

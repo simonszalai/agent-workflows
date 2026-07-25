@@ -193,10 +193,12 @@ its cleanup contract owns the next run.
 
 ## Terminal report
 
-Load and apply `skills/references/terminal-outcomes.md` before reporting. Run the shared post-check
-after the last lifecycle action and put exactly one large banner plus its confirmation/failure
-block before the lifecycle-gate rows below. Only an exact production PASS, completed required
-cleanup, a re-read canonical `completed` status, and a clean closeout audit may use
+Load and apply `skills/references/terminal-outcomes.md` before reporting. When `/ticket-deploy`
+is the outermost run, run the shared post-check after the last lifecycle action and put exactly one
+large banner plus its confirmation/failure block before the lifecycle-gate rows below; under
+`/ticket-flow`, relay the result and let it own the post-check. Only an exact production PASS,
+completed required cleanup, a re-read canonical `completed` status, and a clean closeout audit
+may use
 `## ✅ COMPLETED — READY TO CLOSE`. Staging-only success uses `## ✅ STAGING VERIFIED`; a deploy or
 verification failure uses the environment-specific red-X banner.
 
