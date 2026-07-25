@@ -62,6 +62,9 @@ ad-hoc health command, or a canary that bypasses the producer transport does not
 Require gradeable output and preserve a bounded credential-free failure class/stderr excerpt before
 spending the full work/connection budget. If the canary fails, stop before fan-out; never infer that
 client authentication failed merely because a later SSH host-key/update phase failed.
+This gate is satisfied by an exact-path canary already executed and recorded (run id +
+parameters) for the same producer, revision, and parameter shape — for example by
+`/ticket-verify` §3a earlier in this run. Cite the recorded run id instead of re-running it.
 
 This skill authorizes autonomous repair of mechanical CI failures throughout staging and
 production delivery. Follow `ci-self-heal.md`: inspect terminal logs, fix routine repository
@@ -88,8 +91,11 @@ Enter from lifecycle truth rather than repeating completed legs:
 | `completed` | report already complete; stop successfully | same | same |
 | `verify_staging_failed` / `verify_prod_failed` | stop; do not retry past a failure without a new explicit user instruction | same | same |
 
-Do not resume past `BLOCKED`, `NEEDS_MORE_TIME`, `PASS (contract-missing)`, missing evidence, or
-a stale evidence artifact merely because the lifecycle status appears later than expected.
+Do not resume past `BLOCKED`, `NEEDS_MORE_TIME`, `PASS (contract-missing)` (unless its recorded
+`risk_tier` is `tiny_safe` per ticket-verify §2a), missing evidence, or a stale evidence artifact
+merely because the lifecycle status appears later than expected. An evidence artifact is *stale*
+only when scope code landed on the environment's branch after the artifact's activation boundary,
+or its `staging_head_sha` no longer contains the promoted commits; age alone is not staleness.
 
 ### 2. Deploy to staging (`staging` and `full`)
 
@@ -113,7 +119,9 @@ Stop on every outcome except exact `PASS`:
 - `NEEDS_MORE_TIME`: stop with the recorded awaited condition and exact resume command. It is
   valid only when a live producer or already-triggered downstream process will produce evidence
   by waiting.
-- `PASS (contract-missing)`: stop; a derived contract is not production-promotion evidence.
+- `PASS (contract-missing)`: stop; a derived contract is not production-promotion evidence —
+  unless the evidence artifact records `risk_tier: tiny_safe` (ticket-verify §2a), in which case
+  treat it as exact `PASS`.
 - exact `PASS`: require the persisted staging evidence artifact. For target `staging`, report and
   stop here (the ticket rests at `staging_verified` for an explicit `prod`/`full` continuation).
   For target `full`, continue to §4.
@@ -138,8 +146,9 @@ loop to promotion PR checks.
 ### 4a. Production leg — direct-to-production (never staged)
 
 Only for tickets whose delivery target is direct production (tiny safe standalone work per
-`landing-policy.md`). Before deploying, re-run the landing-policy risk classification against the
-actual diff. If the change is **not** tiny/safe — schema, auth, encryption, deploy-config, new
+`landing-policy.md`). Before deploying, run the landing-policy risk classification against the
+actual diff — reuse a `risk_tier` classification already recorded for the same diff SHA
+(ticket-verify §2a) instead of re-deriving it. If the change is **not** tiny/safe — schema, auth, encryption, deploy-config, new
 infrastructure/cost, wide blast radius, or material uncertainty — **stop and ask the user for
 confirmation** before any production mutation; report exactly what makes it risky and recommend
 the staging path. With a tiny/safe classification or explicit user confirmation, run
