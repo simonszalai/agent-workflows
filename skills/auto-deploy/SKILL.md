@@ -234,8 +234,9 @@ Before merging, analyze what changed to determine which deployment steps
 are needed. This MUST happen before merge (pushing advances the target branch).
 
 ```bash
-# Check for each change category
-git diff origin/{target_branch}..{branch} --name-only
+# Keep the complete inventory on disk; inspect only a bounded excerpt.
+git diff origin/{target_branch}..{branch} --name-only > .context/deploy-files.txt
+sed -n '1,200p' .context/deploy-files.txt
 ```
 
 **Generic detection categories:**

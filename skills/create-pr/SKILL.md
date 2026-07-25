@@ -86,7 +86,8 @@ Check for verification evidence:
 ```bash
 # Files changed on this branch vs main
 git diff --stat main...HEAD
-git diff --name-only main...HEAD
+git diff --name-only main...HEAD > .context/pr-files.txt
+sed -n '1,200p' .context/pr-files.txt
 ```
 
 ### 4a. Classify generated database schema changes before staging
@@ -99,9 +100,9 @@ Required checks when `prisma/schema.prisma` is dirty:
 
 ```bash
 git fetch origin main
-git diff -- prisma/schema.prisma
-git diff origin/main -- prisma/schema.prisma
-git diff origin/main...HEAD -- prisma/schema.prisma
+bin/compact-exec -- git diff -- prisma/schema.prisma
+bin/compact-exec -- git diff origin/main -- prisma/schema.prisma
+bin/compact-exec -- git diff origin/main...HEAD -- prisma/schema.prisma
 ```
 
 Interpretation:

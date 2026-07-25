@@ -287,6 +287,218 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("must be rotate_required", rejected.stdout)
 
+    def test_e0003_r1_deployment_ownership_contract_and_workflow_surfaces(self) -> None:
+        plan = (ROOT / "skills/epic-plan/SKILL.md").read_text()
+        split = (ROOT / "skills/epic-split/SKILL.md").read_text()
+        todos = (ROOT / "skills/create-build-todos/SKILL.md").read_text()
+        guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
+        epic = (ROOT / "skills/epic-flow/SKILL.md").read_text()
+        promote = (ROOT / "skills/ticket-promote/SKILL.md").read_text()
+        ownership = (ROOT / "skills/references/deployment-ownership.md").read_text()
+
+        for contract in (plan, split, todos, guide, epic, promote, ownership):
+            self.assertIn("deployment-ownership", contract)
+        for classification in ("non_secret_config", "secret_value", "manual_gate"):
+            self.assertIn(classification, ownership)
+            self.assertIn(classification, guide)
+        self.assertIn("Third-repo config ownership is a step", split)
+        self.assertIn('mode="straight_to_prod"', epic)
+        self.assertIn('mode="staging_only"', epic)
+        self.assertIn('mode="promotion"', epic)
+        self.assertIn("Do not reuse the planning snapshot", promote)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = {
+                "mode": "straight_to_prod",
+                "implementation_repos": ["app"],
+                "guide_status": "FINALIZED",
+                "assets": [{
+                    "asset_id": "deploy-config",
+                    "tracked_path": "deploy/service.yaml",
+                    "owner_repo": "ops",
+                    "destination_repo": "app",
+                    "owner_source": "ops/deploy/service.yaml",
+                    "workspace_path": None,
+                    "requirements": [{
+                        "name": "PUBLIC_BASE_URL",
+                        "classification": "non_secret_config",
+                        "source_owner": "ops",
+                        "destination": "production",
+                        "application_route": "tracked manifest",
+                        "safe_state_handling": "leave prior value",
+                        "verification_evidence": "read-only manifest query",
+                    }, {
+                        "name": "API_TOKEN",
+                        "classification": "secret_value",
+                        "source_owner": "security",
+                        "destination": "production vault",
+                        "application_route": "audited secret manager",
+                        "safe_state_handling": "leave service disabled",
+                        "verification_evidence": "name-only binding check",
+                    }, {
+                        "name": "release approval",
+                        "classification": "manual_gate",
+                        "source_owner": "release owner",
+                        "destination": "production promotion",
+                        "application_route": "recorded approval",
+                        "safe_state_handling": "do not promote",
+                        "verification_evidence": "approval record exists",
+                    }],
+                }],
+            }
+            path = root / "inventory.json"
+            path.write_text(json.dumps(inventory))
+            blocked = run_script("deployment-ownership-contract", str(path))
+            self.assertEqual(blocked.returncode, 3)
+            codes = {item["code"] for item in json.loads(blocked.stdout)["issues"]}
+            self.assertIn("missing_owner_workspace", codes)
+            self.assertIn("third_repo_step_missing", codes)
+
+            inventory["mode"] = "staging_only"
+            inventory["assets"][0]["requirements"][0]["verification_evidence"] = ""
+            path.write_text(json.dumps(inventory))
+            record_only = run_script("deployment-ownership-contract", str(path))
+            self.assertEqual(record_only.returncode, 0)
+            record_result = json.loads(record_only.stdout)
+            self.assertEqual(record_result["status"], "record_only")
+            self.assertIn(
+                "finalized_guide_has_incomplete_rows",
+                {item["code"] for item in record_result["issues"]},
+            )
+
+            inventory.update({
+                "mode": "promotion",
+                "recheck_of": "sha256:prior",
+                "rechecked_at_epoch": time.time(),
+            })
+            inventory["assets"][0]["requirements"][0][
+                "verification_evidence"
+            ] = "read-only manifest query"
+            inventory["assets"][0].update({
+                "workspace_path": str(root),
+                "step_ticket": "F0042",
+                "depends_on": ["F0041"],
+            })
+            path.write_text(json.dumps(inventory))
+            ready = run_script("deployment-ownership-contract", str(path))
+            self.assertEqual(ready.returncode, 0, ready.stdout)
+            self.assertEqual(json.loads(ready.stdout)["status"], "ready")
+
+            inventory["assets"][0]["requirements"][0]["classification"] = "token"
+            path.write_text(json.dumps(inventory))
+            invalid_classification = run_script(
+                "deployment-ownership-contract", str(path)
+            )
+            self.assertEqual(invalid_classification.returncode, 2)
+            self.assertIn("classification must be one of", invalid_classification.stdout)
+
+    def test_e0003_r2_progress_leases_renew_rotate_and_preserve_time_truth(self) -> None:
+        economy = (ROOT / "skills/references/execution-economy.md").read_text()
+        for path in (
+            "skills/epic-flow/SKILL.md",
+            "skills/milestone-flow/SKILL.md",
+            "skills/ticket-flow/SKILL.md",
+        ):
+            self.assertIn("durable progress lease", (ROOT / path).read_text().lower())
+        self.assertIn("exactly one status inspection", economy)
+        self.assertIn(
+            "Elapsed wall time alone is never execution failure",
+            " ".join(economy.split()),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.json"
+            second = root / "second.json"
+            first.write_text('{"completed":["one"]}')
+            second.write_text('{"completed":["one","two"]}')
+
+            def progress(path: Path, sequence: int) -> dict:
+                return {
+                    "kind": "checkpoint",
+                    "sequence": sequence,
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+
+            now = time.time()
+            lease = {
+                "phase_name": "build",
+                "rotation_generation": 0,
+                "lease_generation": 0,
+                "inspection_budget": 1,
+                "renewal_budget": 1,
+                "renewals_used": 0,
+                "started_at_epoch": now,
+                "lease_deadline_epoch": now + 5,
+                "absolute_deadline_epoch": now + 100,
+                "durable_progress": progress(first, 1),
+            }
+            lease_path = root / "lease.json"
+            lease_path.write_text(json.dumps(lease))
+            issued = run_script("progress-lease", "issue", str(lease_path))
+            self.assertEqual(issued.returncode, 0, issued.stdout)
+            self.assertEqual(json.loads(issued.stdout)["action"], "block_once")
+
+            observation = {
+                "state": "sleep",
+                "inspections_used": 1,
+                "observed_at_epoch": now + 6,
+                "durable_progress": progress(second, 2),
+            }
+            observation_path = root / "observation.json"
+            observation_path.write_text(json.dumps(observation))
+            renewed = run_script(
+                "progress-lease", "expiry", str(observation_path), "--lease", str(lease_path)
+            )
+            renewal = json.loads(renewed.stdout)
+            self.assertEqual(renewal["action"], "renew_once")
+            self.assertEqual(renewal["state"], "sleep")
+            self.assertFalse(renewal["elapsed_is_failure"])
+
+            lease["renewals_used"] = 1
+            lease_path.write_text(json.dumps(lease))
+            exhausted = run_script(
+                "progress-lease", "expiry", str(observation_path), "--lease", str(lease_path)
+            )
+            self.assertEqual(json.loads(exhausted.stdout)["reason"], "renewal_already_used")
+            lease["renewals_used"] = 0
+            lease_path.write_text(json.dumps(lease))
+
+            observation["durable_progress"] = progress(first, 1)
+            observation_path.write_text(json.dumps(observation))
+            stale = run_script(
+                "progress-lease", "expiry", str(observation_path), "--lease", str(lease_path)
+            )
+            self.assertEqual(json.loads(stale.stdout)["reason"], "stale_progress")
+
+            observation["state"] = "complete"
+            observation.pop("durable_progress")
+            observation_path.write_text(json.dumps(observation))
+            terminal = run_script(
+                "progress-lease", "expiry", str(observation_path), "--lease", str(lease_path)
+            )
+            self.assertEqual(json.loads(terminal.stdout)["action"], "consume_terminal")
+
+            observation.update({
+                "state": "unknown",
+                "observed_at_epoch": now + 101,
+                "durable_progress": progress(second, 2),
+            })
+            observation_path.write_text(json.dumps(observation))
+            deadline = run_script(
+                "progress-lease", "expiry", str(observation_path), "--lease", str(lease_path)
+            )
+            self.assertEqual(json.loads(deadline.stdout)["reason"], "absolute_deadline")
+
+            observation["inspections_used"] = 2
+            observation_path.write_text(json.dumps(observation))
+            rejected = run_script(
+                "progress-lease", "expiry", str(observation_path), "--lease", str(lease_path)
+            )
+            self.assertEqual(rejected.returncode, 2)
+
     def test_e0026_retro_contracts_are_present_and_consistent(self) -> None:
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
         guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
@@ -497,13 +709,54 @@ class WorkflowEfficiencyTest(unittest.TestCase):
                                 "--", "/bin/sh", "-c", "printf 123456789; exit 3")
             self.assertEqual(result.returncode, 3)
             summary = json.loads(result.stdout)
+            self.assertEqual(summary["status"], "failure")
             self.assertEqual(summary["exit_code"], 3)
             self.assertEqual(summary["output_bytes"], 9)
             self.assertEqual(summary["tail"], "56789")
             self.assertEqual(Path(summary["output_file"]).read_text(), "123456789")
+            self.assertEqual(Path(summary["output_file"]).stat().st_mode & 0o777, 0o600)
             expected = f"cd {shlex.quote(str(ROOT))} && "
             expected += shlex.join(["/bin/sh", "-c", "printf 123456789; exit 3"])
             self.assertEqual(summary["rerun_command"], expected)
+            self.assertEqual(summary["head_sha"], subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+            ).stdout.strip())
+            self.assertIsNotNone(summary["tree_sha"])
+
+    def test_noisy_command_linter_rejects_raw_and_accepts_compact_examples(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills" / "demo" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("# Demo\n\n```bash\npytest -q\n```\n")
+            rejected = run_script("workflow-noisy-command-check", "--root", str(root))
+            self.assertEqual(rejected.returncode, 2)
+            self.assertEqual(json.loads(rejected.stdout)["status"], "fail")
+            skill.write_text("# Demo\n\n```bash\nbin/compact-exec -- pytest -q\n```\n")
+            accepted = run_script("workflow-noisy-command-check", "--root", str(root))
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+            skill.write_text(
+                "# Demo\n\n```bash\n"
+                "bin/compact-exec -- prefect deploy --pool production\n"
+                "```\n"
+            )
+            unsafe_production = run_script(
+                "workflow-noisy-command-check", "--root", str(root)
+            )
+            self.assertEqual(unsafe_production.returncode, 2)
+            self.assertIn(
+                "production_mutation_requires_redacted_exec",
+                unsafe_production.stdout,
+            )
+            skill.write_text(
+                "# Demo\n\n```bash\n"
+                "bin/redacted-exec -- prefect deploy --pool production\n"
+                "```\n"
+            )
+            safe_production = run_script(
+                "workflow-noisy-command-check", "--root", str(root)
+            )
+            self.assertEqual(safe_production.returncode, 0, safe_production.stdout)
 
     def test_compact_exec_timeout_kills_descendant_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

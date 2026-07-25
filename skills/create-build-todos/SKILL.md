@@ -207,10 +207,16 @@ ticket = mcp__autodev-memory__get_ticket(
    - for polling/observer/storage changes, the **volume and redundancy evidence**: queries that
      compute rows/run, rows/day, bytes/day, duplicate/unchanged-payload write rate, retention/TTL,
      and whether repeated identical polls create new durable rows.
+   - the cached **deployment/config ownership inventory** from planning, reconciled against the
+     real build. Every environment key/action records classification (`non_secret_config`,
+     `secret_value`, or `manual_gate`), source/owner, destination, application route, safe-state
+     handling, and verification evidence. Run `bin/deployment-ownership-contract`; never invent a
+     token/secret because a config row is absent.
 
    Use the template in the `create-deployment-guide` skill. Mark `Status: FINALIZED` only when the
    deploy steps and both env evidence sections are concrete **and every runtime evidence row has a
-   producing deployment/command**; otherwise leave the unknown rows as `TBD` and note them.
+   producing deployment/command and every ownership row has all required fields**; otherwise leave
+   the guide DRAFT and name the gap.
 
    Find the draft's `artifact_id` in the `get_ticket` response (the `deployment_guide` artifact)
    and update by id; if the ticket skipped `/ticket-plan` and none exists, create one instead.

@@ -44,13 +44,15 @@ Read before acting:
 - `../references/conductor-multi-repo.md`
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
+- `../references/deployment-ownership.md`
 
 ## Full-auto process
 
 ### 1. Load and normalize the epic
 
-- Load `get_epic(project, epic_id)` with source tickets, step tickets, artifacts, events, and
-  blockers.
+- Load `get_epic(project, epic_id, detail="light")` for structure/manifests. Request only the
+  needed `plan`, `deployment_guide`, or `verification_evidence` bodies with `detail="full"`,
+  selected `artifact_types`, and an explicit `response_byte_budget`.
 - Cache that response/version as the orchestration snapshot and pass bounded milestone extracts to
   milestone-flow. Reload only after `/epic-plan`, `/epic-split`, or a completed milestone mutates
   the epic; do not re-read the unchanged full epic between routing decisions.
@@ -82,6 +84,11 @@ Read before acting:
   stageable/observable risk boundary: it has acceptance criteria, deployment-guide evidence for
   staging and production, and does not require unbuilt later milestones to pass its gate. If that
   is not true, improve the plan/split before building; do not paper over the gap with a fake gate.
+- Before the first build, create and validate the non-mutating deployment/config ownership
+  inventory. A fully autonomous straight-to-production run uses `mode="straight_to_prod"` and
+  blocks on unresolved owners, missing owner workspaces, absent third-repo config steps, or an
+  incomplete deployment guide. `--staging-only` uses `mode="staging_only"`: preserve the same gaps
+  as `record_only` without falsely blocking unrelated staging work.
 
 ### 2. Walk milestones in order
 
@@ -113,6 +120,9 @@ For each milestone in dependency order:
 After the final milestone has a staging `PASS`:
 
 - If `--staging-only` is set, stop and report that production was intentionally not touched.
+- Immediately before promotion, rebuild the ownership inventory from current tracked files and
+  workspaces with `mode="promotion"`, `recheck_of`, and `rechecked_at_epoch`, then validate it.
+  Promotion blocks on any newly unresolved owner/workspace/guide gap.
 - Otherwise run the ordered epic production promotion/deploy path:
 
   ```text
@@ -166,6 +176,12 @@ current epic artifact/checkpoint and packet manifest at every safe boundary. A v
 `rotate_required` result causes an immediate fresh `fork_turns: "none"` replacement from the first
 incomplete unit; the old owner gets no follow-up work. Preserve passed milestones, landing state,
 deploy state, and verification artifacts rather than rerunning them.
+
+Every phase dispatch also carries the durable progress lease from `execution-economy.md`. The
+parent blocks once per lease. At expiry it performs one inspection only: terminal results are
+consumed, one renewal is allowed only after checkpoint/tool-receipt advancement, and stale or
+hard-deadline work is interrupted and rotated. Sleep/paused/unknown time is reported, not mislabeled
+as execution failure.
 
 ## Output
 

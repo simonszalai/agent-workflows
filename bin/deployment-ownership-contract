@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Validate deployment/config ownership inventories before workflow execution."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+
+CLASSIFICATIONS = {"non_secret_config", "secret_value", "manual_gate"}
+MODES = {"straight_to_prod", "staging_only", "promotion"}
+DETAIL_FIELDS = (
+    "source_owner",
+    "destination",
+    "application_route",
+    "safe_state_handling",
+    "verification_evidence",
+)
+
+
+class ContractError(ValueError):
+    """The ownership inventory is malformed."""
+
+
+def require_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{field} must be a non-empty string")
+    return value
+
+
+def require_string_list(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise ContractError(f"{field} must be an array of non-empty strings")
+    return value
+
+
+def load(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ContractError("inventory root must be an object")
+    return value
+
+
+def evaluate(inventory: dict) -> tuple[dict, int]:
+    mode = inventory.get("mode")
+    if mode not in MODES:
+        raise ContractError(f"mode must be one of: {', '.join(sorted(MODES))}")
+    implementation_repos = set(
+        require_string_list(inventory.get("implementation_repos"), "implementation_repos")
+    )
+    assets = inventory.get("assets")
+    if not isinstance(assets, list):
+        raise ContractError("assets must be an array")
+    if not assets:
+        require_string(inventory.get("no_tracked_assets_reason"), "no_tracked_assets_reason")
+
+    issues: list[dict[str, str]] = []
+    for asset_index, asset in enumerate(assets):
+        prefix = f"assets[{asset_index}]"
+        if not isinstance(asset, dict):
+            raise ContractError(f"{prefix} must be an object")
+        asset_id = require_string(asset.get("asset_id"), f"{prefix}.asset_id")
+        require_string(asset.get("tracked_path"), f"{prefix}.tracked_path")
+        owner_repo = require_string(asset.get("owner_repo"), f"{prefix}.owner_repo")
+        require_string(asset.get("destination_repo"), f"{prefix}.destination_repo")
+        require_string(asset.get("owner_source"), f"{prefix}.owner_source")
+        workspace_path = asset.get("workspace_path")
+        if workspace_path is not None:
+            require_string(workspace_path, f"{prefix}.workspace_path")
+        if workspace_path is None or not Path(workspace_path).is_dir():
+            issues.append({"asset_id": asset_id, "code": "missing_owner_workspace"})
+
+        if owner_repo not in implementation_repos:
+            step_ticket = asset.get("step_ticket")
+            depends_on = asset.get("depends_on")
+            if not isinstance(step_ticket, str) or not step_ticket.strip():
+                issues.append({"asset_id": asset_id, "code": "third_repo_step_missing"})
+            if not isinstance(depends_on, list) or not depends_on:
+                issues.append({"asset_id": asset_id, "code": "third_repo_dependency_missing"})
+            else:
+                require_string_list(depends_on, f"{prefix}.depends_on")
+
+        requirements = asset.get("requirements")
+        if not isinstance(requirements, list) or not requirements:
+            issues.append({"asset_id": asset_id, "code": "requirements_missing"})
+            continue
+        for requirement_index, requirement in enumerate(requirements):
+            requirement_prefix = f"{prefix}.requirements[{requirement_index}]"
+            if not isinstance(requirement, dict):
+                raise ContractError(f"{requirement_prefix} must be an object")
+            name = require_string(requirement.get("name"), f"{requirement_prefix}.name")
+            classification = requirement.get("classification")
+            if classification not in CLASSIFICATIONS:
+                raise ContractError(
+                    f"{requirement_prefix}.classification must be one of: "
+                    f"{', '.join(sorted(CLASSIFICATIONS))}"
+                )
+            for field in DETAIL_FIELDS:
+                value = requirement.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    issues.append(
+                        {
+                            "asset_id": asset_id,
+                            "requirement": name,
+                            "code": f"guide_field_missing:{field}",
+                        }
+                    )
+
+    guide_status = inventory.get("guide_status")
+    if guide_status not in {"DRAFT", "FINALIZED"}:
+        raise ContractError("guide_status must be DRAFT or FINALIZED")
+    if guide_status == "DRAFT":
+        issues.append({"asset_id": "*", "code": "deployment_guide_incomplete"})
+    if guide_status == "FINALIZED" and any(
+        issue["code"].startswith("guide_field_missing") for issue in issues
+    ):
+        issues.append({"asset_id": "*", "code": "finalized_guide_has_incomplete_rows"})
+
+    if mode == "promotion":
+        require_string(inventory.get("recheck_of"), "recheck_of")
+        rechecked_at = inventory.get("rechecked_at_epoch")
+        if isinstance(rechecked_at, bool) or not isinstance(rechecked_at, (int, float)):
+            raise ContractError("rechecked_at_epoch must be a number")
+        if not 0 <= time.time() - float(rechecked_at) <= 3_600:
+            raise ContractError("rechecked_at_epoch must be within the last hour")
+
+    if issues and mode == "staging_only":
+        status = "record_only"
+        exit_code = 0
+    elif issues:
+        status = "blocked"
+        exit_code = 3
+    else:
+        status = "ready"
+        exit_code = 0
+    return {
+        "status": status,
+        "mode": mode,
+        "asset_count": len(assets),
+        "issue_count": len(issues),
+        "issues": issues,
+    }, exit_code
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="deployment-ownership-contract")
+    parser.add_argument("inventory", type=Path)
+    args = parser.parse_args()
+    try:
+        result, exit_code = evaluate(load(args.inventory))
+    except ContractError as exc:
+        print(json.dumps({"status": "invalid", "error": str(exc)}, separators=(",", ":")))
+        return 2
+    print(json.dumps(result, separators=(",", ":")))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

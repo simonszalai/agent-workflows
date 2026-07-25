@@ -109,6 +109,12 @@ instructions — **discover it, do not assume**:
    ```
 3. Encode what you learn into the Deployment Steps. Name the **real** commands/objects for this
    project, not generic placeholders.
+4. Load and reconcile the planning-time inventory from
+   `../references/deployment-ownership.md`. For every environment key/action record its
+   classification (`non_secret_config`, `secret_value`, or `manual_gate`), source/owner,
+   destination, application route, safe-state handling, and verification evidence. Missing config
+   is not evidence that a token/secret should be invented. Validate the completed inventory with
+   `bin/deployment-ownership-contract`.
 
 ### 4. Define the Verification Evidence contract (CRITICAL)
 
@@ -238,6 +244,12 @@ mcp__autodev-memory__create_artifact(
 **Branch:** {branch}
 **Repos touched:** {repo-a, repo-b, ...}
 **Date:** {YYYY-MM-DD}
+
+## Deployment / Configuration Ownership
+
+| Key / action | Type | Source / owner | Destination | Application route | Safe-state handling | Verification evidence |
+| ------------ | ---- | -------------- | ----------- | ----------------- | ------------------- | --------------------- |
+| {name} | {non_secret_config / secret_value / manual_gate} | {repo/team/source} | {repo/env} | {exact route} | {unset/rollback behavior} | {read-only proof} |
 
 ## Summary
 

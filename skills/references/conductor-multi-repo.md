@@ -5,7 +5,8 @@ or when the system context says directories are linked into the current Conducto
 
 ## Repo/workspace resolution
 
-- Start from `get_epic(...).involved_repos` and each step ticket's `repo` field; those are the
+- Start from `get_epic(..., detail="light").involved_repos` and each step ticket's `repo`
+  field; those are the
   authoritative repo names for epic work.
 - Map each repo to an actual filesystem root before planning execution:
   - the current working directory's git remote basename usually maps to the primary workspace repo;

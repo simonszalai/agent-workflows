@@ -29,7 +29,7 @@ it never weakens tests, review, merge policy, or propagation checks.
 After the last file change, run exactly once:
 
 ```bash
-bin/check-agent-workflows
+bin/compact-exec -- bin/check-agent-workflows
 ```
 
 Any subsequent tree change invalidates that result and requires one new final gate. A zero-test run

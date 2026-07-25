@@ -143,7 +143,9 @@ Run before creating any worktree, branch, or PR:
 
 ### Epic (`--epic E0007 [--milestone M2]`)
 
-1. Load `get_epic(project, epic_id)` with milestones, step tickets, gate artifacts, events.
+1. Load `get_epic(project, epic_id, detail="light")` for structure, then selected gate artifact
+   bodies with `detail="full"`, `artifact_types=["verification_evidence",
+   "deployment_guide"]`, and an explicit `response_byte_budget`.
 2. If `--milestone` is present, scope to that milestone; otherwise include every milestone
    whose staging gate has a recorded PASS, in milestone order.
 3. Require each included step ticket to be `merged` or `staging_verified` with a passing
@@ -269,6 +271,11 @@ helper fixed by a co-staged ticket is the classic false-PASS mechanism). Missing
 (older evidence artifacts) is not a blocker; note it and continue.
 
 ## Production command preflight (before landing)
+
+Rebuild and validate the deployment/config ownership inventory immediately before promotion with
+`mode="promotion"`, `recheck_of`, and `rechecked_at_epoch` as defined in
+`../references/deployment-ownership.md`. Do not reuse the planning snapshot. Unresolved owners,
+missing owner workspaces, absent third-repo config steps, or an incomplete guide block promotion.
 
 While `origin/main` is still unchanged, read the cached production deployment guide and project
 deploy config, detect deploy categories with `git diff origin/main..HEAD`, and build the exact
