@@ -37,7 +37,9 @@ Higher-risk scopes rest at `staging_verified` until a human invokes this skill e
 ## Non-Negotiables
 
 - **Production-impacting. Prefer stopping over guessing.** Every stop must say exactly what
-  landed, what deployed, what is stuck, and what was never touched.
+  landed, what deployed, what is stuck, and what was never touched. A stop requires a **named,
+  concrete uncertainty** (which gate, which missing evidence, which unproven condition); with
+  all gates green, general caution is not a stop reason.
 - A ticket must be `staging_verified` with PASS evidence, or the caller must be
   `/ticket-verify staging` passing a fresh PASS verdict. No PASS evidence -> stop.
 - **One unit fully landed AND deployed before the next begins** (batch/epic modes).
@@ -55,8 +57,11 @@ Higher-risk scopes rest at `staging_verified` until a human invokes this skill e
   `--branch staging` at runtime; PR #390 merged with `--delete-branch` on head `staging` and
   crashed all 24 staging flows until the branch was re-pushed.
 - `git fetch origin main staging --prune` before every branch comparison.
-- Do not promote unrelated staging commits in ticket/batch/epic modes. If isolation cannot be
-  proven, stop and report — do not silently widen scope.
+- Do not promote unrelated staging commits in ticket/batch/epic modes. Isolation is *proven*
+  when the promoted commit set applies without pulling in other tickets' content and
+  `git log origin/main..origin/staging` shows no other ticket's commits touching the promoted
+  diff's files. Other tickets' commits on staging in unrelated files do not break isolation.
+  If isolation cannot be proven by these checks, stop and report — do not silently widen scope.
 - **Schema-bearing tickets are not the fast path.** Use the schema gate (§Schema gate) before
   treating them as normal cherry-picks.
 - Deploy steps come from the ticket's `deployment_guide` artifact and the project deploy
@@ -283,7 +288,9 @@ ordered production command table. Preflight every command: validate imports/CLI/
 non-mutating command and, when the guide defines a safe idempotent staging mirror, execute the same
 command shape there with staging credentials. Record each expected production postcondition in the
 manifest. Missing/failed preflight stops before merge; never invent a dry-run flag or use the
-production mutation itself as its preflight.
+production mutation itself as its preflight. A preflight already recorded by `/auto-deploy`
+Phase 6b for the same command, guide version, and diff is valid — cite its recorded result
+instead of re-executing; re-preflight only commands whose shape, target, or inputs changed.
 
 ## Land on main
 

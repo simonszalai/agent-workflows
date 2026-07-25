@@ -113,7 +113,8 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   Also read its **Activation boundary**. If the artifact is missing or its evidence rows are still
   `TBD`/empty, fall back to deriving evidence from source + plan acceptance criteria, and flag in
   the report that the work shipped without a finalized evidence contract — the best staging
-  verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote.
+  verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote
+  unless the scope classifies as `tiny_safe` under §2a.
   Exception — items in `prod_verified_needs_cleanup` (or legacy tickets tagged
   `cleanup=true`): the item's `deferred_cleanup.evidence_contract` IS the FINALIZED cleanup
   contract (§10/§10a); the contract-missing verdict cap does not apply and no
@@ -125,6 +126,30 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   `deferred_cleanup`, or legacy cleanup body needed by §10; do not load unrelated artifacts or event
   history to discover cleanup;
 - read `.claude/environments/{env}.md` when present.
+
+### 2a. Risk tier (tiny/safe fast path)
+
+Classify the scope's actual diff once per run against the direct-to-main conditions in
+`../references/landing-policy.md` (no schema/migration or backfill, no prompt/LLM change, no
+auth/security/payment/deploy-config change, no cross-repo contract, no user-visible multi-step
+workflow change, clean local tests/review, small and easily reversible diff). Record the result
+and the diff SHA in the evidence artifact metadata as `risk_tier: tiny_safe | standard`. If a
+`risk_tier` was already recorded for the same diff SHA by an earlier leg of this workflow, reuse
+it instead of re-deriving.
+
+For a `tiny_safe` scope, the reduced contract applies:
+
+- run every contract row (or derived acceptance row) for the environment once; the edge-case
+  battery, negative/regression supplements, and storage-amplification checks of §5 are required
+  only when the contract/source/plan names them or the diff touches a repeated writer;
+- `PASS (contract-missing)` counts as `PASS` for the §9b auto-promotion gate, provided every
+  derived row passed on fresh post-activation data and the tier classification evidence
+  (conditions checked, diff SHA) is recorded in the artifact.
+
+Any single failed condition, or unresolved doubt about a condition, means `standard` tier — the
+full §5 battery and the normal §8/§9b rules apply unchanged. The tier never waives blocker
+re-checks (§3), producer boundedness (§3a), destructive-cutover grading (§4a), deployment
+preconditions (§5a), or visible-surface rules (§5b).
 
 ### 3. Re-check active blockers from ground truth
 
@@ -340,7 +365,9 @@ redundant durable data. "Lossless" is not a waiver to save the same payload ever
 Every claim must include a reproducible command/query, expected good output, actual observed
 output, and bad-output interpretation. Record, per evidence item, whether it passed, failed, or
 had no post-activation data yet. A single successful happy-path run is never sufficient evidence
-for PASS when edge cases are in scope.
+for PASS when edge cases are in scope. Edge cases are "in scope" when named in the contract,
+source, plan, build todos, review notes, or bug hypotheses — for a `tiny_safe` scope (§2a) with
+none named, the contract rows alone suffice.
 
 If you need intermediate files, put them in a single run-scoped scratch directory such as:
 
@@ -423,13 +450,17 @@ relevant in `--epic`/`--milestone` mode — see the "§7" section of
 The deployment_guide evidence contract is the gate — verdict is determined by the env's evidence
 items:
 
-- `PASS` — **every** evidence item for this environment passed, and no related failures surfaced;
+- `PASS` — **every** evidence item for this environment passed, and no related failures surfaced.
+  A failure is *related* only when it occurs in a surface the diff touched or the contract names;
+  a pre-existing failure whose diagnostic signature is identical before and after the activation
+  boundary is not related (signature comparison rules in §6);
 - `PASS (contract-missing)` — every derived evidence item passed, but the deployment_guide
   evidence contract was missing/`TBD` and the items were derived from source/plan acceptance
   criteria. This is the **best possible verdict** for such a scope. On staging it sets
   `staging_verified` but does **not** auto-invoke `/ticket-promote`: promotion requires an
   explicit human go-ahead, or a regenerated FINALIZED deployment guide followed by a re-run
-  that grades the real contract;
+  that grades the real contract. Exception: a `tiny_safe` scope (§2a) with every derived row
+  passed on fresh post-activation data auto-promotes as if `PASS`;
 - `FAIL` — any evidence item shows broken behavior or expected-but-missing activity;
 - `NEEDS_MORE_TIME` — the feature **is deployed and running** (its producing deployment is
   registered in the target env and, for scheduled/continuous flows, executing), but one or more
