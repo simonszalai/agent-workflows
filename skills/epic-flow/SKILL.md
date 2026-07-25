@@ -25,6 +25,22 @@ entire epic, continue across milestones, or do it without further human interven
 Never silently choose gate-stop when the user explicitly asked for a hands-off/full-auto epic.
 Never advance to a later milestone until the current milestone's staging gate has passed.
 
+## This skill does not own design
+
+`/epic-flow` orchestrates **sequencing, packaging, milestone boundaries, gates, deploy order, and
+fix loops**. It must never edit an epic or step-ticket `plan` artifact's *design* — the mechanism,
+API, transport, concurrency shape, or optimisation a step uses — directly with `update_artifact`.
+If normalization or a readiness re-check concludes the design must change, route it through
+`/epic-plan` (or `/epic-split` for step decomposition), which owns source traceability, the
+critic panel, and the citation rules for user-attributed decisions. Recording a gate verdict,
+milestone assignment, DAG edge, or deploy note on an artifact is in scope; rewriting what the
+code should do is not.
+
+This boundary exists because E0027's F0296 step plan was rev'd from "pre-warm the first record to
+completion" to "release the fan-out on the first streamed delta" by this skill's orchestrator
+under a composite "rev 4 amendment" change note. No source ticket asked for it, no critic saw it,
+it became a milestone gate criterion and a required test, and it never worked in staging.
+
 ## Usage
 
 ```text

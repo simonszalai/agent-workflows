@@ -146,8 +146,9 @@ with no code in the diff — is still a missing-scope finding.
 
 Its charter is the Scope Completeness Check (see the section at the end of this skill for
 the method/table): every source deliverable must map to a plan step and to code in the diff;
-every plan elimination must actually be deleted; every builder deviation must be sound
-against the plan's intent. Missing scope items are **p1 findings with `absence: true`**
+**every material addition in the diff must map back to a source deliverable or cited user
+decision** (step 6 — the plan alone does not justify it); every plan elimination must actually be
+deleted; every builder deviation must be sound against the plan's intent. Missing scope items are **p1 findings with `absence: true`**
 (anchor to the closest related file, evidence = the grep commands that should find the missing
 code). Classify them `gated_auto` when the approved plan determines the implementation; use
 `manual` only when completing the scope requires a genuine unresolved human choice. Unsound
@@ -632,7 +633,33 @@ construction. The method:
    `evidence` (absence claims are settled by running those searches)
 5. **Audit builder deviations** — every Deviations entry from the build must be sound
    against the plan's intent; unsound deviations are findings
-6. **Re-run the call-site sweep for shared-primitive rollouts** — if the ticket rolls out
+6. **Run the check in reverse — unrequested scope.** The steps above only find scope the source
+   asked for and the code lacks. Also walk the other direction: for every material thing the diff
+   *adds* (a mechanism, an API/transport, a concurrency or caching shape, a performance
+   optimisation), find the source-artifact line or cited user decision that asked for it. **"The
+   approved plan says so" is not an answer** — the plan is what is under review here too, and a
+   plan revision can introduce scope the source never contained. When a diff element traces only
+   to a plan revision, check that revision's `change_note` for a source citation.
+
+   **Tracing to a decision is not enough — confirm the decision is still CURRENT.** A cited
+   `locked, <name>` decision can be entirely genuine and *already abandoned*. The tell is a
+   **later** source or plan artifact that contradicts it: that is supersession, and a diff matching
+   the older decision is reverting a correction, not implementing a requirement. Compare artifact
+   dates; if a later artifact specifies something different, treat the diff as a p1 finding until
+   someone confirms which decision stands. An addition with no traceable origin — or one tracing
+   only to a superseded decision — is a **p1 finding proposing deletion**, not a p3 nit, and the
+   finding must say what it costs (LOC, new failure surface, measured benefit if any).
+
+   Corollary: **do not harden what should not exist.** Before filing a finding that makes a
+   mechanism safer, more correct, or more complete, confirm the mechanism is requested. Filing a
+   robustness improvement against unrequested scope entrenches it — that inversion is the symptom
+   this step exists to catch (E0027/F0296: six findings on a streaming pre-warm barrier, one of
+   which added sibling cancellation to it; none asked whether streaming should exist. It traced to a
+   genuine locked user decision that had **already been withdrawn** — a later source artifact
+   specified the non-streaming design — so a provenance check alone would have passed it and only
+   the currency check catches it. It was the repo's only SSE call site, failed record 1 of every run
+   through the decrypt proxy, and was deleted at −43 lines for a ~1.5% claimed speedup. R0061).
+7. **Re-run the call-site sweep for shared-primitive rollouts** — if the ticket rolls out
    or extends a cross-cutting primitive for a failure class (retry/backoff, timeouts,
    error classification, rate limiting, redaction, boundary encoding), independently
    re-enumerate ALL call sites of the underlying operation repo-wide (e.g., grep every

@@ -148,6 +148,24 @@ explicitly asks for a full replan/from-scratch run.
      unrelated areas;
    - duplicates collapse;
    - contradictions become open questions, not guesses.
+   - **every design decision traces to a source.** Each material design choice in the plan
+     (mechanism, API, transport, concurrency shape, optimisation) must be traceable to a source
+     ticket/artifact line, a cited user decision, or an explicit plan-authored rationale labelled
+     as such. A choice with none of the three is unrequested scope: drop it. Optimisations are the
+     usual offender — an optimisation nobody asked for needs a stated measured benefit and a
+     stated risk, or it does not go in the plan;
+   - **supersession is annotated at the source, never only downstream.** Follow `epic-split`
+     Phase 1 rule 4. When a locked decision is revised, edit the locked block in place: mark the
+     clause superseded, name the replacement, give the **reason it was rejected**, and point at
+     the artifact carrying the new decision. A replacement recorded only in a step artifact will
+     be reverted the next time anything re-derives from the epic.
+   - **never reconcile a step artifact backwards.** If a step's source/plan contradicts an earlier
+     locked block, that is a supersession signal, not drift. Establish which is later; if you
+     cannot tell, stop and ask. Reverting a correct downstream decision to a stale locked one is
+     how E0027 shipped a streaming pre-warm the user had already abandoned (R0061).
+   - **never extend an attribution to cover a mechanism you inferred** — if a cited decision names
+     a goal and you elaborate a mechanism the person did not name, that mechanism is yours and
+     belongs outside the locked block.
    - inventory every tracked deployment/config/secret-name manifest, its owner/source repo,
      destination repo/environment, and workspace using `deployment-ownership.md`;
    - classify each required key/action as `non_secret_config`, `secret_value`, or `manual_gate`.
@@ -209,6 +227,15 @@ explicitly asks for a full replan/from-scratch run.
     - if no live `plan` artifact exists, create it via `create_epic_artifact`;
     - if a live/current `plan` artifact already exists, update it via `update_artifact` with a
       change note rather than creating a duplicate plan artifact;
+    - **one concern per revision, each justified.** The `change_note` must enumerate every
+      amendment in the revision as its own line: `<what changed> | <source: ticket/artifact
+      line, cited user message, or critic finding id> | <scope: same | ADDS SCOPE | REMOVES
+      SCOPE>`. Bundling unrelated amendments under one composite label
+      ("first-token/fenced-lease/staging-only amendment") is how unrequested scope rides in next
+      to legitimate changes — split them into separate revisions, or at minimum separate lines.
+      Any line marked `ADDS SCOPE` that is not a defect fix or a critic finding must name the user
+      request or source-artifact line that asked for it; if it cannot, revert that line instead of
+      shipping it;
     - mark metadata with whether the run was incremental, plan-only, or from-scratch.
 12. Synchronize milestone rows and pass conditions:
     - compare the planned milestone table against `get_epic(...).milestones`;

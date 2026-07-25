@@ -141,8 +141,40 @@ The artifacts are an iterative pile. Reduce them to **one** coherent design:
    (dated, attributed — "confirmed 2026-06-06, Simon") beats an earlier draft. If two
    statements genuinely conflict and neither is clearly later/confirmed, **do not pick** —
    list it as an open question for the user.
+
+   **A superseded decision must be struck AT ITS SOURCE, with the reason.** A locked block is
+   the authority every downstream agent re-derives from, so revising a decision only downstream
+   leaves the stale version still winning. When a locked decision is revised, edit the locked
+   block in place: mark the clause superseded, name what replaced it, give the **reason**, and
+   point at the artifact that carries the new decision. Never leave a locked block asserting
+   something the epic has abandoned.
+
+   **A later source artifact contradicting an earlier locked block is a SUPERSESSION SIGNAL, not
+   drift to correct.** Before "fixing" a step artifact back toward an earlier locked decision,
+   establish which is later and whether the earlier one was revised. If you cannot tell, **stop
+   and ask** — do not reconcile by reverting.
+
+   E0027 shows the failure mode. Epic decision 1 (2026-07-24) genuinely was the user's, and
+   specified a first-streamed-token cache barrier. It was then abandoned in conversation because
+   the decrypt proxy buffers SSE, and F0296's source artifact plus plan rev 1 both correctly
+   recorded the replacement ("process the FIRST record to completion"). But the locked block was
+   never annotated and the *reason* was never written down anywhere, so `/epic-flow` later
+   re-derived from the stale block, reverted both artifacts to the abandoned design, and it became
+   a milestone gate criterion and a required test. It was the repo's only SSE call site, it never
+   worked through the proxy, it failed record 1 of three staging canaries, and it was deleted at
+   −43 lines (R0061).
+
+   **Record why an approach was rejected, not just what replaced it.** "We cannot stream because
+   the proxy buffers SSE" was the load-bearing fact and it existed only in conversation. A
+   replacement decision without its reason is one orchestrator pass away from being reverted.
+
+   **Never inherit an attribution onto material you added.** If a cited human decision states a
+   goal or constraint and you elaborate it into a specific mechanism, API, or optimisation the
+   person did not name, the mechanism is *yours*: keep it outside the locked block. Splitting the
+   user's actual words from your engineering elaboration is the whole point of the convention.
 5. **Separate locked from open.** Pull out: the goal; the **gated first deliverable** (many
-   epics name one — "gate everything else on it"); confirmed decisions; and open questions.
+   epics name one — "gate everything else on it"); confirmed decisions **with their citations**;
+   agent-proposed decisions (explicitly labelled, uncited); and open questions.
 
 **Write the result back as the canonical `plan` artifact on the epic** so there is a single
 source of truth going forward (the iterative source artifacts stay for provenance — don't delete

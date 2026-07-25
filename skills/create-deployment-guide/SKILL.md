@@ -130,6 +130,18 @@ the activation commit is > 0, and `status='ok'` for all of them" is evidence. Th
 cover every edge case named in the source, plan, acceptance criteria, build todos, review notes,
 and bug hypotheses; one happy-path row is not enough.
 
+**First use of a transport or protocol is its own evidence item.** If the diff introduces the
+repo's *first* call site for a wire mechanism — SSE/streaming, websockets, HTTP/2 push, gRPC,
+long-polling, chunked upload, a new SDK client mode, a new content encoding — grep to confirm it is
+genuinely the first (`rg` the SDK method / scheme repo-wide) and then require a **standalone
+transport smoke check** that exercises that mechanism alone, through the real deployed network path
+including every proxy, gateway, or rewritten `base_url` the runtime actually uses. It must run
+before, and independently of, the feature's own evidence, and its bad-output interpretation is
+"this transport does not survive our network path — the feature built on it cannot ship". A
+mechanism that works against the vendor directly proves nothing about a path that rewrites the
+endpoint: E0027/F0296 shipped the repo's only `messages.stream` call through a decrypt proxy that
+does not relay SSE in order, and it failed deterministically on record 1 of every staging run.
+
 For pollers, observers, schedulers, queue consumers, webhooks, scrapers, supervisor flows, or
 any repeated writer that persists data, the evidence contract must also prove storage shape:
 
@@ -285,6 +297,8 @@ Process step 3), not placeholders.
 - [ ] Tests + type check pass
 - [ ] Branch rebased on target (linear history; avoids migration-graph conflicts)
 - [ ] Migration is order-independent / idempotent (if any)
+- [ ] First-use-of-a-transport smoke check passed through the real proxy/gateway path (if any new
+      wire mechanism — streaming/SSE, websockets, gRPC, new SDK client mode, new encoding)
 - [ ] Destructive cutover reader inventory, activation/restart proofs, and post-cutover soak are
       defined (if any object is removed)
 - [ ] {change-type-specific checks}
