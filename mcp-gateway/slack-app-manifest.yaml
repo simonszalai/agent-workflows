@@ -1,6 +1,6 @@
 display_information:
   name: Simon Agent MCP
-  description: Read-only Slack context for Simon's local coding agents
+  description: Read/write Slack access for Simon's local coding agents
   background_color: "#1d1c1d"
 
 oauth_config:
@@ -16,6 +16,9 @@ oauth_config:
       - search:read.public
       - search:read.users
       - users:read
+      - chat:write
+      - reactions:read
+      - reactions:write
 
 settings:
   org_deploy_enabled: false

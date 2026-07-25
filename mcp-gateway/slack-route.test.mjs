@@ -19,11 +19,13 @@ test("Slack credentials are loaded once from 1Password, never committed", () => 
 	assert.doesNotMatch(env, /xox[pbar]-[A-Za-z0-9-]+/)
 })
 
-test("Slack app manifest is read-only", () => {
+test("Slack app manifest is read/write for messages only", () => {
 	const manifest = readFileSync(`${BASE_DIR}/slack-app-manifest.yaml`, "utf8")
 	assert.match(manifest, /search:read\.im/)
 	assert.match(manifest, /im:history/)
+	assert.match(manifest, /\bchat:write\b/)
+	assert.match(manifest, /\breactions:write\b/)
 	assert.doesNotMatch(manifest, /\bfiles:read\b/)
-	assert.doesNotMatch(manifest, /\bchat:write\b/)
 	assert.doesNotMatch(manifest, /\bchannels:write\b/)
+	assert.doesNotMatch(manifest, /\badmin\b/)
 })
