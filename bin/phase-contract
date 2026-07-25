@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Validate finite workflow-phase dispatch envelopes and structured terminal results."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+import time
+from pathlib import Path
+
+
+ROTATION_REASONS = {
+    "first_compaction",
+    "turn_budget",
+    "elapsed_budget",
+    "token_budget",
+}
+TERMINAL_STATUSES = {"complete", "blocked", "failed", "rotate_required"}
+
+
+class ContractError(ValueError):
+    """A phase envelope or result violates the shared runtime contract."""
+
+
+def load_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractError(f"cannot read JSON {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ContractError(f"{path}: root must be an object")
+    return value
+
+
+def require_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{field} must be a non-empty string")
+    return value
+
+
+def require_int(value: object, field: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ContractError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def require_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ContractError(f"{field} must be a number >= 0")
+    return float(value)
+
+
+def require_string_list(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ContractError(f"{field} must be an array of non-empty strings")
+    return value
+
+
+def validate_file_reference(value: object, field: str, *, max_bytes: int | None = None) -> dict:
+    if not isinstance(value, dict):
+        raise ContractError(f"{field} must be an object")
+    path = Path(require_string(value.get("path"), f"{field}.path"))
+    digest = require_string(value.get("sha256"), f"{field}.sha256")
+    if not path.is_absolute() or not path.is_file():
+        raise ContractError(f"{field}.path must name an existing absolute file")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ContractError(f"{field}.sha256 must be a lowercase SHA-256")
+    data = path.read_bytes()
+    if max_bytes is not None and len(data) > max_bytes:
+        raise ContractError(f"{field}.path exceeds max_packet_bytes={max_bytes}")
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != digest:
+        raise ContractError(f"{field}.sha256 mismatch: expected {digest}, got {actual}")
+    return value
+
+
+def validate_dispatch(dispatch: dict, *, allow_expired: bool = False) -> dict:
+    require_string(dispatch.get("phase_name"), "phase_name")
+    generation = require_int(dispatch.get("rotation_generation"), "rotation_generation")
+    require_string(dispatch.get("first_incomplete_unit"), "first_incomplete_unit")
+
+    budget = dispatch.get("budget")
+    if not isinstance(budget, dict):
+        raise ContractError("budget must be an object")
+    require_int(budget.get("max_turns"), "budget.max_turns", minimum=1)
+    require_int(budget.get("max_checkpoints"), "budget.max_checkpoints", minimum=1)
+    max_elapsed = require_int(
+        budget.get("max_elapsed_seconds"), "budget.max_elapsed_seconds", minimum=1
+    )
+    max_packet_bytes = require_int(
+        budget.get("max_packet_bytes"), "budget.max_packet_bytes", minimum=1
+    )
+    token_usage = budget.get("token_usage")
+    if token_usage not in {"available", "unavailable"}:
+        raise ContractError("budget.token_usage must be available or unavailable")
+    max_tokens = budget.get("max_tokens")
+    if token_usage == "available":
+        require_int(max_tokens, "budget.max_tokens", minimum=1)
+    elif max_tokens is not None:
+        raise ContractError("budget.max_tokens must be null when token usage is unavailable")
+
+    started_at = require_number(dispatch.get("started_at_epoch"), "started_at_epoch")
+    deadline = require_number(dispatch.get("deadline_epoch"), "deadline_epoch")
+    now = time.time()
+    if started_at > now + 60:
+        raise ContractError("started_at_epoch cannot be in the future")
+    if abs(deadline - started_at - max_elapsed) > 0.001:
+        raise ContractError("deadline_epoch must equal started_at_epoch + max_elapsed_seconds")
+    if not allow_expired and deadline <= now:
+        raise ContractError("deadline_epoch must be in the future at dispatch validation")
+
+    validate_file_reference(dispatch.get("packet"), "packet", max_bytes=max_packet_bytes)
+    checkpoint = dispatch.get("checkpoint")
+    if generation:
+        validate_file_reference(checkpoint, "checkpoint")
+    elif checkpoint is not None:
+        validate_file_reference(checkpoint, "checkpoint")
+    return dispatch
+
+
+def validate_result(result: dict, dispatch: dict) -> dict:
+    phase_name = require_string(result.get("phase_name"), "phase_name")
+    generation = require_int(result.get("rotation_generation"), "rotation_generation")
+    if phase_name != dispatch["phase_name"] or generation != dispatch["rotation_generation"]:
+        raise ContractError("result phase_name/rotation_generation do not match dispatch")
+
+    status = result.get("status")
+    if status not in TERMINAL_STATUSES:
+        raise ContractError("status must be complete, blocked, failed, or rotate_required")
+    completed_scope = require_string_list(result.get("completed_scope"), "completed_scope")
+    remaining_scope = require_string_list(result.get("remaining_scope"), "remaining_scope")
+    validate_file_reference(result.get("checkpoint"), "checkpoint")
+
+    usage = result.get("usage")
+    if not isinstance(usage, dict):
+        raise ContractError("usage must be an object")
+    turns_used = require_int(usage.get("turns_used"), "usage.turns_used")
+    checkpoints_used = require_int(usage.get("checkpoints_used"), "usage.checkpoints_used")
+    elapsed = require_number(usage.get("elapsed_seconds"), "usage.elapsed_seconds")
+    productive = usage.get("productive_seconds")
+    stall = usage.get("stall_seconds")
+    if productive is not None:
+        require_number(productive, "usage.productive_seconds")
+    if stall is not None:
+        require_number(stall, "usage.stall_seconds")
+    if productive is not None and stall is not None and productive + stall > elapsed + 0.001:
+        raise ContractError("productive_seconds + stall_seconds cannot exceed elapsed_seconds")
+
+    budget = dispatch["budget"]
+    tokens_used = usage.get("tokens_used")
+    if budget["token_usage"] == "available":
+        tokens_used = require_int(tokens_used, "usage.tokens_used")
+    elif tokens_used is not None:
+        raise ContractError("usage.tokens_used must be null when token usage is unavailable")
+
+    reason = result.get("reason")
+    exceeded_turn_work = (
+        turns_used >= budget["max_turns"]
+        or checkpoints_used >= budget["max_checkpoints"]
+    )
+    exceeded_elapsed = (
+        elapsed >= budget["max_elapsed_seconds"] or time.time() >= dispatch["deadline_epoch"]
+    )
+    exceeded_tokens = (
+        budget["token_usage"] == "available" and tokens_used >= budget["max_tokens"]
+    )
+    if status == "rotate_required":
+        if reason not in ROTATION_REASONS:
+            raise ContractError("rotate_required has an invalid reason")
+        if not remaining_scope:
+            raise ContractError("rotate_required must name remaining_scope")
+        if reason == "turn_budget" and not exceeded_turn_work:
+            raise ContractError(
+                "turn_budget requires the turn/checkpoint work budget to be reached"
+            )
+        if reason == "elapsed_budget" and not exceeded_elapsed:
+            raise ContractError("elapsed_budget requires the elapsed budget to be reached")
+        if reason == "token_budget" and not exceeded_tokens:
+            raise ContractError("token_budget requires an available token ceiling to be reached")
+    else:
+        if reason is not None:
+            raise ContractError("non-rotation results must set reason to null")
+        if exceeded_turn_work or exceeded_elapsed or exceeded_tokens:
+            raise ContractError("a result at/over budget must be rotate_required")
+        if status == "complete" and remaining_scope:
+            raise ContractError("complete must have empty remaining_scope")
+        if status in {"blocked", "failed"} and not remaining_scope:
+            raise ContractError(f"{status} must name remaining_scope")
+    if len(completed_scope) + len(remaining_scope) == 0:
+        raise ContractError("result must name completed_scope or remaining_scope")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    dispatch_parser = subparsers.add_parser("dispatch")
+    dispatch_parser.add_argument("dispatch", type=Path)
+    result_parser = subparsers.add_parser("result")
+    result_parser.add_argument("result", type=Path)
+    result_parser.add_argument("--dispatch", required=True, type=Path)
+    args = parser.parse_args()
+
+    try:
+        if args.command == "dispatch":
+            validate_dispatch(load_json(args.dispatch))
+        else:
+            dispatch = validate_dispatch(load_json(args.dispatch), allow_expired=True)
+            validate_result(load_json(args.result), dispatch)
+    except ContractError as exc:
+        print(json.dumps({"status": "invalid", "error": str(exc)}))
+        return 2
+    print(json.dumps({"status": "valid", "kind": args.command}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

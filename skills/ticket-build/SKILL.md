@@ -4,7 +4,7 @@ description: >-
   Implementation phase for one planned ticket: build todos, build, adaptive review, resolve
   findings, and the local health gates. Thin orchestrator over create-build-todos, build,
   write-tests, review, and resolve-review; does not plan, land, deploy, or verify environments.
-max_turns: 300
+max_turns: 100
 ---
 
 # Ticket Build
@@ -79,10 +79,24 @@ Follow `../references/execution-phases.md` and `../references/execution-economy.
   each boundary, then start the next phase in a fresh `fork_turns: "none"` agent with only its
   bounded checkpoint/packet. The health phase owner is an orchestrator, never a builder/reviewer/
   resolver subagent.
-- Choose and record a fixed context/token budget for every phase owner. Force replacement after the
-  first compaction or when the budget is reached, whichever happens first. A replacement receives
-  only the persisted checkpoint and phase-specific packet; never continue an indefinitely growing
-  agent merely because it still responds.
+- Apply the validated dispatch/result/rotation contract in `execution-economy.md` with
+  `max_packet_bytes: 16384` and these default hard per-generation budgets:
+
+  | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+  |---|---:|---:|---:|---:|
+  | build-todo creation | 40 | 4 | 60 min | 80,000 |
+  | implementation | 80 | 12 | 180 min | 160,000 |
+  | test-writing | 50 | 4 | 90 min | 90,000 |
+  | each health gate | 30 | 2 | 90 min | 60,000 |
+  | review | 60 | 6 | 90 min | 100,000 |
+  | review resolution | 60 | 8 | 120 min | 120,000 |
+
+- This table is the required fixed context/token budget. An observable first compaction is an
+  immediate `rotate_required` boundary.
+- A valid `rotate_required` persists every completed todo/finding and the current tree SHA before a
+  fresh `fork_turns: "none"` replacement starts at the first incomplete unit. The old owner gets no
+  follow-up work. Preserve the coherent builder chain and orchestrator-owned validation contract:
+  rotate a chain at the next safe per-todo checkpoint; never make a builder validate or drop a gate.
 - Tests, builds, migrations, large diffs, and other noisy commands must use `bin/compact-exec` or an
   established equally compact stricter wrapper. Full output stays in the log; the model receives
   only the bounded summary/tail. On failure, report the absolute `output_file` and exact
@@ -97,6 +111,7 @@ Build todos: {n} completed; review: {light|heavy}, {n} findings resolved
 Pre-review health gate: PASS ({command} @ {sha})
 Final health gate: REUSED ({command} @ {sha}) | PASS ({command} @ {final sha})
 Artifacts: build_todo x{n}, review_todo x{n} persisted
+Rotations: {count}; reasons: {reason counts}; productive/stall/elapsed: {when available}
 Next: /ticket-deploy F0123 staging|prod|full
 ```
 

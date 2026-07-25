@@ -4,7 +4,7 @@ description: >-
   Autonomous single-ticket execution with MCP ticket tracking: runs ticket-plan, ticket-build,
   and ticket-deploy in sequence. Default stops after staging verification; the optional `prod`
   argument continues through production promotion, verification, and completion.
-max_turns: 300
+max_turns: 100
 ---
 
 # Ticket Flow
@@ -235,10 +235,24 @@ A `merged` epic step alone is not proof the milestone is deployed or verified; o
 ### 4a. Phase rotation budget
 
 Planning, build/review/local verification, and deploy/environment verification are durable phase
-boundaries. Choose and record a fixed context/token budget for each phase owner. Force a checkpoint
-and fresh `fork_turns: "none"` replacement after the first compaction or when the budget is reached,
-whichever comes first. The replacement receives only the durable checkpoint and phase packet.
-Never continue an indefinitely growing agent merely because it still responds.
+boundaries. Apply the validated dispatch/result/rotation contract in `execution-economy.md` with
+`max_packet_bytes: 16384` and these default hard per-generation budgets:
+
+| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+|---|---:|---:|---:|---:|
+| planning | 60 | 4 | 90 min | 100,000 |
+| build/review/local verification | 90 | 12 | 180 min | 160,000 |
+| deploy/environment verification | 80 | 8 | 180 min | 140,000 |
+
+This table is the required fixed context/token budget. An observable first compaction is an
+immediate `rotate_required` boundary.
+
+On valid `rotate_required`, persist the owning phase's MCP artifacts, tree/landing/deploy state, and
+next immutable checkpoint before a fresh `fork_turns: "none"` replacement. Resume at the first
+incomplete unit; do not re-plan an accepted plan, rerun completed build todos, reopen resolved
+findings, duplicate a landing/deploy, or rewrite verification evidence. The old owner receives no
+follow-up work. Safety coverage is unchanged: rotate and continue rather than dropping a health,
+review, deploy, or verification gate.
 
 ### 5. Status truth
 
@@ -269,6 +283,8 @@ to concrete evidence — the command run, test counts, PR link, deploy output, a
 End every report with an explicit "Not verified:" line listing anything claimed but not
 exercised in this run. The user must never have to ask "did you actually do X?" — if X lacks
 evidence, the report says so first.
+Also report rotation count/reasons and productive, stall/sleep, and elapsed phase time when
+available.
 
 Standalone ticket, default (stops after staging verify):
 

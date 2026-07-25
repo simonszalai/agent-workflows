@@ -1,7 +1,7 @@
 ---
 name: milestone-flow
 description: Execute one epic milestone's step-ticket DAG, deploy the milestone to staging, and run the explicit epic/milestone verification gate.
-max_turns: 400
+max_turns: 100
 ---
 
 # Milestone Flow
@@ -233,10 +233,25 @@ milestone it was asked to execute.
 
 Treat readiness, each execution wave, the gate package, staging deploy, and staging verification as
 durable phase boundaries. At each boundary, persist the canonical step/epic artifact and active
-packet manifest, then start the next phase in a fresh `fork_turns: "none"` agent with only its
-packet/checkpoint. Choose and record a fixed context/token budget before each phase. Force rotation
-after the first compaction or when that budget is reached, whichever happens first; never continue
-an indefinitely growing agent merely because it still responds.
+packet manifest. Apply the validated dispatch/result/rotation contract in `execution-economy.md`
+with `max_packet_bytes: 16384` and these default hard per-generation budgets:
+
+| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+|---|---:|---:|---:|---:|
+| readiness | 30 | 3 | 45 min | 60,000 |
+| one execution wave | 80 | 8 | 180 min | 160,000 |
+| gate package | 35 | 3 | 60 min | 70,000 |
+| staging deploy | 40 | 4 | 180 min | 80,000 |
+| staging verification | 60 | 6 | 180 min | 120,000 |
+
+This table is the required fixed context/token budget. An observable first compaction is an
+immediate `rotate_required` boundary.
+
+An execution wave with more than eight safe step checkpoints must be split into generations. On a
+valid `rotate_required`, persist every returned per-step completion before dispatching a fresh
+`fork_turns: "none"` replacement with only the next immutable packet/checkpoint. Start at the first
+incomplete step or evidence row. The old owner receives no follow-up work; merged steps, deploy
+state, review records, and written verification evidence are never replayed.
 
 ## Output
 
@@ -253,6 +268,7 @@ Gate package: deployment_guide artifact updated
 Deploy: PASS (/auto-deploy E0007 staging)
 Environment verify: PASS (/ticket-verify staging --epic E0007 --milestone M2 --no-promote)
 Gate evidence: verification_evidence artifact ids recorded
+Rotations: {count}; reasons: {reason counts}; productive/stall/elapsed: {when available}
 
 Next: /epic-flow continues with the next milestone, or production promotion after all milestones pass.
 ```

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -141,6 +142,150 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             "Re-run affected tests after every fix",
         ):
             self.assertNotIn(obsolete.lower(), active_contracts.lower())
+
+    def test_e0003_r4_finite_phase_rotation_contract(self) -> None:
+        economy = (ROOT / "skills/references/execution-economy.md").read_text()
+        named_paths = (
+            "skills/epic-flow/SKILL.md",
+            "skills/milestone-flow/SKILL.md",
+            "skills/ticket-flow/SKILL.md",
+            "skills/ticket-build/SKILL.md",
+            "skills/build/SKILL.md",
+            "skills/epic-plan/SKILL.md",
+        )
+        named_contracts = [(ROOT / path).read_text() for path in named_paths]
+
+        for field in (
+            "phase_name",
+            "rotation_generation",
+            "started_at_epoch",
+            "deadline_epoch",
+            "max_turns",
+            "max_checkpoints",
+            "max_elapsed_seconds",
+            "max_packet_bytes",
+            "max_tokens",
+        ):
+            self.assertIn(field, economy)
+        for status in ("complete", "blocked", "failed", "rotate_required"):
+            self.assertIn(status, economy)
+        for reason in (
+            "first_compaction",
+            "turn_budget",
+            "elapsed_budget",
+            "token_budget",
+        ):
+            self.assertIn(reason, economy)
+        self.assertIn("bin/phase-contract dispatch", economy)
+        self.assertIn("bin/phase-contract result", economy)
+        self.assertIn('fresh `fork_turns: "none"` replacement', economy)
+        self.assertIn("old owner is\n  terminal", economy)
+        self.assertIn("first incomplete unit", economy)
+        self.assertIn("never rerun a completed unit", economy)
+        self.assertIn("without token usage or a reliable\ncompaction event", economy)
+        self.assertIn("productive, stall/sleep, and total elapsed", economy)
+
+        for path, contract in zip(named_paths, named_contracts):
+            max_turns = re.search(r"^max_turns: (\d+)$", contract, re.MULTILINE)
+            self.assertIsNotNone(max_turns, path)
+            self.assertLessEqual(int(max_turns.group(1)), 100, path)
+            self.assertIn("Max turns", contract, path)
+            self.assertIn("Max checkpoints", contract, path)
+            self.assertIn("Max elapsed", contract, path)
+            self.assertIn("Max tokens when exposed", contract, path)
+            self.assertIn("execution-economy.md", contract, path)
+
+        build = named_contracts[4]
+        ticket_build = named_contracts[3]
+        external_build = (ROOT / "bin/external-build").read_text()
+        builder = (ROOT / "agents/builder.md").read_text()
+        self.assertIn("coherent sequential builder chains", build)
+        self.assertIn("next safe per-todo checkpoint", ticket_build)
+        self.assertIn('"rotate_required"', external_build)
+        self.assertIn('chain_status: "rotate_required"', builder)
+        self.assertIn("orchestrator-owned validation", build)
+        self.assertIn("old builder", build)
+
+        active = "\n".join([economy, *named_contracts, builder, external_build]).lower()
+        for obsolete in (
+            "use judgment for the phase budget",
+            "keep going while responsive",
+            "continue merely because it still responds",
+        ):
+            self.assertNotIn(obsolete, active)
+        self.assertEqual([], model_polling_guidance_violations(active))
+
+    def test_phase_contract_validator_enforces_dispatch_and_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packet = root / "packet.md"
+            checkpoint = root / "checkpoint.json"
+            packet.write_text("bounded packet")
+            checkpoint.write_text('{"completed":["todo-1"]}')
+
+            def reference(path: Path) -> dict[str, str]:
+                return {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+
+            dispatch = {
+                "phase_name": "implementation",
+                "rotation_generation": 1,
+                "first_incomplete_unit": "todo-2",
+                "started_at_epoch": time.time(),
+                "budget": {
+                    "max_turns": 50,
+                    "max_checkpoints": 8,
+                    "max_elapsed_seconds": 3000,
+                    "max_packet_bytes": 16384,
+                    "token_usage": "unavailable",
+                    "max_tokens": None,
+                },
+                "packet": reference(packet),
+                "checkpoint": reference(checkpoint),
+            }
+            dispatch["deadline_epoch"] = (
+                dispatch["started_at_epoch"] + dispatch["budget"]["max_elapsed_seconds"]
+            )
+            dispatch_path = root / "dispatch.json"
+            dispatch_path.write_text(json.dumps(dispatch))
+            validated = run_script("phase-contract", "dispatch", str(dispatch_path))
+            self.assertEqual(validated.returncode, 0, validated.stdout)
+
+            result = {
+                "phase_name": "implementation",
+                "rotation_generation": 1,
+                "status": "rotate_required",
+                "reason": "turn_budget",
+                "checkpoint": reference(checkpoint),
+                "completed_scope": ["todo-1"],
+                "remaining_scope": ["todo-2"],
+                "usage": {
+                    "turns_used": 50,
+                    "checkpoints_used": 1,
+                    "elapsed_seconds": 2400,
+                    "productive_seconds": 2100,
+                    "stall_seconds": 300,
+                    "tokens_used": None,
+                },
+            }
+            result_path = root / "result.json"
+            result_path.write_text(json.dumps(result))
+            validated = run_script(
+                "phase-contract", "result", str(result_path), "--dispatch", str(dispatch_path)
+            )
+            self.assertEqual(validated.returncode, 0, validated.stdout)
+
+            result["status"] = "complete"
+            result["reason"] = None
+            result["remaining_scope"] = []
+            result_path.write_text(json.dumps(result))
+            rejected = run_script(
+                "phase-contract", "result", str(result_path), "--dispatch", str(dispatch_path)
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("must be rotate_required", rejected.stdout)
 
     def test_e0026_retro_contracts_are_present_and_consistent(self) -> None:
         economy = (ROOT / "skills/references/execution-economy.md").read_text()

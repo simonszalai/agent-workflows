@@ -1,7 +1,7 @@
 ---
 name: epic-flow
 description: Fully autonomous epic orchestrator. Plans/splits, runs milestone flows that deploy and verify each staging gate, then promotes/deploys/verifies production when explicitly authorized.
-max_turns: 800
+max_turns: 100
 ---
 
 # Epic Flow
@@ -150,11 +150,22 @@ all-history fork.
 ## Phase checkpoints and rotation
 
 Treat normalized plan/split, each milestone gate, and final production promotion/verification as
-durable phase boundaries. Persist the current epic artifact/checkpoint and active packet manifest,
-then start the next phase in a fresh no-history agent with only that phase's packet. Record a fixed
-context/token budget for the phase owner and force rotation after its first compaction or when the
-budget is reached, whichever occurs first. A responsive but indefinitely growing agent is not a
-reason to skip rotation.
+durable phase boundaries. Apply the validated dispatch/result/rotation contract in
+`execution-economy.md`; prose-only or unspecified budgets are invalid. These are the default hard
+per-generation budgets:
+
+| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+|---|---:|---:|---:|---:|
+| normalize plan/split | 60 | 4 | 90 min | 100,000 |
+| one milestone gate owner | 80 | 8 | 180 min | 160,000 |
+| production promotion/verification | 60 | 6 | 180 min | 120,000 |
+
+Use `max_packet_bytes: 16384`. If a milestone needs more than eight safe work-unit checkpoints,
+slice it into bounded execution-wave generations rather than enlarging the session. Persist the
+current epic artifact/checkpoint and packet manifest at every safe boundary. A valid
+`rotate_required` result causes an immediate fresh `fork_turns: "none"` replacement from the first
+incomplete unit; the old owner gets no follow-up work. Preserve passed milestones, landing state,
+deploy state, and verification artifacts rather than rerunning them.
 
 ## Output
 
@@ -173,4 +184,5 @@ Always report:
 - deploy/promote commands run and their evidence artifacts;
 - for each verified milestone/final gate: canonical gate artifact id, per-step ticket evidence
   artifact ids, and compact epic summary artifact id;
+- rotation count/reasons and productive, stall/sleep, and elapsed phase time when available;
 - next automatic action or, if blocked, the exact blocker and safest resume command.

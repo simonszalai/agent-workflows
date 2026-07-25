@@ -17,9 +17,9 @@ Tasks (--task):
   build    Implement one coherent sequential build_todo chain. Prints one JSON object matching
            the build-mode
            contract in agents/builder.md:
-               { "chain_status": "complete|failed|needs_replan",
+               { "chain_status": "complete|failed|needs_replan|rotate_required",
                  "todo_results":[...], "files_changed":[...], "deviations":[...],
-                 "risks_unverified":[...], "error" }
+                 "risks_unverified":[...], "error", "rotation" }
 
   resolve  Apply a batch of review findings. Prints a JSON array, one entry per finding,
            matching the resolve-mode contract in agents/builder.md:
@@ -68,7 +68,8 @@ BUILD_SCHEMA = {
     "type": "object",
     "properties": {
         "chain_status": {
-            "type": "string", "enum": ["complete", "failed", "needs_replan"],
+            "type": "string",
+            "enum": ["complete", "failed", "needs_replan", "rotate_required"],
         },
         "todo_results": {
             "type": "array",
@@ -94,9 +95,54 @@ BUILD_SCHEMA = {
         "deviations": {"type": "array", "items": {"type": "string"}},
         "risks_unverified": {"type": "array", "items": {"type": "string"}},
         "error": {"type": ["string", "null"]},
+        "rotation": {
+            "type": ["object", "null"],
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "enum": [
+                        "first_compaction", "turn_budget", "elapsed_budget", "token_budget",
+                    ],
+                },
+                "checkpoint": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "sha256": {"type": "string"},
+                    },
+                    "required": ["path", "sha256"],
+                    "additionalProperties": False,
+                },
+                "completed_scope": {"type": "array", "items": {"type": "string"}},
+                "remaining_scope": {
+                    "type": "array", "items": {"type": "string"}, "minItems": 1,
+                },
+                "usage": {
+                    "type": "object",
+                    "properties": {
+                        "turns_used": {"type": "integer", "minimum": 0},
+                        "checkpoints_used": {"type": "integer", "minimum": 0},
+                        "elapsed_seconds": {"type": "number", "minimum": 0},
+                        "productive_seconds": {"type": ["number", "null"], "minimum": 0},
+                        "stall_seconds": {"type": ["number", "null"], "minimum": 0},
+                        "tokens_used": {"type": ["integer", "null"], "minimum": 0},
+                    },
+                    "required": [
+                        "turns_used", "checkpoints_used", "elapsed_seconds",
+                        "productive_seconds", "stall_seconds", "tokens_used",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+            "required": [
+                "reason", "checkpoint", "completed_scope", "remaining_scope", "usage",
+            ],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "chain_status", "todo_results", "files_changed", "deviations", "risks_unverified", "error",
+        "rotation",
     ],
     "additionalProperties": False,
 }
@@ -179,6 +225,12 @@ TASK: implement ONLY the coherent sequential build_todo chain given below, in or
   consumer, volume budget, dedupe/change-gating behavior, and retention/TTL for that history.
 - Return one `todo_results` mapping for every todo reached in the chain. A "complete" mapping means
   its implementation is present and inspected; validation remains orchestrator-owned.
+- The context file supplies a finite phase envelope. On a compacted-summary/compaction indication,
+  stop before any further edit and return chain_status "rotate_required" from the last safe
+  checkpoint. At a turn/checkpoint/elapsed/token limit, stop at the next safe todo boundary. Set
+  `error` to null and include `rotation` with exact reason, incoming durable checkpoint reference,
+  completed scope, remaining scope, and usage. Rotation is not failure and consumes no self-repair
+  retry.
 """
 
 RESOLVE_TASK_RULES = """\
@@ -222,7 +274,8 @@ def read_memory_context(path: str | None) -> str:
 def failed_result(task: str, reason: str):
     if task == "build":
         return {"chain_status": "failed", "todo_results": [], "files_changed": [],
-                "deviations": [], "risks_unverified": [reason], "error": reason}
+                "deviations": [], "risks_unverified": [reason], "error": reason,
+                "rotation": None}
     return []  # resolve: empty array — every finding stays pending, caller re-dispatches
 
 
@@ -339,7 +392,14 @@ def main() -> None:
             isinstance(result, dict)
             and (
                 args.task == "build"
-                and result.get("chain_status") in {"complete", "failed", "needs_replan"}
+                and result.get("chain_status")
+                in {"complete", "failed", "needs_replan", "rotate_required"}
+                and (
+                    result.get("chain_status") == "rotate_required"
+                    and isinstance(result.get("rotation"), dict)
+                    or result.get("chain_status") != "rotate_required"
+                    and result.get("rotation") is None
+                )
                 or args.task == "resolve" and isinstance(result.get("results"), list)
             )
         )
