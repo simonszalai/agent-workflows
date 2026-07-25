@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -141,6 +142,170 @@ class HermesContractTest(unittest.TestCase):
             target.chmod(0o644)
             with self.assertRaises(HERMES.SafeError):
                 HERMES.load_json_receipt(target)
+
+
+class HermesExecutablePairTest(unittest.TestCase):
+    def _pair(self, root: Path) -> tuple[Path, Path]:
+        bin_dir = root / "bin"
+        bin_dir.mkdir(parents=True)
+        provider = bin_dir / "hermes-activation"
+        provider.write_text("#!/bin/sh\nexit 0\n")
+        provider.chmod(0o755)
+        op = bin_dir / "op"
+        op.write_text("#!/bin/sh\nexit 0\n")
+        op.chmod(0o755)
+        return provider, op
+
+    def _assert_code(self, code: str, provider: Path, op: Path) -> None:
+        with self.assertRaises(HERMES.SafeError) as caught:
+            HERMES.validate_executable_pair(provider, op)
+        self.assertEqual(caught.exception.code, code)
+        for test_mode in ("0", "1"):
+            with self.subTest(code=code, test_mode=test_mode), mock.patch.dict(
+                os.environ,
+                {
+                    "SENSITIVE_ACCESS_REASON": "Fake E0006/M3/B0002 pair test",
+                    "HERMES_ACTIVATION_TEST_MODE": test_mode,
+                    "OP_BIN": str(op),
+                },
+                clear=False,
+            ):
+                with self.assertRaises(HERMES.SafeError) as preflight:
+                    HERMES.preflight_environment(provider)
+                self.assertEqual(preflight.exception.code, code)
+
+    def test_valid_pair_resolves_to_colocated_op(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            provider, op = self._pair(Path(directory))
+            self.assertEqual(HERMES.validate_executable_pair(provider, op), str(op.resolve()))
+            for test_mode in ("0", "1"):
+                with self.subTest(test_mode=test_mode), mock.patch.dict(
+                    os.environ,
+                    {
+                        "SENSITIVE_ACCESS_REASON": "Fake E0006/M3/B0002 pair test",
+                        "HERMES_ACTIVATION_TEST_MODE": test_mode,
+                        "OP_BIN": str(op),
+                    },
+                    clear=False,
+                ):
+                    self.assertEqual(
+                        HERMES.preflight_environment(provider),
+                        (test_mode == "1", str(op.resolve())),
+                    )
+
+    def test_missing_op_bin_has_a_distinct_safe_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            provider, _ = self._pair(Path(directory))
+            with mock.patch.dict(
+                os.environ,
+                {"SENSITIVE_ACCESS_REASON": "Fake E0006/M3/B0002 pair test"},
+                clear=False,
+            ):
+                os.environ.pop("OP_BIN", None)
+                with self.assertRaises(HERMES.SafeError) as caught:
+                    HERMES.preflight_environment(provider)
+                self.assertEqual(caught.exception.code, "missing_op_bin")
+
+    def test_missing_relative_and_nonregular_paths_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider, op = self._pair(root)
+            self._assert_code("provider_unusable", root / "missing-provider", op)
+            self._assert_code("op_bin_unusable", provider, root / "missing-op")
+            self._assert_code("provider_unusable", Path("bin/hermes-activation"), op)
+            self._assert_code("op_bin_unusable", provider, Path("bin/op"))
+
+            provider.unlink()
+            provider.mkdir()
+            self._assert_code("provider_unusable", provider, op)
+            provider.rmdir()
+            os.mkfifo(provider)
+            self._assert_code("provider_unusable", provider, op)
+
+            provider.unlink()
+            provider.write_text("#!/bin/sh\nexit 0\n")
+            provider.chmod(0o755)
+            op.unlink()
+            op.mkdir()
+            self._assert_code("op_bin_unusable", provider, op)
+            op.rmdir()
+            os.mkfifo(op)
+            self._assert_code("op_bin_unusable", provider, op)
+
+    def test_nonexecutable_and_final_symlink_paths_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider, op = self._pair(root)
+            provider.chmod(0o600)
+            self._assert_code("provider_unusable", provider, op)
+            provider.chmod(0o755)
+            op.chmod(0o600)
+            self._assert_code("op_bin_unusable", provider, op)
+            op.chmod(0o755)
+
+            provider_target = root / "provider-target"
+            provider.rename(provider_target)
+            provider.symlink_to(provider_target)
+            self._assert_code("provider_unusable", provider, op)
+            provider.unlink()
+            provider_target.rename(provider)
+
+            op_target = root / "op-target"
+            op.rename(op_target)
+            op.symlink_to(op_target)
+            self._assert_code("op_bin_unusable", provider, op)
+
+    def test_group_or_other_writable_executables_fail_in_production_and_test_modes(
+        self,
+    ) -> None:
+        for target, mode, code in (
+            ("provider", 0o775, "provider_unusable"),
+            ("provider", 0o757, "provider_unusable"),
+            ("op", 0o775, "op_bin_unusable"),
+            ("op", 0o757, "op_bin_unusable"),
+        ):
+            with (
+                self.subTest(target=target, mode=oct(mode)),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                provider, op = self._pair(Path(directory))
+                (provider if target == "provider" else op).chmod(mode)
+                self._assert_code(code, provider, op)
+
+    def test_mixed_roots_and_symlink_escape_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider, op = self._pair(root / "one")
+            _, other_op = self._pair(root / "two")
+            self._assert_code("op_bin_root_mismatch", provider, other_op)
+
+            outside = root / "outside-op"
+            outside.write_text("#!/bin/sh\nexit 0\n")
+            outside.chmod(0o755)
+            op.unlink()
+            op.symlink_to(outside)
+            self._assert_code("op_bin_unusable", provider, op)
+
+    def test_ambient_root_override_cannot_accept_a_mixed_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider, _ = self._pair(root / "one")
+            other_root = root / "two"
+            _, other_op = self._pair(other_root)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SENSITIVE_ACCESS_REASON": "Fake E0006/M3/B0002 pair test",
+                    "HERMES_ACTIVATION_TEST_MODE": "1",
+                    "HERMES_ACTIVATION_ROOT": str(other_root),
+                    "HERMES_ACTIVATION_ACCEPTED_ROOT": str(other_root),
+                    "OP_BIN": str(other_op),
+                },
+                clear=False,
+            ):
+                with self.assertRaises(HERMES.SafeError) as caught:
+                    HERMES.preflight_environment(provider)
+                self.assertEqual(caught.exception.code, "op_bin_root_mismatch")
 
 
 class HermesItemEnsureTest(unittest.TestCase):
@@ -1376,8 +1541,9 @@ class HermesMemoryCanaryTest(unittest.TestCase):
 
 
 class HermesDisclosureTest(unittest.TestCase):
-    def _fake_op(self, root: Path) -> Path:
-        executable = root / "fake-op"
+    def _fake_op(self, bin_dir: Path) -> Path:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        executable = bin_dir / "op"
         executable.write_text(
             """#!/usr/bin/env python3
 import json
@@ -1408,10 +1574,18 @@ else:
         executable.chmod(0o755)
         return executable
 
+    def _private_provider(self, root: Path) -> tuple[Path, Path]:
+        bin_dir = root / "bin"
+        bin_dir.mkdir(parents=True)
+        provider = bin_dir / "hermes-activation"
+        shutil.copy2(COMMAND, provider)
+        provider.chmod(0o755)
+        return provider, self._fake_op(bin_dir)
+
     def test_runtime_sentinels_never_cross_public_or_persisted_channels(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            fake_op = self._fake_op(root)
+            provider, fake_op = self._private_provider(root / "private")
             ledger = root / "argv.log"
             ledger.write_text("")
             receipt = root / "receipt.json"
@@ -1429,7 +1603,7 @@ else:
                 }
             )
             result = subprocess.run(
-                [str(COMMAND), "items", "ensure", "--receipt", str(receipt)],
+                [str(provider), "items", "ensure", "--receipt", str(receipt)],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -1576,7 +1750,7 @@ else:
     def test_missing_reason_stops_before_child(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            fake_op = self._fake_op(root)
+            provider, fake_op = self._private_provider(root / "private")
             ledger = root / "argv.log"
             ledger.write_text("")
             environment = os.environ.copy()
@@ -1591,7 +1765,7 @@ else:
             )
             environment.pop("SENSITIVE_ACCESS_REASON", None)
             result = subprocess.run(
-                [str(COMMAND), "items", "ensure"],
+                [str(provider), "items", "ensure"],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -1599,6 +1773,34 @@ else:
             self.assertEqual(result.returncode, 3)
             self.assertEqual(ledger.read_text(), "")
             self.assertNotIn("m" * 40, result.stdout + result.stderr)
+
+    def test_mixed_root_fake_op_stops_before_child_in_test_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provider, _ = self._private_provider(root / "private")
+            outside_op = self._fake_op(root / "outside" / "bin")
+            ledger = root / "argv.log"
+            ledger.write_text("")
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HERMES_ACTIVATION_TEST_MODE": "1",
+                    "SENSITIVE_ACCESS_REASON": "Fake E0006/M3/B0002 mixed-root test",
+                    "OP_BIN": str(outside_op),
+                    "FAKE_ARGV_LOG": str(ledger),
+                    "FAKE_MEMORY": "m" * 40,
+                    "FAKE_GATEWAY": "g" * 40,
+                }
+            )
+            result = subprocess.run(
+                [str(provider), "items", "ensure"],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, HERMES.EXIT_PREFLIGHT)
+            self.assertEqual(json.loads(result.stdout)["result"]["code"], "op_bin_root_mismatch")
+            self.assertEqual(ledger.read_text(), "")
 
     def test_test_endpoint_rejects_non_loopback(self) -> None:
         with self.assertRaises(HERMES.SafeError):

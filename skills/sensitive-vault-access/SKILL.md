@@ -39,20 +39,28 @@ scripts/secrets/dev-env ts-prefect-prod \
   --reason "Activate the reviewed F0123 production prompt" -- <write-command>
 ```
 
-The access layer must send a macOS notification immediately before Touch ID showing the
-vault/item, reason, and requester. Missing reasons must fail closed before invoking 1Password.
+On a sensitive cache miss, the canonical shim must send a macOS notification immediately before
+Touch ID showing the vault/item, reason, and requester. It then selects the checked-in canonical
+human account unless the reviewed command supplies an explicit account. Missing reasons,
+notification failures, and invalid account selectors fail closed before invoking 1Password.
+`OP_DESKTOP=1` is neither required nor a supported sensitive-access workaround.
 
-Never bypass this contract with `/opt/homebrew/bin/op`, `OP_BIN`, or an alternate wrapper. Never
-print or log resolved values.
-Never set `OP_DESKTOP=1`, request Touch ID, or use a `*-sensitive` profile merely to complete a
+Never bypass this contract with `/opt/homebrew/bin/op`, an alternate wrapper, or an `OP_BIN` that
+does not name the canonical shim in the consumer/provider's reviewed root. Never print or log
+resolved values. Never request Touch ID or use a `*-sensitive` profile merely to complete a
 read-only check.
 
 ## Session reuse
 
-For an approved mutation that genuinely requires a sensitive credential, always route direct
-reads through `agent-workflows/bin/op` (normally by setting it as `OP_BIN` for the existing
-secrets wrapper). The shim caches each resolved sensitive reference in a **memory-only helper
-scoped by `CONDUCTOR_SESSION_ID`**:
+For an approved mutation that genuinely requires a sensitive credential, attest one reviewed root
+and route the provider/consumer, redaction wrapper, and `OP_BIN` through that same root. Do not mix
+a reviewed provider with a dirty live shim or an alternate checkout. When the consumer accepts
+`OP_BIN`, it must name `<reviewed-root>/bin/op`.
+
+Only sensitive children have inherited service-account, Connect, and `OP_SESSION_*` credentials
+removed. Ordinary non-sensitive reads retain inherited or Keychain-backed silent service-account
+behavior. The shim caches each resolved sensitive reference in a **memory-only helper scoped by
+`CONDUCTOR_SESSION_ID`**:
 
 - the first read requires `SENSITIVE_ACCESS_REASON`, sends the “what is it for?” notification,
   and may prompt for Touch ID;
@@ -68,11 +76,14 @@ a cache miss: every operation that can produce a new fingerprint prompt must fir
 purpose in the notification.
 
 ```bash
-SENSITIVE_ACCESS_REASON="Deploy the reviewed E0003 staging Render configuration" \
-OP_BIN="$HOME/dev/agent-workflows/bin/op" \
-  scripts/secrets/dev-env amaru-staging -- <write-command>
+REVIEWED_ROOT=/absolute/path/to/the/attested/agent-workflows
+SENSITIVE_ACCESS_REASON="Run the reviewed mutation for F0123" \
+OP_BIN="$REVIEWED_ROOT/bin/op" \
+  "$REVIEWED_ROOT/bin/redacted-exec" -- \
+  "$REVIEWED_ROOT/bin/reviewed-provider" <write-command>
 ```
 
 Re-reading the same reference later in that Conductor session reuses the memory cache
-automatically. This cache does not turn a write credential into an approved read-only route and
-does not extend approval to a different vault item.
+automatically without a notification or authentication attempt. This cache does not turn a write
+credential into an approved read-only route and does not extend approval to a different vault
+item.

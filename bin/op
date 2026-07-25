@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # op audit shim (E0022) — logs every op invocation (WHO/WHAT/WHEN, never values)
 # to ~/.local/state/op-audit.log, then execs the real op.
 #
@@ -6,25 +6,149 @@
 # appears, `op-audit` (alias for tail of the log) shows the requesting command,
 # its parent process, and the op:// refs involved.
 #
-# SILENT-BY-DEFAULT (2026-07-08): if OP_SERVICE_ACCOUNT_TOKEN is not already
-# set, the shim reads it from Keychain (service "op-dev-token") and injects it
-# ONLY into the exec'd op process — never into the ambient shell environment.
-# This makes routine reads (TS vault) zero-prompt while keeping the token out
-# of env dumps. The SA can only see the TS vault; writes and TS-sensitive
-# reads fail with a permission error instead of prompting — hand those to the
-# user as ONE batched command, or run with OP_DESKTOP=1 to force the desktop
-# (biometric) path deliberately.
+# SILENT-BY-DEFAULT (2026-07-08): non-sensitive reads retain an inherited
+# OP_SERVICE_ACCOUNT_TOKEN or the Keychain-backed token (service
+# "op-dev-token"), injected only into the exec'd op process. A detected
+# sensitive cache miss instead requires a reason, a successful macOS
+# notification, and valid reviewed human-account selector configuration. Its
+# canonical account is used unless the command supplies an explicit account;
+# machine credentials are removed from that sensitive child. Sensitive cache
+# hits remain notification- and authentication-free. OP_DESKTOP=1 is neither
+# required nor a supported workaround for sensitive access.
 #
 # Args are sanitized: any arg containing '=' is truncated at the '=' (field
 # assignments can carry values); op:// refs and subcommands pass through.
-# The mcp-gateway bypasses this shim (it invokes /opt/homebrew/bin/op via
-# OP_BIN) — start-gateway.sh appends its own audit line instead.
+# mcp-gateway/start-gateway.sh intentionally bypasses this shim via its direct
+# absolute op path and owns a separate audit line. Repairing or widening that
+# gateway route is explicitly outside B0002.
 
 REAL_OP="/opt/homebrew/bin/op"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG="$LOG_DIR/op-audit.log"
-mkdir -p "$LOG_DIR" 2>/dev/null
+
+inspect_file_mode() {
+  local path="$1"
+  local candidate=""
+
+  INSPECTED_MODE=""
+  candidate="$(/usr/bin/stat -f '%Lp' "$path" 2>/dev/null)" || candidate=""
+  if [[ "$candidate" =~ ^0?[0-7]{3}$ ]]; then
+    INSPECTED_MODE="${candidate#0}"
+    return 0
+  fi
+
+  candidate="$(/usr/bin/stat -c '%a' "$path" 2>/dev/null)" || candidate=""
+  if [[ "$candidate" =~ ^0?[0-7]{3}$ ]]; then
+    INSPECTED_MODE="${candidate#0}"
+    return 0
+  fi
+  return 1
+}
+
+mode_is_not_group_or_other_writable() {
+  local mode_value
+
+  inspect_file_mode "$1" || return 1
+  mode_value=$((8#$INSPECTED_MODE))
+  (( (mode_value & 0022) == 0 ))
+}
+
+load_human_account() {
+  local selector="$HERE/op-human-account"
+  local extra=""
+
+  [[ -f "$selector" && ! -L "$selector" && -r "$selector" ]] || return 1
+  inspect_file_mode "$selector" || return 1
+  [[ "$INSPECTED_MODE" == "644" ]] || return 1
+  {
+    IFS= read -r HUMAN_ACCOUNT || return 1
+    [[ "$HUMAN_ACCOUNT" =~ ^[A-Z0-9]{26}$ ]] || return 1
+    while IFS= read -r extra || [[ -n "$extra" ]]; do
+      [[ "$extra" =~ ^[[:space:]]*$ ]] || return 1
+      extra=""
+    done
+  } <"$selector" 2>/dev/null
+}
+
+scan_sensitive_env_file() {
+  local scan_file="$1"
+  local chunk=""
+  local window=""
+  local reference_tail=""
+  local read_status=0
+  local reads_completed=0
+  local scanned_chars=0
+  local chunk_size=4096
+  local max_reads=65536
+  local max_chars=16777216
+
+  if ! exec 3<"$scan_file"; then
+    sensitive_vault="unreadable-sensitive-env-file"
+    sensitive_item="env-file safety gate"
+    return
+  fi
+
+  while (( reads_completed < max_reads )); do
+    chunk=""
+    if IFS= read -r -n "$chunk_size" chunk <&3; then
+      read_status=0
+    else
+      read_status=$?
+    fi
+    ((reads_completed += 1))
+    scanned_chars=$((scanned_chars + ${#chunk} + 1))
+    window+="$chunk"
+
+    if [[ "$window" =~ op://([^/[:space:]]+-sensitive)/ ]]; then
+      sensitive_vault="${BASH_REMATCH[1]}"
+      sensitive_item="env-file references"
+      exec 3<&-
+      return
+    fi
+    if (( scanned_chars > max_chars )); then
+      sensitive_vault="oversized-sensitive-env-file"
+      sensitive_item="env-file safety gate"
+      exec 3<&-
+      return
+    fi
+
+    # Retain a bounded overlap for references split across reads. An
+    # abnormally long unterminated op:// vault token is treated as sensitive
+    # rather than allowing a bounded scan to fail open.
+    reference_tail="${window##*op://}"
+    if [[ "$reference_tail" != "$window" &&
+          "$reference_tail" != */* &&
+          ! "$reference_tail" =~ [[:space:]] &&
+          ${#reference_tail} -ge $chunk_size ]]; then
+      sensitive_vault="unbounded-sensitive-env-reference"
+      sensitive_item="env-file safety gate"
+      exec 3<&-
+      return
+    fi
+    if (( ${#window} > chunk_size * 2 )); then
+      window="${window: -$chunk_size}"
+    fi
+
+    if (( read_status != 0 )); then
+      exec 3<&-
+      return
+    fi
+  done
+
+  # Bound both bytes and delimiter-driven short reads. Files beyond the scan
+  # budget enter the sensitive path conservatively.
+  chunk=""
+  if IFS= read -r -n 1 chunk <&3; then
+    read_status=0
+  else
+    read_status=$?
+  fi
+  exec 3<&-
+  if (( read_status == 0 )) || [[ -n "$chunk" ]]; then
+    sensitive_vault="oversized-sensitive-env-file"
+    sensitive_item="env-file safety gate"
+  fi
+}
 
 sanitized=()
 for a in "$@"; do
@@ -33,10 +157,6 @@ for a in "$@"; do
     *)   sanitized+=("$a") ;;
   esac
 done
-
-parent="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1 | tr -d ' ')"
-gparent_pid="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
-gparent="$(ps -o comm= -p "${gparent_pid:-1}" 2>/dev/null | tail -1 | tr -d ' ')"
 
 # --- sensitive-access attribution ------------------------------------------
 # A reason is mandatory before an agent/tool can trigger Touch ID for a
@@ -68,14 +188,36 @@ for a in "$@"; do
   previous="$a"
 done
 
-if [[ -z "$sensitive_vault" && -n "$env_file" && -r "$env_file" ]]; then
-  sensitive_ref="$(grep -E -m1 -o 'op://[^/[:space:]]+-sensitive/[^/[:space:]]+' "$env_file" 2>/dev/null || true)"
-  if [[ -n "$sensitive_ref" ]]; then
-    ref="${sensitive_ref#op://}"
-    sensitive_vault="${ref%%/*}"
-    sensitive_item="env-file references"
+if [[ -z "$sensitive_vault" && -n "$env_file" &&
+      ( -e "$env_file" || -L "$env_file" ) ]]; then
+  if [[ -f "$env_file" && -r "$env_file" ]]; then
+    scan_sensitive_env_file "$env_file"
+  else
+    sensitive_vault="invalid-sensitive-env-file"
+    sensitive_item="env-file safety gate"
   fi
 fi
+
+if [[ -n "$sensitive_vault" ]]; then
+  # No machine credential may reach any process after sensitive detection,
+  # including the cache helper and notifier on paths that block before op.
+  unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
+  for variable_name in "${!OP_SESSION_@}"; do
+    unset "$variable_name"
+  done
+fi
+
+script_dir="${BASH_SOURCE[0]%/*}"
+[[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
+HERE="$(cd "$script_dir" && pwd)"
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+parent="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1 | tr -d ' ')"
+gparent_pid="$(ps -o ppid= -p "$PPID" 2>/dev/null | tr -d ' ')"
+gparent="$(ps -o comm= -p "${gparent_pid:-1}" 2>/dev/null | tail -1 | tr -d ' ')"
+
+audit_vault="$(printf '%s' "$sensitive_vault" | tr '\r\n\t' '   ' | cut -c1-220)"
+audit_item="$(printf '%s' "$sensitive_item" | tr '\r\n\t' '   ' | cut -c1-220)"
 
 # Reuse direct sensitive reads within one Conductor session. Values live only
 # in the memory of a per-session helper process (0700 directory / 0600 socket),
@@ -83,16 +225,40 @@ fi
 # before notification/authentication, so repeated reads do not trigger Touch ID.
 cacheable_sensitive_read=0
 cache_key=""
-has_read_command=0
+top_level_command=""
+has_explicit_account=0
+skip_option_value=0
 for a in "$@"; do
-  [[ "$a" == "read" ]] && has_read_command=1
+  [[ "$a" == "--" ]] && break
+  if [[ "$skip_option_value" == "1" ]]; then
+    skip_option_value=0
+    continue
+  fi
+  case "$a" in
+    --account)
+      has_explicit_account=1
+      skip_option_value=1
+      ;;
+    --account=*)
+      has_explicit_account=1
+      ;;
+    --config|--encoding|--format|--session)
+      skip_option_value=1
+      ;;
+    --config=*|--encoding=*|--format=*|--session=*|-*) ;;
+    *)
+      if [[ -z "$top_level_command" ]]; then
+        top_level_command="$a"
+      fi
+      ;;
+  esac
 done
-if [[ -n "$sensitive_vault" && "$has_read_command" == "1" && -n "${CONDUCTOR_SESSION_ID:-}" ]]; then
+if [[ -n "$sensitive_vault" && "$top_level_command" == "read" && -n "${CONDUCTOR_SESSION_ID:-}" ]]; then
   cacheable_sensitive_read=1
   cache_key="$(printf '%s\0' "$@" | shasum -a 256 | awk '{print $1}')"
   if "$HERE/sensitive-session-cache" get "$cache_key"; then
     printf '%s pid=%s parent=%s<-%s auth=session-cache vault=%s item=%s :: op read <cached>\n' \
-      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$sensitive_vault" "$sensitive_item" \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
       >> "$LOG" 2>/dev/null
     exit 0
   fi
@@ -103,35 +269,70 @@ fi
 # it previously allowed an unattributed fingerprint prompt.
 if [[ -n "$sensitive_vault" ]]; then
   reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
-  if [[ -z "$reason" ]]; then
+  if [[ ! "$reason" =~ [^[:space:]] ]]; then
     printf '%s pid=%s parent=%s<-%s status=BLOCKED missing-reason vault=%s item=%s\n' \
-      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$sensitive_vault" "$sensitive_item" \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
       >> "$LOG" 2>/dev/null
     echo "ERROR: sensitive vault access requires a reason." >&2
     echo "Set SENSITIVE_ACCESS_REASON (or OP_ACCESS_REASON) to a concise explanation." >&2
     exit 3
   fi
   requester="${CONDUCTOR_WORKSPACE_NAME:-${CONDUCTOR_WORKSPACE:-$parent}}"
-  "$HERE/sensitive-access-notify" "$sensitive_vault" "$sensitive_item" "$reason" "$requester"
+  notification_status=0
+  notifier="$HERE/sensitive-access-notify"
+  if [[ ! -e "$notifier" && ! -L "$notifier" ]]; then
+    notification_status=127
+  elif [[ -L "$notifier" || ! -f "$notifier" || ! -x "$notifier" ]] ||
+       ! mode_is_not_group_or_other_writable "$notifier"; then
+    notification_status=126
+  else
+    "$notifier" "$sensitive_vault" "$sensitive_item" "$reason" "$requester" \
+      || notification_status=$?
+  fi
+  if [[ "$notification_status" != "0" ]]; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED notification-failed notification-status=%s vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$notification_status" \
+      "$audit_vault" "$audit_item" >> "$LOG" 2>/dev/null
+    echo "ERROR: sensitive vault access notification failed." >&2
+    exit "$notification_status"
+  fi
+
+  if ! load_human_account; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED invalid-account-config vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
+      >> "$LOG" 2>/dev/null
+    echo "ERROR: invalid human account selector configuration." >&2
+    exit 4
+  fi
 fi
 
 # --- auth mode resolution ---------------------------------------------------
-# signin/account subcommands and explicit --account calls are desktop-only
-# (SA tokens can't run them / conflict with --account);
-# OP_DESKTOP=1 is the deliberate biometric escape hatch.
+# Sensitive requests automatically use the reviewed human account after the
+# notification; an explicit --account remains explicit. For ordinary requests,
+# signin/account subcommands, explicit --account, and OP_DESKTOP=1 select the
+# desktop path without changing silent service-account behavior.
 wants_desktop=0
-case " $* " in *" --account "*|*" --account="*) wants_desktop=1 ;; esac
+[[ "$has_explicit_account" == "1" ]] && wants_desktop=1
 [ "${OP_DESKTOP:-0}" = "1" ] && wants_desktop=1
-case "${1:-}" in signin|account) wants_desktop=1 ;; esac
+case "$top_level_command" in signin|account) wants_desktop=1 ;; esac
 
-auth="interactive BIOMETRIC-PROMPT"
-if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
-  auth="service-account(silent)"
-elif [ "$wants_desktop" != "1" ]; then
-  OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s op-dev-token -w 2>/dev/null)"
-  if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-    export OP_SERVICE_ACCOUNT_TOKEN
-    auth="service-account(keychain)"
+child_argv=("$@")
+if [[ -n "$sensitive_vault" ]]; then
+  if [[ "$has_explicit_account" != "1" ]]; then
+    child_argv=(--account "$HUMAN_ACCOUNT" "$@")
+  fi
+
+  auth="interactive BIOMETRIC-PROMPT"
+else
+  auth="interactive BIOMETRIC-PROMPT"
+  if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+    auth="service-account(silent)"
+  elif [ "$wants_desktop" != "1" ]; then
+    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s op-dev-token -w 2>/dev/null)"
+    if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+      export OP_SERVICE_ACCOUNT_TOKEN
+      auth="service-account(keychain)"
+    fi
   fi
 fi
 
@@ -144,11 +345,11 @@ printf '%s pid=%s parent=%s<-%s auth=%s%s :: op %s\n' \
 if [[ "$cacheable_sensitive_read" == "1" ]]; then
   # `op read` callers use --no-newline, so command substitution is lossless.
   # The resolved value stays in process memory and is sent over the 0600 socket.
-  sensitive_value="$("$REAL_OP" "$@")" || exit $?
+  sensitive_value="$("$REAL_OP" "${child_argv[@]}")" || exit $?
   printf %s "$sensitive_value" | "$HERE/sensitive-session-cache" put "$cache_key"
   printf %s "$sensitive_value"
   sensitive_value=""
   exit 0
 fi
 
-exec "$REAL_OP" "$@"
+exec "$REAL_OP" "${child_argv[@]}"
