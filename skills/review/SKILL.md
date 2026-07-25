@@ -11,13 +11,21 @@ test, finding, or fail-loud gate.
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
 ```bash
+ORCHESTRATOR_THREAD_ID="${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${SESSION_ID:-}}}"
+test -n "$ORCHESTRATOR_THREAD_ID" || {
+  echo "review: no explicit orchestrator session/thread identifier is available" >&2
+  exit 2
+}
 printf 'Review bounded diff against %s\n' "$base" | \
-  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "$ORCHESTRATOR_THREAD_ID" \
     --agent-type reviewer --provider "$provider" --mechanism external_peer \
     --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
 ```
 
-Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task review`.
+Pass `--memory-context-file "$MEMORY_PACKET"` and
+`--orchestrator-thread-id "$ORCHESTRATOR_THREAD_ID"` to every `external-agent --task review`
+call. The adapter fails loudly when the identifier is absent or empty; never rely on ambient
+environment inference for usage attribution.
 
 Review implementation with a genuinely light native path and conditional specialized fanout.
 Supports multiple

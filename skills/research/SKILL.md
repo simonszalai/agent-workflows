@@ -274,6 +274,8 @@ workflow requires one or the user asks to retain the research.
    mkdir -p .context/research
    # Write the question to a file so it survives shell quoting.
    Q="$(cat .context/research/question.txt)"
+   ORCHESTRATOR_THREAD_ID="${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${SESSION_ID:-}}}"
+   test -n "$ORCHESTRATOR_THREAD_ID" || exit 2
    for provider in $(agent-workflow-provider --peers); do
      MEMORY_PACKET=".context/research/${provider}-memory-task.md"
      cat .context/research/question.txt | \
@@ -281,6 +283,7 @@ workflow requires one or the user asks to retain the research.
          --agent-type researcher --provider "$provider" --mechanism external_peer \
          --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
      external-agent --task research --provider "$provider" --question "$Q" \
+       --orchestrator-thread-id "$ORCHESTRATOR_THREAD_ID" \
        --memory-context-file "$MEMORY_PACKET" \
        --out ".context/research/${provider}.json" 2>".context/research/${provider}.log" &
    done

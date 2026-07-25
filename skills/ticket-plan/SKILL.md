@@ -22,13 +22,16 @@ to be hidden or a required critic/safety gate to be skipped.
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
 ```bash
+ORCHESTRATOR_THREAD_ID="${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${SESSION_ID:-}}}"
+test -n "$ORCHESTRATOR_THREAD_ID" || exit 2
 cat .context/plan/question.txt .context/plan/source.md | \
-  autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
+  autodev-memory-task-packet --cwd "$PWD" --session-id "$ORCHESTRATOR_THREAD_ID" \
     --agent-type planner --provider "$provider" --mechanism external_peer \
     --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
 ```
 
-Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task plan`.
+Pass `--memory-context-file "$MEMORY_PACKET"` and
+`--orchestrator-thread-id "$ORCHESTRATOR_THREAD_ID"` to `external-agent --task plan`.
 
 The planning workflow. Picks up a `backlog` or `up_next` ticket (or creates one), researches the
 codebase, selects a light or heavy native planning path, conditionally escalates peers for risk or
@@ -332,6 +335,8 @@ the current runner in parallel through `external-agent --task plan`. Provider su
 `fork_turns: "none"`; full logs/envelopes go under `.context/plan/<run-id>/`. One peer remains
 research-blind so shared research errors can be detected. Preflight the adapter flags before
 calling it; a mismatch is a loud failure, never an improvised re-pairing.
+Every adapter call passes the explicit root rollout identifier through
+`--orchestrator-thread-id <orchestrator_thread_id>`.
 
 Merge usable peer envelopes with the native plan and audit material disagreements. Run at most one
 convergence round for an escalated light plan and three for heavy. Resolve each disagreement by

@@ -215,6 +215,45 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertNotIn(obsolete, active)
         self.assertEqual([], model_polling_guidance_violations(active))
 
+    def test_lfg_enforces_bounded_dispatch_rotation_and_terminal_waiters(self) -> None:
+        lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
+        max_turns = re.search(r"^max_turns: (\d+)$", lfg, re.MULTILINE)
+        self.assertIsNotNone(max_turns)
+        self.assertLessEqual(int(max_turns.group(1)), 100)
+        for phase in (
+            "research/investigation",
+            "planning and build-todo creation",
+            "build and test-writing",
+            "review and resolution",
+            "closeout",
+        ):
+            self.assertIn(phase, lfg)
+        for command in ("bin/phase-contract dispatch", "bin/phase-contract result"):
+            self.assertIn(command, lfg)
+        for packet_field in (
+            "objective", "exact scope", "relevant paths", "contract excerpt", "risks",
+            "predecessor tree SHA", "orchestrator-owned validation", "enforced return shape",
+        ):
+            self.assertIn(packet_field, lfg)
+        self.assertIn("first reliable compaction marker", " ".join(lfg.split()))
+        self.assertIn("first incomplete unit", lfg)
+        self.assertIn('exactly one fresh\n`fork_turns: "none"` waiter leaf', lfg)
+        self.assertIn("timeout resume command", lfg)
+        self.assertNotIn('fork_turns: "all"', lfg)
+
+    def test_active_workflow_docs_never_enable_all_history_dispatch(self) -> None:
+        assignment = re.compile(r"fork_turns\s*(?:=|:)\s*[\"']?all\b", re.IGNORECASE)
+        violations = []
+        for root in (ROOT / "skills", ROOT / "agents", ROOT / "workflows"):
+            for path in root.rglob("*"):
+                if path.is_file() and path.suffix in {".md", ".toml", ".js"}:
+                    for line_number, line in enumerate(path.read_text().splitlines(), 1):
+                        if assignment.search(line) and not any(
+                            marker in line.lower() for marker in ("prohibited", "never", "must not")
+                        ):
+                            violations.append(f"{path.relative_to(ROOT)}:{line_number}")
+        self.assertEqual([], violations)
+
     def test_phase_contract_validator_enforces_dispatch_and_rotation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1342,6 +1381,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
             result = run_script("external-agent", "--task", "research", "--provider", "codex",
                                 "--question", "inspect code", "--repo", str(ROOT),
+                                "--orchestrator-thread-id", "root-rollout",
                                 "--memory-context-file", str(packet), "--usage-dir", str(usage_dir),
                                 "--telemetry-file", str(root / "telemetry"), env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1351,9 +1391,72 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(sidecar["usage"]["total_tokens"], 12)
             self.assertEqual(sidecar["model"], "provider_default")
             self.assertEqual(sidecar["repo"], str(ROOT.resolve()))
+            self.assertEqual(sidecar["orchestrator_thread_id"], "root-rollout")
+            self.assertEqual(sidecar["orchestrator_id_source"], "explicit_cli")
             self.assertRegex(sidecar["started_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
             self.assertGreaterEqual(sidecar["duration_ms"], 0)
             self.assertNotIn("all good", json.dumps(sidecar))
+
+    def test_external_review_sidecar_is_attributed_to_root_rollout_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            codex = fake_bin / "codex"
+            codex.write_text(
+                "#!/bin/sh\nout=''\nprev=''\n"
+                "for arg in \"$@\"; do [ \"$prev\" = '-o' ] && out=\"$arg\"; prev=\"$arg\"; done\n"
+                "cat >/dev/null\n"
+                "printf '%s' '{\"reviewer_key\":\"codex\",\"findings\":[],"
+                "\"residual_risks\":[],\"testing_gaps\":[]}' > \"$out\"\n"
+                "echo '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":11,"
+                "\"cached_input_tokens\":3,\"output_tokens\":2,\"total_tokens\":13}}'\n"
+            )
+            codex.chmod(0o755)
+            packet = root / "packet"
+            packet.write_text("<autodev-memory-task-context>\nx\n</autodev-memory-task-context>")
+            usage_dir = root / "usage"
+            env = os.environ.copy()
+            env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
+            adapter = run_script(
+                "external-agent", "--task", "review", "--provider", "codex",
+                "--base", "origin/main", "--repo", str(ROOT),
+                "--orchestrator-thread-id", "root-rollout",
+                "--memory-context-file", str(packet), "--usage-dir", str(usage_dir),
+                "--telemetry-file", str(root / "telemetry"), env=env,
+            )
+            self.assertEqual(adapter.returncode, 0, adapter.stderr)
+            self.write_session(root / "root.jsonl", {"id": "root-rollout"}, [
+                {"timestamp": "2026-07-25T20:00:00Z", "type": "event_msg",
+                 "payload": {"type": "task_started"}},
+            ])
+            report_result = run_script(
+                "workflow-efficiency-report", str(root / "root.jsonl"),
+                "--sessions-root", str(root), "--external-usage-dir", str(usage_dir),
+            )
+            self.assertEqual(report_result.returncode, 0, report_result.stderr)
+            external = json.loads(report_result.stdout)["external_provider_usage"]
+            self.assertEqual(external["sidecars"], 1)
+            self.assertEqual(external["available_runs"], 1)
+            self.assertEqual(external["usage"]["total_tokens"], 13)
+            self.assertEqual(external["status"], "complete")
+
+    def test_active_external_dispatches_pass_explicit_orchestrator_identifier(self) -> None:
+        paths = (
+            "skills/review/SKILL.md",
+            "skills/investigate/SKILL.md",
+            "skills/research/SKILL.md",
+            "skills/ticket-plan/SKILL.md",
+            "skills/epic-plan/SKILL.md",
+            "agents/external-reviewer.md",
+            "agents/external-planner.md",
+        )
+        for path in paths:
+            contract = (ROOT / path).read_text()
+            self.assertIn("--orchestrator-thread-id", contract, path)
+        external_agent = (ROOT / "bin/external-agent").read_text()
+        self.assertIn('"--orchestrator-thread-id", required=True', external_agent)
+        self.assertIn('"orchestrator_id_source": "explicit_cli"', external_agent)
 
     def test_external_agent_failure_still_writes_unavailable_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1370,6 +1473,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             usage_dir = root / "usage"
             result = run_script("external-agent", "--task", "research", "--provider", "codex",
                                 "--question", "inspect code", "--repo", str(ROOT),
+                                "--orchestrator-thread-id", "root-rollout",
                                 "--memory-context-file", str(packet), "--usage-dir", str(usage_dir),
                                 "--telemetry-file", str(root / "telemetry"), env=env)
             self.assertEqual(result.returncode, 2)
@@ -1377,6 +1481,14 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertFalse(sidecar["usage_available"])
             self.assertEqual(sidecar["adapter_outcome"], "invalid_provider_output")
             self.assertEqual(sidecar["attempt_statuses"], ["exit_7", "exit_7"])
+            self.assertEqual(sidecar["orchestrator_thread_id"], "root-rollout")
+
+    def test_external_agent_requires_explicit_orchestrator_identifier(self) -> None:
+        result = run_script("external-agent", "--task", "research", "--provider", "codex",
+                            "--question", "inspect code", "--repo", str(ROOT),
+                            "--memory-context-file", "/missing")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--orchestrator-thread-id", result.stderr)
 
 
 if __name__ == "__main__":

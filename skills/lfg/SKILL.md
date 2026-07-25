@@ -1,7 +1,7 @@
 ---
 name: lfg
 description: Let's Fucking Go - Autonomous end-to-end workflow on the current branch from a GitHub issue, error report, or conversation. Commits before and after; never opens PRs.
-max_turns: 300
+max_turns: 90
 ---
 
 # LFG Command
@@ -102,6 +102,42 @@ LFG detects its input source automatically:
 | `/lfg` (no args)       | Conversation  | Extract requirements from thread    |
 
 ## Process Overview
+
+LFG directly follows `../references/execution-economy.md`. Every child dispatch below uses
+`fork_turns: "none"` and a bounded self-contained packet. The packet must name the objective,
+exact scope, relevant paths and artifact/checkpoint IDs, the applicable contract excerpt, risks,
+predecessor tree SHA when relevant, named orchestrator-owned validation, and an enforced return
+shape. Never use an all-history fork or make a child reconstruct context from the conversation.
+
+Research/investigation, planning, build, review/resolve, and closeout are separate durable phase
+owners, not one monolithic LFG session. Before each generation, write its immutable packet and
+checkpoint, validate `bin/phase-contract dispatch <envelope.json>`, then accept its one JSON result
+only after `bin/phase-contract result <result.json> --dispatch <envelope.json>` succeeds. Use
+`max_packet_bytes: 16384` and these hard per-generation budgets:
+
+| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+|---|---:|---:|---:|---:|
+| research/investigation | 50 | 4 | 90 min | 100,000 |
+| planning and build-todo creation | 60 | 6 | 120 min | 120,000 |
+| build and test-writing | 90 | 12 | 180 min | 160,000 |
+| review and resolution | 70 | 8 | 120 min | 140,000 |
+| closeout | 50 | 6 | 90 min | 100,000 |
+
+Each phase starts from the last validated `.context/` checkpoint and predecessor tree SHA. At
+every safe unit boundary, persist the completed unit and first incomplete unit. The first reliable
+compaction marker is authoritative; on it or a finite turn/checkpoint/elapsed/token budget
+exhaustion, return
+`rotate_required`; validate the result, then start one fresh `fork_turns: "none"` owner from only
+the last validated checkpoint. The old owner is terminal. Never duplicate a mutation, validation
+result, review finding, deployment-guide decision, compound write, or commit. Resume from the
+first incomplete unit.
+
+Any CI, test, deployment, or other pending wait follows the same execution-economy waiting
+contract. Under Conductor, when a parent unified-exec call would yield, dispatch exactly one fresh
+`fork_turns: "none"` waiter leaf containing the identifier, deadline, exact deterministic waiter
+command, terminal success/failure predicates, compact output contract, and timeout resume command.
+The parent blocks once for the terminal result; it never starts and polls the wait, polls the
+child, or replaces it with model-driven status reads.
 
 ```
 0.  Pre-work checkpoint -> Commit any uncommitted state on the current branch as a checkpoint
@@ -231,17 +267,21 @@ Determine input source and extract requirements.
 Write the parsed requirements to `.context/source.md` for reference by later phases.
 
 **For features:**
-- Spawn `researcher` agent to analyze codebase patterns, integration points, similar implementations
+- Spawn a `researcher` agent with `fork_turns: "none"` and the bounded packet contract above to
+  analyze codebase patterns, integration points, and similar implementations
 - Write findings to `.context/research.md`
 
 **For bugs:**
-- Spawn `investigator` agent (or `hypothesis-evaluator` for production incidents)
+- Spawn an `investigator` agent (or `hypothesis-evaluator` for production incidents) with
+  `fork_turns: "none"` and the bounded packet contract above
 - Investigate root causes, check logs, analyze code paths
 - Write findings to `.context/investigation.md`
 
 ### Phase 3: Plan
 
-Spawn `planner` agent with all gathered context (source + research/investigation).
+Spawn a `planner` agent with `fork_turns: "none"`. Pass paths to the bounded source and
+research/investigation artifacts plus the packet contract above; do not inherit conversation
+history.
 
 The plan must answer three questions clearly:
 
@@ -262,7 +302,8 @@ errors are the most expensive class to catch at review time (full rebuild). So b
 approving, when the work matches any heavy signal — new system/app from scratch,
 schema/data change, multi-component work, repeated writer (poller/observer/scheduler/
 queue/webhook), or research found no existing pattern to follow — spawn ONE critique agent
-(same runner, `fork_turns: "none"`, bounded plan/path packet, correctness + YAGNI lenses combined;
+(same runner, `fork_turns: "none"`, bounded plan/path packet satisfying the contract above,
+correctness + YAGNI lenses combined;
 it should read the code to check the
 plan's assumptions) and revise the plan once for its must-address findings. Skip the
 critique for work matching none of the signals. This is deliberately lighter than
@@ -277,7 +318,8 @@ review loop remains the backstop.
 
 Run `/create-build-todos` internally:
 
-- Spawns `build-planner` agent for deep research
+- Spawns a `build-planner` agent with `fork_turns: "none"` and the bounded packet contract above
+  for deep research
 - Creates build_todo files with detailed implementation steps
 - Each step includes discovered patterns and conventions
 
@@ -313,6 +355,8 @@ Run `/write-tests` internally:
 2. Write tests at the appropriate level (unit, integration, e2e)
 3. Do not execute tests or any other validation command; return exact suggested commands to the
    main lfg orchestrator
+4. Dispatch the test-writer with `fork_turns: "none"` and a bounded diff/path packet satisfying
+   the contract above
 
 After the test-writing subagent returns, the **main lfg orchestrator** runs the canonical full
 health command exactly once before review and records the PASS by `(tree SHA, exact command)`.
@@ -334,7 +378,8 @@ Run the adaptive iteration loop from the `review` skill. Each round:
    via the `resolve-review` skill's **finding-routing logic only** — do NOT run its
    commit/push or deployment-guide steps; lfg owns its own commits in Phase 11 and never
    pushes, and the deploy guide is Phase 10). Resolution builders implement only and do not
-   run validation.
+   run validation. Every reviewer and resolution builder uses `fork_turns: "none"` with the
+   bounded diff/finding/path packet and enforced return shape above.
 
 Repeat up to **3 rounds**, or stop earlier when no actionable
 (`safe_auto`/`gated_auto`/`manual`) findings remain. `advisory` and gate-suppressed nits do

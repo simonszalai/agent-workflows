@@ -42,6 +42,7 @@ providers instead of using this Claude-specific subagent wrapper.
 
    ```bash
    external-agent --task review --provider <provider> --base "$base" \
+     --orchestrator-thread-id <orchestrator_thread_id> \
      --memory-context-file <memory_context_file> \
      --out .context/review/<provider>.json 2>.context/review/<provider>.log
    ```
