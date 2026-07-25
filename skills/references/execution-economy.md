@@ -78,13 +78,72 @@ terminal result or one timeout.
 
 ## Durable checkpoints and phase rotation
 
-- Before each durable phase boundary, persist the phase result to its canonical MCP artifact or
-  workflow checkpoint. Start the next phase in a fresh `fork_turns: "none"` agent with only the
-  checkpoint and bounded packet required for that phase.
-- Choose and record a fixed context/token budget for every phase owner. Force replacement after
-  the first context compaction or when that budget is reached, whichever happens first. Persist the
-  checkpoint before replacement. Never keep an indefinitely growing agent merely because it still
-  responds.
+Every long phase is a finite dispatch, not an advisory request to "stay concise." Before dispatch,
+write an immutable packet plus a JSON phase envelope and run
+`bin/phase-contract dispatch <envelope.json>`. An invalid envelope is a hard stop. The envelope
+records:
+
+- `phase_name`, zero-based `rotation_generation`, `first_incomplete_unit`, `started_at_epoch`, and
+  `deadline_epoch` (exactly start plus the elapsed budget);
+- a finite positive `max_turns`, `max_checkpoints`, `max_elapsed_seconds`, and
+  `max_packet_bytes`;
+- `token_usage: "available"` plus a finite positive `max_tokens` when the provider exposes usage,
+  otherwise `token_usage: "unavailable"` and `max_tokens: null`;
+- the absolute immutable packet path and SHA-256, plus the prior checkpoint path/hash for every
+  replacement generation.
+
+The phase packet repeats those limits and requires the owner to count its turns and safe checkpoint
+advances. Harness `max_turns` and subprocess timeouts remain hard outer caps; set the packet budget
+below them so the owner has room to checkpoint and return. A host without token usage or a reliable
+compaction event is not allowed an unbounded phase: finite turns/checkpoints, elapsed time, and
+packet bytes are the mechanical backstop.
+
+Every phase owner returns exactly one JSON result. Capture it once, without reinterpretation, and
+run `bin/phase-contract result <result.json> --dispatch <envelope.json>` before accepting it:
+
+```json
+{
+  "phase_name": "implementation",
+  "rotation_generation": 0,
+  "status": "rotate_required",
+  "reason": "turn_budget",
+  "checkpoint": {"path": "/absolute/checkpoint.json", "sha256": "<sha256>"},
+  "completed_scope": ["todo-1"],
+  "remaining_scope": ["todo-2"],
+  "usage": {
+    "turns_used": 48,
+    "checkpoints_used": 4,
+    "elapsed_seconds": 2700,
+    "productive_seconds": 2400,
+    "stall_seconds": 300,
+    "tokens_used": null
+  }
+}
+```
+
+- `status` is exactly `complete`, `blocked`, `failed`, or `rotate_required`.
+  `rotate_required` is nonterminal, not success or failure. Its exact `reason` is one of
+  `first_compaction`, `turn_budget`, `elapsed_budget`, or `token_budget`; it must name a validated
+  durable checkpoint, completed scope, and non-empty remaining scope. The turn budget also owns the
+  finite safe-checkpoint work cap on hosts that do not expose a trustworthy turn counter.
+- At every safe unit boundary, persist completion to the canonical MCP artifact or workflow
+  checkpoint. Resume from the first incomplete unit; never rerun a completed unit or duplicate a
+  mutation, landing, deployment, review finding, or verification row.
+- If the host presents a compacted-summary marker or other reliable compaction indication, stop
+  before any further implementation, review, deploy, or verification action, persist the safe
+  checkpoint, and return `rotate_required` with `reason: "first_compaction"`. There is no portable
+  way to infer an invisible host compaction; do not claim otherwise.
+- On valid `rotate_required`, the parent first persists/validates the returned completion mapping
+  and next immutable checkpoint, then dispatches one fresh `fork_turns: "none"` replacement using
+  only that checkpoint and its bounded packet. Increment `rotation_generation`. The old owner is
+  terminal: never send it `followup_task`, `send_message`, another prompt, or more work even if it
+  remains responsive.
+- Enforce the budget with dispatch limits, deterministic checkpoints, one terminal wait, or a
+  host-supported timeout. Never introduce repeated `wait`, `write_stdin`, `wait_agent`, status
+  reads, or heartbeat polling. Required safety gates remain required; rotate and continue instead
+  of skipping them.
+- Outer terminal reports include rotation count/reasons and, when the source exposes them,
+  productive, stall/sleep, and total elapsed seconds separately.
 
 ## Secret-safe operations
 

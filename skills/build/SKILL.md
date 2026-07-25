@@ -170,6 +170,16 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
 
 5. **Build loop — coherent sequential builder chains:**
 
+   Use `max_packet_bytes: 16384` and these validated hard per-generation budgets:
+
+   | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+   |---|---:|---:|---:|---:|
+   | whole implementation owner | 90 | 12 | 180 min | 160,000 |
+   | one builder chain | 50 | 8 | 50 min | 100,000 |
+
+   Run `bin/phase-contract dispatch` before every generation. A larger chain must be sliced at safe
+   todo boundaries; never enlarge the session allowance.
+
    Build the execution order from the **pending** build_todos: process in `step`/`sequence`
    order, but if a todo's `depends_on` names a todo that would otherwise sort later, move that
    dependency ahead so prerequisites always run first. Partition that ordered DAG into the
@@ -223,6 +233,10 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
        Predecessor checkpoint/tree SHA: {sha}
        Targeted risks/unverified items: {bounded list}
        Orchestrator validation command (name only; DO NOT run it): {exact command}
+       Phase envelope: {absolute path + SHA-256}
+       Phase: implementation-chain; rotation_generation: {n}
+       Hard budget: max_turns=50; max_checkpoints=8; max_elapsed_seconds=3000;
+       max_packet_bytes=16384; max_tokens=100000 when usage is exposed, otherwise null.
 
        Validation ownership:
        Implement and inspect code only. Do NOT run test suites, validation commands, typecheck,
@@ -237,7 +251,8 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
        dedupe/change-gating behavior, and retention/TTL for that append-only history.
 
        Return the structured build-result JSON per the builder Output (Build Mode) contract:
-       { chain_status, todo_results[], files_changed, deviations, risks_unverified, error }
+       { chain_status, todo_results[], files_changed, deviations, risks_unverified, error,
+       rotation }
      "
    )
    ```
@@ -247,8 +262,17 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    | `chain_status`   | Orchestrator action                                                                    |
    | ---------------- | -------------------------------------------------------------------------------------- |
    | `complete`       | Validate every per-todo mapping, checkpoint each covered todo, then dispatch next chain |
+   | `rotate_required` | Checkpoint valid leading todos, validate rotation, dispatch fresh remainder owner      |
    | `failed`         | **Bounded chain-local self-repair** — see below                                         |
    | `needs_replan`   | **STOP** and hand back to `/ticket-plan` with the builder's `error`; do not build on     |
+
+   `rotate_required` is nonterminal and must include `rotation.reason` (one of
+   `first_compaction`, `turn_budget`, `elapsed_budget`, `token_budget`), the durable incoming
+   checkpoint/packet reference, completed scope, remaining scope, and measured usage. First
+   checkpoint every structurally valid leading `todo_results` mapping. Then write/validate the next
+   immutable checkpoint and envelope and dispatch a fresh `fork_turns: "none"` builder starting at
+   the first incomplete todo. Never send follow-up work to the old builder. Do not consume a retry:
+   rotation is neither success nor failure.
 
    **Bounded self-repair (on `failed`):** first checkpoint any leading todos whose completion
    mappings are structurally valid. Dispatch a *fresh* builder for the remainder of the **same
@@ -279,6 +303,11 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    This is the entire resume story: re-running `/build` picks up from the first todo still
    `pending`. No journal, no scratch file — the MCP artifact (ticketed) or the
    `.context/build_todos/` file (ticketless) is the source of truth.
+
+   If a host exposes a compacted-summary/compaction indication, the builder stops before further
+   edits and returns `rotate_required` with `reason: "first_compaction"`. Hosts without that signal
+   use the finite turn/checkpoint/elapsed backstop above. A rotation never reruns a checkpointed
+   todo, breaks a coherent sequential chain, or transfers validation into the builder.
 
 7. **Stopping condition and validation handoff:**
 
@@ -396,6 +425,7 @@ Build complete for {ID}: {title}
 Steps: {N}/{N} completed
 Validation: PENDING parent orchestrator | PASS ({command} @ {tree SHA}, standalone only)
 Visual verification: PENDING parent orchestrator | {absolute screenshot paths, standalone only}
+Rotations: {count}; reasons: {reason counts}; productive/stall/elapsed: {when available}
 
 Implementation:
 - {todo NN}: {one line: what changed} — checkpointed from chain {chain id}

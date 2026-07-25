@@ -1,7 +1,7 @@
 ---
 name: epic-plan
 description: Deep planning for an autodev epic from absorbed source tickets and epic artifacts. Runs cross-provider Claude/Codex/Grok planning and adversarial review, consolidates context, writes/revises the canonical epic plan, synchronizes milestone pass conditions/gates, and idempotently reconciles epic step tickets/DAG by default.
-max_turns: 200
+max_turns: 100
 ---
 
 # Epic Plan
@@ -52,6 +52,7 @@ explicitly asks for a full replan/from-scratch run.
 - `../references/epic-lifecycle.md`
 - `../references/conductor-multi-repo.md`
 - `../references/execution-phases.md`
+- `../references/execution-economy.md`
 
 ## Usage
 
@@ -286,6 +287,27 @@ explicitly asks for a full replan/from-scratch run.
     lacks milestone, step, or artifact update support, explicitly report that limitation and
     include the exact criteria/step/plan edits to enter manually.
 
+## Phase budgets and rotation
+
+Context/research, peer planning, convergence/canonical-plan write, and step reconciliation are
+durable phases. Apply the validated dispatch/result/rotation contract in `execution-economy.md`
+with `max_packet_bytes: 16384` and these default hard per-generation budgets:
+
+| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+|---|---:|---:|---:|---:|
+| context/research | 50 | 4 | 90 min | 100,000 |
+| peer planning/cross-review | 70 | 6 | 120 min | 140,000 |
+| convergence/canonical plan | 60 | 4 | 90 min | 120,000 |
+| step reconciliation/final audit | 80 | 10 | 120 min | 150,000 |
+
+Persist the latest canonical plan/milestone/ticket mutations and the first incomplete unit before a
+valid `rotate_required` return. Then dispatch a fresh `fork_turns: "none"` replacement with only
+the immutable packet/checkpoint. The old owner gets no follow-up work. Incremental idempotency still
+governs: never duplicate peer calls already checkpointed, create duplicate step tickets, rewrite
+completed steps, or discard settled plan decisions merely because a phase rotated. A visible first
+compaction is an immediate stop; otherwise the finite turn/checkpoint/elapsed limits are the
+portable backstop.
+
 ## Output
 
 Report:
@@ -296,5 +318,6 @@ Report:
 - step-ticket reconciliation table: reused/updated/created/unchanged/stale-proposed-removal,
   milestone assignment, blockers, per-ticket plan artifact id plus ticket status, and cross-repo contracts;
 - open questions, if any;
+- rotation count/reasons and productive, stall/sleep, and elapsed phase time when available;
 - if `--plan-only` was used, recommended next command: `/epic-split E0007 --reconcile`;
 - otherwise recommended next command is the appropriate execution command, not `/epic-split`.

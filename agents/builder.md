@@ -2,7 +2,7 @@
 name: builder
 description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, /ticket-flow, and /lfg with task-specific prompts."
 model: inherit
-max_turns: 100
+max_turns: 60
 memory_types: [gotcha, pattern, architecture]
 skills:
   - autodev-search
@@ -33,6 +33,12 @@ The orchestrator (`/build`) partitions the todo DAG and dispatches one fresh bui
 7. Report one per-todo completion mapping plus the chain summary as structured JSON (see Output).
    Do **not** update artifact status yourself. The orchestrator validates the result and
    checkpoints each covered todo individually.
+
+The prompt supplies a finite phase envelope below this 60-turn harness cap. Count turns and safe
+per-todo checkpoints. If the host exposes a compacted-summary/compaction indication, stop before
+any further edit and return `chain_status: "rotate_required"` from the last safe checkpoint. For a
+turn/checkpoint/elapsed/token limit, stop at the next safe per-todo boundary. Rotation is not
+failure and consumes no self-repair retry.
 
 If you cannot finish because a todo itself is wrong — it contradicts what you find in the code, or
 the plan's design doesn't hold — **stop** at that todo and return
@@ -129,17 +135,40 @@ failed chain from its first incomplete todo:
   "files_changed": ["path/one.ts", "path/two.ts"],
   "deviations": ["<pattern deviations, or empty array>"],
   "risks_unverified": ["<unverified item plus suggested orchestrator command, or empty array>"],
-  "error": null
+  "error": null,
+  "rotation": null
 }
 ```
 
-Each todo `status` and the aggregate `chain_status` are one of:
+Each todo `status` is one of `complete`, `failed`, or `needs_replan`. Aggregate `chain_status` adds
+`rotate_required`:
 
 - `"complete"` — implementation is present and inspected; validation remains orchestrator-owned.
 - `"failed"` — something the todo owns is incomplete and you could not fix it (including a missing
   migration). Put the concrete failure (command + message) in `error`.
 - `"needs_replan"` — the todo itself is wrong; the plan must change before building can
   continue. Put the reason in `error`.
+- `"rotate_required"` — stop at a safe per-todo boundary. Set `error` to null and `rotation` to:
+
+  ```json
+  {
+    "reason": "first_compaction|turn_budget|elapsed_budget|token_budget",
+    "checkpoint": {"path": "/absolute/incoming-checkpoint.json", "sha256": "<sha256>"},
+    "completed_scope": ["todo already completed in this generation"],
+    "remaining_scope": ["first incomplete todo", "later todo"],
+    "usage": {
+      "turns_used": 50,
+      "checkpoints_used": 2,
+      "elapsed_seconds": 2400,
+      "productive_seconds": 2100,
+      "stall_seconds": 300,
+      "tokens_used": null
+    }
+  }
+  ```
+
+  The orchestrator persists valid leading completion mappings and creates the next immutable
+  checkpoint before replacement. Do not continue after returning or accept follow-up work.
 
 ## Output (Resolve Mode)
 
