@@ -2,8 +2,8 @@
 //
 // This workflow returns raw reviewer envelopes only. It MUST run concurrently with external
 // provider dispatch. After every native and peer envelope has arrived, the orchestrator invokes
-// review-synthesize exactly once with the combined array. No confidence gate, dedup, skeptic,
-// persistence, or routing decision belongs here.
+// review-synthesize exactly once with the combined array. No dedup, filtering, persistence, or
+// routing decision belongs here.
 
 export const meta = {
   name: 'review-collect',
@@ -80,14 +80,16 @@ function reviewerPrompt(reviewer, intent, files, diffSummary, diffPath, mode, ca
     (reviewer.references || []).map(p => `  - ${p}`).join('\n') || '  (none)',
     ``,
     `Return per the reviewer output schema. Rules:`,
-    `- One finding per real issue. Specific file:line. No vague nits.`,
-    `- evidence: quote or paraphrase the code that proves the issue (>=1 required).`,
-    `- confidence is code-grounded. Before assigning >=0.80 you MUST have read the`,
-    `  surrounding function and at least one call site; cite both in evidence.`,
+    `- Report every issue that clears the bar: one finding per real issue, a specific`,
+    `  file:line, a statement of what breaks, and evidence citing the code that proves`,
+    `  it (>=1 required). Breadth is wanted — a later pass filters, so do not withhold a`,
+    `  grounded finding because you are unsure how it will be ranked.`,
+    `- confidence records how well-grounded the finding is, on the evidence you actually`,
+    `  read. It is a label for downstream triage, not a bar to clear.`,
     `- If the issue is something MISSING (migration, test, elimination step, scope item,`,
     `  deploy surface): set absence: true, anchor file/line to the closest related`,
     `  artifact, and put the exact grep/ls commands that should find the missing thing`,
-    `  in evidence — skeptics verify absences by searching, not by reading the anchor.`,
+    `  in evidence — absences are settled by running those searches, not by reading the anchor.`,
     `- pre_existing: true if the issue exists on main and the diff did not introduce it.`,
     `- autofix_class safe_auto only if the fix is mechanical and obviously correct.`,
     `- owner: review-fixer for safe_auto fixes; downstream-resolver for gated_auto/manual; human for advisory.`,

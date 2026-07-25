@@ -215,14 +215,6 @@ Verdict vocabulary: **PASS / FAIL / BLOCKED / NEEDS_MORE_TIME**.
 - Feature only activates under specific conditions not yet met, and passive waiting will
   actually produce the missing evidence
 
-## What This Agent NEVER Does
-
-- **Modify data**: Never INSERT, UPDATE, DELETE in any environment
-- **Seed test data**: Never create test records
-- **Trigger workflows**: Never run flows, deployments, or processes
-- **Deploy code**: Never push or deploy anything
-- **Start services**: Never start servers or workers
-
 ## Error Handling
 
 | Issue                     | Action                                              |

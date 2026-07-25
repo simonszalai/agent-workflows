@@ -1,44 +1,42 @@
 // review-synthesize — one heavyweight synthesis/gating pass over raw findings from EVERY
 // provider. Native collection and external peer dispatch finish before this workflow starts.
 //
-// Phase shape (mirrors skills/review/SKILL.md Synthesis Methodology 1-9):
+// Phase shape (mirrors skills/review/SKILL.md Synthesis Methodology):
 //   1. Validate + flatten the already-collected reviewer envelopes + union coverage.
-//   3. Dedup in two passes — exact (+/-3 line window, same normalized title), then a
+//   2. Dedup in two passes — exact (+/-3 line window, same normalized title), then a
 //      SEMANTIC same-issue pass (one cheap judge call over same-file/±5-line pairs with
 //      differing titles, and absence-finding pairs). Cross-provider agreement is the core
 //      signal of this pipeline and providers never word titles identically, so exact
 //      matching alone would silently discard consensus. Then +0.10 cross-reviewer boost
 //      per extra reviewer (cap 1.0).
-//   4. Confidence gate (<0.60 suppressed; p1 >=0.50 rescued).
-//   5. Adversarial verify, tiered by corroboration (confidence is self-reported and must
-//      not buy an unconditional skip):
-//        - <0.80: 2 independent skeptics in parallel.
-//        - >=0.80 but p1, or single-reviewer: 1 spot-check skeptic.
-//        - >=0.80 multi-reviewer consensus, p2/p3: skip verify.
-//   6. Apply skeptic verdicts:
-//        - fewer verdicts than expected: keep finding, requires_verification stays true.
-//        - 2-skeptic: unanimous refute drops; unanimous uphold boosts +0.10 and clears
-//          requires_verification; mixed keeps with requires_verification = true.
-//        - 1-skeptic spot-check: uphold clears requires_verification; refute/unsure keeps
-//          the finding contested (never a silent drop on one dissent vs a >=0.80 author).
-//   7. Separate pre-existing.
-//   8. Sort.
-//   9. Normalize routing (coherence between autofix_class and owner) then partition.
+//   3. Label low-confidence findings (<0.60 -> low_confidence: true). Nothing is dropped
+//      for confidence: the model reports, a later pass filters.
+//   4. Absence confirmation: findings claiming something is MISSING get one search pass,
+//      because reading an anchor line cannot establish an absence. A found artifact is
+//      concrete external counter-evidence and drops the claim; anything else keeps it.
+//   5. Separate pre-existing.
+//   6. Sort.
+//   7. Normalize routing (coherence between autofix_class and owner) then partition.
+//
+// WHY THERE IS NO SKEPTIC TIER: adversarial re-refutation of the model's own findings is
+// self-verification. Current models self-correct, so a refute-biased second pass costs two
+// agent calls per borderline finding and removes true positives. Precision belongs to the
+// consumer of `findings`, not to a gate that deletes evidence before anyone reads it.
 //
 // Returns the synthesized object only. MCP persistence, mode behavior, and presentation
 // stay in the skill — the workflow never touches MCP.
 //
-// WHY COLLECTION MUST FINISH FIRST (load-bearing): the +0.10 cross-reviewer boost can lift a
-// 0.70 finding past the 0.80 verify-skip threshold. Synthesizing native results before peer
-// envelopes arrive changes both confidence and skeptic routing, so peers would never truly
-// participate in the documented gate.
+// WHY COLLECTION MUST FINISH FIRST (load-bearing): cross-provider agreement is the core
+// signal, and it only exists once every envelope is present. Synthesizing native results
+// before peer envelopes arrive loses the dedup match, so the +0.10 corroboration boost and
+// the `reviewers` provenance list would both be wrong.
 
 export const meta = {
   name: 'review-synthesize',
-  description: 'Synthesize raw native and external review envelopes in one dedup, confidence, skeptic, and routing pass.',
+  description: 'Synthesize raw native and external review envelopes in one dedup, labelling, and routing pass.',
   phases: [
-    { title: 'Synthesize', detail: 'validate all provider envelopes, dedup, boost, and gate' },
-    { title: 'Verify', detail: 'adversarial 2-skeptic verify on borderline findings only' },
+    { title: 'Synthesize', detail: 'validate all provider envelopes, dedup, boost, and label' },
+    { title: 'Verify', detail: 'search-confirm absence claims only' },
   ],
 }
 
@@ -84,7 +82,7 @@ function normalizeFile(f) {
 function lineNumber(f) {
   return Number.isFinite(+f?.line) ? Math.max(1, +f.line | 0) : 1
 }
-// Stable per-finding key for skeptic-verdict matching. Not fuzzy — each finding has
+// Stable per-finding key for absence-verdict matching. Not fuzzy — each finding has
 // exactly one key. Dedup uses a separate +/-3 window comparator (see dedupAndMerge).
 function findingKey(f) {
   return [normalizeFile(f.file), lineNumber(f), normalizeTitle(f.title)].join('|')
@@ -224,24 +222,12 @@ function applyCrossReviewerBoost(f) {
   return { ...f, confidence: Math.min(1.0, boosted) }
 }
 
-function passesConfidenceGate(f) {
-  if (f.severity === 'p1' && f.confidence >= 0.5) return true
-  return f.confidence >= 0.6
-}
+// Confidence is a label, never a filter. Below this line a finding is marked
+// `low_confidence` so a downstream pass can rank or triage it — it is still returned.
+const LOW_CONFIDENCE = 0.60
 
-// Verify tiering: confidence alone cannot buy a skip — it is self-reported by the
-// finding's author, and unpoliced inflation would bypass the only adversarial layer in
-// the pipeline. Corroboration (multi-reviewer agreement after semanticMerge) is what
-// earns the skip; p1 findings gate merges and always get at least a spot-check.
-//   <0.80                                   -> 2 skeptics (full adversarial verify)
-//   >=0.80, p1                              -> 1 skeptic spot-check
-//   >=0.80, single reviewer, p2/p3          -> 1 skeptic spot-check (uncorroborated)
-//   >=0.80, multi-reviewer, p2/p3           -> 0 (corroborated by independent agreement)
-function skepticCount(f) {
-  if (f.confidence < 0.80) return 2
-  if (f.severity === 'p1') return 1
-  if ((f.reviewers?.length || 1) < 2) return 1
-  return 0
+function labelConfidence(f) {
+  return { ...f, low_confidence: f.confidence < LOW_CONFIDENCE }
 }
 
 // Re-derive owner from autofix_class so (class, owner) is always coherent. Without this,
@@ -275,20 +261,17 @@ function partition(findings) {
   return { inSkillFixer, residualActionable, reportOnly }
 }
 
-function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
-  const protocol = finding.absence === true ? [
-    `ABSENCE PROTOCOL: this finding claims something is MISSING (a migration, test,`,
-    `elimination step, scope item, or deploy surface). Reading around the anchor line`,
-    `cannot verify an absence. Instead: run the search commands listed in the evidence`,
-    `(grep/ls/Glob), plus your own searches for plausible names and locations of the`,
-    `missing artifact. UPHOLD if it is genuinely absent from the working tree; REFUTE`,
-    `only if you find it — cite where it exists (file:line) in counter_evidence.`,
-  ] : [
-    `Open the file at the line. Read +/- 30 lines of context.`,
-  ]
+// Absence claims are the one case a second pass genuinely adds information: "X is
+// missing" cannot be established by reading the anchor line, and the search that settles
+// it is external evidence rather than the model second-guessing itself.
+function absenceSearchPrompt(finding, intent, diffSummary, diffPath) {
   return [
-    `You are an adversarial skeptic (#${idx}). Your job is to REFUTE this finding.`,
-    `Default to "refute" unless the evidence is concrete and reproducible.`,
+    `Settle one absence claim by searching the working tree.`,
+    `This finding claims something is MISSING (a migration, test, elimination step, scope`,
+    `item, or deploy surface). Run the search commands listed in the evidence (grep/ls/Glob),`,
+    `plus your own searches for plausible names and locations of the missing artifact.`,
+    `UPHOLD if it is genuinely absent. REFUTE only if you actually find it — cite where it`,
+    `exists (file:line) in counter_evidence. Do not refute on judgment; refute on a hit.`,
     ``,
     `Intent: ${intent}`,
     `Diff at: ${diffPath}`,
@@ -299,12 +282,10 @@ function skepticPrompt(finding, idx, intent, diffSummary, diffPath) {
     `  title: ${finding.title}`,
     `  severity: ${finding.severity}`,
     `  confidence reported: ${finding.confidence}`,
-    ...(finding.absence === true ? [`  absence claim: true (something is missing)`] : []),
     `  why_it_matters: ${finding.why_it_matters}`,
     `  evidence:`,
     (finding.evidence || []).map(e => `    - ${e}`).join('\n'),
     ``,
-    ...protocol,
     `Return per verifyVerdictSchema. finding_key must equal "${findingKey(finding)}".`,
   ].join('\n')
 }
@@ -360,37 +341,23 @@ const dedupCollapsed = exactCollapsed + semanticCollapsed
 log(`Dedup: ${exactCollapsed} exact + ${semanticCollapsed} semantic collapsed (${merged0.length} remain)`)
 const merged = merged0.map(applyCrossReviewerBoost)
 
-// Phase 3: confidence gate
-//
-// Findings in [0.50, gate-threshold) are returned separately as `pre_gate_suppressed` so
-// the skill can run a memory-assisted upgrade pass on them (the workflow has no MCP
-// access). Without this the memory-upgrade step documented in the skill would be dead
-// code on the heavy path.
-const beforeGate = merged.length
-const gated = merged.filter(passesConfidenceGate)
-const preGateSuppressed = merged.filter(f => !passesConfidenceGate(f) && f.confidence >= 0.50)
-const suppressedByGate = beforeGate - gated.length
+// Phase 3: label confidence. No finding is dropped here — a numeric cutoff applied by the
+// producer deletes true positives that the consumer never gets to see.
+const labelled = merged.map(labelConfidence)
+const lowConfidence = labelled.filter(f => f.low_confidence).length
 
-// Phase 4: adversarial verify, tiered by corroboration (see skepticCount)
+// Phase 4: absence confirmation — one search pass per absence claim, nothing else.
 phase('Verify')
-const borderline = gated.filter(f => skepticCount(f) > 0)
-const skipsVerify = gated.filter(f => skepticCount(f) === 0)
-const fullVerify = borderline.filter(f => skepticCount(f) === 2).length
-const spotCheck = borderline.length - fullVerify
-log(`Verify: ${fullVerify} full (2 skeptics) + ${spotCheck} spot-check (1 skeptic); ${skipsVerify.length} skip (>=0.80 multi-reviewer consensus)`)
+const absenceClaims = labelled.filter(f => f.absence === true)
+const settled = labelled.filter(f => f.absence !== true)
+log(`Absence confirmation: ${absenceClaims.length} claim(s) searched; ${settled.length} finding(s) need none`)
 
-const skepticCalls = []
-for (const f of borderline) {
-  const n = skepticCount(f)
-  for (let i = 1; i <= n; i++) {
-    skepticCalls.push(() => agent(
-      skepticPrompt(f, i, intent, diffSummary, diffPath),
-      // p1 findings get the strongest skeptic; everything else stays cheap.
-      { label: `skeptic:${findingKey(f)}:${i}`, phase: 'Verify', model: f.severity === 'p1' ? 'opus' : 'sonnet', schema: verifyVerdictSchema }
-    ))
-  }
-}
-const verdicts = skepticCalls.length ? await parallel(skepticCalls) : []
+const verdicts = absenceClaims.length
+  ? await parallel(absenceClaims.map(f => () => agent(
+      absenceSearchPrompt(f, intent, diffSummary, diffPath),
+      { label: `absence:${findingKey(f)}`, phase: 'Verify', model: 'sonnet', schema: verifyVerdictSchema }
+    )))
+  : []
 
 const verdictsByKey = new Map()
 for (const v of verdicts) {
@@ -399,72 +366,44 @@ for (const v of verdicts) {
   verdictsByKey.get(v.finding_key).push(v)
 }
 
-// Phase 5: apply verdicts
-const verifiedBorderline = []
-let verifyDropped = 0
-let skepticFailures = 0      // borderline findings that got <2 verdicts
-let contestedKept = 0         // borderline findings with mixed verdicts
+// Phase 5: apply absence verdicts. Only a located artifact removes the claim — that is
+// evidence that the finding is factually wrong, not a second opinion about its severity.
+const confirmedAbsences = []
+let absenceRefuted = 0
+let absenceUnsettled = 0
 
-for (const f of borderline) {
-  const expected = skepticCount(f)
-  const vs = verdictsByKey.get(findingKey(f)) || []
+for (const f of absenceClaims) {
+  const v = (verdictsByKey.get(findingKey(f)) || [])[0]
 
-  // Fewer verdicts than dispatched: keep finding, requires_verification stays true.
-  if (vs.length < expected) {
-    skepticFailures += 1
-    verifiedBorderline.push({ ...f, requires_verification: true })
+  // No verdict arrived: keep the claim, still flagged as needing verification.
+  if (!v) {
+    absenceUnsettled += 1
+    confirmedAbsences.push({ ...f, requires_verification: true })
     continue
   }
 
-  const upholds = vs.filter(v => v.verdict === 'uphold').length
-  const counter = vs.flatMap(v => v.counter_evidence || [])
+  const counter = v.counter_evidence || []
   const evidence = counter.length
-    ? [...(f.evidence || []), ...counter.map(c => `[skeptic] ${c}`)]
+    ? [...(f.evidence || []), ...counter.map(c => `[absence-search] ${c}`)]
     : f.evidence
 
-  // Spot-check tier (1 skeptic on a >=0.80 self-confident finding): an uphold clears
-  // requires_verification; a refute/unsure contests it — but never silently drops a
-  // high-confidence finding on a single dissent.
-  if (expected === 1) {
-    if (upholds === 1) {
-      verifiedBorderline.push({ ...f, requires_verification: false, evidence })
-    } else {
-      contestedKept += 1
-      verifiedBorderline.push({ ...f, requires_verification: true, evidence })
-    }
+  // The artifact was found and cited: the absence claim is false.
+  if (v.verdict === 'refute' && counter.length) {
+    absenceRefuted += 1
     continue
   }
 
-  // Full tier (2 skeptics). The prompt tells skeptics to default to "refute" when
-  // uncertain, so "unsure" is treated as a non-uphold (counts toward dropping). This
-  // avoids the silent-survive path where 1 refute + 1 unsure would otherwise keep a
-  // finding that no skeptic upheld.
-  const nonUpholds = vs.length - upholds
-
-  // No skeptic upheld: drop.
-  if (nonUpholds === vs.length) {
-    verifyDropped += 1
+  if (v.verdict === 'uphold') {
+    confirmedAbsences.push({ ...f, requires_verification: false, evidence })
     continue
   }
 
-  // Unanimous uphold: +0.10 confidence, requires_verification cleared.
-  if (upholds === vs.length) {
-    verifiedBorderline.push({
-      ...f,
-      confidence: Math.min(1.0, f.confidence + 0.1),
-      requires_verification: false,
-      evidence,
-    })
-    continue
-  }
-
-  // Mixed verdict (split refute/uphold/unsure): keep but flag for human review.
-  contestedKept += 1
-  verifiedBorderline.push({ ...f, requires_verification: true, evidence })
+  absenceUnsettled += 1
+  confirmedAbsences.push({ ...f, requires_verification: true, evidence })
 }
 
 // Phase 6-8: recombine, separate pre-existing, sort, normalize routing, partition
-const finalFindings = [...skipsVerify, ...verifiedBorderline]
+const finalFindings = [...settled, ...confirmedAbsences]
 const preExisting = finalFindings.filter(f => f.pre_existing === true)
 const currentDiff = finalFindings.filter(f => f.pre_existing !== true)
 const sortedCurrent = sortFindings(currentDiff).map(normalizeRouting)
@@ -474,13 +413,11 @@ const partitions = partition(sortedCurrent)
 return {
   findings: sortedCurrent,
   pre_existing: sortedPreExisting,
-  // Findings in [0.50, gate-threshold) that the skill can re-admit via memory upgrade.
-  // These are NOT in `findings` or `partitions` — they're parked for skill-side rescue.
-  pre_gate_suppressed: preGateSuppressed.map(normalizeRouting),
   partitions,
   // Total findings removed from the verdict for any reason. Each addend is also reported
-  // separately in stats so callers can break down where the loss happened.
-  suppressed: invalidDropped + dedupCollapsed + suppressedByGate + verifyDropped,
+  // separately in stats so callers can break down where the loss happened. Confidence is
+  // never an addend here — low-confidence findings ship with `low_confidence: true`.
+  suppressed: invalidDropped + dedupCollapsed + absenceRefuted,
   coverage: {
     residual_risks: Array.from(residualRisks),
     testing_gaps: Array.from(testingGaps),
@@ -494,12 +431,10 @@ return {
     dedup_collapsed_exact: exactCollapsed,
     dedup_collapsed_semantic: semanticCollapsed,
     after_dedup: merged.length,
-    after_gate: gated.length,
-    suppressed_by_gate: suppressedByGate,
-    borderline_verified: borderline.length,
-    verify_dropped: verifyDropped,
-    skeptic_failures: skepticFailures,   // <2 verdicts arrived
-    contested_kept: contestedKept,        // mixed-verdict, requires_verification=true
+    low_confidence: lowConfidence,        // labelled, still returned
+    absence_claims: absenceClaims.length,
+    absence_refuted: absenceRefuted,      // artifact located, claim removed
+    absence_unsettled: absenceUnsettled,  // search inconclusive, requires_verification=true
     final: sortedCurrent.length,
   },
 }

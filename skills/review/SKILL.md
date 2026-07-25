@@ -11,13 +11,10 @@ test, finding, or fail-loud gate.
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
 ```bash
-if ! printf 'Review bounded diff against %s\n' "$base" | \
+printf 'Review bounded diff against %s\n' "$base" | \
   autodev-memory-task-packet --cwd "$PWD" --session-id "${SESSION_ID:-}" \
     --agent-type reviewer --provider "$provider" --mechanism external_peer \
-    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"; then
-  printf '%s\n' '<autodev-memory-task-context>Memory context is unavailable.</autodev-memory-task-context>' \
-    > "$MEMORY_PACKET"
-fi
+    --task-prompt-stdin --allow-unavailable > "$MEMORY_PACKET"
 ```
 
 Pass `--memory-context-file "$MEMORY_PACKET"` to `external-agent --task review`.
@@ -87,7 +84,7 @@ Two orthogonal axes:
 
 ### Step 1: Analyze the Diff
 
-**Write the diff ONCE** as a shared artifact — every native reviewer prompt, skeptic prompt,
+**Write the diff ONCE** as a shared artifact — every native reviewer prompt, absence search,
 and peer dispatch references these paths instead of re-discovering the diff:
 
 ```bash
@@ -270,7 +267,7 @@ External peers are not a default reviewer set. Escalate to the other two provide
 - the diff is safety-critical: security, auth, billing, destructive data/schema migration,
   secrets, deploy configuration, or another project-declared high-blast-radius surface;
 - native reviewers expose a material uncertainty that repository/test evidence cannot settle; or
-- native reviewer/skeptic verdicts materially disagree on an actionable finding.
+- native reviewers materially disagree on an actionable finding.
 
 `mode:solo` disables peers but never removes native safety-critical personas, adversarial checks,
 or project-required review. Announce the trigger. If none fires, do not create provider packets or
@@ -285,12 +282,12 @@ scope, peer failure is explicit residual risk and the report cannot claim indepe
 
 Merge native and peer findings semantically, then apply cross-reviewer confidence boost only to
 actual independent agreement. Peer dispatch changes coverage, not finding truth: evidence,
-confidence gates, skeptic checks, ownership, and fail-loud behavior still apply.
+ownership and fail-loud behavior still apply.
 
 ### Review iteration loop
 
 Autonomous callers run one review/fix round by default. A second (maximum third on heavy scope) is
-allowed only when an adversarial verdict or independent peer materially disagreed, not merely to
+allowed only when an independent peer materially disagreed, not merely to
 re-confirm fixes. Reviewers never rerun validation; they review the bounded diff and recorded
 orchestrator evidence only. Resolution builders also do not validate. After all fixes, the main
 orchestrator reuses the pre-review PASS if the tree is unchanged or runs one final full gate on the
@@ -318,9 +315,9 @@ provider polling.
 
 4. **Decide execution path and peer escalation:**
 
-   Light is one native general reviewer, inline synthesis, no workflow, no skeptics, and no peers.
-   Heavy uses native specialized personas, structured collection/synthesis, and adversarial
-   verification. Peer escalation remains conditional and is not implied by diff size alone.
+   Light is one native general reviewer, inline synthesis, no workflow, and no peers. Heavy uses
+   native specialized personas and structured collection/synthesis. Peer escalation remains
+   conditional and is not implied by diff size alone.
 
    | Condition | Path |
    | --- | --- |
@@ -342,52 +339,52 @@ provider polling.
    not recruit specialists or peers and must not run test suites, validation, typecheck, lint,
    builds, schema pulls/migrations, browser verification, or health commands.
 
-   Validate findings, exact/semantic deduplicate within the single envelope, confidence-gate,
-   segregate pre-existing findings, normalize ownership, and partition. Zero-fill skeptic/peer
-   stats. If the reviewer surfaces a safety-critical concern, material uncertainty, or internal
-   contradiction, upgrade to heavy and apply the peer escalation gate rather than improvising a
-   second light reviewer.
+   Validate findings, exact/semantic deduplicate within the single envelope, label low-confidence
+   findings, segregate pre-existing findings, normalize ownership, and partition. Zero-fill the
+   absence/peer stats. If the reviewer surfaces a safety-critical concern, material uncertainty,
+   or internal contradiction, upgrade to heavy and apply the peer escalation gate rather than
+   improvising a second light reviewer.
 
 5a. **Heavy path:**
 
    Run native `review-collect` with only the specialized personas selected by the diff, then one
-   `review-synthesize` pass with adversarial verification. If Workflow is unavailable, execute the
+   `review-synthesize` pass. If Workflow is unavailable, execute the
    same bounded algorithm inline. Add peer reviewer envelopes only when the escalation gate fires;
    otherwise `raw` contains native envelopes only. Finish every required collection call before
    synthesis. Use `fork_turns: "none"`, shared diff artifacts, output caps, and full logs on disk.
 
-   Safety-critical scope always retains the relevant native persona and adversarial checks even
-   under `mode:solo` or peer failure. Do not downgrade a heavy review merely because provider or
+   Safety-critical scope always retains the relevant native persona even under `mode:solo` or
+   peer failure. Do not downgrade a heavy review merely because provider or
    Workflow tooling is unavailable; surface missing independent coverage as residual risk.
 
 5b. **Result shape (both paths must produce this object):**
 
    ```
    {
-     findings: [...],               // current-diff findings, sorted
+     findings: [...],               // current-diff findings, sorted; low_confidence flagged
      pre_existing: [...],           // segregated
-     pre_gate_suppressed: [...],    // in [0.50, gate-threshold) — for memory upgrade
      partitions: {                  // drives step 6 routing
        inSkillFixer: [...],         // safe_auto → review-fixer
        residualActionable: [...],   // gated_auto|manual → downstream-resolver
        reportOnly: [...]            // advisory + human-owned
      },
-     suppressed: <N>,               // sum of invalid + dedup + gate + verify drops
+     suppressed: <N>,               // invalid + dedup + refuted absence claims only
      coverage: { residual_risks, testing_gaps },
      stats: {                       // diagnostic counters
        reviewers, reviewer_errors, raw_findings, invalid_dropped,
-       dedup_collapsed, after_dedup, after_gate, suppressed_by_gate,
-       borderline_verified, verify_dropped, skeptic_failures,
-       contested_kept, final
+       dedup_collapsed, after_dedup, low_confidence,
+       absence_claims, absence_refuted, absence_unsettled, final
      }
    }
    ```
 
-   The light path must assemble this same object after its inline synthesis — populate
-   the fields it computes (`findings`, `pre_existing`, `pre_gate_suppressed`, `partitions`,
-   `suppressed`, `coverage`) and zero-fill the verify-related stats fields
-   (`borderline_verified: 0`, `verify_dropped: 0`, `skeptic_failures: 0`,
-   `contested_kept: 0`). Downstream steps (6–8) must not branch on path.
+   **No finding is dropped for low confidence, on either path.** Confidence is a label for
+   triage, never a filter: a numeric cutoff applied before anyone reads the findings deletes
+   true positives silently, and reviewers told a score will be used against them report less.
+   Mark `low_confidence: true` below 0.60 and return the finding.
+
+   The light path assembles this same object after its inline synthesis and zero-fills the
+   absence stats it does not compute. Downstream steps (6–8) must not branch on path.
 
 5c. **What the heavy path adds over the light path:**
 
@@ -397,18 +394,13 @@ provider polling.
    - Semantic same-issue dedup (one cheap judge call) so cross-provider agreement is
      detected even when titles differ, before the boost
    - Cross-reviewer agreement boost (+0.10 confidence per additional reviewer)
-   - Tiered adversarial verify — confidence alone cannot buy a skip (it is self-reported):
-     <0.80 gets 2 skeptics; ≥0.80 p1 or single-reviewer findings get a 1-skeptic
-     spot-check; only ≥0.80 multi-reviewer p2/p3 findings skip verify entirely
-   - Skeptic verdict handling (2-skeptic tier): unanimous refute drops, unanimous uphold
-     boosts +0.10 and clears `requires_verification`, mixed verdict or missing verdicts
-     keeps the finding with `requires_verification: true`. Spot-check tier: uphold clears
-     `requires_verification`; refute/unsure contests (never a silent drop on one dissent)
-   - Absence findings (`absence: true`) get a search-based skeptic protocol (grep for the
-     missing artifact) instead of read-around-the-anchor, and semantic-only dedup
+   - Absence confirmation: findings with `absence: true` get one search pass, because reading
+     an anchor line cannot establish that something is missing. Locating the artifact is
+     concrete counter-evidence and removes the claim; an inconclusive search keeps it with
+     `requires_verification: true`. This is the only second pass over a finding — there is no
+     adversarial skeptic tier, because re-refuting the reviewer's own findings spends agent
+     calls per finding and removes true positives without improving precision.
    - Workflow journals for native collection and synthesis (developer-only)
-   - Diagnostic stats: `raw_findings`, `after_dedup`, `after_gate`, `borderline_verified`,
-     `verify_dropped`, `skeptic_failures`, `contested_kept`, `final`
 
 6. **Store findings** as review_todo artifacts:
    ```
@@ -479,14 +471,13 @@ memory-persistence step (`create_entry` for P1/P2 findings) still applies.
 
 ## Synthesis Methodology
 
-Synthesis (validate → dedup → cross-reviewer boost → confidence gate → adversarial verify →
+Synthesis (validate → dedup → cross-reviewer boost → label confidence → confirm absences →
 separate pre-existing → normalize routing → partition → sort → coverage union) lives in
 `workflows/review-synthesize.js`. The heavy path invokes it only after `review-collect` and every
 external peer have returned raw envelopes; the light path runs an inlined subset in this skill.
 
-**Memory-assisted confidence upgrade (skill-side, both paths):** Iterate
-`result.pre_gate_suppressed` (findings in [0.50, gate-threshold) that the gate dropped).
-For each one, search the memory service:
+**Memory-assisted confidence upgrade (skill-side, both paths):** the workflow has no MCP access,
+so it cannot consult memory. For each `low_confidence` finding, search the memory service:
 
 ```
 mcp__autodev-memory__search(
@@ -498,15 +489,10 @@ mcp__autodev-memory__search(
 )
 ```
 
-If memory confirms the pattern (past incident, known gotcha), upgrade the finding's
-confidence to 0.80+, include the memory entry as evidence, and re-admit it into
-`result.findings` + `result.partitions` (re-run sort + normalizeRouting). Decrement
-`result.suppressed` and `result.stats.suppressed_by_gate` accordingly so the Coverage
-output reflects what actually shipped.
-
-This step runs in the skill, not the workflow, because the workflow doesn't have MCP
-access. The workflow surfaces the rescue candidates via `pre_gate_suppressed` so this
-isn't dead code.
+If memory confirms the pattern (past incident, known gotcha), raise the finding's confidence,
+clear `low_confidence`, and add the memory entry to its evidence. The finding was already in
+`result.findings` — this changes how it ranks and how the report presents it, not whether it
+ships.
 
 ---
 
@@ -534,12 +520,11 @@ Use the template at `templates/review-todo.md` for output format.
 - Confidence score backed by evidence
 - Correct autofix classification
 
-**Weak findings (improve before reporting):**
-
-- Vague "could be better" without specifics
-- Style preferences without justification
-- Findings without evidence array
-- Confidence > 0.80 without code-grounded evidence
+**A finding is ready to report when it reads like this:** *"`src/api/endpoints.py:23` interpolates
+`user_id` straight into the SQL string, so any caller of `/search` can execute arbitrary SQL.
+Evidence: line 23 `f'SELECT * FROM users WHERE id = {user_id}'`. Fix: parameterize."* — a specific
+anchor, what breaks, the code that proves it, and a concrete fix. Sharpen a finding to that shape
+rather than withholding it.
 
 ## Knowledge Persistence
 
@@ -626,7 +611,8 @@ Testing gaps:
 - <gap>
 
 Coverage:
-- Suppressed: <N> findings below 0.60 confidence (p1 at 0.50+ retained)
+- Suppressed: <N> (invalid + deduplicated + absence claims refuted by search)
+- Low confidence: <N> findings reported with `low_confidence: true`
 
 Review complete
 ```
@@ -644,7 +630,7 @@ construction. The method:
    implemented are correctness issues, not style nits. Use `gated_auto` when the plan determines
    the fix and `manual` only when product/scope/tradeoff intent is genuinely unresolved. Anchor to
    the closest related file and put the grep commands that should find the missing code in
-   `evidence` (skeptics verify absences by searching)
+   `evidence` (absence claims are settled by running those searches)
 5. **Audit builder deviations** — every Deviations entry from the build must be sound
    against the plan's intent; unsound deviations are findings
 6. **Re-run the call-site sweep for shared-primitive rollouts** — if the ticket rolls out

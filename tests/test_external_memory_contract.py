@@ -85,6 +85,9 @@ class ExternalMemoryContractTest(unittest.TestCase):
             self.assertEqual({event["delegation_id"] for event in events}, {delivery_id})
 
     def test_every_executable_external_recipe_creates_a_packet_and_fallback(self) -> None:
+        # The unavailable-packet fallback lives in the binary behind --allow-unavailable, not
+        # copy-pasted into every recipe. Each recipe must therefore pass that flag and must NOT
+        # carry its own hand-written fallback, which drifts from the binary's wording.
         recipes = [
             "skills/ticket-plan/SKILL.md", "skills/review/SKILL.md",
             "skills/investigate/SKILL.md", "skills/research/SKILL.md",
@@ -95,10 +98,42 @@ class ExternalMemoryContractTest(unittest.TestCase):
             text = (ROOT / relative).read_text()
             self.assertIn("autodev-memory-task-packet", text, relative)
             self.assertIn("--task-prompt-stdin", text, relative)
-            self.assertIn("Memory context is unavailable", text, relative)
+            self.assertIn("--allow-unavailable", text, relative)
+            self.assertNotIn("Memory context is unavailable", text, relative)
             self.assertLess(text.index("autodev-memory-task-packet"),
                             max(text.rfind("external-agent --task"),
                                 text.rfind("external-build --task")), relative)
+
+    def test_allow_unavailable_always_emits_a_usable_packet(self) -> None:
+        # Callers no longer carry a shell fallback, so --allow-unavailable must never exit
+        # non-zero and never print nothing: every failure mode resolves to a truthful packet.
+        for args in (
+            ["--session-id", ""],                                  # missing session scope
+            ["--session-id", "s", "--cache-dir", "/dev/null/no"],  # unusable cache directory
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                result = subprocess.run(
+                    [str(ROOT / "bin/autodev-memory-task-packet"), "--cwd", str(ROOT),
+                     "--project", "p", "--repo", "r", "--agent-type", "builder",
+                     "--provider", "codex", "--mechanism", "external_build",
+                     "--task-prompt-stdin", "--allow-unavailable",
+                     "--telemetry-file", str(root / "telemetry.jsonl"), *args],
+                    input="prompt", text=True, capture_output=True,
+                    env={"HOME": str(root), "PATH": "/usr/bin:/bin"},
+                )
+                self.assertEqual(result.returncode, 0, f"{args}: {result.stderr}")
+                self.assertIn("<autodev-memory-task-context", result.stdout, str(args))
+                self.assertRegex(result.stdout, r'delivery-id="[0-9a-f]{24}"', str(args))
+                self.assertIn("unavailable", result.stdout, str(args))
+
+    def test_allow_unavailable_recovers_from_a_packet_build_error(self) -> None:
+        # Before this, only missing scope produced the fallback packet; a build_task_packet
+        # exception exited 2, which is exactly what the deleted per-skill shell fallbacks
+        # existed to catch.
+        script = (ROOT / "bin/autodev-memory-task-packet").read_text()
+        self.assertEqual(2, script.count("emit_unavailable(args) if args.allow_unavailable else 2"))
+        self.assertIn("except (OSError, ValueError):", script)
 
     def test_external_agent_crash_does_not_confirm_prepared_packet(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

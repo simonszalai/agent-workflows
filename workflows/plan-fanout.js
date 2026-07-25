@@ -413,8 +413,8 @@ function criticPrompt(lens, plan, question, codebaseResearchFile, repoRoot, prio
     `- should-address: meaningful improvement, but plan could ship without it`,
     `- consider: minor refinement`,
     ``,
-    `Honesty over thoroughness. If the plan is genuinely fine from your lens, return`,
-    `findings: [] and say so in overall_assessment. Do NOT invent issues to appear thorough.`,
+    `Honesty over thoroughness. An empty findings list is a good outcome when the plan is`,
+    `sound from your lens — return findings: [] and say so in overall_assessment.`,
   ].filter(Boolean).join('\n')
 }
 
@@ -617,9 +617,12 @@ if (!question || typeof question !== 'string') {
 if (!repoRoot || typeof repoRoot !== 'string') {
   throw new Error('plan-fanout: args.repoRoot is required')
 }
-if (!Array.isArray(framings) || framings.length < 2) {
-  throw new Error('plan-fanout: args.framings must have at least 2 entries (diversity is the point)')
+if (!Array.isArray(framings) || framings.length === 0) {
+  throw new Error('plan-fanout: args.framings must have at least 1 entry')
 }
+// One framing is a legitimate call for a narrow question: synthesis is skipped and the single
+// draft carries through. Diversity is worth paying for when the solution space is genuinely
+// wide, not on every plan.
 
 // Phase 1: parallel drafts
 phase('Draft')

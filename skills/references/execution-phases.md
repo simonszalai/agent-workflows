@@ -46,10 +46,11 @@ its existing ticketless `.context` behavior and is not changed by this reference
    `gated_auto`, even when it changes behavior or hardens a sensitive path.
 
    In an autonomous run, the runner may self-approve a `gated_auto` fix when it is both
-   plan-conformant and corroborated — skeptic-upheld (`requires_verification: false` after verify)
-   or supported by multi-reviewer consensus. An explicit `/ticket-flow prod` (or `/ticket-deploy prod|full`) invocation is standing
-   approval for those fixes and for bounded resolve/re-review rounds; do not stop merely to ask the
-   user to approve an agent-found deterministic correctness fix. Defer an uncorroborated or
+   plan-conformant and corroborated — multi-reviewer consensus, or a settled finding
+   (`requires_verification: false`). An explicit `/ticket-flow prod` (or
+   `/ticket-deploy prod|full`) invocation is standing approval for those fixes and for bounded
+   resolve/re-review rounds; do not stop merely to ask the user to approve an agent-found
+   deterministic correctness fix. Defer an uncorroborated or
    scope-expanding fix. A `manual` finding still requires the missing human decision, unless that
    decision is already recorded in the ticket or current conversation.
 
