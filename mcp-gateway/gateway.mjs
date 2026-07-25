@@ -24,7 +24,7 @@
 // Touch ID prompt, so config problems (stale op:// refs, missing env, bad ports) must be
 // caught without one.
 import http from "node:http"
-import { HOST, PORT, LOCAL_TOKEN, loadRoutes, validate } from "./lib/config.mjs"
+import { HOST, PORT, loadRoutes, validate } from "./lib/config.mjs"
 import { log } from "./lib/log.mjs"
 import { createRequestHandler } from "./lib/proxy.mjs"
 import { startAll, startNew, stopAll } from "./lib/supervisor.mjs"
@@ -47,13 +47,13 @@ const server = http.createServer(createRequestHandler(() => routes))
 server.listen(PORT, HOST, () => {
 	log(`mcp-gateway listening on http://${HOST}:${PORT}`)
 	log(`routes: ${routes.map((r) => r.prefix).join(", ")}`)
-	log(`local auth: ${LOCAL_TOKEN ? "required (x-mcp-gateway-token)" : "off (localhost only)"}`)
+	log("local auth: route-aware (x-mcp-gateway-token)")
 	startAll(routes)
 })
 
 // SIGHUP reloads routes.json without dropping the listener / pooled sockets. Additive
-// for spawn routes: new children start, running ones are left in place so a reload
-// never drops live MCP sessions.
+// for eager spawn routes: new children start, running ones are left in place so a reload
+// never drops live MCP sessions. Non-default-token spawn routes remain request-auth lazy.
 process.on("SIGHUP", () => {
 	try {
 		routes = loadRoutes()
