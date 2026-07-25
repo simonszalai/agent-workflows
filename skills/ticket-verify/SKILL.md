@@ -84,8 +84,8 @@ such as `/ticket-deploy` (targets `staging`/`full`) or by the user. It does not 
 
 If explicit standalone ticket IDs are provided, load only those tickets. For default-queue mode,
 `--epic`/`--milestone` mode, or any run with multiple scopes, load
-`references/verify-scope-dispatch.md`. Epic/milestone runs must also load
-`references/verify-epic-gates.md`.
+`../references/verify-scope-dispatch.md`. Epic/milestone runs must also load
+`../references/verify-epic-gates.md`.
 
 Do **not** skip tickets merely because they have `blocked_at`, `blocked_by`, `blocked_reason`, or
 `blocked_context` metadata. Blocked candidates stay in scope and go through the blocker re-check
@@ -94,7 +94,7 @@ in §3.
 ### 1a. Parallel verifier dispatch
 
 Single-scope runs execute inline. Multi-scope/queue runs load and follow the parallel-dispatch
-section of `references/verify-scope-dispatch.md`.
+section of `../references/verify-scope-dispatch.md`.
 
 ### 2. Load context
 
@@ -283,7 +283,7 @@ crediting them.
 
 ### 5b. Visible-surface (UI) acceptance is graded on STAGING, never production
 
-Load and follow `references/verify-visible-surfaces.md` only when acceptance includes a UI,
+Load and follow `../references/verify-visible-surfaces.md` only when acceptance includes a UI,
 rendered document, email preview, chart, public page, or other browser-visible state.
 
 ### 5. Collect evidence
@@ -355,7 +355,7 @@ self-contained enough that the local scratch directory can be deleted without lo
 verification record.
 
 Visible-surface evidence uses the screenshot and authentication rules in
-`references/verify-visible-surfaces.md`.
+`../references/verify-visible-surfaces.md`.
 
 ### 6. Record the fixed Verification Evidence artifact
 
@@ -410,13 +410,13 @@ sufficient evidence of no regression; the error text/class and its actionability
 For explicit epic/milestone verification, evidence must be persisted across all applicable
 scopes (canonical gate artifact on the epic, full per-step ticket artifacts, and a compact epic
 summary). This is **only** relevant in `--epic`/`--milestone` mode — see the "§6 (epic/milestone)"
-section of `references/verify-epic-gates.md`.
+section of `../references/verify-epic-gates.md`.
 
 ### 7. Epic/milestone aggregation
 
 Epic/milestone aggregation produces one gate verdict for the requested scope. This is **only**
 relevant in `--epic`/`--milestone` mode — see the "§7" section of
-`references/verify-epic-gates.md`.
+`../references/verify-epic-gates.md`.
 
 ### 8. Verdict
 
@@ -476,9 +476,9 @@ the report so the gap is visible rather than silently passing.
 
 ### 9. Status and promotion
 
-After computing the verdict, load `references/verify-lifecycle-actions.md` and apply only the row
+After computing the verdict, load `../references/verify-lifecycle-actions.md` and apply only the row
 for the current environment/mode. Epic/milestone mode instead uses the lifecycle section of
-`references/verify-epic-gates.md`.
+`../references/verify-epic-gates.md`.
 
 ### 9a. Persist report before status changes and clean scratch
 
@@ -502,17 +502,17 @@ create.
 
 ### 9b. Auto-promotion gate (standalone staging PASS only)
 
-Load `references/verify-staging-promotion.md` only for a standalone staging PASS when
+Load `../references/verify-staging-promotion.md` only for a standalone staging PASS when
 `--no-promote` and batch/epic holds do not already prohibit promotion.
 
 ### 9c. Capture failure knowledge (FAIL verdicts, staging or production)
 
-Load `references/verify-failure-capture.md` only after a staging or production `FAIL`.
+Load `../references/verify-failure-capture.md` only after a staging or production `FAIL`.
 
 ### 9d. Root-cause investigation and remediation routing (FAIL verdicts)
 
 A FAIL is not fully reported until it is root-caused. After §9c, load
-`references/verify-failure-investigation.md` and follow it: spawn bounded read-only investigator
+`../references/verify-failure-investigation.md` and follow it: spawn bounded read-only investigator
 agents per failure cluster, persist an `investigation` artifact with the root-cause hypothesis,
 confidence, and classification, then either dispatch a direct fix (standalone staging only, when
 the strict low-risk gate passes — the fix goes through `builder` + `/ticket-deploy staging`,
@@ -521,7 +521,7 @@ FAIL verdict and evidence artifacts are never rewritten by this step.
 
 ### 10 / 10a. Deferred post-verification cleanup (production PASS only)
 
-Load `references/verify-deferred-cleanup.md` when a `deferred_cleanup` artifact exists, when the
+Load `../references/verify-deferred-cleanup.md` when a `deferred_cleanup` artifact exists, when the
 artifact manifest contains a legacy flow-run-cleanup artifact, or when a production bug-ticket
 source/investigation structurally attributes Prefect incident flow runs. It defines the
 ticket-attributed flow-run normalization preflight, §10 (the `deferred_cleanup` contract,

@@ -276,6 +276,24 @@ class ParseSessionLogTest(unittest.TestCase):
         self.assertEqual(event["delivery_id"], delivery_id)
         self.assertNotIn("private memory body", json.dumps(parsed))
 
+    def test_mcp_result_status_uses_top_level_ok_err_key_not_body_substring(self) -> None:
+        """An ``Ok`` result whose body mentions "Error:" is a success, not a failure."""
+        parsed = self.parse([
+            {"type": "event_msg", "payload": {
+                "type": "mcp_tool_call_end",
+                "invocation": {"server": "autodev-memory", "tool": "search"},
+                "result": {"Ok": {"content": [{"text": "Error: handled upstream"}]}},
+            }},
+            {"type": "event_msg", "payload": {
+                "type": "mcp_tool_call_end",
+                "invocation": {"server": "render", "tool": "list_logs"},
+                "result": {"Err": "Transport send error"},
+            }},
+        ], "codex")
+        statuses = [event["status"] for event in parsed["events"]
+                    if event["kind"] == "mcp_result"]
+        self.assertEqual(statuses, ["completed", "failed"])
+
 
 if __name__ == "__main__":
     unittest.main()

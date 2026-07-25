@@ -26,7 +26,7 @@ python /Users/simon/dev/agent-workflows/skills/encryption-verify/scripts/run_enc
 Default required checks:
 
 1. Verify expected encryption docs and scripts exist.
-2. Run `uv run python scripts/check_plaintext_fields.py --verbose`.
+2. Run `uv run python scripts/ci/check_plaintext_fields.py --verbose`.
 3. Run focused local pytest coverage for encryption/classifier/schema/contract behavior.
 4. Check docs do not contain stale signed-allow-list / `EncryptedStr` testing instructions.
 5. Report target-state warnings for known pending migration work (`ciphertext_guard`, dual-mode fallback) without failing.

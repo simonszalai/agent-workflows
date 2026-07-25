@@ -105,6 +105,20 @@ def _outer_status(text: str) -> tuple[str, int | None]:
     return "unknown", None
 
 
+def _mcp_result_status(result: object) -> str:
+    """Classify a Codex ``mcp_tool_call_end`` result.
+
+    ``payload.result`` is a Rust-style result enum serialized as a single-key dict —
+    ``{"Ok": ...}`` or ``{"Err": ...}``. Only that top-level key decides the outcome.
+    Never substring-match the serialized body: a successful call whose content merely
+    mentions ``Err``/``Error:`` is still a success, and treating it as a failure inflates
+    failure counts by orders of magnitude.
+    """
+    if isinstance(result, dict) and "Err" in result:
+        return "failed"
+    return "completed"
+
+
 def _memory_metadata(text: str, include_correlation: bool, include_hashes: bool) -> dict[str, object]:
     """Return envelope metadata only; never retain or emit packet content."""
     match = ENVELOPE_RE.search(text)
@@ -299,8 +313,6 @@ def _parse_codex(
             continue
 
         if record_type == "event_msg" and payload_type == "mcp_tool_call_end":
-            result = payload.get("result")
-            result_text = json.dumps(result, default=str) if result is not None else ""
             invocation = _dict(payload.get("invocation"))
             events.append(
                 _event(
@@ -309,7 +321,7 @@ def _parse_codex(
                     "mcp_result",
                     server=_string(invocation.get("server")),
                     tool=_string(invocation.get("tool")),
-                    status="failed" if "Err" in result_text else "completed",
+                    status=_mcp_result_status(payload.get("result")),
                 )
             )
             continue

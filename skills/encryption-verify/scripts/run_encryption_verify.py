@@ -14,7 +14,7 @@ REQUIRED_PATHS = [
     "docs/encryption/encryption-testing-automated.md",
     "docs/encryption/encryption-testing-manual.md",
     "docs/encryption/plaintext_fields.md",
-    "scripts/check_plaintext_fields.py",
+    "scripts/ci/check_plaintext_fields.py",
     "src/encryption/plaintext_fields.py",
     "src/encryption/types.py",
 ]
@@ -102,7 +102,7 @@ def main() -> int:
         "missing: " + ", ".join(missing) if missing else "all expected encryption docs/scripts exist",
     )
 
-    code, out = run(["uv", "run", "python", "scripts/check_plaintext_fields.py", "--verbose"], repo)
+    code, out = run(["uv", "run", "python", "scripts/ci/check_plaintext_fields.py", "--verbose"], repo)
     add(results, "PLAINTEXT_FIELDS CI", "PASS" if code == 0 else "FAIL", tail(out))
 
     test_cmd = ["uv", "run", "pytest"] + (["tests", "-v"] if args.full_tests else [*FOCUSED_TESTS, "-q"])
