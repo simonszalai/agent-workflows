@@ -7,7 +7,11 @@
 // ensureRunning() reconciles the two on demand.
 import { spawn, execFileSync } from "node:child_process"
 import { join } from "node:path"
-import { BASE_DIR } from "./config.mjs"
+import {
+	BASE_DIR,
+	DEFAULT_CLIENT_TOKEN_ENV,
+	isExplicitlyDisabledRoute,
+} from "./config.mjs"
 import { log } from "./log.mjs"
 
 // prefix -> { proc, port, restarts, aliveTimer }
@@ -103,6 +107,7 @@ export function buildSpawnCommand(route) {
 }
 
 function start(route) {
+	if (isExplicitlyDisabledRoute(route)) return null
 	const s = route.spawn
 	const key = route.prefix
 	const existing = children.get(key)
@@ -127,6 +132,10 @@ function start(route) {
 	proc.on("exit", (code, sig) => {
 		clearTimeout(entry.aliveTimer)
 		if (shuttingDown) return
+		if (isLazySpawnRoute(route)) {
+			log(`spawn ${key} exited (code=${code} sig=${sig}); waiting for an authenticated request`)
+			return
+		}
 		const backoff = Math.min(30_000, 500 * 2 ** entry.restarts)
 		entry.restarts += 1
 		log(`spawn ${key} exited (code=${code} sig=${sig}); respawning in ${backoff}ms`)
@@ -137,7 +146,8 @@ function start(route) {
 	})
 	proc.on("error", (err) => {
 		// Spawn failure (e.g. ENOENT bin) emits 'error' but never 'exit'; drop the entry
-		// so the route isn't wedged — the next request or SIGHUP retries it.
+		// so the route isn't wedged. An eager route can retry on SIGHUP; a protected
+		// lazy route waits for the next authenticated request.
 		clearTimeout(entry.aliveTimer)
 		if (children.get(key) === entry) children.delete(key)
 		log(`spawn ${key} failed: ${String(err.message || err)}`)
@@ -149,14 +159,26 @@ function start(route) {
 // Called per-request for spawn routes: returns a live entry, restarting the child if the
 // map is stale. Null only if the spawn itself immediately fails.
 export function ensureRunning(route) {
+	if (isExplicitlyDisabledRoute(route)) return null
 	const existing = children.get(route.prefix)
 	if (procLooksAlive(existing)) return existing
 	if (existing) children.delete(route.prefix)
 	return start(route)
 }
 
+function isLazySpawnRoute(route) {
+	return route.clientTokenEnv !== undefined &&
+		route.clientTokenEnv !== DEFAULT_CLIENT_TOKEN_ENV
+}
+
+// Token availability never makes a non-default principal eager: those routes can
+// activate only through ensureRunning() after the proxy authenticates a request.
+export function eagerSpawnRoutes(routes) {
+	return routes.filter((route) => route.spawn && !isLazySpawnRoute(route))
+}
+
 export function startAll(routes) {
-	const spawnRoutes = routes.filter((r) => r.spawn)
+	const spawnRoutes = eagerSpawnRoutes(routes)
 	if (!spawnRoutes.length) return
 	reapStrays(spawnRoutes.map((r) => r.spawn))
 	for (const r of spawnRoutes) start(r)
@@ -166,7 +188,7 @@ export function startAll(routes) {
 // (a reload never drops live MCP sessions). Removing a route stops proxying to its
 // child immediately but the process itself lingers until the next daemon restart.
 export function startNew(routes) {
-	const fresh = routes.filter((r) => r.spawn && !children.has(r.prefix))
+	const fresh = eagerSpawnRoutes(routes).filter((r) => !children.has(r.prefix))
 	if (!fresh.length) return
 	reapStrays(fresh.map((r) => r.spawn))
 	for (const r of fresh) start(r)

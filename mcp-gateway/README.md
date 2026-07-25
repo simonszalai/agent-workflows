@@ -25,6 +25,8 @@ workspace's sessions.
 | `gateway.mjs` | entrypoint: wiring, `--validate`, SIGHUP reload, shutdown |
 | `lib/config.mjs` | routes.json loading + config preflight |
 | `lib/proxy.mjs` | transparent streaming reverse proxy (auth swap, TTFB-guarded retry) |
+| `lib/tool-policy.mjs` | route-scoped request allowlist and secret-free denial audit |
+| `lib/tool-filter.mjs` | fail-closed `tools/list` response filter |
 | `lib/supervisor.mjs` | dbhub child supervision (spawn, backoff respawn, pid-probing, reap) |
 | `lib/render-preflight.mjs` | auto-select the Render workspace per MCP session |
 | `waf-encode.mjs` | encode autodev-memory writes past Render's edge WAF |
@@ -63,8 +65,133 @@ outside the audited shim (e.g. under `/bin/sh`), and each sandboxed process re-p
 Touch ID/TCC — that is exactly the four-prompts-per-new-workspace storm this daemon
 exists to prevent.
 
-`SIGHUP` reloads routes.json live (additively for spawn routes: new children start,
-running ones and their sessions are untouched).
+`SIGHUP` reloads routes.json live (additively for eager spawn routes: new children start,
+running ones and their sessions are untouched). Spawn routes using a non-default
+`clientTokenEnv` never start at daemon startup or reload; their child starts lazily only
+after the proxy matches the route and authenticates a request.
+
+### Route client authentication and tool policy
+
+Every loaded route has a `clientTokenEnv`. When omitted it defaults to
+`MCP_GATEWAY_TOKEN`, preserving existing trusted-route behavior. An explicit env name
+selects a distinct local client principal. Tokens are compared only after route matching,
+so a token accepted by one route is rejected by another route with a different env name.
+`/healthz` remains unauthenticated.
+
+`allowTools` is an optional, non-empty, duplicate-free positive inventory. When present:
+
+- `tools/call` is the security boundary. Calls not named in the inventory, JSON-RPC batches,
+  malformed JSON, compressed bodies, and oversized bodies fail with 403 before any upstream
+  dispatch, autodev-memory encoding, or Render workspace preflight.
+- `tools/list` filtering is defense in depth. Plain JSON responses are reduced to the original
+  order intersection with the inventory. SSE, compressed, malformed, oversized, aborted, and
+  unsupported response shapes fail closed without relaying partial bytes.
+- Buffered allowlisted requests are isolated per route/principal: at most eight are active and
+  at most 8 MiB is retained in aggregate. Excess work receives 429 before upstream dispatch.
+  Request bodies have a 15-second deadline; only the buffered `tools/list` response branch has
+  a 30-second body deadline, so transparent long-lived SSE remains exempt.
+
+Omitting `allowTools` means unrestricted transparent behavior and is reserved for existing
+trusted routes. Unrestricted request and response bytes remain on the existing relay path.
+
+An explicitly configured but unset non-default `clientTokenEnv` disables that route with 503.
+It never falls back to `MCP_GATEWAY_TOKEN`. If that route's upstream `authEnv` is also absent,
+validation still succeeds because the route cannot activate; runtime also fails closed and never
+uses another route's bearer. Every non-default-token spawn route is excluded from eager startup
+and reload even when its token exists. When its token is absent, validation also skips runtime-only
+child credential checks while retaining static shape, binary, config, port, and read-only-source
+checks.
+
+### Hermes routes
+
+The checked-in `hermes/autodev-memory`, `hermes/render`, and `hermes/slack` routes all use
+`HERMES_GATEWAY_TOKEN`. They are inert until their M3 secrets are provisioned.
+
+`hermes/autodev-memory` uses `HERMES_AUTODEV_MEMORY_TOKEN` and permits ticket planning,
+artifact, search, and knowledge/config read surfaces. It excludes deletes, reverts, merges,
+superseding, approvals, crystallization decisions, epic surfaces, configuration mutation,
+workflow batch mutation, and knowledge writes. `update_ticket` is retained for planning and
+status work; the independently enforced F0032 server policy denies `approve_execution` and
+execution-state transitions for the Hermes principal.
+
+Exact inventory:
+
+```text
+create_artifact
+create_ticket
+expand_entries
+get_all_tags
+get_artifact
+get_artifact_history
+get_entry
+get_project
+get_repo
+get_review_patterns
+get_security_config_summary
+get_similar_tickets
+get_stats
+get_ticket
+get_ticket_contexts
+list_artifact_comments
+list_entries
+list_projects
+list_repos
+list_tickets
+next_ticket
+reply_artifact_comment
+search
+search_tickets
+update_artifact
+update_ticket
+```
+
+`hermes/render` reuses the pinned `ts/render` workspace and permits only `get_*` and `list_*`
+inventory entries. It excludes deploy triggers, environment changes, object creation,
+client-selected workspaces, and Postgres queries. The gateway's internal pinned workspace
+preflight is not a client tool and runs only after request policy accepts the client call.
+
+Exact inventory:
+
+```text
+get_deploy
+get_key_value
+get_metrics
+get_postgres
+get_selected_workspace
+get_service
+list_deploys
+list_key_value
+list_log_label_values
+list_logs
+list_postgres_instances
+list_services
+list_workspaces
+```
+
+`hermes/slack` permits message/reaction operations plus the required read and search surface.
+It excludes canvases, conversation creation, files, scheduled messages, drafts, channel
+management, and administration. The Slack app manifest is unchanged.
+
+Exact inventory:
+
+```text
+slack_add_reaction
+slack_get_reactions
+slack_list_channel_members
+slack_read_channel
+slack_read_thread
+slack_read_user_profile
+slack_search_channels
+slack_search_emojis
+slack_search_public
+slack_search_public_and_private
+slack_search_users
+slack_send_message
+```
+
+This M2 change lands code and non-activating route definitions only. It does not add secrets,
+edit `gateway.env`, reload the daemon, or publish a Hermes client configuration. F0021 owns
+secret provisioning and the full runtime reload; F0022 owns real Hermes client wiring.
 
 ## Client config
 
@@ -106,8 +233,8 @@ One-time setup:
 
 1. In Slack's app management UI, create an internal app **from an app manifest** using
    `slack-app-manifest.yaml`, select the workspace, and install it as Simon. The manifest
-   is intentionally read-only: message/channel/thread search and history plus user lookup;
-   it has no file access, `chat:write`, or conversation-management scopes.
+   is intentionally limited to message/channel/thread search and history, user lookup,
+   message send, and reactions. It has no file access or conversation-management scopes.
 2. Copy the resulting **User OAuth Token** (`xoxp-...`, not the bot token) into the
    service-account-readable 1Password item `op://MCP/SLACK_MCP_USER_TOKEN/value`.
    A user token is required because bot identity cannot search Simon's DMs/private

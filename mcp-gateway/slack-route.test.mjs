@@ -13,10 +13,10 @@ test("shared Slack route uses the official server and a gateway-owned token", ()
 	assert.equal(route.authScheme, undefined)
 })
 
-test("Slack credentials are loaded once from 1Password, never committed", () => {
-	const env = readFileSync(`${BASE_DIR}/gateway.env`, "utf8")
-	assert.match(env, /^SLACK_MCP_USER_TOKEN=op:\/\/MCP\/SLACK_MCP_USER_TOKEN\/value$/m)
-	assert.doesNotMatch(env, /xox[pbar]-[A-Za-z0-9-]+/)
+test("Slack route stores only the credential env name, never a token", () => {
+	const routes = readFileSync(`${BASE_DIR}/routes.json`, "utf8")
+	assert.match(routes, /"authEnv": "SLACK_MCP_USER_TOKEN"/)
+	assert.doesNotMatch(routes, /xox[pbar]-[A-Za-z0-9-]+/)
 })
 
 test("Slack app manifest is read/write for messages only", () => {

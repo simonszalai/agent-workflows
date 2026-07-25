@@ -15,10 +15,83 @@
       "target": "https://mcp.slack.com/mcp",
       "authEnv": "SLACK_MCP_USER_TOKEN"
     },
+    "hermes/autodev-memory": {
+      "target": "https://autodev-memory.onrender.com/mcp",
+      "authEnv": "HERMES_AUTODEV_MEMORY_TOKEN",
+      "clientTokenEnv": "HERMES_GATEWAY_TOKEN",
+      "allowTools": [
+        "create_artifact",
+        "create_ticket",
+        "expand_entries",
+        "get_all_tags",
+        "get_artifact",
+        "get_artifact_history",
+        "get_entry",
+        "get_project",
+        "get_repo",
+        "get_review_patterns",
+        "get_security_config_summary",
+        "get_similar_tickets",
+        "get_stats",
+        "get_ticket",
+        "get_ticket_contexts",
+        "list_artifact_comments",
+        "list_entries",
+        "list_projects",
+        "list_repos",
+        "list_tickets",
+        "next_ticket",
+        "reply_artifact_comment",
+        "search",
+        "search_tickets",
+        "update_artifact",
+        "update_ticket"
+      ]
+    },
+    "hermes/slack": {
+      "target": "https://mcp.slack.com/mcp",
+      "authEnv": "SLACK_MCP_USER_TOKEN",
+      "clientTokenEnv": "HERMES_GATEWAY_TOKEN",
+      "allowTools": [
+        "slack_add_reaction",
+        "slack_get_reactions",
+        "slack_list_channel_members",
+        "slack_read_channel",
+        "slack_read_thread",
+        "slack_read_user_profile",
+        "slack_search_channels",
+        "slack_search_emojis",
+        "slack_search_public",
+        "slack_search_public_and_private",
+        "slack_search_users",
+        "slack_send_message"
+      ]
+    },
     "ts/render": {
       "target": "https://mcp.render.com/mcp",
       "authEnv": "TS_RENDER_API_KEY",
       "renderWorkspace": "tea-ct11rp0gph6c73bf2kf0"
+    },
+    "hermes/render": {
+      "target": "https://mcp.render.com/mcp",
+      "authEnv": "TS_RENDER_API_KEY",
+      "clientTokenEnv": "HERMES_GATEWAY_TOKEN",
+      "renderWorkspace": "tea-ct11rp0gph6c73bf2kf0",
+      "allowTools": [
+        "get_deploy",
+        "get_key_value",
+        "get_metrics",
+        "get_postgres",
+        "get_selected_workspace",
+        "get_service",
+        "list_deploys",
+        "list_key_value",
+        "list_log_label_values",
+        "list_logs",
+        "list_postgres_instances",
+        "list_services",
+        "list_workspaces"
+      ]
     },
     "amaru/render": {
       "target": "https://mcp.render.com/mcp",

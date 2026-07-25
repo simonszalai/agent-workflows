@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { buildSpawnCommand, reapPatternFor } from "./lib/supervisor.mjs"
+import { buildSpawnCommand, eagerSpawnRoutes, reapPatternFor } from "./lib/supervisor.mjs"
 
 const genericRoute = {
 	prefix: "ts/tailscale",
@@ -51,4 +51,34 @@ test("reap patterns anchor the port with a trailing space", () => {
 	assert.equal(reapPatternFor(dbhubRoute.spawn), "dbhub.*--port 8851 ")
 	assert.equal(reapPatternFor(genericRoute.spawn), "y-server.*--port 8855 ")
 	assert.ok(reapPatternFor(genericRoute.spawn).endsWith(" "))
+})
+
+test("eager startup and reload never activate non-default-token protected spawn routes", () => {
+	const savedToken = process.env.HERMES_GATEWAY_TOKEN
+	const protectedRoute = {
+		...genericRoute,
+		prefix: "hermes/spawn",
+		clientTokenEnv: "HERMES_GATEWAY_TOKEN",
+	}
+	const routes = [
+		dbhubRoute,
+		protectedRoute,
+		{ ...genericRoute, prefix: "shared/spawn", clientTokenEnv: "MCP_GATEWAY_TOKEN" },
+	]
+
+	try {
+		delete process.env.HERMES_GATEWAY_TOKEN
+		assert.deepEqual(
+			eagerSpawnRoutes(routes).map((route) => route.prefix),
+			["ts/postgres", "shared/spawn"],
+		)
+		process.env.HERMES_GATEWAY_TOKEN = "synthetic"
+		assert.deepEqual(
+			eagerSpawnRoutes(routes).map((route) => route.prefix),
+			["ts/postgres", "shared/spawn"],
+		)
+	} finally {
+		if (savedToken === undefined) delete process.env.HERMES_GATEWAY_TOKEN
+		else process.env.HERMES_GATEWAY_TOKEN = savedToken
+	}
 })
