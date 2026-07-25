@@ -48,8 +48,9 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 
 ### 1. Load milestone graph
 
-- `get_epic(project, epic_id)`. `get_epic` responses are often large (tens of KB) and may
-  be spilled to a file — read with `jq` / offsets; don't try to swallow the whole payload.
+- `get_epic(project, epic_id, detail="light")` for structure/manifests, then selected plan,
+  deployment-guide, and verification bodies with `detail="full"`, explicit `artifact_types`, and
+  an explicit `response_byte_budget`. Never load an unbounded all-body epic.
 - This first response and its version are the run cache. Reuse it through wave construction and
   pass bounded milestone/step extracts to delegated ticket-flows; reload only after a workflow in
   this run mutates epic structure or gate artifacts.
@@ -252,6 +253,11 @@ valid `rotate_required`, persist every returned per-step completion before dispa
 `fork_turns: "none"` replacement with only the next immutable packet/checkpoint. Start at the first
 incomplete step or evidence row. The old owner receives no follow-up work; merged steps, deploy
 state, review records, and written verification evidence are never replayed.
+
+Each owner runs under the `execution-economy.md` durable progress lease: one bounded parent block,
+one expiry inspection, and at most one renewal only when a checkpoint/tool receipt advanced.
+Terminal-at-expiry is consumed; stale progress or the hard absolute deadline interrupts and rotates.
+Represent sleep/paused/unknown truthfully and never infer execution failure from elapsed time alone.
 
 ## Output
 

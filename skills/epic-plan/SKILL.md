@@ -61,6 +61,7 @@ explicitly asks for a full replan/from-scratch run.
 - `../references/conductor-multi-repo.md`
 - `../references/execution-phases.md`
 - `../references/execution-economy.md`
+- `../references/deployment-ownership.md`
 
 ## Usage
 
@@ -73,8 +74,9 @@ explicitly asks for a full replan/from-scratch run.
 
 ## Process
 
-1. Resolve project and load `get_epic(project, epic_id)`. `get_epic` is often large (tens of
-   KB) and gets spilled to a file — read it with `jq` / offsets, don't try to swallow it whole.
+1. Resolve project and load `get_epic(project, epic_id, detail="light")`. Selectively reload only
+   the needed epic artifact bodies with `detail="full"`, `artifact_types=[...]`, and an explicit
+   `response_byte_budget`; never request an unbounded all-body epic.
 2. Load context in **one parallel batch** — these streams are independent, never serialize them:
    - load all absorbed source tickets with `get_ticket(detail="full",
      artifact_types=["source"], include_events=false)` and read all epic artifacts in
@@ -146,6 +148,10 @@ explicitly asks for a full replan/from-scratch run.
      unrelated areas;
    - duplicates collapse;
    - contradictions become open questions, not guesses.
+   - inventory every tracked deployment/config/secret-name manifest, its owner/source repo,
+     destination repo/environment, and workspace using `deployment-ownership.md`;
+   - classify each required key/action as `non_secret_config`, `secret_value`, or `manual_gate`.
+     Missing config never implies a token/secret.
 8. Draft the epic plan for the **entire epic**. **Code-grounding rule:** before naming
    files/modules in step plans, READ them; every file/module claim needs a `path:line` citation
    or an explicit "unverified assumption" label. The plan covers:
@@ -245,6 +251,8 @@ explicitly asks for a full replan/from-scratch run.
     - one step = one repo; split cross-repo work into provider/consumer tickets;
     - never hide a required third repo inside an existing step; create/update a step for that repo
       and report it as needing a linked Conductor workspace if no path is available;
+    - tracked config owned by a third repo is always its own step ticket and dependency edge. A
+      missing owner workspace is an explicit execution blocker recorded before build;
     - assign every step to the intended milestone;
     - build an acyclic blocker -> blocked DAG;
     - write cross-repo contracts into both sides of each cross-repo dependency;
@@ -282,7 +290,8 @@ explicitly asks for a full replan/from-scratch run.
     - do not detach/abandon/delete stale existing steps by default. If a step is obsolete, report
       the proposed removal and only remove it when the plan or user explicitly authorizes that
       cleanup. Never rewrite merged/completed steps; create follow-up steps if new work is needed.
-14. Re-load the epic and verify every planned gate milestone exists, has non-empty acceptance
+14. Validate the cached ownership inventory with `bin/deployment-ownership-contract`. Re-load the
+    epic and verify every planned gate milestone exists, has non-empty acceptance
     criteria, has the intended `is_gate` value, and can be satisfied independently without later
     milestones. For each gate, re-run the runtime evidence closure check above against the final
     reconciled step set; if any required runtime evidence lacks a producing same-milestone

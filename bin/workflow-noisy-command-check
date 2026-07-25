@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Reject unbounded noisy shell commands in active workflow examples."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+
+NOISY = re.compile(
+    r"(^|\s)(pytest|npm test|pnpm test|yarn test|bun test|cargo test|go test|"
+    r"docker build|terraform (?:plan|apply)|alembic (?:upgrade|downgrade)|"
+    r"prefect deploy|bin/check-agent-workflows|git diff(?:\s|$))",
+    re.IGNORECASE,
+)
+SAFE_BOUND = re.compile(
+    r"(\|\s*(?:head|tail)\s+-n?\s*\d+|--max-count(?:=|\s+)\d+|"
+    r"\s-[nN]\s*\d+|>\s*[^\s]+|--stat(?:\s|$))"
+)
+PRODUCTION_MUTATION = re.compile(
+    r"(?:(?:prefect\s+deploy|terraform\s+apply|kubectl\s+apply|render\s+deploy|"
+    r"fly\s+deploy|aws\b.{0,30}\bdeploy|gcloud\b.{0,30}\bdeploy)"
+    r".{0,100}\b(?:production|prod)\b|"
+    r"\b(?:production|prod)\b.{0,100}"
+    r"(?:prefect\s+deploy|terraform\s+apply|kubectl\s+apply|render\s+deploy|"
+    r"fly\s+deploy|aws\b.{0,30}\bdeploy|gcloud\b.{0,30}\bdeploy))",
+    re.IGNORECASE,
+)
+
+
+def violations(root: Path) -> list[dict[str, object]]:
+    found: list[dict[str, object]] = []
+    for directory in ("skills", "agents", "workflows"):
+        base = root / directory
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.suffix not in {".md", ".toml"}:
+                continue
+            in_fence = False
+            pending = ""
+            pending_line = 0
+            for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_fence = not in_fence
+                    pending = ""
+                    continue
+                if not in_fence or stripped.startswith(("#", "//", "{")):
+                    continue
+                if pending:
+                    pending += " " + stripped.removesuffix("\\").strip()
+                else:
+                    pending = stripped.removesuffix("\\").strip()
+                    pending_line = line_number
+                if stripped.endswith("\\"):
+                    continue
+                command = pending
+                command_line = pending_line
+                pending = ""
+                if PRODUCTION_MUTATION.search(command) and "bin/redacted-exec" not in command:
+                    found.append(
+                        {
+                            "path": str(path.relative_to(root)),
+                            "line": command_line,
+                            "command": command[:240],
+                            "reason": "production_mutation_requires_redacted_exec",
+                        }
+                    )
+                    continue
+                if not NOISY.search(command):
+                    continue
+                if "bin/redacted-exec" in command:
+                    continue
+                if "bin/compact-exec" in command:
+                    continue
+                if SAFE_BOUND.search(command):
+                    continue
+                found.append(
+                    {
+                        "path": str(path.relative_to(root)),
+                        "line": command_line,
+                        "command": command[:240],
+                    }
+                )
+    return found
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="workflow-noisy-command-check")
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    args = parser.parse_args()
+    found = violations(args.root.resolve())
+    print(
+        json.dumps(
+            {"status": "pass" if not found else "fail", "violations": found},
+            separators=(",", ":"),
+        )
+    )
+    return 0 if not found else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -87,18 +87,20 @@ If the epic doesn't exist yet, create it first (`create_epic`) and absorb its mo
 Read before planning or reconciling cross-repo steps:
 
 - `../references/conductor-multi-repo.md`
+- `../references/deployment-ownership.md`
 
 ## Phase 0 — Load everything
 
 ```
-get_epic(project, epic_id)        # sources, existing steps, artifacts, involved_repos, warnings
+get_epic(project, epic_id, detail="light")
+get_epic(project, epic_id, detail="full", artifact_types=["plan"], response_byte_budget=36000)
 list_repos(project)               # canonical repo set; resolve paths via Conductor linked dirs/workspaces
 get_ticket(project, id, repo, detail="full", artifact_types=["source"], include_events=false)
                                       # full body of each absorbed SOURCE ticket only
 ```
 
-`get_epic` is often large (tens of KB) and gets spilled to a file — read it with `jq` /
-offsets, don't try to swallow it whole. Pull, at minimum:
+The light call supplies structure/manifests; request only selected full artifact types within an
+explicit byte budget. Never load an unbounded all-body epic. Pull, at minimum:
 
 - `.artifacts[]` — `id`, `title`, `created_at`, full `content` (the design material to consolidate)
 - `.sources[]` — absorbed tickets (then `get_ticket` each for its source artifact)
@@ -114,6 +116,11 @@ Resolve every involved repo to a real workspace path using `conductor-multi-repo
 assume `~/dev/{repo}`. If a planned step needs a repo that is not present, still create/reconcile
 the repo-specific step ticket and record the missing workspace as an execution blocker; do not fold
 that work into another repo's step.
+
+Also inventory every tracked deploy/config/secret-name manifest implicated by the plan. Record its
+owner/source repo, destination repo/environment, resolved workspace, and classify each required
+key/action as `non_secret_config`, `secret_value`, or `manual_gate`. Validate the inventory with
+`bin/deployment-ownership-contract`. Missing config never implies a token or secret.
 
 If the user asked to break source/design material into a specific milestone (for example
 "M3 steps"), resolve that milestone from `.milestones[]` before creating tickets. If the named
@@ -163,6 +170,10 @@ Decompose the consolidated plan into the **minimal** set of ordered execution un
   needs work in two repos, **split it per repo** and connect the halves with a cross-repo
   contract edge (Phase 3). A step never spans repos. If the user later identifies another required
   repo, add/reconcile another step for that repo rather than expanding an existing repo's ticket.
+- **Third-repo config ownership is a step.** When a tracked deploy/config manifest belongs to a
+  repo outside the code repos, create/reconcile an explicit ticket there and connect its
+  dependency edge. If that workspace is unavailable, keep the ticket and record an early execution
+  blocker rather than hiding the work or waiting until deploy.
 - **Honour the gate.** If the plan names a first deliverable everything depends on, make it the
   root of the DAG (`E000N-1`).
 - **DB/schema-owning changes go in the repo that owns those migrations.** Whoever creates the

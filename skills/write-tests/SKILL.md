@@ -51,7 +51,7 @@ Determine what code needs tests:
 ```bash
 # If testing current diff
 git diff --stat HEAD
-git diff HEAD -- '*.ts' '*.tsx' '*.py'
+bin/compact-exec -- git diff HEAD -- '*.ts' '*.tsx' '*.py'
 
 # If testing a specific file
 # Read the file and understand its exports

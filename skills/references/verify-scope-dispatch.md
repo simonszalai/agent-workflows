@@ -24,7 +24,9 @@ it through its parent epic gate.
 
 ## Explicit epic or milestone
 
-1. Load `get_epic(project, epic_id)` with artifacts, milestones, steps, events, and blockers.
+1. Load `get_epic(project, epic_id, detail="light")` for structure/manifests, then selected
+   verification/deployment artifact bodies with `detail="full"`, explicit `artifact_types`, and an
+   explicit `response_byte_budget`.
 2. With `--milestone`, restrict scope to that milestone's step tickets and gate package.
 3. Without `--milestone`, verify the current/final gate across completed milestones.
 4. Load `verify-epic-gates.md` and follow its persistence and lifecycle rules.

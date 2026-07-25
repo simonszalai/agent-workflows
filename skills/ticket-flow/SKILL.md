@@ -254,6 +254,11 @@ findings, duplicate a landing/deploy, or rewrite verification evidence. The old 
 follow-up work. Safety coverage is unchanged: rotate and continue rather than dropping a health,
 review, deploy, or verification gate.
 
+Each delegated phase uses the durable progress lease in `execution-economy.md`. The parent blocks
+once, performs at most one expiry inspection, consumes a terminal result, renews at most once only
+after checkpoint/tool-receipt advancement, and otherwise interrupts and rotates from the last
+durable checkpoint. Sleep/paused/unknown is state evidence, not elapsed-time execution failure.
+
 ### 5. Status truth
 
 Statuses are set by the owning phase skills, never duplicated here:

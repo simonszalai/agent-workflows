@@ -30,6 +30,10 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   command needs a stricter boundary. Preserve complete output in the wrapper's log and return only
   its bounded summary/tail. A failure report must include the wrapper's absolute `output_file` and
   precise `rerun_command`. Inspect only targeted excerpts instead of returning the full log.
+- Active workflow examples are mechanically checked by `bin/workflow-noisy-command-check`.
+  A raw noisy command is invalid unless the example demonstrates a small explicit output bound.
+  `bin/compact-exec` reports `status`, `exit_code`, absolute `output_file`, bounded diagnostic
+  `tail`, exact `rerun_command`, and the current `head_sha`/`tree_sha` when run in a Git checkout.
 - Bound code search by paths/globs and byte or result caps. Narrow broad searches after the first
   capped sample; never dump an entire repository or generated artifact into model context.
 - Bound every SQL/data query by time window, selected columns, row limit, and payload size. Start
@@ -144,6 +148,27 @@ run `bin/phase-contract result <result.json> --dispatch <envelope.json>` before 
   of skipping them.
 - Outer terminal reports include rotation count/reasons and, when the source exposes them,
   productive, stall/sleep, and total elapsed seconds separately.
+
+### Durable progress leases
+
+Every parent/child phase block is governed by a progress lease inside the absolute phase deadline.
+Validate the lease with `bin/progress-lease issue <lease.json>`. Its durable-progress reference is
+an immutable checkpoint or tool receipt with an absolute path, SHA-256, and monotonically
+increasing sequence. Heartbeat prose, model responsiveness, and status text are not progress.
+
+The parent performs exactly one bounded block/wait for a lease. At lease expiry it may perform
+exactly one status inspection and then runs
+`bin/progress-lease expiry <observation.json> --lease <lease.json>`:
+
+- consume a terminal result immediately;
+- when the durable sequence and hash advanced and the hard phase deadline remains, issue at most
+  one renewed bounded lease;
+- when progress is stale, the one renewal was already spent, or the absolute deadline arrived,
+  interrupt and rotate/resume from the last validated durable checkpoint.
+
+Represent `sleep`, `paused`, and `unknown` truthfully. Elapsed wall time alone is never execution
+failure. There are no heartbeat loops, duplicate waits, repeated inspections, or unbounded
+fallbacks; `rotate_required` and the finite phase budgets above remain authoritative.
 
 ## Secret-safe operations
 

@@ -69,7 +69,10 @@ Interpret patch-equivalent commits (`-`) as already applied content, not genuine
 ```bash
 git diff --name-only origin/main...origin/staging -- \
   ts_schemas/models/ atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py \
-  migrations/versions/ alembic/ prisma/migrations/ schema.prisma
+  migrations/versions/ alembic/ prisma/migrations/ schema.prisma \
+  > .context/migration-parity-schema-files.txt
+wc -l .context/migration-parity-schema-files.txt
+sed -n '1,200p' .context/migration-parity-schema-files.txt
 ```
 
 Classify:

@@ -96,19 +96,18 @@ git diff --name-only main > .context/review/files.txt
 Then analyze the diff to determine which reviewers to spawn:
 
 ```bash
-# Get changed files
-git diff --name-only main
+# Inspect the bounded cached inventory.
+sed -n '1,200p' .context/review/files.txt
 
 # Categorize changes
-git diff --name-only main -- '*.py'                              # Python files
-git diff --name-only main -- '*.ts' '*.tsx'                      # TypeScript files
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/  # Data/schema
-git diff --name-only main -- '*/flows/*.py' '*/tasks/*.py'       # Pipeline/flow code
-git diff --name-only main -- '*/scrapers/*' '*/scraper*'         # Scraper code
-git diff --name-only main -- '*poll*' '*observer*' '*scheduler*' 'prefect.*.yaml'  # Repeated writers
-git diff --name-only main -- 'prefect.*.yaml'                    # Prefect deployment config
-git diff --name-only main -- '*/prompts/*' '*/contracts/*'       # LLM prompts/contracts
-git diff --name-only main -- '*.md' '*.json' '*.yaml' '*.toml'  # Config/docs only
+rg -N '\.py$' .context/review/files.txt | head -n 200
+rg -N '\.(ts|tsx)$' .context/review/files.txt | head -n 200
+rg -N '(models/|atlas|migrations/)' .context/review/files.txt | head -n 200
+rg -N '(flows/|tasks/)' .context/review/files.txt | head -n 200
+rg -N '(scraper|poll|observer|scheduler|prefect\..*\.yaml)' \
+  .context/review/files.txt | head -n 200
+rg -N '(prompts/|contracts/|\.(md|json|yaml|toml)$)' \
+  .context/review/files.txt | head -n 200
 ```
 
 ### Step 2: Select Reviewers
@@ -169,7 +168,7 @@ In ticketless mode (lfg) the inputs come from `.context/source.md`, `.context/pl
 
 **CRITICAL: data reviewer spawn rule.** Always check for model file changes explicitly:
 ```bash
-git diff --name-only main -- '*/models/*.py' 'ts_schemas/models/' atlas.hcl atlas/plans/ cli_tools/atlas/ migrations/db_object_manifest.py migrations/versions/
+rg -N '(models/|atlas|migrations/)' .context/review/files.txt | head -n 200
 ```
 If ANY model or migration files appear, spawn the data reviewer. Do NOT rely on build_todos
 or plan.md to determine this — check the actual diff. Missing migrations are a p1 finding.

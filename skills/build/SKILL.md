@@ -138,6 +138,16 @@ checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-ow
    Run `bin/phase-contract dispatch` before every generation. A larger chain must be sliced at safe
    todo boundaries; never enlarge the session allowance.
 
+   Use `max_packet_bytes: 16384` and these validated hard per-generation budgets:
+
+   | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+   |---|---:|---:|---:|---:|
+   | whole implementation owner | 90 | 12 | 180 min | 160,000 |
+   | one builder chain | 50 | 8 | 50 min | 100,000 |
+
+   Run `bin/phase-contract dispatch` before every generation. A larger chain must be sliced at safe
+   todo boundaries; never enlarge the session allowance.
+
    Build the execution order from the **pending** build_todos: process in `step`/`sequence`
    order, but if a todo's `depends_on` names a todo that would otherwise sort later, move that
    dependency ahead so prerequisites always run first. Partition that ordered DAG into the
