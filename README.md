@@ -14,7 +14,8 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   equivalent logic inline on Codex/Grok
 - **bin/** - Shared executables including `project-mcp` (legacy/fallback MCP launcher),
   `external-agent` (cross-provider adapter), `compact-exec` (bounded command output), `wait-ci`
-  (single-call CI waiting), and `workflow-efficiency-report` (whole-agent-tree usage accounting)
+  (single-call CI waiting), `workflow-efficiency-report` (whole-agent-tree usage accounting), and
+  the reviewed [`hermes-activation`](docs/hermes-activation.md) secret-safe activation provider
 
 ## Distribution
 
