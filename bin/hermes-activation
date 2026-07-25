@@ -360,23 +360,61 @@ def load_json_receipt(path: Path) -> dict[str, object]:
     return require_object(parse_json_bytes(data, "receipt_shape_mismatch"), "receipt_shape_mismatch")
 
 
-def preflight_environment(*, needs_op: bool = True) -> tuple[bool, str | None]:
+def validated_executable(
+    path: str | Path,
+    *,
+    unusable_code: str,
+) -> tuple[Path, Path]:
+    try:
+        candidate = Path(path).expanduser()
+    except (OSError, RuntimeError):
+        raise SafeError(unusable_code) from None
+    if not candidate.is_absolute():
+        raise SafeError(unusable_code)
+    try:
+        info = candidate.lstat()
+    except OSError:
+        raise SafeError(unusable_code) from None
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or not os.access(candidate, os.X_OK)
+        or (stat.S_IMODE(info.st_mode) & 0o022) != 0
+    ):
+        raise SafeError(unusable_code)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise SafeError(unusable_code) from None
+    return candidate, resolved
+
+
+def validate_executable_pair(provider_path: str | Path, op_bin: str | Path) -> str:
+    provider, resolved_provider = validated_executable(
+        provider_path,
+        unusable_code="provider_unusable",
+    )
+    if provider.name != "hermes-activation" or provider.parent.name != "bin":
+        raise SafeError("provider_unusable")
+    root = resolved_provider.parent.parent
+    if resolved_provider != root / "bin" / "hermes-activation":
+        raise SafeError("provider_unusable")
+
+    _, resolved_op = validated_executable(op_bin, unusable_code="op_bin_unusable")
+    if resolved_op != root / "bin" / "op":
+        raise SafeError("op_bin_root_mismatch")
+    return str(resolved_op)
+
+
+def preflight_environment(provider_path: str | Path) -> tuple[bool, str]:
     reason = os.environ.get("SENSITIVE_ACCESS_REASON", "")
     if not reason.strip():
         raise SafeError("missing_sensitive_access_reason")
-    if not needs_op:
-        return False, None
     op_bin = os.environ.get("OP_BIN")
     if not op_bin:
         raise SafeError("missing_op_bin")
     test_mode = os.environ.get("HERMES_ACTIVATION_TEST_MODE") == "1"
-    expected = Path.home() / "dev" / "agent-workflows" / "bin" / "op"
-    candidate = Path(op_bin).expanduser()
-    if not test_mode and candidate != expected:
-        raise SafeError("op_bin_contract_mismatch")
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
-        raise SafeError("op_bin_unusable")
-    return test_mode, str(candidate)
+    return test_mode, validate_executable_pair(provider_path, op_bin)
 
 
 def test_base(name: str, production: str, test_mode: bool) -> str:
@@ -1959,9 +1997,7 @@ def run(args: argparse.Namespace) -> tuple[dict[str, object], Path | None]:
                 else "canary_nonterminal_receipt_requires_cleanup"
             )
             raise SafeError(code)
-    test_mode, executable = preflight_environment()
-    if executable is None:
-        raise SafeError("missing_op_bin")
+    test_mode, executable = preflight_environment(Path(__file__))
     op = OpClient(executable)
     if command == "items ensure":
         items = ensure_items(op)

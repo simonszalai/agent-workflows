@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Resolve committed op:// reference env files and exec a command.
 # Defaults to .env; override with ENV_FILE=.env.prod (or another reference file).
 # Secret values stay inside `op run` and must never be printed by callers.
@@ -14,21 +14,130 @@ fi
 OP_BIN="${OP_BIN:-op}"
 ENV_FILE="${ENV_FILE:-.env}"
 
-# The HUMAN 1Password account that owns *-sensitive vaults (Touch ID). The dev
-# service account has no grant there, so interactive reads must select this
-# account explicitly — otherwise op uses the CLI default account, which may lack
-# the vault ("<vault> isn't a vault in this account"). Override if the account
-# changes (user ID, sign-in URL, or shorthand from `op account list`). Mirrors
-# ts-prefect scripts/secrets/lib.sh's op_human.
-OP_HUMAN_ACCOUNT="${OP_HUMAN_ACCOUNT:-PT2BTBT4RJFEDPAMWIZCJGX5HY}"
-
-if ! command -v "$OP_BIN" >/dev/null 2>&1; then
-  echo "op-env: missing 1Password CLI: $OP_BIN" >&2
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "op-env: env file not found: $ENV_FILE" >&2
   exit 2
 fi
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "op-env: env file not found: $ENV_FILE" >&2
+inspect_file_mode() {
+  local path="$1"
+  local candidate=""
+
+  INSPECTED_MODE=""
+  candidate="$(/usr/bin/stat -f '%Lp' "$path" 2>/dev/null)" || candidate=""
+  if [[ "$candidate" =~ ^0?[0-7]{3}$ ]]; then
+    INSPECTED_MODE="${candidate#0}"
+    return 0
+  fi
+
+  candidate="$(/usr/bin/stat -c '%a' "$path" 2>/dev/null)" || candidate=""
+  if [[ "$candidate" =~ ^0?[0-7]{3}$ ]]; then
+    INSPECTED_MODE="${candidate#0}"
+    return 0
+  fi
+  return 1
+}
+
+mode_is_not_group_or_other_writable() {
+  local mode_value
+
+  inspect_file_mode "$1" || return 1
+  mode_value=$((8#$INSPECTED_MODE))
+  (( (mode_value & 0022) == 0 ))
+}
+
+scan_sensitive_env_file() {
+  local scan_file="$1"
+  local chunk=""
+  local window=""
+  local reference_tail=""
+  local read_status=0
+  local reads_completed=0
+  local scanned_chars=0
+  local chunk_size=4096
+  local max_reads=65536
+  local max_chars=16777216
+
+  if ! exec 3<"$scan_file"; then
+    return 0
+  fi
+
+  while (( reads_completed < max_reads )); do
+    chunk=""
+    if IFS= read -r -n "$chunk_size" chunk <&3; then
+      read_status=0
+    else
+      read_status=$?
+    fi
+    ((reads_completed += 1))
+    scanned_chars=$((scanned_chars + ${#chunk} + 1))
+    window+="$chunk"
+
+    if [[ "$window" =~ op://[^/[:space:]]+-sensitive/ ]]; then
+      exec 3<&-
+      return 0
+    fi
+    if (( scanned_chars > max_chars )); then
+      exec 3<&-
+      return 0
+    fi
+
+    reference_tail="${window##*op://}"
+    if [[ "$reference_tail" != "$window" &&
+          "$reference_tail" != */* &&
+          ! "$reference_tail" =~ [[:space:]] &&
+          ${#reference_tail} -ge $chunk_size ]]; then
+      exec 3<&-
+      return 0
+    fi
+    if (( ${#window} > chunk_size * 2 )); then
+      window="${window: -$chunk_size}"
+    fi
+
+    if (( read_status != 0 )); then
+      exec 3<&-
+      return 1
+    fi
+  done
+
+  chunk=""
+  if IFS= read -r -n 1 chunk <&3; then
+    read_status=0
+  else
+    read_status=$?
+  fi
+  exec 3<&-
+  if (( read_status == 0 )) || [[ -n "$chunk" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# Sensitive env files must enter through this installation's exact op shim.
+# The shim, rather than op-env or a caller-selected binary, owns the complete
+# cache -> reason -> notifier -> human selector -> real child chain.
+if scan_sensitive_env_file "$ENV_FILE"; then
+  unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
+  for variable_name in "${!OP_SESSION_@}"; do
+    unset "$variable_name"
+  done
+
+  script_dir="${BASH_SOURCE[0]%/*}"
+  [[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
+  HERE="$(cd "$script_dir" && pwd)"
+  expected_op="$HERE/op"
+  if [[ "$OP_BIN" != "$expected_op" || -L "$expected_op" || ! -f "$expected_op" ||
+        ! -x "$expected_op" ]] ||
+     ! mode_is_not_group_or_other_writable "$expected_op"; then
+    echo "op-env: sensitive access requires the exact co-located op shim" >&2
+    exit 2
+  fi
+
+  exec "$expected_op" run --env-file="$ENV_FILE" -- "$@"
+fi
+
+if ! command -v "$OP_BIN" >/dev/null 2>&1; then
+  echo "op-env: missing 1Password CLI: $OP_BIN" >&2
   exit 2
 fi
 
@@ -41,16 +150,4 @@ if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
   fi
 fi
 
-# *-sensitive vaults are interactive-only (the service account has no grant).
-# With a token set, op run would fail with a permission error instead of
-# falling back to Touch ID — so drop the token when the file references one, and
-# pin --account to the human tenant so op doesn't fall back to a default account
-# that can't see the vault. --account cannot be combined with a live SA token,
-# so it is added only on this interactive path.
-op_cmd=("$OP_BIN")
-if grep -qE '=["'"'"']?op://[A-Za-z0-9_-]+-sensitive/' "$ENV_FILE"; then
-  unset OP_SERVICE_ACCOUNT_TOKEN
-  op_cmd+=(--account "$OP_HUMAN_ACCOUNT")
-fi
-
-exec "${op_cmd[@]}" run --env-file="$ENV_FILE" -- "$@"
+exec "$OP_BIN" run --env-file="$ENV_FILE" -- "$@"

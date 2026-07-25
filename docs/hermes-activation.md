@@ -13,21 +13,37 @@ owns the gateway environment/reload.
 ## Sensitive invocation boundary
 
 Every production invocation uses one command-local, operation-specific reason and the reviewed
-1Password shim:
+1Password shim. Set `PROVIDER_ROOT` to one already-attested linked root and take the redaction
+wrapper, provider, and shim only from that root:
 
 ```bash
+PROVIDER_ROOT=/absolute/path/to/already-attested/agent-workflows
 SENSITIVE_ACCESS_REASON='E0006/M3 F0033 Hermes activation' \
-OP_BIN="$HOME/dev/agent-workflows/bin/op" \
-bin/redacted-exec -- bin/hermes-activation items ensure
+OP_BIN="$PROVIDER_ROOT/bin/op" \
+  "$PROVIDER_ROOT/bin/redacted-exec" -- \
+  "$PROVIDER_ROOT/bin/hermes-activation" items ensure
 ```
 
-Use the same prefix for every command below. The provider's typed allowlist is the primary
-disclosure boundary; `redacted-exec` is secondary defense in depth. Do not use direct `op`,
-`OP_DESKTOP=1`, ambient secret exports, raw output logs, or `compact-exec`.
+Use the same three-path prefix, with a reason specific to the operation, for every command below.
+The provider's typed allowlist is the primary disclosure boundary; `redacted-exec` is secondary
+defense in depth. Do not use direct `op`, `OP_DESKTOP=1`, a dirty live checkout, ambient secret
+exports, raw output logs, or `compact-exec`.
 
 The provider accepts test endpoint overrides only when its explicit test mode is set, and then
 only for loopback HTTP. Production hosts, refs, service IDs, key names, policy fields, polling
 intervals, and deadlines cannot be supplied on the command line.
+
+Immediately before F0033, root/operator separately proves that `PROVIDER_ROOT` has the reviewed
+clean HEAD and tree, is contained in remote main, and provides regular executable non-symlink
+files for all three paths. It also verifies provider version `e0006-m3/v1`. Provider self-checks
+do not replace this root attestation.
+
+F0033 must establish a fresh scoped session cache and a fresh false-zero summary preflight before
+consumer execution. B0002 performs no live retry, secret access, provider action, configuration
+mutation, deploy, or canary.
+
+The direct absolute-op bypass in `mcp-gateway/start-gateway.sh` remains an explicit non-goal.
+B0002 does not edit, widen, validate, or reload that gateway path.
 
 ## Frozen identifiers
 
@@ -245,7 +261,8 @@ mode 0600.
 
 Only after the reviewed F0023 merge is live:
 
-1. F0033 proves the restricted summary is false-zero.
+1. F0033 re-attests the reviewed root, starts with a fresh scoped cache, and proves a fresh
+   restricted summary is false-zero.
 2. Run item ensure.
 3. Apply active, wait on its exact ID, and prove true-one plus the admin smoke matrix.
 4. Apply inert, wait on its exact ID, and prove false-zero plus admin smokes.
@@ -254,6 +271,10 @@ Only after the reviewed F0023 merge is live:
 7. F0033 emits one strict `e0006_m3_memory_handoff/v1` artifact.
 8. F0021 validates the handoff, writes only the two ref names to its approved gateway destination,
    validates, reloads once, and runs its cross-layer matrix.
+
+These are mandatory consumer gates, not evidence that B0002 ran a live action. If review changes
+the provider tree, rerun the focused fake suites and canonical repository health on that exact
+final tree before F0033.
 
 For every deploy timeout, rerun wait on the same ID first. After a second bounded timeout,
 emergency cancellation is permitted only with root authorization and the matching safe timeout
