@@ -12,18 +12,20 @@
 //      confidence boost (multiple angles → same hypothesis = stronger signal)
 //   3. Test (parallel): for each surviving hypothesis, an evidence-gatherer agent
 //      runs the testable prediction and returns confirmed/refuted/inconclusive
-//   4. Adversarial refute (parallel): for each CONFIRMED hypothesis, 2 skeptics
-//      try to falsify. Same pattern as review-synthesize's verify.
+//   4. Challenge: ONE skeptic against the single strongest confirmed hypothesis — the
+//      one a fix would actually be built on. Stacking refuters over every confirmed
+//      hypothesis compounds with the tester's own caution and manufactures "no root
+//      cause found" outcomes that the evidence does not support.
 //   5. Synthesize: opus agent picks the root cause (if any survives), builds the
 //      causal chain, drafts short remediation. HONEST about partial findings —
 //      "we ruled out X and Y, still don't know" is a valid output.
 //
 // Returns the synthesized object only. MCP persistence stays in the skill.
 //
-// WHY ADVERSARIAL ON HYPOTHESES (not just findings like review): premature
-// convergence on the wrong root cause causes regressions and recurrence. A
-// confirmed hypothesis is much more dangerous than an unconfirmed one if it's
-// wrong, because someone will ship a fix based on it.
+// WHY THE LEADING HYPOTHESIS IS STILL CHALLENGED (when review findings are not):
+// premature convergence on the wrong root cause causes regressions and recurrence,
+// because someone ships a fix based on it. That risk attaches to the one hypothesis
+// that becomes the root cause — not to the whole candidate list.
 
 export const meta = {
   name: 'investigate-fanout',
@@ -32,7 +34,7 @@ export const meta = {
     { title: 'Generate', detail: 'parallel hypothesis generators from different angles' },
     { title: 'Dedup', detail: 'group near-duplicate hypotheses, boost cross-angle agreement' },
     { title: 'Test', detail: 'evidence-gathering per hypothesis (parallel)' },
-    { title: 'Refute', detail: 'adversarial skeptics on confirmed hypotheses' },
+    { title: 'Refute', detail: 'challenge the leading confirmed hypothesis' },
     { title: 'Synthesize', detail: 'pick root cause, build causal chain, short remediation' },
   ],
 }
@@ -275,16 +277,18 @@ function testPrompt(hypothesisId, hypothesis, bug, environment, repoRoot) {
     `- rationale: 2-4 sentences on why your verdict, citing the evidence`,
     `- counter_evidence: anything that argues against, even if you concluded confirmed`,
     ``,
-    `Default to inconclusive over confirmed when in doubt. False confirmations are more`,
-    `dangerous than honest "we don't know yet" — someone will ship a fix based on a confirmed`,
-    `hypothesis.`,
+    `Call the verdict the evidence supports. Confirmed means the evidence backs the`,
+    `hypothesis; inconclusive means you genuinely could not tell, not that you would like`,
+    `more certainty. A separate challenge pass examines the strongest confirmation, so you`,
+    `do not need to hedge on its behalf.`,
   ].join('\n')
 }
 
-function refutePrompt(hypothesisId, hypothesis, skepticIdx, bug, environment, evidenceGathered) {
+function refutePrompt(hypothesisId, hypothesis, bug, environment, evidenceGathered) {
   return [
-    `You are skeptic #${skepticIdx} for a confirmed hypothesis. Your job is to REFUTE.`,
-    `Default to "refuted" or "weakened" unless the evidence is irrefutable.`,
+    `You are the challenge pass on the strongest confirmed hypothesis — the one a fix would`,
+    `be built on. Try to falsify it, and report what you actually found: "survives" is the`,
+    `right answer when you cannot break it.`,
     ``,
     `Bug: ${bug}`,
     `Environment: ${environment}`,
@@ -323,15 +327,16 @@ function synthesisPrompt(bug, environment, hypothesesWithVerdicts, refuteVerdict
     `All hypotheses with verdicts:`,
     JSON.stringify(hypothesesWithVerdicts, null, 2),
     ``,
-    `Skeptic refutation attempts by hypothesis ID:`,
+    `Challenge verdict on the leading confirmed hypothesis, by hypothesis ID (other`,
+    `confirmed hypotheses are not challenged and carry no entry here):`,
     JSON.stringify(refuteVerdictsByHypId, null, 2),
     ``,
     `Return per synthesisSchema:`,
-    `- root_cause: ONE hypothesis that survived both confirmation AND skeptics, OR null if none did.`,
+    `- root_cause: ONE hypothesis the evidence supports, OR null if none does.`,
     `  - statement: the surviving hypothesis claim`,
     `  - confidence: how sure are you (cap at 0.95 unless evidence is irrefutable)`,
     `  - evidence_summary: 2-4 sentences citing concrete evidence`,
-    `  - survived_skeptics: true only if ALL skeptics returned "survives" (or weakened — that still survives, just less strongly)`,
+    `  - survived_skeptics: true unless the challenge pass returned "refuted" (weakened still survives, just less strongly); true when the hypothesis was not the challenged one`,
     `- causal_chain: trigger → ... → symptom. One step per array entry. Must have NO gaps —`,
     `  "somehow X causes Y" is a gap. If you can't fill a gap, set root_cause to null.`,
     `- recommended_remediation: SHORT paragraph. This is /investigate, not /plan. Say what to`,
@@ -341,7 +346,7 @@ function synthesisPrompt(bug, environment, hypothesesWithVerdicts, refuteVerdict
     `- residual_unknowns: questions the investigation could not answer`,
     ``,
     `Honesty bar:`,
-    `- If no hypothesis survived AND skeptics, set root_cause: null. Do not invent one.`,
+    `- If no hypothesis is supported by the evidence, set root_cause: null. Do not invent one.`,
     `- "We ruled out X, Y, Z; still don't know" is a VALID investigation outcome. The user`,
     `  has better information than before, even without a confirmed root cause.`,
     `- Premature confirmation causes regressions. Better to under-claim than over-claim.`,
@@ -458,18 +463,22 @@ for (const m of hypothesesWithIds) {
 }
 log(`Test: ${confirmedIds.length} confirmed, ${refutedIds.length} refuted, ${inconclusiveIds.length} inconclusive (${testErrors} errors)`)
 
-// Phase 4: adversarial refute on confirmed hypotheses
+// Phase 4: challenge the single strongest confirmed hypothesis. Only the leading candidate can
+// become the root cause, so only it is worth challenging; refuting every confirmed hypothesis
+// twice over spends calls to change an answer nobody was going to act on, and the stacked
+// caution manufactures "no root cause found" outcomes the evidence does not support.
 phase('Refute')
+const leadingId = confirmedIds
+  .slice()
+  .sort((a, b) => (verdictsById.get(b)?.final_confidence ?? 0) - (verdictsById.get(a)?.final_confidence ?? 0))[0]
 const skepticCalls = []
-for (const id of confirmedIds) {
-  const m = hypothesesWithIds.find(x => x.id === id)
-  const v = verdictsById.get(id)
-  for (let i = 1; i <= 2; i++) {
-    skepticCalls.push(() => agent(
-      refutePrompt(id, m.hypothesis, i, bug, environment, v.evidence_gathered),
-      { label: `refute:${id}:${i}`, phase: 'Refute', model: 'sonnet', schema: refuteOutputSchema }
-    ))
-  }
+if (leadingId) {
+  const m = hypothesesWithIds.find(x => x.id === leadingId)
+  const v = verdictsById.get(leadingId)
+  skepticCalls.push(() => agent(
+    refutePrompt(leadingId, m.hypothesis, bug, environment, v.evidence_gathered),
+    { label: `refute:${leadingId}`, phase: 'Refute', model: 'sonnet', schema: refuteOutputSchema }
+  ))
 }
 const refuteResults = skepticCalls.length ? await parallel(skepticCalls) : []
 
@@ -479,7 +488,7 @@ for (const r of refuteResults) {
   if (!refuteByHypId.has(r.hypothesis_id)) refuteByHypId.set(r.hypothesis_id, [])
   refuteByHypId.get(r.hypothesis_id).push(r)
 }
-log(`Refute: ${confirmedIds.length} confirmed hypotheses × 2 skeptics = ${skepticCalls.length} attempts`)
+log(`Refute: ${confirmedIds.length} confirmed; challenged the leading candidate${leadingId ? ` (${leadingId})` : ' (none)'}`)
 
 // Phase 5: synthesize
 phase('Synthesize')
@@ -542,7 +551,7 @@ return {
     refuted_in_test: refutedIds.length,
     inconclusive_in_test: inconclusiveIds.length,
     test_errors: testErrors,
-    skeptic_attempts: skepticCalls.length,
+    challenge_attempts: skepticCalls.length,
     root_cause_found: !!synth.root_cause,
   },
 }

@@ -131,13 +131,6 @@ For each match, read surrounding lines. Group matches into:
 - **Variant**: Intentional variation
 - **Inconsistency**: Different approaches to same problem (flag this!)
 
-### 4. Verify Coverage
-
-Confirm you searched every file:
-- Files with matches: N
-- Files without matches: N (list them)
-- Total: should equal file count from step 1
-
 ## Past Work Research Process (Past Work Mode)
 
 When in past work mode, use these MCP tools:

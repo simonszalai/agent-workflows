@@ -66,7 +66,7 @@ test('review-collect returns raw native envelopes without synthesis', async () =
   assert.deepEqual(result.stats, { attempted: 2, succeeded: 2, failed: 0 })
 })
 
-test('review-synthesize boosts duplicate findings across native and peer envelopes before gate', async () => {
+test('review-synthesize boosts duplicate findings across native and peer envelopes', async () => {
   const result = await runWorkflow(
     './review-synthesize.js',
     {
@@ -89,7 +89,7 @@ test('review-synthesize boosts duplicate findings across native and peer envelop
       diffPath: '.context/review/diff.patch',
     },
     async () => {
-      throw new Error('corroborated p2 finding should not need an agent call after exact merge')
+      throw new Error('a non-absence finding should never trigger an agent call after exact merge')
     },
   )
 
@@ -97,7 +97,65 @@ test('review-synthesize boosts duplicate findings across native and peer envelop
   assert.equal(result.findings[0].confidence, 0.80)
   assert.deepEqual(result.findings[0].reviewers, ['native-security', 'codex'])
   assert.equal(result.stats.reviewers, 2)
-  assert.equal(result.stats.after_gate, 1)
+  assert.equal(result.stats.after_dedup, 1)
+})
+
+test('review-synthesize labels low confidence instead of dropping the finding', async () => {
+  const result = await runWorkflow(
+    './review-synthesize.js',
+    {
+      reviewerResults: [
+        { reviewer_key: 'native-security', findings: [finding(0.35)], residual_risks: [], testing_gaps: [] },
+      ],
+      intent: 'Review the change.',
+      diffSummary: '1 file changed',
+      diffPath: '.context/review/diff.patch',
+    },
+    async () => {
+      throw new Error('a low-confidence finding must not trigger a verification agent call')
+    },
+  )
+
+  assert.equal(result.findings.length, 1, 'low-confidence findings are reported, never suppressed')
+  assert.equal(result.findings[0].low_confidence, true)
+  assert.equal(result.stats.low_confidence, 1)
+  assert.equal(result.suppressed, 0)
+  assert.equal(result.partitions.residualActionable.length, 1)
+})
+
+test('review-synthesize drops an absence claim only when the search locates the artifact', async () => {
+  const absence = key => ({ ...finding(0.75), absence: true, title: `Missing ${key}` })
+  const result = await runWorkflow(
+    './review-synthesize.js',
+    {
+      reviewerResults: [
+        {
+          reviewer_key: 'native-plan-conformance',
+          findings: [absence('migration'), { ...absence('test'), line: 90 }],
+          residual_risks: [],
+          testing_gaps: [],
+        },
+      ],
+      intent: 'Review the change.',
+      diffSummary: '1 file changed',
+      diffPath: '.context/review/diff.patch',
+    },
+    async (prompt, options) => {
+      // Two absence claims at different lines reach the semantic same-issue judge first.
+      if (!options.label.startsWith('absence:')) return { decisions: [{ pair: '0-1', same_issue: false }] }
+      const found = options.label.includes('|42|')
+      return found
+        ? { finding_key: options.label.replace('absence:', ''), verdict: 'refute', counter_evidence: ['migrations/0007_add_col.sql:1'] }
+        : { finding_key: options.label.replace('absence:', ''), verdict: 'uphold', counter_evidence: [] }
+    },
+  )
+
+  assert.equal(result.findings.length, 1, 'located artifact refutes its claim; the other survives')
+  assert.equal(result.findings[0].title, 'Missing test')
+  assert.equal(result.findings[0].requires_verification, false)
+  assert.equal(result.stats.absence_claims, 2)
+  assert.equal(result.stats.absence_refuted, 1)
+  assert.equal(result.suppressed, 1)
 })
 
 test('review-synthesize refuses to run before raw envelopes arrive', async () => {

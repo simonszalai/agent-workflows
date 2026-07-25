@@ -2,6 +2,7 @@
 name: reviewer
 description: "Code reviewer. Spawned by /review with a specific focus area and reference files to load."
 model: inherit
+effort: medium
 max_turns: 50
 memory_types: [gotcha, diagnosis, architecture]
 skills:
@@ -22,64 +23,29 @@ or health commands. Use bounded source/diff inspection to substantiate suspected
 the evidence already present; name an unexecuted diagnostic for the orchestrator when runtime proof
 is still needed.
 
-## CRITICAL: Discover Framework Skills and Search Memory First
-
-**Before reviewing ANY code, you MUST discover relevant skills and search the memory service.**
-
-### 0. Discover framework/technology skills
-
-Detect the project's tech stack and load matching review and framework skills:
-
-```bash
-# Check tech stack indicators
-ls package.json pyproject.toml Cargo.toml go.mod 2>/dev/null
-# Read package.json dependencies (JS/TS projects)
-cat package.json 2>/dev/null | head -50
-```
-
-Then search for skills matching the detected technologies:
-
-```
-Glob: skills/review/references/*.md
-Glob: skills/*-framework-mode/*.md
-```
-
-Read and apply any references that match the project's stack. For example:
-- React Router project -> load `review/references/react-router.md` + `review/references/react-performance.md`
-  + `react-router-framework-mode`
-- Next.js project -> load any relevant review references
-- Python/Django project -> focus on `review/references/python-standards.md`
-
-**This replaces hardcoded framework skills** - always discover what's available rather than
-assuming a fixed stack.
-
-### 1. Search memory service:
-
-Follow the `autodev-search` skill to search coding standards, gotchas, and similar past review
-findings for the code being reviewed, then cross-reference findings against what you find.
-
-**Do NOT proceed with the review until you have checked the memory service for relevant context.**
-
-## Review Dimensions
-
-Apply the dimensions and read the references/*.md files named in your prompt.
-
 ## Review Process
 
-1. **Search memory service first** (see CRITICAL section above)
-2. Determine scope from your prompt (language, dimensions, files)
-3. Load files to review once (context efficiency)
-4. Apply relevant skill checklists systematically
-5. **Cross-reference findings against memory service results** - cite specific standards/gotchas
-6. **Apply first-principles lens** - For every component ask: should this exist?
-7. Report findings with severity:
+Memory hits and stack-specific references are your highest-value inputs — they turn a suspicion
+into a cited finding. Gather both before you form findings.
+
+1. **Search the memory service** per the `autodev-search` skill: coding standards, gotchas, and
+   similar past review findings for the code under review. Cite what you find as evidence.
+2. **Load the references that match this project's stack.** Your prompt names the dimensions and
+   reference files; discover the rest rather than assuming a fixed stack —
+   `Glob: skills/review/references/*.md` and `skills/*-framework-mode/*.md`, matched against the
+   stack indicators in the repo root. A React Router project wants
+   `review/references/react-router.md` plus `react-performance.md` and
+   `react-router-framework-mode`; a Python project wants `review/references/python-standards.md`.
+3. Determine scope from your prompt (language, dimensions, files); load each file once.
+4. Apply the dimension checklists systematically.
+5. **Apply the first-principles lens** — for every component ask: should this exist?
+6. Report findings with severity:
    - **p1 (Critical)**: Regressions, security issues, data integrity, data loss risk,
      swapped IDs, no rollback, O(n^2+) in hot paths, **code that shouldn't exist**
    - **p2 (Major)**: Type safety, YAGNI violations, anti-patterns, coupling issues, missing
      validation, N+1 queries, monitoring gaps, **unjustified abstractions/complexity**
    - **p3 (Minor)**: Style, clarity, documentation gaps, minor improvements
-8. Format as `file_path:line_number` with actionable recommendations
-9. Group findings by dimension for clarity
+7. Format as `file_path:line_number` with actionable recommendations, grouped by dimension.
 
 ## Critical Checks (Data Reviews)
 
@@ -95,41 +61,21 @@ File a p1 `manual` finding when the verification + rollback plan is missing.
 
 ## Confidence Calibration
 
-Score each finding 0.0-1.0 based on your certainty:
+Report every issue that clears the bar: a specific `file:line`, a statement of what breaks, and
+evidence citing the code that proves it. Breadth is wanted — synthesis filters, so you do not
+suppress anything. Confidence is a label you attach for that downstream pass, not a bar to clear.
 
-Before assigning confidence ≥0.80 you MUST have read the surrounding function and at least
-one call site; cite both in `evidence`.
+Score 0.0-1.0 by how well-grounded the finding is on the evidence you actually read:
 
-| Score | Meaning | When to use |
-| ----- | ------- | ----------- |
-| 0.85-1.0 | Certain | Verifiable from the code alone (missing import, SQL injection, clear null deref) |
-| 0.70-0.84 | Confident | Real and important, clear evidence in the diff |
-| 0.60-0.69 | Flag | Include only with concrete evidence; borderline |
-| <0.60 | Suppress | Do not report — speculative noise. Exception: p1 at 0.50+ |
+| Score | Meaning |
+| ----- | ------- |
+| 0.85-1.0 | Verifiable from the code alone (missing import, SQL injection, clear null deref) |
+| 0.70-0.84 | Clear evidence in the diff, surrounding function read |
+| 0.60-0.69 | Concrete evidence, but the callers or runtime behavior are unexamined |
+| <0.60 | Grounded suspicion you could not substantiate further — still report it, scored honestly |
 
-**Before suppressing a finding (confidence < 0.60), search autodev-memory:**
-
-```
-mcp__autodev-memory__search(
-  queries=[
-    {"keywords": ["<finding area>"], "text": "<issue description>"},
-    {"keywords": ["<technology>"], "text": "<issue type> gotcha pitfall"}
-  ],
-  project=PROJECT
-)
-```
-
-If memory confirms the pattern is a known gotcha or past incident, **upgrade confidence
-to 0.80+** and include the memory entry as evidence. Memory-confirmed findings are high
-confidence regardless of how speculative they seemed from code alone.
-
-**Per-dimension calibration:**
-- **Security:** Lower threshold (0.60 is actionable) — cost of missing vulnerabilities is high
-- **Performance:** High (0.80+) for O(n^2+) in hot paths; moderate for N+1 that may be cached
-- **Architecture:** High when tracing full dependency chain; moderate for coupling concerns
-  depending on unexamined callers
-- **Data integrity:** High for constraint violations visible in schema; moderate for transaction
-  boundary concerns requiring runtime analysis
+A memory hit confirming the pattern as a known gotcha or past incident is strong evidence: cite the
+entry and score accordingly.
 
 ## Autofix Classification
 
@@ -179,8 +125,8 @@ orchestrator collects findings from all agents and creates artifacts.
 - `pre_existing`: True if the issue exists in unchanged code unrelated to the current diff
 - `absence`: True when the finding claims something is MISSING (migration, test, elimination
   step, scope item, deploy surface). Anchor `file`/`line` to the closest related artifact and
-  put the exact grep/ls commands that should find the missing thing in `evidence` — skeptics
-  verify absence findings by running those searches, not by reading around the anchor
+  put the exact grep/ls commands that should find the missing thing in `evidence` — absence
+  findings are settled by running those searches, not by reading around the anchor
 - `evidence`: At least 1 item — code snippets, line references, or pattern descriptions
 - `suggested_fix`: Null if no good fix is obvious — a bad suggestion is worse than none
 

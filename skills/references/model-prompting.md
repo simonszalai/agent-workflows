@@ -24,7 +24,28 @@ including ones made by `/compound`, `/deep-dream`, and `/heal-workflows` — con
    for conclusions with evidence instead.
 4. **Structured output rides an enforced schema** (Claude `--json-schema`, Codex
    `--output-schema`, workflow `agent({schema})`). Enumerate fields in prose only where
-   enforcement is missing (the Grok adapter).
+   enforcement is missing (the Grok adapter). A well-designed schema — clear names, enums,
+   `minItems`, descriptions — teaches usage better than an example does; prefer tightening
+   the schema over adding a worked example.
+5. **No self-verification scaffolding.** Current models check and correct their own work.
+   "Add a final verification step", "use a subagent to verify", "double-check before
+   responding", and adversarial re-refutation of a model's own output compound with behavior
+   the model already has: they cost calls and remove true positives without raising quality.
+   This does **not** cover external evidence — staging/production behavior verification,
+   absence searches, and deploy gates observe the world rather than the model, and stay.
+6. **Never suppress at the producer.** Confidence floors, severity thresholds, "only report
+   high-severity issues", and "be conservative" are followed literally and cause
+   under-reporting. Have the producer report everything that clears an evidence bar, label it
+   honestly, and filter in a separate pass that a human can inspect.
+7. **Narrow delegation, don't encourage it.** Models delegate readily; the useful instruction
+   is the bound, not the invitation. Delegate for work that needs its own context window;
+   prefer one agent over several; cap fan-out; never spawn an agent to check your own work.
+8. **Positive examples beat lists of don'ts.** Show the shape you want once, concretely, rather
+   than enumerating failure modes. A "never do X" list is worth keeping only when X is a real
+   safety or audit invariant.
+9. **Say how long the answer should be.** Current models are verbose and expand scope by
+   default; effort controls thinking, not output length. Skills that produce user-facing prose
+   or written deliverables carry an explicit conciseness and scope-constraint line.
 
 ## Effort and model profiles
 
@@ -63,9 +84,14 @@ Place these where they apply (Anthropic-recommended wording; keep it stable so
 - **No unrequested tidying** (build/resolve paths): "Don't add features, refactor, or
   introduce abstractions beyond what the task requires. Do the simplest thing that works
   well. Only validate at system boundaries."
-- **Delegation bounds** (orchestrators): "Delegate independent subtasks to subagents and keep
-  working while they run. For simple, sequential, or single-file work, work directly — only
-  delegate parallel or isolated workstreams."
+- **Delegation bounds** (orchestrators): "Delegate to a subagent only for large tasks that are
+  genuinely independent and parallelizable, such as a wide multi-file investigation. Do not
+  delegate work you can finish yourself in a handful of tool calls, and do not use subagents to
+  verify or double-check your own work. If one subagent can complete the task, use one rather
+  than several, and keep spawn counts low."
+- **Report-everything** (any producer whose output a later pass filters): "Report every finding
+  that clears the evidence bar; breadth is wanted, and a separate pass filters. Score confidence
+  honestly — it is a label for that pass, not a bar to clear."
 - **Final-summary readability** (long autonomous runs): "Your final message is the user's
   first look at the run. Lead with the outcome, write complete sentences, drop working
   shorthand and labels invented mid-run, and give each file/commit/flag its own plain-language
@@ -77,4 +103,5 @@ Place these where they apply (Anthropic-recommended wording; keep it stable so
   `skills/ticket-plan/templates/*`, `skills/references/*`) are single-sourced; skills point
   at the originals rather than carrying copies.
 - `/heal-workflows`: a skill that re-grows per-model forks, unconditional multi-provider
-  fan-out, or prescriptive reasoning scaffolding in the shared tree IS a finding.
+  fan-out, prescriptive reasoning scaffolding, a producer-side confidence/severity suppression
+  gate, or an adversarial pass over the model's own output IS a finding.
