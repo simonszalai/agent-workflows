@@ -233,6 +233,10 @@ Determine `$TARGET_BRANCH` from the delivery route chosen for the ticket (see
 production. When called from `/auto-deploy`, the target environment it resolved dictates the
 base. Never rely on the repo's default base branch.
 
+If the branch has not already passed a local CI parity gate at this exact tree (e.g. via
+`/ticket-build` step 10), run the pre-push gate from `../references/ci-self-heal.md`
+(`bin/ci-local --run`, with judgment on its SKIPs) before pushing.
+
 ```bash
 git push -u origin {branch-name}
 

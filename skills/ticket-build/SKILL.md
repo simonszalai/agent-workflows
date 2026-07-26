@@ -70,8 +70,11 @@ Follow `../references/execution-phases.md` and `../references/execution-economy.
    full gates: post-build/pre-review and post-resolution/final. Focused diagnostics are permitted
    only to identify a failing orchestrator gate and are keyed by `(tree SHA, exact command)`.
    Do not query staging/prod as verification and do not trigger flows/processes.
-10. **Push.** Ensure the feature branch is pushed to the remote (no PR — `/auto-deploy` creates
-   the PR at deploy time).
+10. **Push.** Before the push, run the pre-push local CI parity gate from
+   `../references/ci-self-heal.md` (`bin/ci-local --run` at the final tree, with judgment on its
+   SKIPs) so the first CI run is normally green. Then ensure the feature branch is pushed to the
+   remote (no PR — `/auto-deploy` creates the PR at deploy time). Record which jobs passed
+   locally and which were not locally reproducible.
 
 ### Phase checkpoints, rotation, and command output
 
