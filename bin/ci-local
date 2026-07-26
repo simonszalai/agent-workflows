@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""Extract and run a repo's GitHub Actions CI jobs locally before pushing.
+
+Generic CI-parity gate: parses .github/workflows/*.yml, skips environment-setup
+actions (checkout, setup-*, cache, artifacts), and emits or executes the
+remaining `run:` steps with their env vars in the current local environment.
+
+This tool is advisory scaffolding for an agent, not an oracle: jobs it marks
+SKIP (services, expressions, opaque actions) may still be reproducible with
+judgment, and a local PASS does not replace GitHub CI as the authority.
+
+Modes:
+  ci-local                 list the execution plan (default)
+  ci-local --run           run all runnable jobs; per-job pass/fail summary
+  ci-local --run --job X   run only job X (forces jobs classified as SKIP)
+
+If the target repo has its own bin/ci-local or scripts/ci-local, that override
+is exec'd instead (unless --no-override).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:  # re-exec through uv to supply pyyaml without a repo dependency
+    if os.environ.get("CI_LOCAL_REEXEC") != "1":
+        uv = shutil.which("uv")
+        if uv:
+            os.environ["CI_LOCAL_REEXEC"] = "1"
+            os.execv(uv, [uv, "run", "--quiet", "--no-project", "--with", "pyyaml",
+                          "python3", os.path.abspath(__file__), *sys.argv[1:]])
+    print("ci-local: PyYAML unavailable and uv not found", file=sys.stderr)
+    sys.exit(2)
+
+
+SETUP_ACTION_PREFIXES = (
+    "actions/checkout",
+    "actions/setup-",
+    "actions/cache",
+    "actions/upload-artifact",
+    "actions/download-artifact",
+    "astral-sh/setup-uv",
+    "oven-sh/setup-bun",
+    "pnpm/action-setup",
+)
+
+CI_EVENTS = {"push", "pull_request", "pull_request_target", "merge_group"}
+
+
+@dataclass
+class Step:
+    command: str
+    env: dict[str, str]
+    name: str | None = None
+    needs_expression: bool = False
+
+
+@dataclass
+class Job:
+    name: str
+    steps: list[Step] = field(default_factory=list)
+    services: list[str] = field(default_factory=list)
+    condition: str | None = None
+    opaque_actions: list[str] = field(default_factory=list)
+
+    @property
+    def skip_reasons(self) -> list[str]:
+        reasons = []
+        if self.services:
+            reasons.append(f"needs services: {', '.join(self.services)}")
+        if self.opaque_actions:
+            reasons.append(f"non-setup actions: {', '.join(self.opaque_actions)}")
+        if any(s.needs_expression for s in self.steps):
+            reasons.append("uses ${{ ... }} expressions needing substitution")
+        return reasons
+
+
+def is_setup_action(uses: str) -> bool:
+    ref = uses.split("@", 1)[0]
+    return any(ref.startswith(prefix) for prefix in SETUP_ACTION_PREFIXES)
+
+
+def str_env(env: object) -> dict[str, str]:
+    if not isinstance(env, dict):
+        return {}
+    return {str(k): str(v) for k, v in env.items()}
+
+
+def triggers_on_ci_event(workflow: dict) -> bool:
+    on = workflow.get("on") or workflow.get(True)  # yaml 1.1 parses bare `on:` as True
+    if isinstance(on, str):
+        return on in CI_EVENTS
+    if isinstance(on, list):
+        return bool(CI_EVENTS.intersection(on))
+    if isinstance(on, dict):
+        return bool(CI_EVENTS.intersection(on.keys()))
+    return False
+
+
+def parse_workflow(path: Path) -> list[Job]:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(workflow, dict) or not triggers_on_ci_event(workflow):
+        return []
+    top_env = str_env(workflow.get("env"))
+    jobs: list[Job] = []
+    for job_name, job_def in (workflow.get("jobs") or {}).items():
+        if not isinstance(job_def, dict) or "steps" not in job_def:
+            continue  # reusable-workflow call or malformed job
+        job = Job(
+            name=job_name,
+            services=sorted((job_def.get("services") or {}).keys()),
+            condition=str(job_def["if"]) if "if" in job_def else None,
+        )
+        job_env = {**top_env, **str_env(job_def.get("env"))}
+        for step_def in job_def.get("steps") or []:
+            uses = step_def.get("uses")
+            if uses:
+                if not is_setup_action(uses):
+                    job.opaque_actions.append(uses)
+                continue
+            run = step_def.get("run")
+            if not run:
+                continue
+            command = str(run).strip()
+            job.steps.append(Step(
+                command=command,
+                env={**job_env, **str_env(step_def.get("env"))},
+                name=step_def.get("name"),
+                needs_expression="${{" in command
+                or any("${{" in v for v in {**job_env, **str_env(step_def.get("env"))}.values()),
+            ))
+        if job.steps:
+            jobs.append(job)
+    return jobs
+
+
+def collect_jobs(workflow_dir: Path) -> list[Job]:
+    jobs: list[Job] = []
+    for path in sorted(workflow_dir.glob("*.yml")) + sorted(workflow_dir.glob("*.yaml")):
+        jobs.extend(parse_workflow(path))
+    return jobs
+
+
+def print_plan(jobs: list[Job]) -> None:
+    for job in jobs:
+        reasons = job.skip_reasons
+        status = "RUN" if not reasons else "SKIP"
+        print(f"[{status}] {job.name}" + (f"  (if: {job.condition})" if job.condition else ""))
+        for reason in reasons:
+            print(f"       - {reason}")
+        for step in job.steps:
+            first_line = step.command.splitlines()[0]
+            extra = len(step.command.splitlines()) - 1
+            marker = " [expr]" if step.needs_expression else ""
+            print(f"       $ {first_line}" + (f"  (+{extra} lines)" if extra else "") + marker)
+
+
+def run_job(job: Job, repo_root: Path) -> bool:
+    print(f"\n=== job: {job.name} ===", flush=True)
+    for step in job.steps:
+        label = step.name or step.command.splitlines()[0]
+        if step.needs_expression:
+            print(f"--- SKIPPED (needs ${{{{ }}}} substitution): {label}", flush=True)
+            continue
+        print(f"--- {label}", flush=True)
+        result = subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", step.command],
+            cwd=repo_root, env={**os.environ, **step.env},
+        )
+        if result.returncode != 0:
+            print(f"FAIL {job.name}: step '{label}' exited {result.returncode}", flush=True)
+            return False
+    print(f"PASS {job.name}", flush=True)
+    return True
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="ci-local", description=__doc__)
+    parser.add_argument("--repo", default=".", help="repo root (default: cwd)")
+    parser.add_argument("--run", action="store_true", help="execute runnable jobs")
+    parser.add_argument("--job", action="append", default=[],
+                        help="limit to this job (repeatable); forces SKIP-classified jobs")
+    parser.add_argument("--no-override", action="store_true",
+                        help="ignore a repo-local ci-local override script")
+    args = parser.parse_args()
+
+    repo_root = Path(args.repo).resolve()
+    if not args.no_override and os.environ.get("CI_LOCAL_OVERRIDE") != "1":
+        for override in (repo_root / "bin" / "ci-local", repo_root / "scripts" / "ci-local"):
+            if override.is_file() and os.access(override, os.X_OK) \
+                    and override.resolve() != Path(__file__).resolve():
+                print(f"ci-local: delegating to repo override {override}", flush=True)
+                os.environ["CI_LOCAL_OVERRIDE"] = "1"
+                os.execv(str(override), [str(override), *sys.argv[1:]])
+
+    workflow_dir = repo_root / ".github" / "workflows"
+    if not workflow_dir.is_dir():
+        print(f"ci-local: no workflows directory at {workflow_dir}", file=sys.stderr)
+        return 2
+    jobs = collect_jobs(workflow_dir)
+    if not jobs:
+        print("ci-local: no CI-triggered jobs with run steps found", file=sys.stderr)
+        return 2
+    if args.job:
+        unknown = set(args.job) - {j.name for j in jobs}
+        if unknown:
+            print(f"ci-local: unknown job(s): {', '.join(sorted(unknown))}", file=sys.stderr)
+            return 2
+        jobs = [j for j in jobs if j.name in args.job]
+
+    if not args.run:
+        print_plan(jobs)
+        return 0
+
+    results: dict[str, str] = {}
+    for job in jobs:
+        if job.skip_reasons and not args.job:
+            results[job.name] = "SKIP (" + "; ".join(job.skip_reasons) + ")"
+            continue
+        results[job.name] = "PASS" if run_job(job, repo_root) else "FAIL"
+
+    print("\n=== ci-local summary ===")
+    for name, outcome in results.items():
+        print(f"{outcome:>4s}  {name}" if outcome in {"PASS", "FAIL"} else f"SKIP  {name}: {outcome[6:-1]}")
+    return 1 if any(outcome == "FAIL" for outcome in results.values()) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
