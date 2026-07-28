@@ -1008,8 +1008,14 @@ class StatefulFakeMemory:
 
 
 class StatefulFakeMemoryHttp:
-    def __init__(self, service: StatefulFakeMemory) -> None:
+    def __init__(
+        self,
+        service: StatefulFakeMemory,
+        *,
+        result_shape: str = "content",
+    ) -> None:
         self.service = service
+        self.result_shape = result_shape
         self.calls: list[tuple[str, str, object]] = []
 
     def request(
@@ -1032,20 +1038,28 @@ class StatefulFakeMemoryHttp:
             if not isinstance(params, dict) or set(params) != {"name", "arguments"}:
                 raise AssertionError(("MCP params", params))
             result = self.service.tool(params["name"], params["arguments"])
+            content = [
+                {
+                    "type": "text",
+                    "text": json.dumps(result, separators=(",", ":")),
+                }
+            ]
+            if self.result_shape == "content":
+                tool_result = {"content": content, "isError": False}
+            elif self.result_shape == "structured":
+                tool_result = {
+                    "content": content,
+                    "structuredContent": result,
+                    "isError": False,
+                }
+            else:
+                raise AssertionError(("MCP result shape", self.result_shape))
             return HERMES.HttpResponse(
                 200,
                 {
                     "jsonrpc": "2.0",
                     "id": body["id"],
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(result, separators=(",", ":")),
-                            }
-                        ],
-                        "isError": False,
-                    },
+                    "result": tool_result,
                 },
             )
         if path == HERMES.BATCH_PATH:
@@ -1060,6 +1074,160 @@ class StatefulFakeMemoryHttp:
                 ),
             )
         raise AssertionError(("memory path", path))
+
+
+class StaticMemoryHttp:
+    def __init__(self, result: object) -> None:
+        self.result = result
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: object | None = None,
+        *,
+        accepted: set[int],
+    ) -> object:
+        if (
+            method != "POST"
+            or path != HERMES.MCP_PATH
+            or accepted != {200}
+            or not isinstance(body, dict)
+        ):
+            raise AssertionError(("memory transport", method, path, body, accepted))
+        return HERMES.HttpResponse(
+            200,
+            {
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": self.result,
+            },
+        )
+
+
+class HermesMemoryClientTest(unittest.TestCase):
+    def test_valid_structured_content_success(self) -> None:
+        service = StatefulFakeMemory("run-safe-structured")
+        service.seed_ticket()
+        client = HERMES.MemoryClient(
+            StatefulFakeMemoryHttp(service, result_shape="structured")
+        )
+        result = client.tool(
+            "get_ticket",
+            {
+                "project": HERMES.PROJECT,
+                "repo": service.repo,
+                "ticket_id": service.ticket_id,
+                "detail": "light",
+                "include_events": False,
+            },
+        )
+        self.assertEqual(result["ticket"]["id"], service.ticket_id)
+
+    def test_legacy_content_only_success(self) -> None:
+        expected = {"ticket": {"id": "F0001"}}
+        client = HERMES.MemoryClient(
+            StaticMemoryHttp(
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(expected, separators=(",", ":")),
+                        }
+                    ],
+                    "isError": False,
+                }
+            )
+        )
+        self.assertEqual(client.tool("get_ticket", {}), expected)
+
+    def test_mcp_error_envelope_fails_closed(self) -> None:
+        class ErrorMemoryHttp:
+            def request(
+                self,
+                method: str,
+                path: str,
+                body: object | None = None,
+                *,
+                accepted: set[int],
+            ) -> object:
+                if not isinstance(body, dict):
+                    raise AssertionError("missing request")
+                return HERMES.HttpResponse(
+                    200,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": body["id"],
+                        "error": {"code": -32603, "message": "redacted"},
+                    },
+                )
+
+        with self.assertRaisesRegex(HERMES.SafeError, "memory_mcp_shape_mismatch"):
+            HERMES.MemoryClient(ErrorMemoryHttp()).tool("get_ticket", {})
+
+    def test_malformed_and_ambiguous_result_shapes_fail_closed(self) -> None:
+        cases = (
+            {},
+            {"structuredContent": []},
+            {"structuredContent": {"ticket": None}},
+            {"structuredContent": {"ticket": None}, "isError": "false"},
+            {
+                "content": [{"type": "text", "text": '{"ticket":null}'}],
+                "structuredContent": {"ticket": {"id": "F0001"}},
+                "isError": False,
+            },
+            {
+                "content": [{"type": "text", "text": '{"ticket":null}'}],
+                "structuredContent": {"ticket": None},
+                "isError": True,
+            },
+            {
+                "content": [{"type": "text", "text": '{"approved":1}'}],
+                "structuredContent": {"approved": True},
+                "isError": False,
+            },
+        )
+        for result in cases:
+            with self.subTest(result_keys=sorted(result)):
+                with self.assertRaises(HERMES.SafeError):
+                    HERMES.MemoryClient(StaticMemoryHttp(result)).tool(
+                        "get_ticket",
+                        {},
+                    )
+
+    def test_result_metadata_is_accepted_validated_and_never_returned(self) -> None:
+        sentinel = "must-not-cross-the-parser-boundary"
+        expected = {"ticket": None}
+        content = [
+            {
+                "type": "text",
+                "text": json.dumps(expected, separators=(",", ":")),
+            }
+        ]
+        result = HERMES.MemoryClient(
+            StaticMemoryHttp(
+                {
+                    "content": content,
+                    "structuredContent": expected,
+                    "isError": False,
+                    "_meta": {"private": sentinel},
+                }
+            )
+        ).tool("get_ticket", {})
+        self.assertEqual(result, expected)
+        self.assertNotIn(sentinel, json.dumps(result))
+
+        with self.assertRaises(HERMES.SafeError) as caught:
+            HERMES.MemoryClient(
+                StaticMemoryHttp(
+                    {
+                        "content": content,
+                        "structuredContent": expected,
+                        "_meta": [sentinel],
+                    }
+                )
+            ).tool("get_ticket", {})
+        self.assertNotIn(sentinel, str(caught.exception))
 
 
 class HermesMemoryCanaryTest(unittest.TestCase):
@@ -1234,6 +1402,33 @@ class HermesMemoryCanaryTest(unittest.TestCase):
             HERMES.MAX_CANARY_CLEANUP_REQUESTS,
         )
         self.assertEqual(complete.cleanup, "pass")
+
+    def test_cleanup_uses_structured_content_parser(self) -> None:
+        run_id = "run-safe-structured-cleanup"
+        fake = StatefulFakeMemory(run_id)
+        fake.seed_ticket()
+        fake.ticket["status"] = "planned"
+        state = self._initial_state(run_id)
+        state.ticket_id = fake.ticket_id
+        state.phase = "awaiting_admin_approval"
+        state.checks = list(HERMES.CANARY_CHECKS[:6])
+        state.requests = 13
+        state.mutations = 2
+        state.embedding_writes = 2
+        memory = HERMES.MemoryClient(
+            StatefulFakeMemoryHttp(fake, result_shape="structured")
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "state"
+            HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+            HERMES.Canary(memory, state, receipt).cleanup()
+            complete = HERMES.CanaryState.from_receipt(
+                HERMES.load_json_receipt(receipt)
+            )
+        self.assertEqual(complete.cleanup, "pass")
+        self.assertEqual(fake.ticket["status"], "abandoned")
+        self.assertIsNone(fake.ticket["execution_approved_at"])
+        self.assertIsNone(fake.ticket["execution_approved_by"])
 
     def test_ambiguous_create_is_reconciled_by_fixed_repo_selector(self) -> None:
         run_id = "run-safe-reconcile"
