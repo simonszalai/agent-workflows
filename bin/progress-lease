@@ -19,6 +19,7 @@ POLLING_OPERATIONS = {
     "list_agents",
     "github_status",
     "render_status",
+    "prefect_status",
     "equivalent_status_read",
 }
 

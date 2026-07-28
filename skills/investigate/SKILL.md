@@ -213,6 +213,8 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    {
      bug, environment,
      root_cause: { statement, confidence, evidence_summary, survived_skeptics } | null,
+     failure_class: code_defect | verifier_defect | environment_capacity |
+                    external_observation | invalid_evidence | unknown,
      causal_chain: ["trigger", ..., "symptom"],
      recommended_remediation,
      hypotheses: [
@@ -279,6 +281,24 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
      that must also be true if this link is correct
    - **If a prediction was wrong but a fix appears to work, you found a symptom,
      not the root cause** — the real cause is still active
+
+6a. **Verification-failure classification and owner** — When the input is a failed verification
+   row, classify it before recommending any mutation:
+
+   | Class | Next owner |
+   | --- | --- |
+   | `code_defect` | normal product build + full required review |
+   | `verifier_defect` | bounded verifier owner |
+   | `environment_capacity` | environment/capacity owner |
+   | `external_observation` | observation/provider owner |
+   | `invalid_evidence` | evidence-contract owner |
+   | `unknown` | fail closed; gather the named missing evidence |
+
+   Only `code_defect` enters a product-code revision. Never convert uncertainty into
+   `code_defect`; `unknown` is a valid fail-closed result. Verifier, environment, observation, and
+   evidence fixes do not create a product revision. If this is already the second staging
+   revision for the same activation/contract, include the class and exact contract delta in the
+   stabilization record before any further mutation.
 
 7. **Smart escalation** — If 2–3 hypotheses are exhausted without confirmation:
 
@@ -402,6 +422,7 @@ Include in the investigation artifact after Root Causes section:
 The investigation artifact contains:
 
 - Root causes identified
+- Verification failure class and bounded next owner (when applicable)
 - Evidence from each source
 - Severity assessment
 - Recommended fixes (high-level)

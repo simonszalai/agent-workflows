@@ -21,9 +21,14 @@ and relevant deployment-guide rows — and must return:
   revision);
 - the causal chain from the shipped change (or environment/deploy state) to the observed bad
   output — or an explicit statement that the failure predates the activation boundary;
-- classification: `code_defect`, `deploy_or_config_gap`, `data_or_migration_gap`,
-  `environment_or_dependency`, `contract_wrong` (the evidence row itself is incorrect), or
-  `pre_existing`.
+- classification: `code_defect`, `verifier_defect`, `environment_capacity`,
+  `external_observation`, `invalid_evidence`, or `unknown`.
+
+`unknown` is the honest fail-closed default when the evidence cannot distinguish the classes.
+Only `code_defect` may enter a product build/review loop. Route `verifier_defect` to the bounded
+verifier owner, `environment_capacity` to the environment owner, `external_observation` to its
+observation/provider owner, and `invalid_evidence` to the evidence-contract owner. Those routes do
+not create a product-code revision.
 
 Investigation stays inside the verification boundaries: strictly read-only, no new flow triggers
 beyond what §Boundaries already permitted for evidence collection, and bounded by the same
@@ -54,13 +59,11 @@ Apply a fix in the same run **only when all of these hold**:
 
 1. standalone ticket mode (never in `--epic`/`--milestone` mode — remediation there belongs to
    `/epic-flow`'s fix loop) and the environment is **staging**;
-2. root cause is `confirmed` with reproducible evidence and classified `code_defect` or
-   `contract_wrong`;
+2. root cause is `confirmed` with reproducible evidence and classified `code_defect`;
 3. the fix is small and low-risk by the §9b risk vocabulary: no schema changes, no
    deploy-config/infra changes, no auth/security surface, no data backfill or migration;
 4. the fix lands on the ticket's existing branch through the normal owners — a `builder` agent
-   makes the code change (or, for `contract_wrong`, the deployment-guide evidence row is
-   corrected), the branch is pushed, and redeploy + re-verification go through
+   makes the code change, the branch is pushed, and redeploy + re-verification go through
    `/ticket-deploy staging` — `/ticket-verify` itself never edits environments or deploys.
 
 Production FAILs are never direct-fixed from this skill. Code/config/auth remediation must use the
@@ -95,8 +98,10 @@ The verification report records each stage independently:
 Never report “unblocked” at an earlier stage. Re-verification starts only after all required stages
 are true; missing stages are explicit blockers with their owner and resume command.
 
-`pre_existing` failures additionally get a route to file a separate bug ticket via
-`ticket-curator` so the regression-vs-baseline distinction stays tracked.
+After two staging revisions for the same activation/contract, enter stabilization mode before any
+further mutation: persist the latest failure class and the exact contract delta. A third mutation
+without those fields is invalid. Stabilization does not turn `unknown` into a code defect and does
+not waive deploy, review, or verification gates.
 
 ## 4. Output additions
 

@@ -6,7 +6,7 @@ description: >-
   (evidence), ticket-promote (production landing + deploy). Self-heals routine CI failures and
   stops on behavior-verification failures, blockers, unsafe evidence triggers, genuine timing
   waits, or human-judgment decisions.
-max_turns: 300
+max_turns: 30
 ---
 
 # Ticket Deploy
@@ -53,6 +53,13 @@ Read and follow:
 All CI and Prefect waits must use one bounded waiter process. In Conductor, dispatch only the wait
 to one fresh leaf with `fork_turns: "none"`, then block once for its terminal result. Never poll a
 resumable process session or re-sample the parent model while the external run is pending.
+
+For each activated revision, `/ticket-verify` compiles all finalized rows into exactly one
+`bin/deploy-verify-controller` manifest. This orchestrator consumes only its terminal JSON receipt
+or bounded timeout/resume result. It must not run a second ad-hoc verifier, reattest identity
+outside the controller, or split one revision's rows across model turns. Unsupported evidence
+surfaces fail closed; all existing deploy, auth, exact-transport, safety, cleanup, and evidence
+predicates remain in the manifest.
 
 Before any high-cardinality external producer required by a deployment guide (cohort, soak,
 per-record verifier, repeated SSH/API session, or equivalent), run one real unit through the
@@ -114,7 +121,10 @@ Run:
 
 Stop on every outcome except exact `PASS`:
 
-- `FAIL`: stop so the user can inspect the failing flow/evidence. Do not fix, redeploy, or promote.
+- `FAIL`: require a persisted failure class before any new revision. Only `code_defect` may enter
+  the normal product build/review/redeploy loop. Route `verifier_defect`, `environment_capacity`,
+  `external_observation`, and `invalid_evidence` to their bounded verifier/environment/
+  observation/evidence owners without mutating product code. `unknown` fails closed and stops.
 - `BLOCKED`: stop with the exact missing deployment, unsafe trigger, or contract repair.
 - `NEEDS_MORE_TIME`: stop with the recorded awaited condition and exact resume command. It is
   valid only when a live producer or already-triggered downstream process will produce evidence
@@ -125,6 +135,13 @@ Stop on every outcome except exact `PASS`:
 - exact `PASS`: require the persisted staging evidence artifact. For target `staging`, report and
   stop here (the ticket rests at `staging_verified` for an explicit `prod`/`full` continuation).
   For target `full`, continue to §4.
+
+Track staging revision sequence by activation key + evidence-contract version. After two staging
+revisions for the same pair, enter stabilization mode: persist the latest failure class and exact
+contract delta before any third code mutation. Same-risk follow-ups use one delta builder and one
+delta reviewer; a newly crossed security, auth, runtime-protocol, migration, destructive-data, or
+browser-patch boundary resets to the full/heavy review path with its specialist coverage. Rotation
+continues these gates from the immutable checkpoint; it never skips them.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 

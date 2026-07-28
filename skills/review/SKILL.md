@@ -294,14 +294,22 @@ ownership and fail-loud behavior still apply.
 
 ### Review iteration loop
 
-Autonomous callers run one review/fix round by default. A second (maximum third on heavy scope) is
-allowed only when an independent peer materially disagreed, not merely to
-re-confirm fixes. Reviewers never rerun validation; they review the bounded diff and recorded
-orchestrator evidence only. Resolution builders also do not validate. After all fixes, the main
-orchestrator reuses the pre-review PASS if the tree is unchanged or runs one final full gate on the
-changed tree. Carry only contested findings, unresolved advisories, and residual risks into the
-next bounded packet. Use a blocking bounded wait or a single resume command; never model-drive
-provider polling.
+Autonomous callers run one review wave by default. Every additional role/wave cites the recorded
+escalation trigger in the ticket phase's mechanically validated `fanout_budget`; reviewer
+availability or curiosity is not a trigger. A second (maximum third on heavy scope) wave is allowed
+only when an independent peer materially disagreed, not merely to re-confirm fixes.
+
+A same-risk follow-up revision uses one delta builder and one delta reviewer over the prior
+reviewed tree. If the delta first crosses security, auth, runtime-protocol, migration,
+destructive-data, or browser-patch risk, reset to the full/heavy path and retain the matching
+specialist coverage. Never label a new boundary "delta" to save fanout.
+
+Reviewers never rerun validation; they review the bounded diff and recorded orchestrator evidence
+only. Resolution builders also do not validate. After all fixes, the main orchestrator reuses an
+exact-tree/exact-command PASS receipt or runs the one orchestrator-owned final gate on the changed
+tree. Carry only contested findings, unresolved advisories, and residual risks into the next
+bounded packet. Use a blocking bounded wait or a single resume command; never model-drive provider
+polling.
 
 ## Process
 

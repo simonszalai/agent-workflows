@@ -168,15 +168,25 @@ def compact_exec_receipt(text: str) -> dict | None:
         return None
     if not isinstance(rerun_command, str) or " && " not in rerun_command:
         return None
-    command = rerun_command.split(" && ", 1)[1]
-    normalized = " ".join(command.split())
+    exact = value.get("normalized_exact_command")
+    if isinstance(exact, str) and exact:
+        normalized = exact
+    else:
+        command = rerun_command.split(" && ", 1)[1]
+        normalized = " ".join(command.split())
     return {
         "tree_sha": tree_sha,
         "normalized_exact_command": normalized,
         "status": value.get("status"),
         "exit_code": value.get("exit_code"),
         "output_file": value.get("output_file"),
-        "attribution_certain": value.get("tree_changed_during_command") is not True,
+        "attribution_certain": (
+            value.get(
+                "attribution_certain",
+                value.get("tree_changed_during_command") is not True,
+            )
+            is True
+        ),
     }
 
 
@@ -570,15 +580,15 @@ def main() -> None:
         statuses = [row.get("status") for row in rows]
         certain = all(row["attribution_certain"] for row in rows)
         if not certain:
-            classification = "uncertain_tree_changed_during_command"
+            classification = "uncertain_attribution"
         elif len(rows) > 1:
-            classification = "duplicate_unchanged_tree"
+            classification = "exact_tree_duplicate"
         elif len(command_trees[command]) > 1:
-            classification = "changed_tree_rerun"
+            classification = "changed_tree_run"
         else:
-            classification = "initial"
+            classification = "initial_run"
         if certain and (tree_sha, command) in repaired_keys:
-            classification = "failure_repair_rerun"
+            classification = "repair_run"
         validation_attribution.append({
             "tree_sha": tree_sha,
             "normalized_exact_command": command,
