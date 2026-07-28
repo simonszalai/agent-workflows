@@ -1,54 +1,49 @@
 ---
 name: tool-postgres
-description: Postgres MCP tool reference for database investigation. Portable to any project using Postgres MCP.
+description: Postgres access reference for database investigation — psql wrapper (ts-prefect) or Postgres MCP tools (other projects).
 ---
 
-# Postgres MCP Tool Reference
+# Postgres Access Reference
 
-How to use Postgres MCP tools for database investigation.
+How to query project databases during investigation.
 
 Also follow `../references/execution-economy.md` for run-local caching and bounded output.
 
-**Important:** Production Postgres MCP is read-only. Use it for investigation and querying
-only. Data modifications must go through application code (flows, scripts) and the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos may still use Alembic/Prisma migrations).
+**Important:** Production Postgres access is read-only. Use it for investigation and
+querying only. Data modifications must go through application code (flows, scripts) and
+the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos
+may still use Alembic/Prisma migrations).
 
-## Server & Tool Layout (DBHub, since 2026-07-12)
+## Primary interface: `scripts/db/sql.sh` (ts-prefect, since 2026-07-28)
 
-Postgres access goes through one `postgres` MCP server per project (DBHub behind the
-mcp-gateway). All of the project's environments are **sources on that one server**, and the
-tool name carries the environment as a suffix:
-
-| Environment | Tool | Access |
-| ----------- | ---- | ------ |
-| Production | `mcp__postgres__execute_sql_prod` | Read-only (writes rejected) |
-| Staging | `mcp__postgres__execute_sql_staging` | Read-write |
-| Dev (local) | `mcp__postgres__execute_sql_dev` | Read-write |
-| Prefect prod (ts only) | `mcp__postgres__execute_sql_prod_prefect` | Read-only |
-| autodev-memory ts (ts only) | `mcp__postgres__execute_sql_autodev_ts` | Read-only |
-
-Each source also has a schema-exploration tool: `mcp__postgres__search_objects_<env>`.
-
-The shared autodev-memory global database is its own read-only single-source server, so
-its tools keep plain names: `mcp__postgres_autodev_global__execute_sql` / `__search_objects`.
-
-**Examples:**
+In ts-prefect (and any repo that ships it), database access is a checked-in psql wrapper
+run via the Bash tool — the dbhub `postgres` MCP server was removed (it lost the client
+tool-registry race on cloud VMs, leaving sessions with no DB tools):
 
 ```
-# Production
-mcp__postgres__execute_sql_prod(sql="SELECT ...")
-
-# Staging
-mcp__postgres__execute_sql_staging(sql="SELECT ...")
-
-# Dev
-mcp__postgres__execute_sql_dev(sql="SELECT ...")
+scripts/db/sql.sh <dev|staging|prod> "<SQL>"          # run a query (CSV output)
+scripts/db/sql.sh <dev|staging|prod> search "<term>"  # find tables/columns/indexes/functions
 ```
 
-**CRITICAL:** When told to investigate a specific environment, use that environment's tool
-suffix. Never default to `_prod` when staging or dev was requested.
+- Credentials resolve lazily per call (op service-account token; silent on Mac and cloud).
+  Never print DSNs or tokens.
+- Prod is read-only (ts_readonly role + read-only transaction GUC); 30s statement timeout
+  everywhere; output capped at 50 KB with a TRUNCATED marker — add LIMIT, don't retry
+  without one.
 
-Older sessions may still expose the legacy per-environment servers
-(`mcp__postgres_prod__execute_sql` etc.) — same rules apply, prefix instead of suffix.
+**CRITICAL:** When told to investigate a specific environment, pass that tier argument.
+Never default to `prod` when staging or dev was requested.
+
+## MCP tool layout (projects still on Postgres MCP / Mac gateway transition)
+
+Other projects still expose one `postgres` MCP server (DBHub behind the mcp-gateway) with
+the environment as a tool-name suffix: `mcp__postgres__execute_sql_<env>` and
+`mcp__postgres__search_objects_<env>` (env = prod/staging/dev; ts adds `prod_prefect` and
+`autodev_ts`). Prod tools are read-only. The shared autodev-memory global database is its
+own server: `mcp__postgres_autodev_global__execute_sql` / `__search_objects`. Older
+sessions may expose legacy per-environment servers (`mcp__postgres_prod__execute_sql`
+etc.) — same rules apply. If both the wrapper and MCP tools are available, prefer the
+wrapper.
 
 ## Mandatory query and payload bounds
 
@@ -77,8 +72,8 @@ path rather than routing it through MCP or model context.
 | `mcp__postgres__execute_sql_{env}` | Run SQL (multiple statements allowed, `;`-separated) |
 | `mcp__postgres__search_objects_{env}` | Search/explore schemas, tables, columns, indexes, procedures |
 
-Everything else is plain SQL via `execute_sql_{env}` — see the recipes below for what the
-old dedicated tools used to do.
+Everything else is plain SQL — see the recipes below for what the old dedicated tools
+used to do.
 
 ## Data Investigation Patterns
 
@@ -172,7 +167,8 @@ FROM pg_stat_user_indexes ORDER BY idx_scan ASC, pg_relation_size(indexrelid) DE
 
 ## Schema Exploration
 
-Prefer `search_objects_{env}` for interactive exploration. SQL equivalents:
+Prefer `scripts/db/sql.sh <tier> search "<term>"` (or `search_objects_{env}` on MCP
+projects) for interactive exploration. SQL equivalents:
 
 ```sql
 -- list schemas

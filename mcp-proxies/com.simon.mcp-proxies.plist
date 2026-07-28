@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Loopback MCP auth proxies (render 8789, tailscale 8790, autodev-memory 8792).
+     Install: cp to ~/Library/LaunchAgents/ then
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.simon.mcp-proxies.plist
+     Unlike the mcp-gateway plist, retrying is FREE here — credentials come from the
+     Keychain service-account token, never Touch ID — so StartInterval re-runs the
+     idempotent `ensure` every 5 minutes as a self-heal (a healthy listener is left
+     alone; a dead one is restarted). -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.simon.mcp-proxies</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/simon/dev/agent-workflows/mcp-proxies/start-proxies.sh</string>
+        <string>ensure</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/mcp-proxies.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mcp-proxies.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
