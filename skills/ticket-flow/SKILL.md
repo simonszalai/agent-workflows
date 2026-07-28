@@ -137,6 +137,10 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   `planned` ticket with a plan artifact enters at build; a built, locally verified ticket enters
   at deploy). Do not resume past a `verify_*_failed` status without a new explicit user
   instruction.
+- For a Hermes-origin ticket, consume only server-returned pickup/approval truth. The restricted
+  principal cannot self-approve or set execution statuses; an admin approval pair authorizes the
+  current live plan, and any later Hermes edit clears it. Do not add a client-side origin filter or
+  carry a cached approval past an edit.
 
 ### 1. Gather context
 

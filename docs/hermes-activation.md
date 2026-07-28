@@ -299,6 +299,63 @@ Unknown or missing fields, duplicate labels/IDs, non-PASS state, failed cleanup,
 for a bearer, secret, password, token, value, body, header, C4, digest, or length blocks F0021.
 The handoff contains ref names, never resolved values or secret-derived material.
 
+## F0021 gateway consumer
+
+`bin/hermes-gateway-activation` is the reviewed `e0006-m3-gateway/v1` consumer. It accepts only the
+closed handoff above and the frozen F0023 merge/tree. `prepare` edits only the checked-in
+`mcp-gateway/gateway.env`, adding the two canonical ref names; it never reads either value.
+
+After the F0021 PR is merged and its exact main tree is verified, the production operator uses
+private mode-0600 receipt paths:
+
+```bash
+bin/hermes-gateway-activation prepare \
+  --handoff-receipt /absolute/private/f0033-handoff.json \
+  --gateway-env "$PWD/mcp-gateway/gateway.env" \
+  --receipt /absolute/private/f0021-prepare.json
+
+bin/hermes-gateway-activation verify-config \
+  --handoff-receipt /absolute/private/f0033-handoff.json \
+  --gateway-env "$PWD/mcp-gateway/gateway.env" \
+  --receipt /absolute/private/f0021-config.json
+
+cd mcp-gateway
+SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway validation' \
+  ../bin/redacted-exec -- \
+  /opt/homebrew/bin/op run --env-file=./gateway.env -- node gateway.mjs --validate
+launchctl kickstart -k "gui/$(id -u)/com.simon.mcp-gateway"
+```
+
+Wait for `/healthz` to report all three `hermes/*` routes before running the phased canary in an
+`op run --env-file=mcp-gateway/gateway.env` process that also receives the existing default local
+gateway token without printing it:
+
+```bash
+bin/hermes-gateway-activation canary --phase prepare \
+  --handoff-receipt /absolute/private/f0033-handoff.json \
+  --state-receipt /absolute/private/f0021-canary.json
+# Admin approves the exact returned synthetic ticket.
+bin/hermes-gateway-activation canary --phase after-approval \
+  --handoff-receipt /absolute/private/f0033-handoff.json \
+  --state-receipt /absolute/private/f0021-canary.json
+# Admin reapproves the same ticket.
+bin/hermes-gateway-activation canary --phase after-reapproval \
+  --handoff-receipt /absolute/private/f0033-handoff.json \
+  --state-receipt /absolute/private/f0021-canary.json
+```
+
+The canary is capped at one synthetic repo/ticket/source/plan, 32 gateway requests, eight accepted
+mutations, two admin actions, and five minutes. It verifies gateway health, Render mutation
+denials, credential isolation, batch/REST bypass rejection, filtered `tools/list`, server-side
+origin/status/approval/pickup behavior, and terminal cleanup. Receipts contain only fixed check
+codes and safe identifiers. If a phase fails after ticket creation, run `--phase cleanup`; do not
+retry `prepare`.
+
+Rollback removes only the two Hermes ref lines, performs the same reviewed validation and one
+gateway restart, then proves `/healthz`. F0021 never changes the memory Render configuration;
+memory rollback remains owned by F0033. The signed GitHub webhook ping is out of scope and must not
+be run.
+
 ## Rollback
 
 Before a consumer uses the provider, code rollback is an ordinary revert of the reviewed provider

@@ -130,3 +130,16 @@ with tags or free-form metadata.
 There is no `approved` ticket status. Approval is the decision to leave `planned` and start
 work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
 are retired; use `in_progress` for any ticket-related flow that has started.
+
+### Hermes-origin approval and pickup
+
+Hermes-origin tickets use the same statuses but have an additional server-owned execution gate.
+The restricted principal may create and plan its own ticket, but it cannot set execution statuses
+or approve execution. An admin approves the current live plan with `approve_execution=true`; the
+server stamps both `execution_approved_at` and `execution_approved_by`.
+
+Any later Hermes-owned ticket edit clears both approval fields atomically. The ticket must then be
+reapproved before pickup. `next_ticket` enforces this server-side: it returns a Hermes-origin
+`planned` ticket only when its current plan has the intact admin approval pair and the caller's
+project/repo scope matches. Workflow skills must not approximate this with a client-side origin
+filter, status rewrite, tag, or cached approval.
