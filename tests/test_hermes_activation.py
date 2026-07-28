@@ -803,6 +803,10 @@ class StatefulFakeMemory:
         self.artifacts: list[dict[str, object]] = []
         self.human_tags = {"area": "security-operations"}
         self.calls: list[tuple[str, object]] = []
+        self.applied_result_additions: dict[str, object] = {}
+        self.applied_result_removals: set[str] = set()
+        self.applied_result_copies = 1
+        self.return_batch_error = False
 
     def seed_ticket(self) -> None:
         self.ticket = {
@@ -990,20 +994,24 @@ class StatefulFakeMemory:
             raise AssertionError("missing ticket")
         self.ticket["status"] = "planned"
         self.artifacts.append({"id": "artifact-plan", "artifact_type": "plan"})
+        if self.return_batch_error:
+            return {"error": "synthetic provider error"}
+        applied_result: dict[str, object] = {
+            "operation_id": operation["operation_id"],
+            "ticket_id": self.ticket_id,
+            "repo": self.repo,
+            "status": "applied",
+            "artifact_id": "artifact-plan",
+            "ticket_status": "planned",
+        }
+        applied_result.update(self.applied_result_additions)
+        for key in self.applied_result_removals:
+            applied_result.pop(key, None)
         return {
             "mode": "atomic",
             "committed": True,
             "complete": True,
-            "results": [
-                {
-                    "operation_id": operation["operation_id"],
-                    "ticket_id": self.ticket_id,
-                    "repo": self.repo,
-                    "status": "applied",
-                    "artifact_id": "artifact-plan",
-                    "ticket_status": "planned",
-                }
-            ],
+            "results": [dict(applied_result) for _ in range(self.applied_result_copies)],
         }
 
 
@@ -1376,6 +1384,152 @@ class HermesMemoryCanaryTest(unittest.TestCase):
                     for operation in batch_operations
                 )
             )
+
+    def test_plan_transition_accepts_current_eight_key_projection(self) -> None:
+        run_id = "run-safe-current-projection"
+        fake = StatefulFakeMemory(run_id)
+        fake.applied_result_additions = {
+            "category": "feature",
+            "assignee_id": None,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "state"
+            state = self._initial_state(run_id)
+            HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+            HERMES.Canary(HERMES.MemoryClient(StatefulFakeMemoryHttp(fake)), state, receipt).prepare()
+            saved = HERMES.CanaryState.from_receipt(HERMES.load_json_receipt(receipt))
+        self.assertEqual(saved.phase, "awaiting_admin_approval")
+        self.assertEqual(saved.checks, list(HERMES.CANARY_CHECKS[:6]))
+
+    def test_plan_transition_accepts_legacy_six_key_projection(self) -> None:
+        run_id = "run-safe-legacy-projection"
+        fake = StatefulFakeMemory(run_id)
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "state"
+            state = self._initial_state(run_id)
+            HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+            HERMES.Canary(HERMES.MemoryClient(StatefulFakeMemoryHttp(fake)), state, receipt).prepare()
+            saved = HERMES.CanaryState.from_receipt(HERMES.load_json_receipt(receipt))
+        self.assertEqual(saved.phase, "awaiting_admin_approval")
+
+    def test_plan_transition_rejects_each_missing_required_field(self) -> None:
+        required = (
+            "operation_id",
+            "ticket_id",
+            "repo",
+            "status",
+            "artifact_id",
+            "ticket_status",
+        )
+        for field in required:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                run_id = f"run-safe-missing-{field.replace('_', '-')}"
+                fake = StatefulFakeMemory(run_id)
+                fake.applied_result_removals = {field}
+                receipt = Path(directory) / "state"
+                state = self._initial_state(run_id)
+                HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+                with self.assertRaisesRegex(
+                    HERMES.SafeError,
+                    "canary_plan_transition_failed",
+                ):
+                    HERMES.Canary(
+                        HERMES.MemoryClient(StatefulFakeMemoryHttp(fake)),
+                        state,
+                        receipt,
+                    ).prepare()
+
+    def test_plan_transition_rejects_unknown_additive_field(self) -> None:
+        run_id = "run-safe-unknown-projection"
+        fake = StatefulFakeMemory(run_id)
+        fake.applied_result_additions = {"future_field": "not-reviewed"}
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "state"
+            state = self._initial_state(run_id)
+            HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+            with self.assertRaisesRegex(
+                HERMES.SafeError,
+                "canary_plan_transition_failed",
+            ):
+                HERMES.Canary(
+                    HERMES.MemoryClient(StatefulFakeMemoryHttp(fake)),
+                    state,
+                    receipt,
+                ).prepare()
+
+    def test_plan_transition_rejects_wrong_additive_values_and_types(self) -> None:
+        variants = (
+            {"category": "operations", "assignee_id": None},
+            {"category": 1, "assignee_id": None},
+            {"category": "feature", "assignee_id": "user-123"},
+            {"category": "feature", "assignee_id": False},
+        )
+        for index, additions in enumerate(variants):
+            with self.subTest(additions=additions), tempfile.TemporaryDirectory() as directory:
+                run_id = f"run-safe-additive-{index}"
+                fake = StatefulFakeMemory(run_id)
+                fake.applied_result_additions = additions
+                receipt = Path(directory) / "state"
+                state = self._initial_state(run_id)
+                HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+                with self.assertRaisesRegex(
+                    HERMES.SafeError,
+                    "canary_plan_transition_failed",
+                ):
+                    HERMES.Canary(
+                        HERMES.MemoryClient(StatefulFakeMemoryHttp(fake)),
+                        state,
+                        receipt,
+                    ).prepare()
+
+    def test_plan_transition_rejects_duplicate_results_and_error_envelopes(self) -> None:
+        variants = (
+            ("duplicate", {"applied_result_copies": 2}),
+            ("error", {"return_batch_error": True}),
+        )
+        for label, attributes in variants:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                run_id = f"run-safe-{label}-result"
+                fake = StatefulFakeMemory(run_id)
+                for name, value in attributes.items():
+                    setattr(fake, name, value)
+                receipt = Path(directory) / "state"
+                state = self._initial_state(run_id)
+                HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+                with self.assertRaisesRegex(
+                    HERMES.SafeError,
+                    "canary_plan_transition_failed",
+                ):
+                    HERMES.Canary(
+                        HERMES.MemoryClient(StatefulFakeMemoryHttp(fake)),
+                        state,
+                        receipt,
+                    ).prepare()
+
+    def test_cleanup_succeeds_after_plan_transition_projection_failure(self) -> None:
+        run_id = "run-safe-projection-cleanup"
+        fake = StatefulFakeMemory(run_id)
+        fake.applied_result_additions = {"category": "feature", "assignee_id": "unexpected"}
+        memory = HERMES.MemoryClient(StatefulFakeMemoryHttp(fake))
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "state"
+            state = self._initial_state(run_id)
+            HERMES.atomic_write_json(receipt, HERMES.asdict(state))
+            with self.assertRaisesRegex(
+                HERMES.SafeError,
+                "canary_plan_transition_failed",
+            ):
+                HERMES.Canary(memory, state, receipt).prepare()
+
+            state = HERMES.CanaryState.from_receipt(HERMES.load_json_receipt(receipt))
+            HERMES.Canary(memory, state, receipt).cleanup()
+            complete = HERMES.CanaryState.from_receipt(HERMES.load_json_receipt(receipt))
+
+        self.assertEqual(complete.phase, "complete")
+        self.assertEqual(complete.cleanup, "pass")
+        self.assertEqual(fake.ticket["status"], "abandoned")
+        self.assertIsNone(fake.ticket["execution_approved_at"])
+        self.assertIsNone(fake.ticket["execution_approved_by"])
 
     def test_cleanup_reserve_survives_normal_cap_exhaustion(self) -> None:
         run_id = "run-safe-cleanup"

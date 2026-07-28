@@ -201,6 +201,38 @@ def require_exact_keys(value: dict[str, object], keys: set[str], code: str) -> N
         raise SafeError(code)
 
 
+def validate_plan_transition_result(
+    result: dict[str, object],
+    *,
+    ticket_id: str,
+    repo: str,
+) -> None:
+    code = "canary_plan_transition_failed"
+    required = {
+        "operation_id",
+        "ticket_id",
+        "repo",
+        "status",
+        "artifact_id",
+        "ticket_status",
+    }
+    additive = {"category", "assignee_id"}
+    if frozenset(result) not in {frozenset(required), frozenset(required | additive)}:
+        raise SafeError(code, exit_code=EXIT_CLEANUP)
+    if (
+        result["operation_id"] != "create-plan-and-plan-ticket"
+        or result["ticket_id"] != ticket_id
+        or result["repo"] != repo
+        or result["status"] != "applied"
+        or result["ticket_status"] != "planned"
+    ):
+        raise SafeError(code, exit_code=EXIT_CLEANUP)
+    require_opaque_id(result["artifact_id"], code)
+    if additive.issubset(result):
+        if result["category"] != "feature" or result["assignee_id"] is not None:
+            raise SafeError(code, exit_code=EXIT_CLEANUP)
+
+
 def compact_json(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode(
         "utf-8"
@@ -1639,20 +1671,11 @@ class Canary:
         ):
             raise SafeError("canary_plan_transition_failed", exit_code=EXIT_CLEANUP)
         planned_result = require_object(planned_results[0], "canary_plan_transition_failed")
-        require_exact_keys(
+        validate_plan_transition_result(
             planned_result,
-            {"operation_id", "ticket_id", "repo", "status", "artifact_id", "ticket_status"},
-            "canary_plan_transition_failed",
+            ticket_id=self.state.ticket_id,
+            repo=self.state.repo,
         )
-        if (
-            planned_result["operation_id"] != "create-plan-and-plan-ticket"
-            or planned_result["ticket_id"] != self.state.ticket_id
-            or planned_result["repo"] != self.state.repo
-            or planned_result["status"] != "applied"
-            or planned_result["ticket_status"] != "planned"
-        ):
-            raise SafeError("canary_plan_transition_failed", exit_code=EXIT_CLEANUP)
-        require_opaque_id(planned_result["artifact_id"], "canary_plan_transition_failed")
         pickup = self.tool("next_ticket", {"project": PROJECT, "repo": self.state.repo})
         require_exact_keys(pickup, {"ticket", "message"}, "canary_pickup_shape_mismatch")
         if pickup["ticket"] is not None:
