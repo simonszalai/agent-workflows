@@ -37,19 +37,23 @@ Your Task prompt will specify the target environment. Use the matching tool pref
 
 ### Database Tools
 
-One `postgres` MCP server carries all environments as tool-name suffixes (DBHub):
+If the repo ships `scripts/db/sql.sh` (ts-prefect does), that is the database interface —
+run it via Bash with the environment as the tier argument:
 
-| Environment | Tool                                  |
-| ----------- | ------------------------------------- |
-| Production  | `mcp__postgres__execute_sql_prod`     |
-| Staging     | `mcp__postgres__execute_sql_staging`  |
-| Dev (local) | `mcp__postgres__execute_sql_dev`      |
+| Environment | Command                                    |
+| ----------- | ------------------------------------------ |
+| Production  | `scripts/db/sql.sh prod "<SQL>"`           |
+| Staging     | `scripts/db/sql.sh staging "<SQL>"`        |
+| Dev (local) | `scripts/db/sql.sh dev "<SQL>"`            |
 
-Schema exploration: `mcp__postgres__search_objects_<env>`. (Older sessions may still expose
-the legacy per-environment servers `mcp__postgres_<env>__execute_sql` — same rule applies.)
+Schema exploration: `scripts/db/sql.sh <tier> search "<term>"`.
 
-**If the prompt says "Environment: staging", use the `_staging` tools exclusively.**
-Never fall back to production tools when a different environment is specified.
+Projects still on Postgres MCP expose one `postgres` server with tool-name suffixes:
+`mcp__postgres__execute_sql_<env>` / `mcp__postgres__search_objects_<env>` (older
+sessions: legacy `mcp__postgres_<env>__execute_sql` servers — same rule applies).
+
+**If the prompt says "Environment: staging", use the staging tier/tools exclusively.**
+Never fall back to production when a different environment is specified.
 
 ### Infrastructure Tools (Render)
 
