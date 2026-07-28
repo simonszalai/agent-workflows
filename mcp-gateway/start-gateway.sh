@@ -94,6 +94,9 @@ summarize_error_file() {
 # this host intentionally has access to only a subset of the configured vaults.
 GATEWAY_ENV_FILE="$HERE/gateway.env"
 [[ -f "$HERE/gateway.local.env" ]] && GATEWAY_ENV_FILE="$HERE/gateway.local.env"
+# The selected env file is authoritative for restricted-route activation. Clear
+# inherited copies so removing a ref row cannot leave a stale parent-shell token active.
+unset HERMES_AUTODEV_MEMORY_TOKEN HERMES_GATEWAY_TOKEN
 
 export MCP_GATEWAY_HOST="${MCP_GATEWAY_HOST:-127.0.0.1}"
 export MCP_GATEWAY_PORT="${MCP_GATEWAY_PORT:-8765}"

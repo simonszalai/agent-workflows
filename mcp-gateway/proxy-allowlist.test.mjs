@@ -513,6 +513,36 @@ test("route auth and allowlist boundaries integrate", async () => {
 	}
 })
 
+test("health keeps configured route inventory when Hermes credential is absent", async () => {
+	const saved = process.env.HERMES_GATEWAY_TOKEN
+	delete process.env.HERMES_GATEWAY_TOKEN
+	const routes = [{
+		prefix: "hermes/test",
+		target: "http://127.0.0.1:9/mcp",
+		clientTokenEnv: "HERMES_GATEWAY_TOKEN",
+		allowTools: ["search"],
+	}]
+	const server = http.createServer(createRequestHandler(() => routes))
+	try {
+		const port = await listen(server)
+		const health = await request(port, { path: "/healthz", method: "GET" })
+		assert.equal(health.status, 200)
+		const body = JSON.parse(health.body.toString("utf8"))
+		assert.equal(body.ok, true)
+		assert.deepEqual(body.routes, ["hermes/test"])
+		const disabled = await request(port, {
+			path: "/hermes/test",
+			body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+		})
+		assert.equal(disabled.status, 503)
+		assert.match(disabled.body.toString("utf8"), /credential unavailable/)
+	} finally {
+		await close(server)
+		if (saved === undefined) delete process.env.HERMES_GATEWAY_TOKEN
+		else process.env.HERMES_GATEWAY_TOKEN = saved
+	}
+})
+
 test("protected spawn activation is lazy and occurs only after successful route authentication", async () => {
 	const savedToken = process.env.HERMES_GATEWAY_TOKEN
 	delete process.env.HERMES_GATEWAY_TOKEN

@@ -107,8 +107,20 @@ class GatewayActivationTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         path.chmod(0o600)
 
-    def run_prepare(self, root: Path, receipt: Path, handoff_path: Path) -> subprocess.CompletedProcess:
-        env_path = root / "mcp-gateway" / "gateway.env"
+    def run_env_command(
+        self,
+        command: str,
+        root: Path,
+        receipt: Path,
+        handoff_path: Path,
+        env_path: Path | None = None,
+    ) -> subprocess.CompletedProcess:
+        gateway = root / "mcp-gateway"
+        env_path = env_path or (
+            gateway / "gateway.local.env"
+            if (gateway / "gateway.local.env").is_file()
+            else gateway / "gateway.env"
+        )
         env = {
             **os.environ,
             "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
@@ -117,7 +129,7 @@ class GatewayActivationTests(unittest.TestCase):
         return subprocess.run(
             [
                 str(COMMAND),
-                "prepare",
+                command,
                 "--handoff-receipt",
                 str(handoff_path),
                 "--gateway-env",
@@ -154,7 +166,7 @@ class GatewayActivationTests(unittest.TestCase):
             receipt = root / "receipt.json"
             self.write_json(handoff_path, handoff())
 
-            first = self.run_prepare(root, receipt, handoff_path)
+            first = self.run_env_command("prepare", root, receipt, handoff_path, env_path)
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
             output = json.loads(first.stdout)
             self.assertTrue(output["result"]["changed"])
@@ -166,7 +178,7 @@ class GatewayActivationTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(env_path.stat().st_mode), 0o640)
             self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
 
-            second = self.run_prepare(root, receipt, handoff_path)
+            second = self.run_env_command("prepare", root, receipt, handoff_path, env_path)
             self.assertEqual(second.returncode, 0)
             self.assertFalse(json.loads(second.stdout)["result"]["changed"])
 
@@ -190,7 +202,10 @@ class GatewayActivationTests(unittest.TestCase):
                 (gateway / "routes.json").write_text('{"routes":{}}', encoding="utf-8")
                 handoff_path = root / "handoff.json"
                 self.write_json(handoff_path, value)
-                result = self.run_prepare(root, root / "receipt.json", handoff_path)
+                result = self.run_env_command(
+                    "prepare", root, root / "receipt.json", handoff_path,
+                    gateway / "gateway.env",
+                )
                 self.assertNotEqual(result.returncode, 0)
                 output = json.loads(result.stdout)
                 self.assertEqual(output["result"]["code"], expected)
@@ -208,7 +223,9 @@ class GatewayActivationTests(unittest.TestCase):
             (gateway / "routes.json").write_text('{"routes":{}}', encoding="utf-8")
             handoff_path = root / "handoff.json"
             self.write_json(handoff_path, handoff())
-            result = self.run_prepare(root, root / "receipt.json", handoff_path)
+            result = self.run_env_command(
+                "prepare", root, root / "receipt.json", handoff_path, env_path
+            )
             self.assertEqual(
                 json.loads(result.stdout)["result"]["code"],
                 "gateway_env_conflicting_ref",
@@ -232,6 +249,65 @@ class GatewayActivationTests(unittest.TestCase):
                 json.loads(result.stdout)["result"]["code"],
                 "gateway_env_path_invalid",
             )
+
+    def test_local_override_is_the_only_prepare_and_rollback_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            gateway = root / "mcp-gateway"
+            gateway.mkdir()
+            tracked = gateway / "gateway.env"
+            local = gateway / "gateway.local.env"
+            tracked.write_text("TRACKED=unchanged\n", encoding="utf-8")
+            local.write_text("LOCAL=effective\n", encoding="utf-8")
+            tracked_before = tracked.read_bytes()
+            (gateway / "routes.json").write_text(json.dumps({"routes": {
+                prefix: {
+                    "clientTokenEnv": "HERMES_GATEWAY_TOKEN",
+                    "allowTools": ["safe"],
+                }
+                for prefix in (
+                    "hermes/autodev-memory",
+                    "hermes/render",
+                    "hermes/slack",
+                )
+            }}), encoding="utf-8")
+            handoff_path = root / "handoff.json"
+            self.write_json(handoff_path, handoff())
+
+            prepared = self.run_env_command(
+                "prepare", root, root / "prepare.json", handoff_path, local
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+            prepared_result = json.loads(prepared.stdout)["result"]
+            self.assertEqual(
+                prepared_result["gateway_env"],
+                {"basename": "gateway.local.env", "status": "refs_present"},
+            )
+            self.assertNotIn("refs", prepared_result)
+            self.assertEqual(tracked.read_bytes(), tracked_before)
+
+            rejected = self.run_env_command(
+                "prepare", root, root / "wrong.json", handoff_path, tracked
+            )
+            self.assertEqual(
+                json.loads(rejected.stdout)["result"]["code"],
+                "gateway_env_path_invalid",
+            )
+
+            rolled_back = self.run_env_command(
+                "rollback", root, root / "rollback.json", handoff_path, local
+            )
+            self.assertEqual(
+                rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr
+            )
+            rollback_result = json.loads(rolled_back.stdout)["result"]
+            self.assertEqual(rollback_result["gateway_env"], {
+                "basename": "gateway.local.env",
+                "status": "refs_absent",
+            })
+            for name, _ref in GATEWAY.ENV_ROWS:
+                self.assertNotIn(f"{name}=", local.read_text(encoding="utf-8"))
+            self.assertEqual(tracked.read_bytes(), tracked_before)
 
     def test_custom_http_auth_uses_gateway_header_without_authorization(self) -> None:
         observed: dict[str, str | None] = {}

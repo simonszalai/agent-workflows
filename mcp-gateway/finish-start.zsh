@@ -7,6 +7,11 @@ HERE="${0:A:h}"
 NODE_BIN="${NODE_BIN:-/Users/simon/.nvm/versions/node/v24.14.1/bin/node}"
 [[ -x "$NODE_BIN" ]] || NODE_BIN="$(command -v node)"
 
+if (( $# > 1 )) || { (( $# == 1 )) && [[ "$1" != "--validate" ]]; }; then
+  print -u2 "mcp-gateway: finish-start accepts only --validate"
+  exit 64
+fi
+
 postgres_url_swap_database() { # full-url database-name
   local url="$1" db="$2" head tail
   if [[ "$url" == *\?* ]]; then head="${url%%\?*}"; tail="?${url#*\?}"; else head="$url"; tail=""; fi
@@ -40,4 +45,4 @@ else
 fi
 unset TS_PROD_POSTGRES_URL TS_PROD_DATABASE_NAME TS_PROD_PREFECT_DATABASE_NAME TS_PROD_PREFECT_DB
 
-exec "$NODE_BIN" "$HERE/gateway.mjs"
+exec "$NODE_BIN" "$HERE/gateway.mjs" "$@"
