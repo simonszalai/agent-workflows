@@ -603,8 +603,9 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertIn('fork_turns: "none"', contract)
 
         self.assertIn("Model-driven polling is absolutely prohibited", economy)
-        self.assertIn("bin/wait-ci", economy)
-        self.assertIn("bin/wait-prefect-flow", economy)
+        self.assertIn("`wait-ci <pr>`", economy)
+        self.assertIn("`wait-prefect-flow <flow-run-id>", economy)
+        self.assertIn("must resolve through `PATH`", economy)
         self.assertIn("deterministic bounded poller", economy)
         self.assertIn("one blocking foreground", economy)
         self.assertIn("deterministic bounded poller", milestone)
@@ -644,7 +645,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         for sample in prohibited:
             self.assertTrue(model_polling_guidance_violations(sample), sample)
         allowed = (
-            "Run bin/wait-ci once as one blocking foreground command.",
+            "Run wait-ci once as one blocking foreground command.",
             "Never call wait_agent repeatedly for the same pending condition.",
             "The deterministic script, not the model, polls until its hard deadline.",
         )
@@ -743,7 +744,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         create_pr = (ROOT / "skills/create-pr/SKILL.md").read_text()
         methodology = (ROOT / "skills/ticket-plan/references/plan-methodology.md").read_text()
 
-        self.assertIn("bin/wait-ci {pr_number}", deploy)
+        self.assertIn("wait-ci {pr_number}", deploy)
         self.assertNotIn("gh pr checks {pr_number} --watch", deploy)
         self.assertIn("Preflight every deploy command before merge", deploy)
         self.assertIn("bin/redacted-exec", deploy)
@@ -755,6 +756,27 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("tree SHA equals `HEAD`", create_pr)
         self.assertIn("Record a before inventory", methodology)
         self.assertIn("live inventory contains none of the retired items", methodology)
+
+    def test_deployment_wait_owners_enforce_one_fresh_conductor_leaf(self) -> None:
+        owners = (
+            ROOT / "skills/auto-deploy/SKILL.md",
+            ROOT / "skills/ticket-promote/SKILL.md",
+            ROOT / "skills/ticket-verify/SKILL.md",
+            ROOT / "skills/milestone-flow/SKILL.md",
+            ROOT / "skills/workflow-authoring/SKILL.md",
+            ROOT / "skills/references/ci-self-heal.md",
+        )
+        for path in owners:
+            contract = path.read_text()
+            normalized = " ".join(contract.split())
+            self.assertIn('fork_turns: "none"', contract, path)
+            self.assertRegex(normalized, r"block(?:s)? once", path)
+            self.assertNotIn("gh pr checks --watch", contract, path)
+            self.assertRegex(
+                normalized,
+                r"(never|must not).{0,160}(polls?|repeated)",
+                path,
+            )
 
     def test_workflow_authoring_and_promotion_contracts_are_worktree_safe(self) -> None:
         authoring = (ROOT / "skills/workflow-authoring/SKILL.md").read_text()
@@ -902,6 +924,92 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(summary["polls"], 2)
             self.assertEqual(result.stdout.count("\n"), 1)
 
+    def test_shared_waiters_are_portable_from_an_unrelated_consumer_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            installed_bin = root / "installed-bin"
+            consumer = root / "consumer-repository"
+            installed_bin.mkdir()
+            consumer.mkdir()
+            for name in ("wait-ci", "wait-prefect-flow"):
+                (installed_bin / name).symlink_to(ROOT / "bin" / name)
+
+            fake_gh = root / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "printf '[{\"name\":\"test\",\"state\":\"IN_PROGRESS\","
+                "\"bucket\":\"pending\",\"link\":\"x\"}]'\n"
+            )
+            fake_gh.chmod(0o755)
+            fake_prefect = root / "prefect"
+            fake_prefect.write_text(
+                "#!/bin/sh\n"
+                "printf '{\"state\":{\"type\":\"RUNNING\",\"name\":\"Running\"}}'\n"
+            )
+            fake_prefect.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{installed_bin}{os.pathsep}{environment['PATH']}"
+
+            ci = subprocess.run(
+                [
+                    "wait-ci", "12", "--gh", str(fake_gh), "--timeout", "0",
+                    "--initial-delay", "0", "--max-delay", "0",
+                ],
+                cwd=consumer,
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(ci.returncode, 124, ci.stderr)
+            ci_summary = json.loads(ci.stdout)
+            self.assertEqual(ci_summary["status"], "timeout")
+            self.assertEqual(ci_summary["resume_command"], "wait-ci 12 --timeout 1")
+            self.assertNotIn("bin/wait-", ci_summary["resume_command"])
+
+            prefect = subprocess.run(
+                [
+                    "wait-prefect-flow", "run-123",
+                    "--command-prefix", str(fake_prefect), "--timeout", "0",
+                    "--initial-delay", "0", "--max-delay", "0",
+                ],
+                cwd=consumer,
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+            self.assertEqual(prefect.returncode, 124, prefect.stderr)
+            prefect_summary = json.loads(prefect.stdout)
+            self.assertEqual(prefect_summary["status"], "timeout")
+            self.assertTrue(
+                prefect_summary["resume_command"].startswith(
+                    "wait-prefect-flow run-123 "
+                )
+            )
+            self.assertNotIn("bin/wait-", prefect_summary["resume_command"])
+
+    def test_active_workflow_guidance_uses_path_resolved_shared_waiters(self) -> None:
+        result = run_script("workflow-waiter-portability-check")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(json.loads(result.stdout)["violations"], [])
+
+    def test_waiter_portability_check_rejects_repo_relative_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills" / "demo" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("# Demo\n\n```bash\nbin/wait-ci 42\n```\n")
+            result = run_script(
+                "workflow-waiter-portability-check", "--root", str(root)
+            )
+            self.assertEqual(result.returncode, 2)
+            violation = json.loads(result.stdout)["violations"][0]
+            self.assertEqual(violation["waiter"], "bin/wait-ci")
+            self.assertEqual(
+                violation["reason"], "shared_waiters_must_resolve_through_PATH"
+            )
+
     def test_wait_ci_can_wait_for_one_actions_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -991,7 +1099,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("ticket-attributed incident cleanup", wrapper)
         self.assertIn("scripts.prefect_ops.delete_ticket_flow_runs", wrapper)
         self.assertIn("stop and ask the user for\nconfirmation", wrapper)
-        self.assertIn("bin/wait-prefect-flow", verify)
+        self.assertIn("wait-prefect-flow", verify)
         self.assertIn("preserve the failed flow-run history", verify)
         self.assertIn("structurally attributes Prefect incident flow runs", verify)
         self.assertIn("/ticket-deploy <ID> staging", ticket_flow)

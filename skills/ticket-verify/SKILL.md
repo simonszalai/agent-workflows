@@ -242,12 +242,15 @@ Trigger exactly once and capture the run id and parameters. For Prefect, wait wi
 process:
 
 ```text
-bin/wait-prefect-flow <run-id> --command-prefix '<project-approved prefect command>' --timeout 540
+wait-prefect-flow <run-id> --command-prefix '<project-approved prefect command>' --timeout 540
 ```
 
-Follow `execution-economy.md`: in Conductor the wait runs in one fresh `fork_turns: "none"` leaf,
-not in the parent. A `failure` terminal result makes the evidence row and verdict `FAIL`; persist the
-run id/state and stop the caller. A timeout may become `NEEDS_MORE_TIME` only when the same run is
+Follow `execution-economy.md`: in Conductor, dispatch that exact deterministic command immediately
+to one fresh `fork_turns: "none"` leaf and block once for its terminal result. The parent never
+starts or polls a resumable process, polls the leaf, substitutes a CLI `--watch`, or performs
+repeated Prefect status reads. A `failure` terminal result makes the evidence row and verdict
+`FAIL`; persist the run id/state and stop the caller. A timeout may become `NEEDS_MORE_TIME` only
+when the same run is
 `RUNNING`, its worker is healthy, and fresh state/log evidence shows progress. A run still
 `PENDING`/`SCHEDULED` after the bounded startup wait is `BLOCKED` with its missing worker or queue
 precondition, not a timing wait. Include the waiter's exact resume command only for genuine timing

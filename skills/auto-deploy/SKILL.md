@@ -176,11 +176,14 @@ the generic process; the project-specific command overrides where it differs.
 ### Phase 4: Check CI
 
 ```bash
-bin/wait-ci {pr_number} --timeout 540
+wait-ci {pr_number} --timeout 540
 ```
 
-- Invoke that as one blocking foreground tool call with an outer timeout above 540 seconds; consume
-  its one JSON result. Do not background it and poll process output from model turns.
+- Under Conductor, dispatch that exact deterministic command immediately to one fresh
+  `fork_turns: "none"` leaf and block once for its compact terminal result. The parent must not
+  start the wait, poll the leaf or a resumable parent process, substitute `gh ... --watch`, or use
+  repeated GitHub status reads. Outside Conductor, invoke it as one blocking foreground tool call
+  with an outer timeout above 540 seconds and consume its one JSON result.
 - If checks fail: wait for the check set to become terminal, inspect the failed GitHub Actions logs,
   and run the `ci-self-heal.md` loop. Mechanical failures are fixed, locally verified, reviewed,
   committed, pushed, and waited on again. Resume Phase 5 only after the current tree is green.
@@ -222,7 +225,8 @@ git push --force-with-lease
 ```
 
 Wait for CI to re-run after rebase (checks must pass again) with one new
-`bin/wait-ci {pr_number} --timeout 540` invocation. Repair mechanical failures through the same CI
+`wait-ci {pr_number} --timeout 540` invocation, using one new no-history waiter leaf under
+Conductor. Repair mechanical failures through the same CI
 self-heal loop. If it times out, return its resume command; never turn GitHub polling into repeated
 model turns.
 

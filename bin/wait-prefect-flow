@@ -48,7 +48,7 @@ def main() -> None:
         remaining = max(1, round(args.timeout - elapsed))
         quoted_prefix = shlex.quote(args.command_prefix)
         return (
-            f"bin/wait-prefect-flow {shlex.quote(args.run_id)} "
+            f"wait-prefect-flow {shlex.quote(args.run_id)} "
             f"--command-prefix {quoted_prefix} --timeout {remaining}"
         )
 

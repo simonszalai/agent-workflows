@@ -79,9 +79,9 @@ Repeated work:
   ticket context is fetched once, bounded (`detail`, `artifact_types`,
   `include_events=false`), and passed to children as a packet.
 - Long command output belongs in `bin/compact-exec`; CI waits belong in one foreground
-  `bin/wait-ci` call (or a `fork_turns: "none"` waiter when the harness cannot block), not a
-  background process followed by poll loops in model turns. The process may poll; the model should
-  be sampled once at the terminal result.
+  `wait-ci` call resolved through `PATH` (or a `fork_turns: "none"` waiter when the harness cannot
+  block), not a background process followed by poll loops in model turns. The process may poll; the
+  model should be sampled once at the terminal result.
 
 Contracts and measurement:
 

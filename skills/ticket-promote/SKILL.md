@@ -298,7 +298,7 @@ instead of re-executing; re-preflight only commands whose shape, target, or inpu
 git push -u origin "$BRANCH"
 gh pr create --base main --head "$BRANCH" \
   --title "Promote ${SCOPE} to production" --body-file manifest.md
-bin/wait-ci <pr_number> --timeout 540
+wait-ci <pr_number> --timeout 540
 ```
 
 Under Conductor, dispatch that exact deterministic command immediately to exactly one fresh
