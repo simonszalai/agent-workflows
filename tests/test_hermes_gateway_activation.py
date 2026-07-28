@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -372,15 +373,25 @@ class GatewayActivationTests(unittest.TestCase):
             if path in ("/hermes/render", "/shared/autodev-memory"):
                 if isinstance(body, dict) and body.get("method") == "tools/list":
                     if path == "/hermes/render" and credential == b"h" * 32:
-                        return 200, b'{"result":{"tools":[{"name":"get_service"}]}}'
+                        return (
+                            200,
+                            b'{"jsonrpc":"2.0","id":2,"result":'
+                            b'{"tools":[{"name":"get_service"}]}}',
+                        )
                     return 401, b'{"error":"unauthorized"}'
                 return 403, b'{"error":"denied"}'
             return 403, b'{"error":"denied"}'
 
-        with mock.patch.dict(os.environ, {
-            "HERMES_GATEWAY_TOKEN": "h" * 32,
-            "MCP_GATEWAY_TOKEN": "d" * 32,
-        }, clear=False), mock.patch.object(
+        with tempfile.NamedTemporaryFile() as audit_log, mock.patch.dict(
+            os.environ,
+            {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                "HERMES_GATEWAY_ACTIVATION_TEST_LOG": audit_log.name,
+                "HERMES_GATEWAY_TOKEN": "h" * 32,
+                "MCP_GATEWAY_TOKEN": "d" * 32,
+            },
+            clear=False,
+        ), mock.patch.object(
             GATEWAY.urllib.request, "urlopen", return_value=health
         ), mock.patch.object(GATEWAY, "raw_request", side_effect=request):
             GATEWAY.probe_gateway(state)
@@ -397,6 +408,220 @@ class GatewayActivationTests(unittest.TestCase):
         serialized = json.dumps(asdict(state))
         self.assertNotIn("h" * 32, serialized)
         self.assertNotIn("d" * 32, serialized)
+
+    def test_tools_list_probe_accepts_only_filtered_or_audited_fail_closed(self) -> None:
+        filtered = (
+            200,
+            b'{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get_service"}]}}',
+            b"",
+        )
+        filtered_with_forbidden_text = (
+            200,
+            b'{"jsonrpc":"2.0","id":2,"result":{"tools":['
+            b'{"name":"get_service","description":"does not call trigger_deploy"}]}}',
+            b"",
+        )
+        denied_body = GATEWAY.TOOLS_LIST_DENIAL_BODY
+
+        def audit(
+            *,
+            route: str = "hermes/render",
+            reason: str = "unsupported_content_type",
+            outcome: str = "denied",
+            extra: dict[str, object] | None = None,
+        ) -> bytes:
+            event: dict[str, object] = {
+                "event": "mcp_gateway_tool_list_filter_denied",
+                "route": route,
+                "reason": reason,
+                "outcome": outcome,
+            }
+            event.update(extra or {})
+            return (
+                "2026-07-28T18:00:00.000Z tool list filter denied "
+                + json.dumps(event, separators=(",", ":"))
+                + "\n"
+            ).encode()
+
+        accepted = (filtered, filtered_with_forbidden_text) + tuple(
+            (403, denied_body, audit(reason=reason))
+            for reason in sorted(GATEWAY.TOOLS_LIST_DENIAL_REASONS)
+        )
+        rejected = (
+            (403, denied_body, b""),
+            (403, denied_body, audit(route="hermes/other")),
+            (403, denied_body, audit(outcome="allowed")),
+            (403, denied_body, audit(reason="future_unreviewed_reason")),
+            (
+                403,
+                denied_body,
+                b'2026-07-28T18:00:00.000Z tool list filter denied '
+                b'{"event":"mcp_gateway_tool_list_filter_denied",'
+                b'"route":"hermes/other","route":"hermes/render",'
+                b'"reason":"unsupported_content_type","outcome":"denied"}\n',
+            ),
+            (403, b' { "error":"upstream tools/list response denied" } ', audit()),
+            (
+                403,
+                b'{"error":"concealed","error":"upstream tools/list response denied"}',
+                audit(),
+            ),
+            (
+                403,
+                b'{"error":"upstream tools/list response denied","extra":true}',
+                audit(),
+            ),
+            (418, b'{"error":"teapot"}', b""),
+            (
+                200,
+                b'{"jsonrpc":"2.0","id":2,"result":{"tools":['
+                b'{"name":"trigger_deploy"}]}}',
+                b"",
+            ),
+            (
+                200,
+                b'{"jsonrpc":"2.0","id":2,"result":{"tools":['
+                b'{"name":"delete_service"}]}}',
+                b"",
+            ),
+            (
+                200,
+                b'{"jsonrpc":"2.0","id":2,"result":{"tools":[]},'
+                b'"error":{"code":-32603}}',
+                b"",
+            ),
+            (
+                200,
+                b'{"jsonrpc":"2.0","id":2,"result":{"tools":'
+                b'[{"name":"trigger\\u005fdeploy"}]},'
+                b'"result":{"tools":[{"name":"get_service"}]}}',
+                b"",
+            ),
+            (
+                200,
+                b'{"jsonrpc":"2.0","id":2,"result":{"tools":['
+                b'{"name":"get_service","inputSchema":{"default":NaN}}]}}',
+                b"",
+            ),
+            (
+                200,
+                b'{"jsonrpc":"2.0","id":2,"result":{"tools":['
+                b'{"name":"get_service","inputSchema":{"default":Infinity}}]}}',
+                b"",
+            ),
+        )
+
+        for status, body, audit_bytes in accepted:
+            with self.subTest(status=status, accepted=True), tempfile.TemporaryDirectory() as temp:
+                log = Path(temp) / "gateway.log"
+                log.write_bytes(b"existing log line\n")
+
+                def request(*_args: object, **_kwargs: object) -> tuple[int, bytes]:
+                    with log.open("ab") as stream:
+                        stream.write(audit_bytes)
+                    return status, body
+
+                with mock.patch.dict(os.environ, {
+                    "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                    "HERMES_GATEWAY_ACTIVATION_TEST_LOG": str(log),
+                }, clear=False), mock.patch.object(
+                    GATEWAY, "raw_request", side_effect=request
+                ):
+                    self.assertEqual(
+                        GATEWAY.probe_tools_list(b"h" * 32, (b"h" * 32, b"d" * 32)),
+                        body,
+                    )
+
+        for status, body, audit_bytes in rejected:
+            with self.subTest(status=status, accepted=False), tempfile.TemporaryDirectory() as temp:
+                log = Path(temp) / "gateway.log"
+                log.write_bytes(b"existing log line\n")
+
+                def request(*_args: object, **_kwargs: object) -> tuple[int, bytes]:
+                    with log.open("ab") as stream:
+                        stream.write(audit_bytes)
+                    return status, body
+
+                with mock.patch.dict(os.environ, {
+                    "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                    "HERMES_GATEWAY_ACTIVATION_TEST_LOG": str(log),
+                }, clear=False), mock.patch.object(
+                    GATEWAY, "raw_request", side_effect=request
+                ), self.assertRaisesRegex(GATEWAY.SafeError, "tools_list_filter_failed"):
+                    GATEWAY.probe_tools_list(b"h" * 32, (b"h" * 32, b"d" * 32))
+
+        secret = b"h" * 32
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "gateway.log"
+            log.write_bytes(b"")
+
+            def secret_request(*_args: object, **_kwargs: object) -> tuple[int, bytes]:
+                with log.open("ab") as stream:
+                    stream.write(audit(extra={"detail": secret.decode()}))
+                return 403, denied_body
+
+            with mock.patch.dict(os.environ, {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                "HERMES_GATEWAY_ACTIVATION_TEST_LOG": str(log),
+            }, clear=False), mock.patch.object(
+                GATEWAY, "raw_request", side_effect=secret_request
+            ), self.assertRaisesRegex(GATEWAY.SafeError, "secret_leak_detected"):
+                GATEWAY.probe_tools_list(secret, (secret, b"d" * 32))
+
+    def test_tools_list_probe_bounds_the_audit_log_append(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "gateway.log"
+            log.write_bytes(b"")
+
+            def request(*_args: object, **_kwargs: object) -> tuple[int, bytes]:
+                with log.open("ab") as stream:
+                    stream.write(b"x" * (GATEWAY.MAX_AUDIT_LOG_BYTES + 1))
+                return 403, GATEWAY.TOOLS_LIST_DENIAL_BODY
+
+            with mock.patch.dict(os.environ, {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                "HERMES_GATEWAY_ACTIVATION_TEST_LOG": str(log),
+            }, clear=False), mock.patch.object(
+                GATEWAY, "raw_request", side_effect=request
+            ), self.assertRaisesRegex(GATEWAY.SafeError, "gateway_audit_log_too_large"):
+                GATEWAY.probe_tools_list(b"h" * 32, (b"h" * 32, b"d" * 32))
+
+    def test_filtered_tools_list_does_not_require_audit_log_proof(self) -> None:
+        body = (
+            b'{"jsonrpc":"2.0","id":2,"result":'
+            b'{"tools":[{"name":"get_service"}]}}'
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            missing = Path(temp) / "missing.log"
+            with mock.patch.dict(os.environ, {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                "HERMES_GATEWAY_ACTIVATION_TEST_LOG": str(missing),
+            }, clear=False), mock.patch.object(
+                GATEWAY, "raw_request", return_value=(200, body)
+            ):
+                self.assertEqual(
+                    GATEWAY.probe_tools_list(b"h" * 32, (b"h" * 32, b"d" * 32)),
+                    body,
+                )
+
+            noisy = Path(temp) / "noisy.log"
+            noisy.write_bytes(b"")
+
+            def noisy_request(*_args: object, **_kwargs: object) -> tuple[int, bytes]:
+                with noisy.open("ab") as stream:
+                    stream.write(b"x" * (GATEWAY.MAX_AUDIT_LOG_BYTES + 1))
+                return 200, body
+
+            with mock.patch.dict(os.environ, {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                "HERMES_GATEWAY_ACTIVATION_TEST_LOG": str(noisy),
+            }, clear=False), mock.patch.object(
+                GATEWAY, "raw_request", side_effect=noisy_request
+            ):
+                self.assertEqual(
+                    GATEWAY.probe_tools_list(b"h" * 32, (b"h" * 32, b"d" * 32)),
+                    body,
+                )
 
     def test_secret_audit_rejects_credentials_and_deadline_is_enforced(self) -> None:
         with self.assertRaisesRegex(GATEWAY.SafeError, "secret_leak_detected"):
@@ -422,21 +647,35 @@ class GatewayActivationTests(unittest.TestCase):
 
     def test_closed_matrix_includes_server_approval_pickup_and_cleanup(self) -> None:
         self.assertEqual(len(GATEWAY.CHECKS), len(set(GATEWAY.CHECKS)))
-        for required in (
-            "origin_status_source_identity",
-            "self_approval_and_execution_status_denied",
-            "cross_ticket_write_denied",
-            "admin_approval_observed",
-            "owner_edit_clears_approval",
-            "admin_reapproval_observed",
-            "scoped_pickup_exact",
-            "terminal_cleanup",
+        self.assertEqual(GATEWAY.CHECKS, (
+            "gateway_health_routes",
             "render_mutations_denied_zero_dispatch",
+            "token_cross_routes_rejected",
             "jsonrpc_batch_and_rest_bypass_rejected",
             "tools_list_filtered_fail_closed",
             "secret_free_audit",
-        ):
-            self.assertIn(required, GATEWAY.CHECKS)
+            "origin_status_source_identity",
+            "self_approval_and_execution_status_denied",
+            "cross_ticket_write_denied",
+            "unapproved_pickup_empty",
+            "admin_approval_observed",
+            "owner_edit_clears_approval",
+            "cleared_approval_pickup_empty",
+            "admin_reapproval_observed",
+            "scoped_pickup_exact",
+            "terminal_cleanup",
+        ))
+        self.assertEqual(len(GATEWAY.CHECKS), 16)
+
+    def test_tools_list_denial_reasons_match_gateway_emissions(self) -> None:
+        proxy = (ROOT / "mcp-gateway" / "lib" / "proxy.mjs").read_text(encoding="utf-8")
+        tool_filter = (
+            ROOT / "mcp-gateway" / "lib" / "tool-filter.mjs"
+        ).read_text(encoding="utf-8")
+        emitted = set(re.findall(r'denyResponse\("([^"]+)"', proxy))
+        emitted.update(re.findall(r'error\.reason \|\| "([^"]+)"', proxy))
+        emitted.update(re.findall(r'ToolFilterError\("([^"]+)"', tool_filter))
+        self.assertEqual(emitted, set(GATEWAY.TOOLS_LIST_DENIAL_REASONS))
 
 
 if __name__ == "__main__":
