@@ -6,6 +6,7 @@
 #   render          127.0.0.1:8789  -> https://mcp.render.com/mcp        (+ workspace preflight)
 #   tailscale       127.0.0.1:8790  -> local tailscale-mcp-server :8791  (per-boot bearer)
 #   autodev-memory  127.0.0.1:8792  -> https://autodev-memory.onrender.com/mcp (+ WAF encode)
+#   context7        127.0.0.1:8793  -> https://mcp.context7.com/mcp
 #
 # Credentials: resolved per proxy via `op run --env-file=proxies.env`, authenticated
 # by the Keychain service-account token (op-dev-token) — silent, no Touch ID. Keys
@@ -34,6 +35,7 @@ RENDER_PORT=8789
 TAILSCALE_PORT=8790
 TAILSCALE_UPSTREAM_PORT=8791
 AUTODEV_PORT=8792
+CONTEXT7_PORT=8793
 RENDER_WORKSPACE="tea-ct11rp0gph6c73bf2kf0"
 
 LOG_DIR="${HOME}/Library/Logs/mcp-proxies"
@@ -77,6 +79,10 @@ start_autodev() {
   [ -f "$WAF_ENCODER" ] || { log "ERROR: WAF encoder missing at ${WAF_ENCODER}"; return 1; }
   spawn_proxy autodev-memory "$AUTODEV_PORT" "https://autodev-memory.onrender.com/mcp" \
     AUTODEV_MEMORY_API_TOKEN MCP_PROXY_BODY_TRANSFORM="$WAF_ENCODER"
+}
+
+start_context7() {
+  spawn_proxy context7 "$CONTEXT7_PORT" "https://mcp.context7.com/mcp" CONTEXT7_API_KEY
 }
 
 # The upstream npm server mandates a bearer in --http mode; it is generated per boot
@@ -124,12 +130,13 @@ stop_tailscale() {
   pkill -f "mcp-proxy.mjs tailscale" 2>/dev/null || true
 }
 
-SERVERS=(render autodev-memory tailscale)
+SERVERS=(render autodev-memory context7 tailscale)
 
 healthy() {
   case "$1" in
     render)         listening "$RENDER_PORT" ;;
     autodev-memory) listening "$AUTODEV_PORT" ;;
+    context7)       listening "$CONTEXT7_PORT" ;;
     tailscale)      listening "$TAILSCALE_PORT" && listening "$TAILSCALE_UPSTREAM_PORT" ;;
     *) return 1 ;;
   esac
@@ -139,6 +146,7 @@ start_server() {
   case "$1" in
     render)         start_render ;;
     autodev-memory) start_autodev ;;
+    context7)       start_context7 ;;
     tailscale)      start_tailscale ;;
     *) return 1 ;;
   esac
@@ -163,7 +171,7 @@ case "${1:-ensure}" in
     exit "$rc"
     ;;
   stop)
-    pkill -f "mcp-proxy.mjs (render|autodev-memory)" 2>/dev/null || true
+    pkill -f "mcp-proxy.mjs (render|autodev-memory|context7)" 2>/dev/null || true
     stop_tailscale
     log "stopped"
     ;;
