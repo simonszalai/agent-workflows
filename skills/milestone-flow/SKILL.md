@@ -212,12 +212,14 @@ re-run/fix the evidence write rather than marking the milestone complete.
   milestone success.
 - `NEEDS_MORE_TIME`: persist the exact awaited condition, source-of-truth query, fixed interval,
   deadline/attempt cap, explicit success/failure predicates, and verifier resume command. Use
-  `bin/wait-prefect-flow` for a Prefect run; otherwise write one deterministic bounded poller under
+  `wait-prefect-flow` for a Prefect run; otherwise write one deterministic bounded poller under
   the run scratch directory. The poller alone performs repeated status reads and emits one compact
   terminal result. It must exit nonzero at the cap with the exact resume/retry command. Do not
   periodically re-run the model-driven verifier.
-  Run that poller in one blocking foreground call. If the harness would yield, send only the poller
-  to one fresh `fork_turns: "none"` leaf and make the parent block once for its terminal result.
+  Outside Conductor, run that poller in one blocking foreground call. In Conductor, dispatch only
+  the exact deterministic poller command immediately to one fresh `fork_turns: "none"` leaf and
+  make the parent block once for its terminal result. The parent never starts or polls a resumable
+  process, polls the leaf, substitutes a CLI `--watch`, or performs repeated provider status reads.
   After a successful predicate, start one fresh verifier agent and grade once. On timeout, persist
   the gate state and resume command and report it; never claim milestone success. Repeated `wait`,
   `write_stdin`, `wait_agent`, GitHub/Prefect/Render reads, or other model status checks are

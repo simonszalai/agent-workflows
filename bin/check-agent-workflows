@@ -47,6 +47,10 @@ def main() -> None:
     print("==> python syntax", flush=True)
     validate_python_syntax()
     run("noisy command contract", [str(ROOT / "bin" / "workflow-noisy-command-check")])
+    run(
+        "shared waiter portability",
+        [str(ROOT / "bin" / "workflow-waiter-portability-check")],
+    )
     run("ticket context contract", [str(ROOT / "bin" / "workflow-ticket-context-check")])
     run("python tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
     node_tests = [str(path.relative_to(ROOT))

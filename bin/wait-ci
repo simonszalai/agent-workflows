@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -45,11 +46,11 @@ def main() -> None:
     def resume_command() -> str:
         elapsed = time.monotonic() - started
         remaining = max(1, round(args.timeout - elapsed))
-        command = "bin/wait-ci"
+        command = "wait-ci"
         if args.run_id:
-            command += f" --run {args.run_id}"
+            command += f" --run {shlex.quote(args.run_id)}"
         elif args.ref:
-            command += f" {args.ref}"
+            command += f" {shlex.quote(args.ref)}"
         return command + f" --timeout {remaining}"
 
     def handle_signal(signum: int, _frame: object) -> None:

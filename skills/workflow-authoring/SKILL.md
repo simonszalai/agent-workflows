@@ -40,9 +40,11 @@ is a failure, never a PASS.
 1. `git diff --check`, inspect the bounded diff/stat, then `git add -A` and commit everything.
 2. Verify `git status --porcelain` is empty after the commit.
 3. Push the workspace branch and create a regular PR against `main`.
-4. Wait once with `bin/wait-ci <pr> --timeout 540`. In Conductor, enforce the shared
-   execution-economy rule: run this wait in one fresh `fork_turns: "none"` leaf and block once on
-   the agent; never poll a unified-exec session from the authoring orchestrator.
+4. Wait once with `wait-ci <pr> --timeout 540`. Shared waiters resolve through `PATH`, including
+   from unrelated consumer repositories. In Conductor, dispatch this exact deterministic command
+   immediately to one fresh `fork_turns: "none"` leaf and block once on the agent; never start it
+   in the authoring orchestrator, poll a unified-exec session, substitute `gh ... --watch`, or use
+   repeated GitHub status reads.
 5. Merge without `--delete-branch`; Conductor often has `main` checked out in another worktree, and
    `gh` branch cleanup can report a local failure after the remote merge succeeded. Confirm the PR is
    `MERGED`, then delete only the remote throwaway head with `git push origin --delete <head>`.

@@ -29,8 +29,10 @@ jobs (branch-gated migrate/release jobs) are out of scope for the local gate.
 
 ## Loop
 
-1. Wait once for the current workflow/check set to reach a terminal result. In Conductor, delegate
-   only the bounded `wait-ci` process to a fresh `fork_turns: "none"` leaf and block once.
+1. Wait once for the current workflow/check set to reach a terminal result. In Conductor, dispatch
+   only the exact bounded `wait-ci` command immediately to one fresh `fork_turns: "none"` leaf and
+   block once. The parent never starts or polls a resumable process, polls the leaf, substitutes
+   `gh ... --watch`, or performs repeated GitHub status reads.
 2. Fetch the failed GitHub Actions job logs. Classify every failure before editing.
 3. Handle **transient infrastructure** (runner/network/cache/service startup) by rerunning only the
    failed jobs once, then wait once on the new run.

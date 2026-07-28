@@ -67,9 +67,11 @@ Render deployment reads; and equivalent status checks. Background-command-plus-r
 are prohibited, including as a fallback. A process may poll; the model is sampled only after one
 terminal result or one timeout.
 
-- GitHub PR checks and Actions runs use `bin/wait-ci <pr>` or `bin/wait-ci --run <run-id>`.
+- GitHub PR checks and Actions runs use `wait-ci <pr>` or `wait-ci --run <run-id>`.
   Prefect flow runs use
-  `bin/wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'`. Each is one
+  `wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'`. Shared waiters
+  are installed in the user executable directory and must resolve through `PATH`; never address
+  them relative to the current repository. Each is one
   bounded process with explicit terminal success/failure predicates, one compact JSON result, and
   `status="timeout"` plus an exact `resume_command` when its hard deadline expires.
 - If no purpose-built waiter exists, write a deterministic bounded poller under the run's scratch
@@ -77,6 +79,10 @@ terminal result or one timeout.
   failure terminal predicates, a full log on disk, and one compact terminal result. Timeout exits
   nonzero and prints the exact resume/retry command. The script, never the model, performs the
   repeated status reads.
+- There is no maintained shared Render waiter. For a Render condition, use the generic scratch
+  poller contract above only when its authenticated status transport is already available and
+  secret-safe; otherwise stop with the exact resume command and missing-adapter limitation. Never
+  replace the missing adapter with `render`/API status reads from repeated model turns.
 - Run the waiter or poller as one blocking foreground tool call whenever the harness supports it.
   Resume model reasoning only after the process reaches a terminal predicate or its deadline.
 - If the harness yields a resumable command session, do not build a model loop around the session.
