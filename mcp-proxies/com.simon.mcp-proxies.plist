@@ -17,6 +17,11 @@
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <!-- `ensure` spawns the proxies with nohup and exits immediately. Without this,
+         launchd reaps the whole process group when the script returns, killing every
+         proxy it just started (they bind, log "ready", then die). -->
+    <key>AbandonProcessGroup</key>
+    <true/>
     <key>StartInterval</key>
     <integer>300</integer>
     <key>StandardOutPath</key>
