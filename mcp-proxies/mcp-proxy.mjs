@@ -80,6 +80,18 @@ const transport = isTls ? https : http
 // Reuse upstream connections; MCP is chatty and every tool call is a POST.
 const agent = new transport.Agent({ keepAlive: true })
 
+// Loopback upstreams are servers WE spawn (e.g. tailscale-mcp-server via npx), and a
+// bound socket does not mean a ready server: a client initialize that lands in the
+// boot window gets a connection error or 5xx and the whole session permanently loses
+// the server — the exact race this proxy exists to kill (observed 2026-07-28: front
+// proxy up at :07.8, client init at :10.9, upstream still warming → "failed").
+// So buffered requests to a loopback upstream are RETRIED until the upstream answers,
+// up to MCP_PROXY_RETRY_SECS (default 90 — npx cold-download is the worst case).
+// Remote upstreams (render, autodev) are already-running services and never retry.
+const RETRY_SECS = UPSTREAM.hostname === "127.0.0.1"
+	? Number(process.env.MCP_PROXY_RETRY_SECS || 90)
+	: 0
+
 // ---- Render workspace preflight (ported from mcp-gateway lib/render-preflight.mjs) ----
 // The hosted Render MCP scopes "selected workspace" to the MCP session and resets it on
 // every reconnect, so agents' first call used to hit "no workspace set" and they stopped
@@ -154,8 +166,9 @@ function ensureRenderWorkspace(req, body) {
 }
 
 // body === null means "stream it through". A Buffer means the request was buffered
-// (transform and/or preflight), so content-length is re-derived from the new bytes.
-const forward = (req, res, body) => {
+// (transform, preflight, and/or loopback retry), so content-length is re-derived
+// from the new bytes — and only buffered requests can be retried.
+const forward = (req, res, body, retryDeadline = 0) => {
 	// Copy client headers, then strip what must not cross the boundary.
 	// `authorization` is dropped unconditionally BEFORE injecting ours — a
 	// client-supplied credential must never reach upstream, and an empty Bearer
@@ -168,6 +181,12 @@ const forward = (req, res, body) => {
 	headers.authorization = `Bearer ${TOKEN}`
 	headers.host = UPSTREAM.host
 	if (body !== null) headers["content-length"] = String(body.length)
+
+	const retryable = body !== null && retryDeadline > Date.now() && !res.headersSent
+	const retry = (why) => {
+		console.error(`[${LABEL}] upstream not ready (${why}), retrying...`)
+		setTimeout(() => forward(req, res, body, retryDeadline), 1000)
+	}
 
 	const upstream = transport.request(
 		{
@@ -182,6 +201,13 @@ const forward = (req, res, body) => {
 			agent,
 		},
 		(up) => {
+			// A booting loopback upstream can bind and still answer 5xx while it warms
+			// up; delivering that to a registering client loses the server for the whole
+			// session, so treat it like a connection failure while the deadline allows.
+			if (retryable && (up.statusCode || 0) >= 500) {
+				up.resume() // drain and discard
+				return retry(`status ${up.statusCode}`)
+			}
 			res.writeHead(up.statusCode || 502, up.headers)
 			// Pipe, never buffer: MCP Streamable HTTP replies with SSE for anything
 			// long-running, and buffering would stall tool calls until completion.
@@ -190,6 +216,7 @@ const forward = (req, res, body) => {
 	)
 
 	upstream.on("error", (err) => {
+		if (retryable && retryDeadline > Date.now()) return retry(err.code || err.message)
 		console.error(`[${LABEL}] upstream error: ${err.message}`)
 		if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" })
 		res.end(JSON.stringify({ error: { message: `${LABEL} upstream: ${err.message}` } }))
@@ -201,9 +228,9 @@ const forward = (req, res, body) => {
 
 const server = http.createServer((req, res) => {
 	// Only POST bodies are ever buffered, and only when a feature needs the bytes
-	// (body transform, or render preflight's initialize detection). Responses are
-	// always piped — SSE must stream.
-	const mustBuffer = (transformBody || RENDER_WORKSPACE) && req.method === "POST"
+	// (body transform, render preflight's initialize detection, or loopback retry).
+	// Responses are always piped — SSE must stream.
+	const mustBuffer = (transformBody || RENDER_WORKSPACE || RETRY_SECS) && req.method === "POST"
 	if (!mustBuffer) return forward(req, res, null)
 
 	const chunks = []
@@ -226,7 +253,8 @@ const server = http.createServer((req, res) => {
 				console.error(`[${LABEL}] body transform failed, forwarding unchanged: ${err.message}`)
 			}
 		}
-		ensureRenderWorkspace(req, raw).then(() => forward(req, res, out))
+		const deadline = RETRY_SECS ? Date.now() + RETRY_SECS * 1000 : 0
+		ensureRenderWorkspace(req, raw).then(() => forward(req, res, out, deadline))
 	})
 })
 
