@@ -302,46 +302,72 @@ The handoff contains ref names, never resolved values or secret-derived material
 ## F0021 gateway consumer
 
 `bin/hermes-gateway-activation` is the reviewed `e0006-m3-gateway/v1` consumer. It accepts only the
-closed handoff above and the frozen F0023 merge/tree. `prepare` edits only the checked-in
-`mcp-gateway/gateway.env`, adding the two canonical ref names; it never reads either value.
+closed handoff above and the frozen F0023 merge/tree. `prepare` edits only the effective env file,
+adding the two canonical ref names; it never reads either value. The effective file matches gateway
+startup precedence: `gateway.local.env` when present, otherwise `gateway.env`.
 
 After the F0021 PR is merged and its exact main tree is verified, the production operator uses
 private mode-0600 receipt paths:
 
 ```bash
-bin/hermes-gateway-activation prepare \
+cd mcp-gateway
+GATEWAY_ENV_FILE="$PWD/gateway.env"
+[[ -f "$PWD/gateway.local.env" ]] && GATEWAY_ENV_FILE="$PWD/gateway.local.env"
+NON_EFFECTIVE_FILE=""
+if [[ "${GATEWAY_ENV_FILE:t}" == "gateway.local.env" ]]; then
+  NON_EFFECTIVE_FILE="$PWD/gateway.env"
+fi
+NON_EFFECTIVE_SNAPSHOT=""
+if [[ -n "$NON_EFFECTIVE_FILE" && -f "$NON_EFFECTIVE_FILE" ]]; then
+  NON_EFFECTIVE_SNAPSHOT="$(mktemp -t f0021-non-effective.XXXXXX)"
+  chmod 600 "$NON_EFFECTIVE_SNAPSHOT"
+  cp -p "$NON_EFFECTIVE_FILE" "$NON_EFFECTIVE_SNAPSHOT"
+fi
+printf 'effective_env=%s status=selected\n' "${GATEWAY_ENV_FILE:t}"
+
+../bin/hermes-gateway-activation prepare \
   --handoff-receipt /absolute/private/f0033-handoff.json \
-  --gateway-env "$PWD/mcp-gateway/gateway.env" \
+  --gateway-env "$GATEWAY_ENV_FILE" \
   --receipt /absolute/private/f0021-prepare.json
 
-bin/hermes-gateway-activation verify-config \
+../bin/hermes-gateway-activation verify-config \
   --handoff-receipt /absolute/private/f0033-handoff.json \
-  --gateway-env "$PWD/mcp-gateway/gateway.env" \
+  --gateway-env "$GATEWAY_ENV_FILE" \
   --receipt /absolute/private/f0021-config.json
 
-cd mcp-gateway
+if [[ -n "$NON_EFFECTIVE_SNAPSHOT" ]]; then
+  cmp -s "$NON_EFFECTIVE_FILE" "$NON_EFFECTIVE_SNAPSHOT" || exit 1
+fi
+printf 'non_effective_env_status=unchanged_or_not_present\n'
+
 SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway validation' \
-  ../bin/redacted-exec -- \
-  /opt/homebrew/bin/op run --env-file=./gateway.env -- node gateway.mjs --validate
+  ../bin/redacted-exec -- /usr/bin/env \
+    -u HERMES_AUTODEV_MEMORY_TOKEN -u HERMES_GATEWAY_TOKEN \
+    /opt/homebrew/bin/op run --account "${OP_ACCOUNT:-my.1password.com}" \
+    --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
+    /bin/zsh "$PWD/finish-start.zsh" --validate
 launchctl kickstart -k "gui/$(id -u)/com.simon.mcp-gateway"
 ```
 
 Wait for `/healthz` to report all three `hermes/*` routes before running the phased canary in an
-`op run --env-file=mcp-gateway/gateway.env` process that also receives the existing default local
+`op run --env-file="$GATEWAY_ENV_FILE"` process that also receives the existing default local
 gateway token without printing it:
 
 ```bash
-bin/hermes-gateway-activation canary --phase prepare \
-  --handoff-receipt /absolute/private/f0033-handoff.json \
-  --state-receipt /absolute/private/f0021-canary.json
+run_canary() {
+  SENSITIVE_ACCESS_REASON='E0006/M3 F0021 bounded gateway canary' \
+    ../bin/redacted-exec -- /opt/homebrew/bin/op run \
+      --account "${OP_ACCOUNT:-my.1password.com}" \
+      --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
+      ../bin/hermes-gateway-activation canary --phase "$1" \
+        --handoff-receipt /absolute/private/f0033-handoff.json \
+        --state-receipt /absolute/private/f0021-canary.json
+}
+run_canary prepare
 # Admin approves the exact returned synthetic ticket.
-bin/hermes-gateway-activation canary --phase after-approval \
-  --handoff-receipt /absolute/private/f0033-handoff.json \
-  --state-receipt /absolute/private/f0021-canary.json
+run_canary after-approval
 # Admin reapproves the same ticket.
-bin/hermes-gateway-activation canary --phase after-reapproval \
-  --handoff-receipt /absolute/private/f0033-handoff.json \
-  --state-receipt /absolute/private/f0021-canary.json
+run_canary after-reapproval
 ```
 
 The canary is capped at one synthetic repo/ticket/source/plan, 32 gateway requests, eight accepted
@@ -351,10 +377,93 @@ origin/status/approval/pickup behavior, and terminal cleanup. Receipts contain o
 codes and safe identifiers. If a phase fails after ticket creation, run `--phase cleanup`; do not
 retry `prepare`.
 
-Rollback removes only the two Hermes ref lines, performs the same reviewed validation and one
-gateway restart, then proves `/healthz`. F0021 never changes the memory Render configuration;
-memory rollback remains owned by F0033. The signed GitHub webhook ping is out of scope and must not
-be run.
+Rollback first cleans up an incomplete canary, then removes only the two Hermes ref lines from the
+same effective file:
+
+```bash
+CANARY_STATE=/absolute/private/f0021-canary.json
+CANARY_PHASE="$(python3 - "$CANARY_STATE" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("missing")
+else:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    phase = value.get("phase") if isinstance(value, dict) else None
+    ticket_id = value.get("ticket_id") if isinstance(value, dict) else None
+    if phase == "prepare":
+        if not isinstance(ticket_id, str) or not re.fullmatch(r"[FBR]\d{4,}", ticket_id):
+            raise SystemExit("canary_prepare_without_ticket=invalid")
+        print("prepare_with_ticket")
+    elif phase not in {
+        "awaiting_admin_approval",
+        "awaiting_admin_reapproval",
+        "complete",
+    }:
+        raise SystemExit("canary_phase=invalid")
+    else:
+        print(phase)
+PY
+)"
+case "$CANARY_PHASE" in
+  prepare_with_ticket|awaiting_admin_approval|awaiting_admin_reapproval)
+    SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway canary rollback cleanup' \
+      ../bin/redacted-exec -- /opt/homebrew/bin/op run \
+        --account "${OP_ACCOUNT:-my.1password.com}" \
+        --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
+        ../bin/hermes-gateway-activation canary --phase cleanup \
+          --handoff-receipt /absolute/private/f0033-handoff.json \
+          --state-receipt "$CANARY_STATE"
+    ;;
+  complete|missing) ;;
+  *) exit 1 ;;
+esac
+../bin/hermes-gateway-activation rollback \
+  --handoff-receipt /absolute/private/f0033-handoff.json \
+  --gateway-env "$GATEWAY_ENV_FILE" \
+  --receipt /absolute/private/f0021-rollback.json
+if [[ -n "$NON_EFFECTIVE_SNAPSHOT" ]]; then
+  cmp -s "$NON_EFFECTIVE_FILE" "$NON_EFFECTIVE_SNAPSHOT" || exit 1
+fi
+SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway rollback validation' \
+  ../bin/redacted-exec -- /usr/bin/env \
+    -u HERMES_AUTODEV_MEMORY_TOKEN -u HERMES_GATEWAY_TOKEN \
+    /opt/homebrew/bin/op run --account "${OP_ACCOUNT:-my.1password.com}" \
+    --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
+    /bin/zsh "$PWD/finish-start.zsh" --validate
+launchctl kickstart -k "gui/$(id -u)/com.simon.mcp-gateway"
+python3 - <<'PY'
+import json
+import time
+import urllib.request
+
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8765/healthz", timeout=2
+        ) as response:
+            payload = json.load(response)
+        if payload.get("ok") is True:
+            print("rollback_health=pass")
+            break
+    except (OSError, ValueError):
+        pass
+    time.sleep(1)
+else:
+    raise SystemExit("rollback_health=fail")
+PY
+```
+
+The rollback receipt proves only `refs_absent`; the exact resolved validation proves the routes
+are explicitly disabled in the effective startup environment. Reload exactly once after validation
+PASS, then require `/healthz` `ok=true`. Configured Hermes prefixes may remain in route inventory
+and must not be required to disappear. F0021 never changes the memory Render configuration; memory
+rollback remains owned by F0033. The signed GitHub webhook ping is out of scope and must not run.
 
 ## Rollback
 

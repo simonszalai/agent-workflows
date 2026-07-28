@@ -243,7 +243,14 @@ One-time setup:
 
    ```bash
    cd ~/dev/agent-workflows/mcp-gateway
-   node gateway.mjs --validate
+   GATEWAY_ENV_FILE="$PWD/gateway.env"
+   [[ -f "$PWD/gateway.local.env" ]] && GATEWAY_ENV_FILE="$PWD/gateway.local.env"
+   SENSITIVE_ACCESS_REASON="Validate the effective MCP gateway startup configuration" \
+     ../bin/redacted-exec -- /usr/bin/env \
+       -u HERMES_AUTODEV_MEMORY_TOKEN -u HERMES_GATEWAY_TOKEN \
+       /opt/homebrew/bin/op run --account "${OP_ACCOUNT:-my.1password.com}" \
+       --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
+       /bin/zsh "$PWD/finish-start.zsh" --validate
    launchctl kickstart -k gui/$(id -u)/com.simon.mcp-gateway
    ```
 
@@ -273,22 +280,25 @@ One-time setup:
 ## Operate
 
 ```bash
-node gateway.mjs --validate     # preflight config WITHOUT a restart (see below)
+GATEWAY_ENV_FILE="$PWD/gateway.env"
+[[ -f "$PWD/gateway.local.env" ]] && GATEWAY_ENV_FILE="$PWD/gateway.local.env"
+SENSITIVE_ACCESS_REASON="Validate the effective MCP gateway startup configuration" \
+  ../bin/redacted-exec -- /usr/bin/env \
+    -u HERMES_AUTODEV_MEMORY_TOKEN -u HERMES_GATEWAY_TOKEN \
+    /opt/homebrew/bin/op run --account "${OP_ACCOUNT:-my.1password.com}" \
+    --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
+    /bin/zsh "$PWD/finish-start.zsh" --validate
 curl -s http://127.0.0.1:8765/healthz | python3 -m json.tool   # routes + children alive
 kill -HUP <daemon pid>          # hot-reload routes.json (additive)
 launchctl kickstart -k gui/$(id -u)/com.simon.mcp-gateway      # full restart — ONE Touch ID
 ```
 
-**Always `--validate` before a restart.** Restarts cost a biometric prompt and re-resolve
-`gateway.env`'s `op://` refs, so a 1Password vault/item rename that happened months ago
-surfaces only then. Validate checks routes.json shape, port collisions, spawn bins and
-TOML files on disk, and that every `${ENV_VAR}` used by TOMLs/auth is set. To also verify
-the `op://` refs themselves:
-
-```bash
-grep -oE 'op://[^ ]+' gateway.env | sort -u | while read r; do
-  op read "$r" >/dev/null 2>&1 && echo "OK  $r" || echo "FAIL $r"; done
-```
+**Always run resolved validation through `finish-start.zsh --validate` before a restart.**
+This is the exact startup composition pipeline: it uses the same effective-env precedence as
+`start-gateway.sh`, resolves the selected file, derives the production URLs, and exits before
+opening the listener. Restarts cost a biometric prompt and re-resolve the effective env file's
+`op://` refs. Validation checks routes.json shape, port collisions, spawn bins and TOML files on
+disk, and every required environment variable after composition.
 
 A failed daemon start exits **cleanly by design** (no KeepAlive retry — each retry would
 be another Touch ID prompt); it posts one macOS notification and stays down until

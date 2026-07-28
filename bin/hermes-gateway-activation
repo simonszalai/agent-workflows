@@ -166,14 +166,20 @@ def test_mode() -> bool:
     return os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_MODE") == "1"
 
 
-def expected_env_path() -> Path:
+def gateway_root() -> Path:
     root = ROOT
     if test_mode():
         override = os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_ROOT")
         if not override:
             raise SafeError("test_root_missing")
         root = Path(override).resolve()
-    return root / "mcp-gateway" / "gateway.env"
+    return root / "mcp-gateway"
+
+
+def expected_env_path() -> Path:
+    gateway = gateway_root()
+    local = gateway / "gateway.local.env"
+    return local if local.is_file() else gateway / "gateway.env"
 
 
 def require_env_path(path: Path) -> Path:
@@ -229,10 +235,45 @@ def write_refs(path: Path) -> bool:
     return True
 
 
-def config_checks(path: Path) -> None:
-    values = validate_env_text(path.read_text(encoding="utf-8"))
-    if any(values.get(name) != ref for name, ref in ENV_ROWS):
-        raise SafeError("gateway_ref_missing")
+def remove_refs(path: Path) -> bool:
+    try:
+        before = path.read_text(encoding="utf-8")
+    except OSError:
+        raise SafeError("gateway_env_unreadable") from None
+    values = validate_env_text(before)
+    for name, ref in ENV_ROWS:
+        if name in values and values[name] != ref:
+            raise SafeError("gateway_env_conflicting_ref")
+    names = {name for name, _ref in ENV_ROWS}
+    kept = [
+        line for line in before.splitlines(keepends=True)
+        if not (
+            "=" in line
+            and line.strip().split("=", 1)[0] in names
+        )
+    ]
+    updated = "".join(kept)
+    marker = "# Hermes restricted routes (E0006 M3; refs only, never resolved values)\n"
+    updated = updated.replace(f"\n{marker}\n", "\n")
+    if updated == before:
+        return False
+    mode = path.stat().st_mode & 0o777
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(updated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return True
+
+
+def route_checks(path: Path) -> None:
     routes = json.loads((path.parent / "routes.json").read_text(encoding="utf-8"))["routes"]
     for prefix in ("hermes/autodev-memory", "hermes/render", "hermes/slack"):
         route = routes.get(prefix)
@@ -241,6 +282,20 @@ def config_checks(path: Path) -> None:
         tools = route.get("allowTools")
         if not isinstance(tools, list) or not tools or len(tools) != len(set(tools)):
             raise SafeError("gateway_route_contract_mismatch")
+
+
+def config_checks(path: Path) -> None:
+    values = validate_env_text(path.read_text(encoding="utf-8"))
+    if any(values.get(name) != ref for name, ref in ENV_ROWS):
+        raise SafeError("gateway_ref_missing")
+    route_checks(path)
+
+
+def rollback_checks(path: Path) -> None:
+    values = validate_env_text(path.read_text(encoding="utf-8"))
+    if any(name in values for name, _ref in ENV_ROWS):
+        raise SafeError("gateway_ref_still_present")
+    route_checks(path)
 
 
 def safe_output(command: str, result: dict[str, object]) -> dict[str, object]:
@@ -562,6 +617,10 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--handoff-receipt", type=Path, required=True)
     verify.add_argument("--gateway-env", type=Path, required=True)
     verify.add_argument("--receipt", type=Path, required=True)
+    rollback = groups.add_parser("rollback", allow_abbrev=False)
+    rollback.add_argument("--handoff-receipt", type=Path, required=True)
+    rollback.add_argument("--gateway-env", type=Path, required=True)
+    rollback.add_argument("--receipt", type=Path, required=True)
     canary = groups.add_parser("canary", allow_abbrev=False)
     canary.add_argument(
         "--phase", choices=("prepare", "after-approval", "after-reapproval", "cleanup"),
@@ -574,18 +633,30 @@ def parser() -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> dict[str, object]:
     handoff = validate_handoff(args.handoff_receipt)
-    if args.command in {"prepare", "verify-config"}:
+    if args.command in {"prepare", "verify-config", "rollback"}:
         require_receipt_target(args.receipt)
         env_path = require_env_path(args.gateway_env)
-        changed = write_refs(env_path) if args.command == "prepare" else False
-        config_checks(env_path)
+        if args.command == "prepare":
+            changed = write_refs(env_path)
+            config_checks(env_path)
+            env_status = "refs_present"
+        elif args.command == "rollback":
+            changed = remove_refs(env_path)
+            rollback_checks(env_path)
+            env_status = "refs_absent"
+        else:
+            changed = False
+            config_checks(env_path)
+            env_status = "refs_present"
         result = {
             "handoff_schema": HANDOFF_SCHEMA,
             "provider_commit": PROVIDER_COMMIT,
             "provider_tree": PROVIDER_TREE,
             "evidence_artifact_id": handoff["evidence_artifact_id"],
-            "gateway_env": "mcp-gateway/gateway.env",
-            "refs": [{"name": name, "ref": ref} for name, ref in ENV_ROWS],
+            "gateway_env": {
+                "basename": env_path.name,
+                "status": env_status,
+            },
             "changed": changed,
         }
         H.atomic_write_json(args.receipt, safe_output(args.command, result))
