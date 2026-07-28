@@ -5,7 +5,7 @@ description: >-
   production. The default queue includes pending verification, failed verification, production
   cleanup holders, and pending epic gates. Read-only while verifying; standalone staging PASS
   promotes unless disabled.
-max_turns: 200
+max_turns: 30
 ---
 
 # Ticket Verify
@@ -126,6 +126,21 @@ For each standalone ticket, or for the epic/milestone gate as a unit:
   `deferred_cleanup`, or legacy cleanup body needed by §10; do not load unrelated artifacts or event
   history to discover cleanup;
 - read `.claude/environments/{env}.md` when present.
+
+The verifier has one context owner. Before any child/controller dispatch, write a runtime context
+receipt containing the light-manifest reads, direct artifact IDs/hashes, bounded child packet
+references, and any canonical artifact replacements, then run:
+
+```text
+bin/workflow-ticket-context-check receipt <receipt.json>
+```
+
+The first manifest read must be light. A refresh is allowed only after the version changes and
+must send the cached prior version as `known_version`; a repeated same-`context_version` read is a
+contract failure. Children receive artifact IDs, hashes, and excerpts, never complete ticket
+bodies. Plan/deployment-guide updates replace a bounded current body; historical revisions stay in
+artifact history rather than being appended to that canonical body. Do not dispatch or grade from
+a static-only context check: the validated runtime receipt is required evidence.
 
 ### 2a. Risk tier (tiny/safe fast path)
 
@@ -320,6 +335,40 @@ fails closed.
 
 ### 5. Collect evidence
 
+#### One revision-bound controller
+
+Compile the finalized environment rows and required supplements into one bounded manifest for
+`bin/deploy-verify-controller`. The manifest preserves the existing deploy, authorization,
+exact-transport, safety, cleanup, and evidence predicates; compilation never drops or weakens a
+row. It records:
+
+- exact activated revision, environment, activation/contract key, ordered prior staging revision
+  SHAs plus the resulting sequence, exact working directory, one runtime-identity command, overall
+  deadline, state path, and full-log directory;
+- `contract_status: FINALIZED` plus references to the preserved deploy, authorization,
+  exact-transport, safety, and evidence predicate receipts;
+- each row's gate class, acceptance source/reference, argv, expected exit code, timeout, sample
+  size, explicit idempotent/resume-safe predicate, defect distinguished, and failure class;
+- baseline, sample-size rationale, finite resource budget, and an earlier same-defect exact-path
+  canary reference for every statistical/high-N row; and
+- from the third staging revision for the same activation/contract, the stabilization failure
+  class and contract delta.
+
+Run the controller as one blocking foreground call. It deterministically waits for the exact
+revision, attests runtime identity, executes the rows in manifest order, refuses unsupported
+surfaces, stops high-N work after a failed canary, reattests identity, persists full logs/state,
+and emits one compact terminal JSON receipt. The model consumes only that terminal receipt or one
+bounded `timeout` with its exact `resume_command`; it never drives row/status polling. In
+Conductor, if the host cannot hold the foreground call, dispatch only this exact controller to one
+fresh `fork_turns: "none"` leaf and block once.
+
+An evidence surface without a maintained command adapter is `invalid_evidence`/`BLOCKED`, not a
+license to perform ad-hoc model-driven collection. Persist the manifest, terminal receipt, and log
+references in the verification evidence artifact. Put controller state/logs under a durable
+credential-safe cache such as `~/.cache/agent-workflows/deploy-verify/<run-id>/`, never under the
+run-scoped `.context` directory deleted by §9a. The receipt carries bounded output tails plus full
+log hashes/paths; full logs stay at those paths.
+
 #### Reusable query packs
 
 Before inventing sequential schema-discovery and evidence queries, look for a repo-owned bounded
@@ -370,11 +419,11 @@ Never treat "rows exist" as PASS for a repeated writer if polling frequency is c
 redundant durable data. "Lossless" is not a waiver to save the same payload every interval.
 
 Every claim must include a reproducible command/query, expected good output, actual observed
-output, and bad-output interpretation. Record, per evidence item, whether it passed, failed, or
-had no post-activation data yet. A single successful happy-path run is never sufficient evidence
-for PASS when edge cases are in scope. Edge cases are "in scope" when named in the contract,
-source, plan, build todos, review notes, or bug hypotheses — for a `tiny_safe` scope (§2a) with
-none named, the contract rows alone suffice.
+output, bad-output interpretation, gate class, and acceptance source. Record, per evidence item,
+whether it passed, failed, or had no post-activation data yet. A single successful happy-path run
+is never sufficient evidence for PASS when edge cases are in scope. Edge cases are "in scope" when
+named in the contract, source, plan, build todos, review notes, or bug hypotheses — for a
+`tiny_safe` scope (§2a) with none named, the contract rows alone suffice.
 
 If you need intermediate files, put them in a single run-scoped scratch directory such as:
 
@@ -406,6 +455,8 @@ The collected evidence is a first-class artifact, separate from the `deployment_
   - `screenshot_count`: total screenshots captured;
   - `scope`: ticket id or epic/milestone gate id;
   - `generated_by`: `/ticket-verify`;
+  - `controller_receipt`: manifest/state/log references plus exact revision pre/post attestation;
+  - `failure_classes`: row id -> bounded class/owner for every non-PASS row;
   - **staging runs only** — co-tenancy attribution (staging is shared, and this ticket's
     evidence was collected with other tickets' code present):
     - `staging_head_sha`: `git rev-parse origin/staging` at collection time;
@@ -457,7 +508,8 @@ relevant in `--epic`/`--milestone` mode — see the "§7" section of
 The deployment_guide evidence contract is the gate — verdict is determined by the env's evidence
 items:
 
-- `PASS` — **every** evidence item for this environment passed, and no related failures surfaced.
+- `PASS` — every `causal_ship_gate` for this environment passed and no related causal failure
+  surfaced. Failed observations remain explicit and routed but do not change the causal verdict.
   A failure is *related* only when it occurs in a surface the diff touched or the contract names;
   a pre-existing failure whose diagnostic signature is identical before and after the activation
   boundary is not related (signature comparison rules in §6);
@@ -486,6 +538,14 @@ items:
   milestone deploy via `/milestone-flow`; `prefect deploy` + trigger the deployment; or land/deploy the
   UI change to staging then `/ticket-verify staging <scope>`). This is an explicit outcome, never an
   omitted row.
+
+Controller grading is causal: every failed `causal_ship_gate` fails closed, while a failed
+`observation` is recorded and routed but cannot fail an unrelated causal ship gate. Missing,
+unsupported, or ambiguous causal evidence is `invalid_evidence`, never PASS. A failed observation
+does not erase a causal PASS, and it also cannot be relabeled as causal after current output is
+known. `unknown` blocks promotion fail-closed even when the separately reported causal gate passed;
+that hold does not pretend an observation caused the ship-gate failure. Thresholds remain the
+accepted contract rather than being tailored to the run.
 
 Never report `NEEDS_MORE_TIME` for a feature whose producing deployment is absent or has never
 run — that misrepresents "nobody deployed/triggered it" as "wait for data." If §5a could not

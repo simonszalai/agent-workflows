@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -18,6 +19,60 @@ ROTATION_REASONS = {
     "token_budget",
 }
 TERMINAL_STATUSES = {"complete", "blocked", "failed", "rotate_required"}
+TICKET_PHASE_BUDGETS = {
+    "planning": {
+        "max_turns": 30,
+        "max_checkpoints": 4,
+        "max_elapsed_seconds": 2700,
+        "max_tokens": 60000,
+    },
+    "build_review": {
+        "max_turns": 40,
+        "max_checkpoints": 12,
+        "max_elapsed_seconds": 3600,
+        "max_tokens": 90000,
+    },
+    "deploy_verify": {
+        "max_turns": 20,
+        "max_checkpoints": 8,
+        "max_elapsed_seconds": 2700,
+        "max_tokens": 60000,
+    },
+}
+FANOUT_ROLES = {
+    "investigator",
+    "builder_chain",
+    "review_wave",
+    "verifier",
+    "delta_builder",
+    "delta_reviewer",
+    "specialist_reviewer",
+}
+RISK_BOUNDARIES = {
+    "security",
+    "auth",
+    "runtime_protocol",
+    "migration",
+    "destructive_data",
+    "browser_patch",
+}
+MAX_ROLE_COUNTS = {
+    "investigator": 2,
+    "builder_chain": 2,
+    "review_wave": 2,
+    "verifier": 2,
+    "delta_builder": 1,
+    "delta_reviewer": 1,
+    "specialist_reviewer": 6,
+}
+VERIFICATION_FAILURE_CLASSES = {
+    "code_defect",
+    "verifier_defect",
+    "environment_capacity",
+    "external_observation",
+    "invalid_evidence",
+    "unknown",
+}
 
 
 class ContractError(ValueError):
@@ -76,8 +131,184 @@ def validate_file_reference(value: object, field: str, *, max_bytes: int | None 
     return value
 
 
-def validate_dispatch(dispatch: dict, *, allow_expired: bool = False) -> dict:
-    require_string(dispatch.get("phase_name"), "phase_name")
+def validate_ticket_fanout(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise ContractError("fanout_budget must be an object")
+    require_string(value.get("activation_key"), "fanout_budget.activation_key")
+    require_string(value.get("contract_version"), "fanout_budget.contract_version")
+    staging_revision = require_int(
+        value.get("staging_revision"),
+        "fanout_budget.staging_revision",
+        minimum=1,
+    )
+    prior_revisions = value.get("prior_staging_revisions")
+    if (
+        not isinstance(prior_revisions, list)
+        or len(prior_revisions) != staging_revision - 1
+        or any(not isinstance(item, str) or not item for item in prior_revisions)
+    ):
+        raise ContractError(
+            "fanout_budget.prior_staging_revisions must contain one id per prior revision"
+        )
+    if len(set(prior_revisions)) != len(prior_revisions):
+        raise ContractError(
+            "fanout_budget.prior_staging_revisions must be unique"
+        )
+    if staging_revision >= 3:
+        stabilization = value.get("stabilization")
+        if not isinstance(stabilization, dict):
+            raise ContractError(
+                "fanout_budget.stabilization is required before a third revision"
+            )
+        if stabilization.get("failure_class") not in VERIFICATION_FAILURE_CLASSES:
+            raise ContractError(
+                "fanout_budget.stabilization.failure_class is invalid"
+            )
+        require_string(
+            stabilization.get("contract_delta"),
+            "fanout_budget.stabilization.contract_delta",
+        )
+    revision_path = value.get("revision_path")
+    if revision_path not in {
+        "first_revision",
+        "same_risk_delta",
+        "new_risk_boundary",
+    }:
+        raise ContractError("fanout_budget.revision_path is invalid")
+    counts = value.get("role_counts")
+    if not isinstance(counts, dict):
+        raise ContractError("fanout_budget.role_counts must be an object")
+    if set(counts) != FANOUT_ROLES:
+        raise ContractError(
+            "fanout_budget.role_counts must contain exactly the supported roles"
+        )
+    validated_counts = {
+        role: require_int(counts.get(role), f"fanout_budget.role_counts.{role}")
+        for role in FANOUT_ROLES
+    }
+    for role, count in validated_counts.items():
+        if count > MAX_ROLE_COUNTS[role]:
+            raise ContractError(
+                f"fanout_budget.role_counts.{role} exceeds {MAX_ROLE_COUNTS[role]}"
+            )
+    baselines = {
+        "first_revision": {
+            "investigator": 1,
+            "builder_chain": 1,
+            "review_wave": 1,
+            "verifier": 1,
+            "delta_builder": 0,
+            "delta_reviewer": 0,
+            "specialist_reviewer": 0,
+        },
+        "same_risk_delta": {
+            "investigator": 0,
+            "builder_chain": 0,
+            "review_wave": 0,
+            "verifier": 1,
+            "delta_builder": 1,
+            "delta_reviewer": 1,
+            "specialist_reviewer": 0,
+        },
+        "new_risk_boundary": {
+            "investigator": 1,
+            "builder_chain": 1,
+            "review_wave": 1,
+            "verifier": 1,
+            "delta_builder": 0,
+            "delta_reviewer": 0,
+            "specialist_reviewer": 0,
+        },
+    }
+    baseline = baselines[revision_path]
+    for role, minimum in baseline.items():
+        if validated_counts[role] < minimum:
+            raise ContractError(
+                f"fanout_budget.role_counts.{role} cannot reduce required coverage "
+                f"for {revision_path}"
+            )
+    if revision_path == "same_risk_delta" and (
+        validated_counts["builder_chain"]
+        or validated_counts["review_wave"]
+        or validated_counts["delta_builder"] != 1
+        or validated_counts["delta_reviewer"] != 1
+    ):
+        raise ContractError(
+            "same_risk_delta must use the delta builder and delta reviewer path"
+        )
+
+    escalations = value.get("escalations")
+    if not isinstance(escalations, list):
+        raise ContractError("fanout_budget.escalations must be an array")
+    escalation_counts = {role: 0 for role in FANOUT_ROLES}
+    for index, escalation in enumerate(escalations):
+        if not isinstance(escalation, dict):
+            raise ContractError(f"fanout_budget.escalations[{index}] must be an object")
+        role = escalation.get("role")
+        if role not in FANOUT_ROLES:
+            raise ContractError(f"fanout_budget.escalations[{index}].role is invalid")
+        require_string(
+            escalation.get("trigger"),
+            f"fanout_budget.escalations[{index}].trigger",
+        )
+        escalation_counts[role] += 1
+    for role, count in validated_counts.items():
+        extras = count - baseline[role]
+        if extras > escalation_counts[role]:
+            raise ContractError(
+                f"every additional {role} requires a recorded escalation trigger"
+            )
+
+    boundaries = require_string_list(
+        value.get("risk_boundaries", []), "fanout_budget.risk_boundaries"
+    )
+    if len(boundaries) != len(set(boundaries)):
+        raise ContractError("fanout_budget.risk_boundaries must be unique")
+    if any(boundary not in RISK_BOUNDARIES for boundary in boundaries):
+        raise ContractError("fanout_budget.risk_boundaries contains an invalid boundary")
+    heavy_review = value.get("heavy_review")
+    if not isinstance(heavy_review, bool):
+        raise ContractError("fanout_budget.heavy_review must be boolean")
+    if revision_path == "new_risk_boundary":
+        if (
+            not boundaries
+            or not heavy_review
+            or validated_counts["specialist_reviewer"] < len(boundaries)
+        ):
+            raise ContractError(
+                "new_risk_boundary requires named risk boundaries, heavy_review=true, "
+                "and specialist_reviewer coverage"
+            )
+    elif boundaries:
+        raise ContractError(
+            "risk boundaries require revision_path=new_risk_boundary"
+        )
+    return value
+
+
+def validate_context_receipt(reference: object) -> None:
+    value = validate_file_reference(
+        reference, "context_receipt", max_bytes=65536
+    )
+    checker = Path(__file__).with_name("workflow-ticket-context-check")
+    result = subprocess.run(
+        [str(checker), "receipt", value["path"]],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        detail = result.stdout.strip() or result.stderr.strip()
+        raise ContractError(f"context_receipt is invalid: {detail[:500]}")
+
+
+def validate_dispatch(
+    dispatch: dict,
+    *,
+    allow_expired: bool = False,
+    required_profile: str | None = None,
+) -> dict:
+    phase_name = require_string(dispatch.get("phase_name"), "phase_name")
     generation = require_int(dispatch.get("rotation_generation"), "rotation_generation")
     require_int(dispatch.get("coordinator_generation"), "coordinator_generation")
     fork_mode = require_string(dispatch.get("fork_mode"), "fork_mode")
@@ -97,8 +328,10 @@ def validate_dispatch(dispatch: dict, *, allow_expired: bool = False) -> dict:
     budget = dispatch.get("budget")
     if not isinstance(budget, dict):
         raise ContractError("budget must be an object")
-    require_int(budget.get("max_turns"), "budget.max_turns", minimum=1)
-    require_int(budget.get("max_checkpoints"), "budget.max_checkpoints", minimum=1)
+    max_turns = require_int(budget.get("max_turns"), "budget.max_turns", minimum=1)
+    max_checkpoints = require_int(
+        budget.get("max_checkpoints"), "budget.max_checkpoints", minimum=1
+    )
     max_elapsed = require_int(
         budget.get("max_elapsed_seconds"), "budget.max_elapsed_seconds", minimum=1
     )
@@ -130,6 +363,36 @@ def validate_dispatch(dispatch: dict, *, allow_expired: bool = False) -> dict:
         validate_file_reference(checkpoint, "checkpoint")
     elif checkpoint is not None:
         validate_file_reference(checkpoint, "checkpoint")
+
+    profile = dispatch.get("contract_profile")
+    if required_profile is not None and profile != required_profile:
+        raise ContractError(f"contract_profile must equal {required_profile}")
+    if profile is not None and profile != "ticket-flow":
+        raise ContractError("contract_profile is unsupported")
+    if profile == "ticket-flow":
+        if phase_name not in TICKET_PHASE_BUDGETS:
+            raise ContractError(
+                "ticket-flow phase_name must be planning, build_review, or deploy_verify"
+            )
+        ceiling = TICKET_PHASE_BUDGETS[phase_name]
+        for field, observed in (
+            ("max_turns", max_turns),
+            ("max_checkpoints", max_checkpoints),
+            ("max_elapsed_seconds", max_elapsed),
+        ):
+            if observed > ceiling[field]:
+                raise ContractError(
+                    f"ticket-flow {phase_name} budget.{field} exceeds {ceiling[field]}"
+                )
+        if token_usage == "available" and max_tokens > ceiling["max_tokens"]:
+            raise ContractError(
+                f"ticket-flow {phase_name} budget.max_tokens exceeds "
+                f"{ceiling['max_tokens']}"
+            )
+        if max_packet_bytes > 16384:
+            raise ContractError("ticket-flow budget.max_packet_bytes exceeds 16384")
+        validate_ticket_fanout(dispatch.get("fanout_budget"))
+        validate_context_receipt(dispatch.get("context_receipt"))
     return dispatch
 
 
@@ -233,6 +496,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     dispatch_parser = subparsers.add_parser("dispatch")
     dispatch_parser.add_argument("dispatch", type=Path)
+    ticket_dispatch_parser = subparsers.add_parser("ticket-dispatch")
+    ticket_dispatch_parser.add_argument("dispatch", type=Path)
     result_parser = subparsers.add_parser("result")
     result_parser.add_argument("result", type=Path)
     result_parser.add_argument("--dispatch", required=True, type=Path)
@@ -241,6 +506,10 @@ def main() -> int:
     try:
         if args.command == "dispatch":
             validate_dispatch(load_json(args.dispatch))
+        elif args.command == "ticket-dispatch":
+            validate_dispatch(
+                load_json(args.dispatch), required_profile="ticket-flow"
+            )
         else:
             dispatch = validate_dispatch(load_json(args.dispatch), allow_expired=True)
             validate_result(load_json(args.result), dispatch)

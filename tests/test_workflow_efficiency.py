@@ -1760,9 +1760,9 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertFalse(report["execution_economy"]["compliant"])
             classes = {row["classification"] for row in report["validation_attribution"]}
             self.assertEqual(classes, {
-                "duplicate_unchanged_tree",
-                "changed_tree_rerun",
-                "failure_repair_rerun",
+                "exact_tree_duplicate",
+                "changed_tree_run",
+                "repair_run",
             })
 
     def test_e0006_build_budget_block_occurs_once(self) -> None:
