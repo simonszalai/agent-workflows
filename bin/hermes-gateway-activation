@@ -1,0 +1,660 @@
+#!/usr/bin/env python3
+"""Reviewed, secret-safe F0021 Hermes gateway activation and verification driver."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import tempfile
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import NoReturn, cast
+
+
+ROOT = Path(__file__).resolve().parents[1]
+LOADER = importlib.machinery.SourceFileLoader(
+    "hermes_activation_provider", str(ROOT / "bin" / "hermes-activation")
+)
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
+if SPEC is None:
+    raise RuntimeError("provider import failed")
+H = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = H
+LOADER.exec_module(H)
+
+CONTRACT = "e0006-m3-gateway/v1"
+STATE_SCHEMA = "e0006_m3_gateway_canary/v1"
+HANDOFF_SCHEMA = "e0006_m3_memory_handoff/v1"
+PROVIDER_COMMIT = "a5fcf69e41777d890a8141b095859ecf33d2592c"
+PROVIDER_TREE = "c7ff07df9a226ab1c7e33f5a4510f35b9ec55b4d"
+GATEWAY_BASE = "http://127.0.0.1:8765"
+MAX_BYTES = 64 * 1024
+CANARY_SECONDS = 5 * 60
+CANARY_PREFIX = "e0006-m3-gateway-canary-"
+CANARY_TITLE = "E0006 M3 Hermes gateway canary "
+CANARY_TAG = "e0006-m3-gateway-canary"
+ENV_ROWS = (
+    ("HERMES_AUTODEV_MEMORY_TOKEN", H.MEMORY_REF),
+    ("HERMES_GATEWAY_TOKEN", H.GATEWAY_REF),
+)
+CHECKS = (
+    "gateway_health_routes",
+    "render_mutations_denied_zero_dispatch",
+    "token_cross_routes_rejected",
+    "jsonrpc_batch_and_rest_bypass_rejected",
+    "tools_list_filtered_fail_closed",
+    "secret_free_audit",
+    "origin_status_source_identity",
+    "self_approval_and_execution_status_denied",
+    "cross_ticket_write_denied",
+    "unapproved_pickup_empty",
+    "admin_approval_observed",
+    "owner_edit_clears_approval",
+    "cleared_approval_pickup_empty",
+    "admin_reapproval_observed",
+    "scoped_pickup_exact",
+    "terminal_cleanup",
+)
+FORBIDDEN_RENDER = (
+    "update_environment_variables",
+    "trigger_deploy",
+    "create_service",
+)
+SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
+
+
+class SafeError(Exception):
+    def __init__(self, code: str, exit_code: int = 3) -> None:
+        super().__init__(code)
+        self.code = code
+        self.exit_code = exit_code
+
+
+@dataclass
+class State:
+    schema: str
+    run_id: str
+    repo: str
+    ticket_id: str | None
+    phase: str
+    started_at: float
+    deadline_at: float
+    checks: list[str]
+    requests: int
+    mutations: int
+    cleanup: str | None
+
+    @classmethod
+    def load(cls, path: Path) -> "State":
+        value = read_json(path)
+        expected = set(cls.__annotations__)
+        if set(value) != expected or value.get("schema") != STATE_SCHEMA:
+            raise SafeError("state_receipt_mismatch")
+        state = cls(**value)
+        if (
+            not SAFE_ID.fullmatch(state.run_id)
+            or state.repo != CANARY_PREFIX + state.run_id
+            or state.phase not in {
+                "prepare",
+                "awaiting_admin_approval",
+                "awaiting_admin_reapproval",
+                "complete",
+            }
+            or state.checks != list(CHECKS[: len(state.checks)])
+            or len(state.checks) > len(CHECKS)
+            or state.deadline_at - state.started_at != CANARY_SECONDS
+            or not isinstance(state.requests, int)
+            or not isinstance(state.mutations, int)
+            or state.requests < 0
+            or state.requests > 32
+            or state.mutations < 0
+            or state.mutations > 8
+            or (state.phase == "complete") != (state.cleanup == "pass")
+        ):
+            raise SafeError("state_receipt_mismatch")
+        return state
+
+    def save(self, path: Path) -> None:
+        H.atomic_write_json(path, asdict(self))
+
+
+def read_json(path: Path) -> dict[str, object]:
+    if not path.is_absolute() or path.is_symlink():
+        raise SafeError("receipt_path_invalid")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise SafeError("receipt_missing") from None
+    if len(raw) > MAX_BYTES:
+        raise SafeError("receipt_too_large")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SafeError("receipt_json_invalid") from None
+    if not isinstance(value, dict):
+        raise SafeError("receipt_json_invalid")
+    return cast(dict[str, object], value)
+
+
+def require_receipt_target(path: Path) -> Path:
+    if not path.is_absolute() or path.is_symlink() or not path.parent.is_dir():
+        raise SafeError("receipt_path_invalid")
+    return path
+
+
+def validate_handoff(path: Path) -> dict[str, object]:
+    try:
+        value = H.validate_handoff(read_json(path))
+    except H.SafeError as error:
+        raise SafeError(error.code) from None
+    provider = cast(dict[str, object], value["provider"])
+    if provider["merge_sha"] != PROVIDER_COMMIT or provider["tree_sha"] != PROVIDER_TREE:
+        raise SafeError("handoff_provider_revision_mismatch")
+    return value
+
+
+def test_mode() -> bool:
+    return os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_MODE") == "1"
+
+
+def expected_env_path() -> Path:
+    root = ROOT
+    if test_mode():
+        override = os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_ROOT")
+        if not override:
+            raise SafeError("test_root_missing")
+        root = Path(override).resolve()
+    return root / "mcp-gateway" / "gateway.env"
+
+
+def require_env_path(path: Path) -> Path:
+    if not path.is_absolute() or path.is_symlink() or path.resolve() != expected_env_path().resolve():
+        raise SafeError("gateway_env_path_invalid")
+    return path
+
+
+def validate_env_text(text: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            raise SafeError("gateway_env_shape_mismatch")
+        name, value = stripped.split("=", 1)
+        if name in found:
+            raise SafeError("gateway_env_duplicate")
+        found[name] = value
+    return found
+
+
+def write_refs(path: Path) -> bool:
+    try:
+        before = path.read_text(encoding="utf-8")
+    except OSError:
+        raise SafeError("gateway_env_unreadable") from None
+    values = validate_env_text(before)
+    for name, ref in ENV_ROWS:
+        if name in values and values[name] != ref:
+            raise SafeError("gateway_env_conflicting_ref")
+    missing = [(name, ref) for name, ref in ENV_ROWS if name not in values]
+    if not missing:
+        return False
+    suffix = "" if before.endswith("\n") else "\n"
+    block = "\n# Hermes restricted routes (E0006 M3; refs only, never resolved values)\n"
+    block += "".join(f"{name}={ref}\n" for name, ref in missing)
+    updated = before + suffix + block
+    mode = path.stat().st_mode & 0o777
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(updated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return True
+
+
+def config_checks(path: Path) -> None:
+    values = validate_env_text(path.read_text(encoding="utf-8"))
+    if any(values.get(name) != ref for name, ref in ENV_ROWS):
+        raise SafeError("gateway_ref_missing")
+    routes = json.loads((path.parent / "routes.json").read_text(encoding="utf-8"))["routes"]
+    for prefix in ("hermes/autodev-memory", "hermes/render", "hermes/slack"):
+        route = routes.get(prefix)
+        if not isinstance(route, dict) or route.get("clientTokenEnv") != "HERMES_GATEWAY_TOKEN":
+            raise SafeError("gateway_route_contract_mismatch")
+        tools = route.get("allowTools")
+        if not isinstance(tools, list) or not tools or len(tools) != len(set(tools)):
+            raise SafeError("gateway_route_contract_mismatch")
+
+
+def safe_output(command: str, result: dict[str, object]) -> dict[str, object]:
+    return {"schema": CONTRACT, "command": command, "status": "pass", "result": result}
+
+
+def gateway_base() -> str:
+    override = os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_BASE")
+    if override is None:
+        return GATEWAY_BASE
+    if not test_mode() or not re.fullmatch(r"http://127\.0\.0\.1:\d+", override):
+        raise SafeError("gateway_base_invalid")
+    return override
+
+
+def token(name: str) -> bytes:
+    raw = os.environ.get(name)
+    if raw is None or len(raw) < 16 or raw != raw.strip():
+        raise SafeError("gateway_credential_unavailable")
+    return raw.encode("utf-8")
+
+
+def raw_request(path: str, credential: bytes, body: object | None = None) -> tuple[int, bytes]:
+    data = None if body is None else H.compact_json(body)
+    headers = {"Accept": "application/json", "x-mcp-gateway-token": credential.decode()}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(gateway_base() + path, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                raise SafeError("gateway_response_too_large", 4)
+            return response.status, raw
+    except urllib.error.HTTPError as error:
+        raw = error.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise SafeError("gateway_response_too_large", 4)
+        return error.code, raw
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise SafeError("gateway_transport_failure", 4) from None
+
+
+class GatewayMemoryClient(H.MemoryClient):
+    def tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+        self.request_id += 1
+        response = self.http.request(
+            "POST",
+            "/",
+            {
+                "jsonrpc": "2.0",
+                "id": self.request_id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            },
+            accepted={200},
+        )
+        envelope = H.require_object(response.body, "memory_mcp_shape_mismatch")
+        result = H.require_object(envelope.get("result"), "memory_mcp_shape_mismatch")
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        blocks = H.require_list(result.get("content"), "memory_mcp_shape_mismatch")
+        if len(blocks) != 1:
+            raise H.SafeError("memory_mcp_shape_mismatch")
+        block = H.require_object(blocks[0], "memory_mcp_shape_mismatch")
+        return H.require_object(json.loads(H.require_string(block.get("text"))))
+
+
+def memory_client() -> GatewayMemoryClient:
+    credential = token("HERMES_GATEWAY_TOKEN")
+    http = H.HttpClient(
+        gateway_base() + "/hermes/autodev-memory",
+        credential,
+        auth_header="X-MCP-Gateway-Token",
+        auth_scheme="",
+    )
+    return GatewayMemoryClient(http)
+
+
+def tool(client: GatewayMemoryClient, state: State, name: str, args: dict[str, object],
+         *, mutation: bool = False, cleanup: bool = False) -> dict[str, object]:
+    if not cleanup and time.time() > state.deadline_at:
+        raise SafeError("canary_deadline_exceeded", 6)
+    if state.requests >= 32 or state.mutations + int(mutation) > 8:
+        raise SafeError("canary_bound_exceeded", 6)
+    state.requests += 1
+    state.mutations += int(mutation)
+    try:
+        return client.tool(name, args)
+    except H.SafeError as error:
+        raise SafeError(error.code, error.exit_code) from None
+
+
+def expect_ticket(result: dict[str, object], state: State, *, status: str,
+                  approved: bool) -> dict[str, object]:
+    ticket = result.get("ticket")
+    if not isinstance(ticket, dict):
+        raise SafeError("canary_ticket_shape_mismatch", 6)
+    pair = ticket.get("execution_approved_at") is not None and ticket.get(
+        "execution_approved_by"
+    ) == "admin"
+    if (
+        ticket.get("id") != state.ticket_id
+        or ticket.get("repo") != state.repo
+        or ticket.get("origin") != "hermes"
+        or ticket.get("status") != status
+        or pair != approved
+    ):
+        raise SafeError("canary_ticket_state_mismatch", 6)
+    return ticket
+
+
+def get_ticket(client: GatewayMemoryClient, state: State, *, status: str,
+               approved: bool, cleanup: bool = False) -> dict[str, object]:
+    result = tool(client, state, "get_ticket", {
+        "project": H.PROJECT,
+        "repo": state.repo,
+        "ticket_id": state.ticket_id,
+        "detail": "light",
+        "include_events": False,
+    }, cleanup=cleanup)
+    return expect_ticket(result, state, status=status, approved=approved)
+
+
+def expect_denial(result: dict[str, object]) -> None:
+    if set(result) != {"error"} or not isinstance(result["error"], str):
+        raise SafeError("canary_denial_missing", 6)
+
+
+def assert_secret_free(payloads: list[bytes], secrets: tuple[bytes, ...]) -> None:
+    for payload in payloads:
+        lowered = payload.lower()
+        if any(secret and secret in payload for secret in secrets):
+            raise SafeError("secret_leak_detected", 6)
+        for marker in (b'"authorization"', b'"x-mcp-gateway-token"', b'"password"'):
+            if marker in lowered:
+                raise SafeError("secret_leak_detected", 6)
+
+
+def probe_gateway(state: State) -> None:
+    hermes = token("HERMES_GATEWAY_TOKEN")
+    default = token("MCP_GATEWAY_TOKEN")
+    try:
+        with urllib.request.urlopen(gateway_base() + "/healthz", timeout=10) as health:
+            health_status = health.status
+            health_raw = health.read(MAX_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise SafeError("gateway_transport_failure", 4) from None
+    if len(health_raw) > MAX_BYTES:
+        raise SafeError("gateway_response_too_large", 4)
+    health_body = json.loads(health_raw)
+    routes = health_body.get("routes") if isinstance(health_body, dict) else None
+    if health_status != 200 or not isinstance(routes, list) or not all(
+        name in routes for name in ("hermes/autodev-memory", "hermes/render", "hermes/slack")
+    ):
+        raise SafeError("gateway_health_invalid", 4)
+    state.checks.append(CHECKS[0])
+    observed = [health_raw]
+    for name in FORBIDDEN_RENDER:
+        status, body = raw_request("/hermes/render", hermes, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        })
+        observed.append(body)
+        if status != 403:
+            raise SafeError("render_mutation_not_denied", 6)
+    state.checks.append(CHECKS[1])
+    cases = (
+        ("/hermes/render", default),
+        ("/shared/autodev-memory", hermes),
+    )
+    for path, credential in cases:
+        status, body = raw_request(path, credential, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {},
+        })
+        observed.append(body)
+        if status != 401:
+            raise SafeError("cross_route_token_accepted", 6)
+    state.checks.append(CHECKS[2])
+    for path, body in (
+        ("/hermes/autodev-memory", [{"method": "tools/list"}]),
+        ("/hermes/autodev-memory/tickets/workflow/batch", {"operations": []}),
+    ):
+        status, response = raw_request(path, hermes, body)
+        observed.append(response)
+        if status != 403:
+            raise SafeError("gateway_bypass_not_denied", 6)
+    state.checks.append(CHECKS[3])
+    status, body = raw_request("/hermes/render", hermes, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {},
+    })
+    if status != 200 or any(name.encode() in body for name in FORBIDDEN_RENDER):
+        raise SafeError("tools_list_filter_failed", 6)
+    observed.append(body)
+    state.checks.append(CHECKS[4])
+    assert_secret_free(observed + [json.dumps(asdict(state)).encode()], (hermes, default))
+    state.checks.append(CHECKS[5])
+
+
+def prepare_canary(state: State, receipt: Path) -> None:
+    probe_gateway(state)
+    client = memory_client()
+    created = tool(client, state, "create_ticket", {
+        "project": H.PROJECT,
+        "repo": state.repo,
+        "title": CANARY_TITLE + state.run_id,
+        "type": "feature",
+        "description": "Synthetic bounded gateway canary source.",
+        "status": "merged",
+        "tags": {"canary": CANARY_TAG, "run_id": state.run_id},
+        "command": "e0006-m3-gateway-canary",
+        "agent": "hermes",
+    }, mutation=True)
+    state.ticket_id = str(created.get("ticket_id"))
+    get_ticket(client, state, status="backlog", approved=False)
+    state.checks.append(CHECKS[6])
+    for update in ({"status": "in_progress"}, {"approve_execution": True}):
+        denied = tool(client, state, "update_ticket", {
+            "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+            **update, "command": "e0006-m3-gateway-canary", "agent": "hermes",
+        })
+        expect_denial(denied)
+    state.checks.append(CHECKS[7])
+    human = tool(client, state, "update_ticket", {
+        "project": H.PROJECT, "repo": H.HUMAN_TICKET_REPO,
+        "ticket_id": H.HUMAN_TICKET_ID, "tags": {"gateway_probe": state.run_id},
+        "command": "e0006-m3-gateway-canary", "agent": "hermes",
+    })
+    expect_denial(human)
+    state.checks.append(CHECKS[8])
+    tool(client, state, "create_artifact", {
+        "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+        "artifact_type": "plan", "title": "Bounded gateway canary plan",
+        "content": "Synthetic plan for the bounded gateway canary.",
+        "command": "e0006-m3-gateway-canary", "agent": "hermes",
+    }, mutation=True)
+    changed = tool(client, state, "update_ticket", {
+        "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+        "status": "planned", "command": "e0006-m3-gateway-canary", "agent": "hermes",
+    }, mutation=True)
+    if changed.get("status") != "updated":
+        raise SafeError("canary_plan_transition_failed", 6)
+    pickup = tool(client, state, "next_ticket", {"project": H.PROJECT, "repo": state.repo})
+    if pickup.get("ticket") is not None:
+        raise SafeError("canary_unapproved_pickup", 6)
+    state.checks.append(CHECKS[9])
+    state.phase = "awaiting_admin_approval"
+    state.save(receipt)
+
+
+def after_approval(state: State, receipt: Path) -> None:
+    if time.time() > state.deadline_at:
+        raise SafeError("canary_deadline_exceeded", 6)
+    client = memory_client()
+    get_ticket(client, state, status="planned", approved=True)
+    state.checks.append(CHECKS[10])
+    tool(client, state, "update_ticket", {
+        "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+        "summary_bullets": ["Gateway owner edit clears approval"],
+        "command": "e0006-m3-gateway-canary", "agent": "hermes",
+    }, mutation=True)
+    get_ticket(client, state, status="planned", approved=False)
+    state.checks.append(CHECKS[11])
+    pickup = tool(client, state, "next_ticket", {"project": H.PROJECT, "repo": state.repo})
+    if pickup.get("ticket") is not None:
+        raise SafeError("canary_cleared_approval_pickup", 6)
+    state.checks.append(CHECKS[12])
+    state.phase = "awaiting_admin_reapproval"
+    state.save(receipt)
+
+
+def cleanup(state: State, receipt: Path, *, require_reapproval: bool) -> None:
+    if require_reapproval and time.time() > state.deadline_at:
+        raise SafeError("canary_deadline_exceeded", 6)
+    client = memory_client()
+    if require_reapproval:
+        get_ticket(client, state, status="planned", approved=True)
+        state.checks.append(CHECKS[13])
+        pickup = tool(client, state, "next_ticket", {"project": H.PROJECT, "repo": state.repo})
+        picked = pickup.get("ticket")
+        if not isinstance(picked, dict) or picked.get("id") != state.ticket_id:
+            raise SafeError("canary_scoped_pickup_failed", 6)
+        state.checks.append(CHECKS[14])
+    changed = tool(client, state, "update_ticket", {
+        "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+        "status": "abandoned", "command": "e0006-m3-gateway-canary-cleanup", "agent": "hermes",
+    }, mutation=True, cleanup=not require_reapproval)
+    if changed.get("status") != "updated":
+        raise SafeError("canary_cleanup_failed", 6)
+    get_ticket(
+        client, state, status="abandoned", approved=False, cleanup=not require_reapproval
+    )
+    pickup = tool(
+        client,
+        state,
+        "next_ticket",
+        {"project": H.PROJECT, "repo": state.repo},
+        cleanup=not require_reapproval,
+    )
+    if pickup.get("ticket") is not None:
+        raise SafeError("canary_cleanup_pickup_not_empty", 6)
+    if require_reapproval:
+        state.checks.append(CHECKS[15])
+    state.phase = "complete"
+    state.cleanup = "pass"
+    state.save(receipt)
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="hermes-gateway-activation", allow_abbrev=False)
+    root.add_argument("--version", action="version", version=CONTRACT)
+    groups = root.add_subparsers(dest="command", required=True)
+    prepare = groups.add_parser("prepare", allow_abbrev=False)
+    prepare.add_argument("--handoff-receipt", type=Path, required=True)
+    prepare.add_argument("--gateway-env", type=Path, required=True)
+    prepare.add_argument("--receipt", type=Path, required=True)
+    verify = groups.add_parser("verify-config", allow_abbrev=False)
+    verify.add_argument("--handoff-receipt", type=Path, required=True)
+    verify.add_argument("--gateway-env", type=Path, required=True)
+    verify.add_argument("--receipt", type=Path, required=True)
+    canary = groups.add_parser("canary", allow_abbrev=False)
+    canary.add_argument(
+        "--phase", choices=("prepare", "after-approval", "after-reapproval", "cleanup"),
+        required=True,
+    )
+    canary.add_argument("--handoff-receipt", type=Path, required=True)
+    canary.add_argument("--state-receipt", type=Path, required=True)
+    return root
+
+
+def run(args: argparse.Namespace) -> dict[str, object]:
+    handoff = validate_handoff(args.handoff_receipt)
+    if args.command in {"prepare", "verify-config"}:
+        require_receipt_target(args.receipt)
+        env_path = require_env_path(args.gateway_env)
+        changed = write_refs(env_path) if args.command == "prepare" else False
+        config_checks(env_path)
+        result = {
+            "handoff_schema": HANDOFF_SCHEMA,
+            "provider_commit": PROVIDER_COMMIT,
+            "provider_tree": PROVIDER_TREE,
+            "evidence_artifact_id": handoff["evidence_artifact_id"],
+            "gateway_env": "mcp-gateway/gateway.env",
+            "refs": [{"name": name, "ref": ref} for name, ref in ENV_ROWS],
+            "changed": changed,
+        }
+        H.atomic_write_json(args.receipt, safe_output(args.command, result))
+        return safe_output(args.command, result)
+    receipt = args.state_receipt
+    require_receipt_target(receipt)
+    if args.phase == "prepare":
+        if receipt.exists():
+            raise SafeError("state_receipt_exists")
+        now = time.time()
+        state = State(
+            STATE_SCHEMA, uuid.uuid4().hex[:20], "", None, "prepare",
+            now, now + CANARY_SECONDS, [], 0, 0, None,
+        )
+        state.repo = CANARY_PREFIX + state.run_id
+        state.save(receipt)
+        prepare_canary(state, receipt)
+    else:
+        state = State.load(receipt)
+        if args.phase == "after-approval":
+            if state.phase != "awaiting_admin_approval":
+                raise SafeError("canary_phase_mismatch")
+            after_approval(state, receipt)
+        elif args.phase == "after-reapproval":
+            if state.phase != "awaiting_admin_reapproval":
+                raise SafeError("canary_phase_mismatch")
+            cleanup(state, receipt, require_reapproval=True)
+        else:
+            cleanup(state, receipt, require_reapproval=False)
+    result = {
+        "phase": state.phase,
+        "run_id": state.run_id,
+        "ticket_id": state.ticket_id or "pending",
+        "checks": [{"code": code, "pass": True} for code in state.checks],
+        "cleanup": state.cleanup,
+        "verification_complete": state.checks == list(CHECKS),
+    }
+    assert_secret_free(
+        [json.dumps(result, separators=(",", ":")).encode()],
+        (token("HERMES_GATEWAY_TOKEN"), token("MCP_GATEWAY_TOKEN")),
+    )
+    return safe_output("canary", result)
+
+
+def main() -> NoReturn:
+    args = parser().parse_args()
+    command = getattr(args, "command", "unknown")
+    try:
+        output = run(args)
+        sys.stdout.write(json.dumps(output, separators=(",", ":")) + "\n")
+        raise SystemExit(0)
+    except (SafeError, H.SafeError) as error:
+        code = getattr(error, "code", "internal_error")
+        sys.stdout.write(json.dumps({
+            "schema": CONTRACT,
+            "command": command,
+            "status": "fail",
+            "result": {"code": code},
+        }, separators=(",", ":")) + "\n")
+        raise SystemExit(getattr(error, "exit_code", 3))
+    except Exception:
+        sys.stdout.write(json.dumps({
+            "schema": CONTRACT,
+            "command": command,
+            "status": "fail",
+            "result": {"code": "internal_error"},
+        }, separators=(",", ":")) + "\n")
+        raise SystemExit(3)
+
+
+if __name__ == "__main__":
+    main()

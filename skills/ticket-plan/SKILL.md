@@ -37,6 +37,11 @@ The planning workflow. Picks up a `backlog` or `up_next` ticket (or creates one)
 codebase, selects a light or heavy native planning path, conditionally escalates peers for risk or
 uncertainty, writes a plan artifact and a DRAFT deployment guide, and marks the ticket `planned`.
 
+For a Hermes-origin ticket, planning may create or update the plan and leave the ticket `planned`,
+but the restricted principal cannot self-approve or move it into an execution status. Admin
+approval is a separate server-side action on the current live plan. Any later Hermes edit clears
+that approval pair and requires reapproval; do not implement a client-side origin or pickup filter.
+
 This is the **only** planning skill — there is no separate manual plan command. Methodology
 standards (audits, checklists, synthesis guidelines) live in
 `references/plan-methodology.md`; the plan output template is `templates/plan.md`.

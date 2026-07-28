@@ -702,10 +702,20 @@ class NoCrossHostRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class HttpClient:
-    def __init__(self, base: str, bearer: bytes, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        base: str,
+        bearer: bytes,
+        timeout: float = 15.0,
+        *,
+        auth_header: str = "Authorization",
+        auth_scheme: str = "Bearer ",
+    ) -> None:
         self.base = base.rstrip("/")
         self.bearer = bearer
         self.timeout = timeout
+        self.auth_header = auth_header
+        self.auth_scheme = auth_scheme
         self.opener = urllib.request.build_opener(NoCrossHostRedirect())
 
     def request(
@@ -723,7 +733,7 @@ class HttpClient:
             raise SafeError("request_too_large")
         headers = {
             "Accept": "application/json",
-            "Authorization": "Bearer " + self.bearer.decode("utf-8"),
+            self.auth_header: self.auth_scheme + self.bearer.decode("utf-8"),
         }
         if data is not None:
             headers["Content-Type"] = "application/json"
