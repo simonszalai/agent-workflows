@@ -13,6 +13,14 @@ from pathlib import Path
 
 NONTERMINAL_STATES = {"running", "sleep", "paused", "unknown"}
 TERMINAL_STATES = {"complete", "blocked", "failed", "rotate_required"}
+POLLING_OPERATIONS = {
+    "wait_agent",
+    "write_stdin",
+    "list_agents",
+    "github_status",
+    "render_status",
+    "equivalent_status_read",
+}
 
 
 class ContractError(ValueError):
@@ -132,6 +140,52 @@ def decide_expiry(lease: dict, observation: dict) -> dict:
     }
 
 
+def validate_execution_economy_receipt(receipt: dict) -> dict:
+    observations = receipt.get("observations")
+    if not isinstance(observations, list):
+        raise ContractError("observations must be an array")
+    model_by_condition: dict[str, int] = {}
+    expiry_inspections = 0
+    violations: list[str] = []
+    for index, observation in enumerate(observations):
+        if not isinstance(observation, dict):
+            raise ContractError(f"observations[{index}] must be an object")
+        actor = observation.get("actor")
+        if actor not in {"model", "deterministic_waiter"}:
+            raise ContractError(
+                f"observations[{index}].actor must be model or deterministic_waiter"
+            )
+        operation = require_string(
+            observation.get("operation"), f"observations[{index}].operation"
+        )
+        condition = require_string(
+            observation.get("condition"), f"observations[{index}].condition"
+        )
+        lease_inspection = observation.get("lease_expiry_inspection", False)
+        if not isinstance(lease_inspection, bool):
+            raise ContractError(
+                f"observations[{index}].lease_expiry_inspection must be boolean"
+            )
+        if actor == "model" and operation in POLLING_OPERATIONS:
+            model_by_condition[condition] = model_by_condition.get(condition, 0) + 1
+            if lease_inspection:
+                expiry_inspections += 1
+    for condition, count in sorted(model_by_condition.items()):
+        if count > 1:
+            violations.append(f"repeated model polling for {condition}: {count} observations")
+    if expiry_inspections > 1:
+        violations.append(
+            f"lease expiry inspection budget exceeded: {expiry_inspections} observations"
+        )
+    return {
+        "status": "valid" if not violations else "invalid",
+        "execution_economy_compliant": not violations,
+        "model_poll_conditions": model_by_condition,
+        "lease_expiry_inspections": expiry_inspections,
+        "violations": violations,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="progress-lease")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -140,19 +194,23 @@ def main() -> int:
     expiry = subparsers.add_parser("expiry")
     expiry.add_argument("observation", type=Path)
     expiry.add_argument("--lease", required=True, type=Path)
+    policy = subparsers.add_parser("policy")
+    policy.add_argument("receipt", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "issue":
             validate_lease(load(args.lease), allow_expired=False)
             result = {"status": "valid", "action": "block_once"}
-        else:
+        elif args.command == "expiry":
             lease = validate_lease(load(args.lease), allow_expired=True)
             result = decide_expiry(lease, load(args.observation))
+        else:
+            result = validate_execution_economy_receipt(load(args.receipt))
     except ContractError as exc:
         print(json.dumps({"status": "invalid", "error": str(exc)}, separators=(",", ":")))
         return 2
     print(json.dumps(result, separators=(",", ":")))
-    return 0
+    return 0 if result.get("execution_economy_compliant", True) else 2
 
 
 if __name__ == "__main__":

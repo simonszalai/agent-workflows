@@ -31,7 +31,11 @@ After the operation reaches a terminal result, inspect the scope once more:
 5. **Ticket hygiene:** persist any status, blocker, evidence, notes, or affected-ticket updates
    discovered by the post-check. If work remains in this scope, keep it on the owning ticket with
    the exact next action; do not hide it only in the chat report.
-6. **Closure decision:** a production/final run may say `COMPLETED — READY TO CLOSE` only when all
+6. **Execution-economy compliance:** validate the run receipt with `bin/progress-lease policy` or
+   the rollout report with `--enforce-execution-economy`. Repeated model-driven same-condition
+   polling fails closeout even if the underlying work passed; report the deterministic
+   waiter/resume command instead of hiding the violation behind a success banner.
+7. **Closure decision:** a production/final run may say `COMPLETED — READY TO CLOSE` only when all
    required work and cleanup are done, the canonical item is actually `completed`, and no
    outstanding in-scope change or ticket update remains. Otherwise use a non-complete outcome and
    name the owner and next action.

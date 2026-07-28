@@ -63,8 +63,9 @@ Apply a fix in the same run **only when all of these hold**:
    corrected), the branch is pushed, and redeploy + re-verification go through
    `/ticket-deploy staging` — `/ticket-verify` itself never edits environments or deploys.
 
-Production FAILs are never direct-fixed from this skill: propose routes (§3b) and name
-`/lfg`, a new bug ticket, or rollback via the deployment guide as the fix owner.
+Production FAILs are never direct-fixed from this skill. Code/config/auth remediation must use the
+tracked lifecycle route in §3b; ticketless `/lfg` and untracked auxiliary branches are prohibited
+as the final route.
 
 After a direct fix is dispatched, the current run's FAIL verdict and artifacts stand unchanged;
 the re-run of `/ticket-verify staging <scope>` after redeploy produces the next verdict.
@@ -73,9 +74,26 @@ the re-run of `/ticket-verify staging <scope>` after redeploy produces the next 
 
 When the direct-fix gate does not pass — or confidence is below `confirmed` — propose 2–4
 ranked routes in the investigation artifact and final output. Each route names: the action, its
-owner (`/lfg`, `/ticket-flow` on a new bug ticket, `/ticket-deploy`, `/milestone-flow`, a human
+owner (`/ticket-flow` on a new bug ticket, `/ticket-deploy`, `/milestone-flow`, a human
 decision, or a specific missing-evidence check to run next), what it would prove or fix, and its
 risk. The top route must be concrete enough to execute without re-deriving the investigation.
+
+For every production or epic/milestone remediation that changes code, config, or authentication,
+the top route must create a new fix ticket/epic step attached to the failed milestone. It names
+separate owners for build, review, landing, secret/config application, deploy, and re-verification.
+The failed milestone remains failed until all lifecycle stages complete. An auxiliary branch or
+implemented commit is not a substitute for the attached step.
+
+The verification report records each stage independently:
+
+- `implemented`: fix exists on a reviewed worktree branch;
+- `landed`: the reviewed fix commit is on the intended target branch;
+- `configured`: required secret/config/auth state is applied by its named owner;
+- `deployed`: runtime serves the landed/configured revision; and
+- `producer available`: every browser/flow/job/data producer required for evidence is live.
+
+Never report “unblocked” at an earlier stage. Re-verification starts only after all required stages
+are true; missing stages are explicit blockers with their owner and resume command.
 
 `pre_existing` failures additionally get a route to file a separate bug ticket via
 `ticket-curator` so the regression-vs-baseline distinction stays tracked.
@@ -84,4 +102,4 @@ risk. The top route must be concrete enough to execute without re-deriving the i
 
 The final report's FAIL rows must include the investigation artifact ID, the root-cause one-liner
 with confidence, and either `direct fix dispatched -> /ticket-deploy staging` or the top proposed
-route.
+route. Production/epic rows also include the five lifecycle stage fields above.

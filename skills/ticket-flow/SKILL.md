@@ -45,6 +45,7 @@ Read before acting:
 - `../references/execution-economy.md`
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
+- `../references/environment-topology.md`
 - `../references/execution-phases.md`
 - `../references/epic-lifecycle.md` when the ticket is an epic step
 - `../references/conductor-multi-repo.md` when the ticket is an epic step, cross-repo
@@ -76,10 +77,12 @@ are retired; route related ticket sets to per-ticket `/ticket-flow` runs or an e
 Choose the intended delivery target **before planning/building** so the verification strategy,
 deployment guide, and risk controls match the path:
 
-1. explicit `--target staging|production|prod|main|none` or `--no-land`;
-2. existing PR base / branch ancestry, if a PR already exists;
-3. epic milestone/integration target, for epic-step tickets only;
-4. landing policy risk classification.
+1. a valid `bin/environment-capability` production-only result from exact topology metadata plus
+   explicit production acceptance/user authorization;
+2. explicit `--target staging|production|prod|main|none` or `--no-land`;
+3. existing PR base / branch ancestry, if a PR already exists;
+4. epic milestone/integration target, for epic-step tickets only;
+5. landing policy risk classification.
 
 Target meanings:
 
@@ -95,12 +98,18 @@ Target meanings:
 The Conductor workspace target branch is a hint, not permission to bypass risk classification.
 If the workspace appears to target `main` but the ticket is not tiny/safe, **route the standalone
 ticket to staging automatically** unless the user explicitly requested direct production.
+Never infer production-only from failed staging access. Unknown or missing topology stays
+staging-first. A valid production-only capability is passed unchanged in every immutable child
+packet so ticket-deploy and ticket-verify consume the route rather than improvising a bypass.
 
 ## Process
 
 ### 0. Resolve ticket and target
 
 - Resolve project from `<!-- mem:project=X -->` and repo from git remote.
+- Resolve the surface through `bin/environment-capability` and cache its JSON result. Production
+  routing is valid only when the exact topology, acceptance contract, user authorization, and
+  verifier-mode gates all pass.
 - If the ticket's `repo` does not match the current repo, switch only to an available linked
   Conductor directory for that repo after checking its git remote; otherwise stop and report the
   missing repo workspace. Do not implement a ticket for one repo inside another repo.

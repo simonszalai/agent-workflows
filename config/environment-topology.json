@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "surfaces": [
+    {
+      "project": "autodev",
+      "repo": "autodev-dashboard",
+      "surface": "dashboard",
+      "audience": "internal_single_user",
+      "staging_available": false,
+      "verification_environment": "production",
+      "approved_production_verifier_mode": "read_only_backdoor_browser"
+    }
+  ]
+}

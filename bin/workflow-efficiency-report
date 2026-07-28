@@ -18,6 +18,7 @@ CALL_TYPES = {"function_call", "custom_tool_call"}
 OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output"}
 COMPACTION_TYPES = {"compacted", "context_compacted"}
 MAX_DIAGNOSTIC_ROWS = 20
+MODEL_POLL_TOOL_NAMES = {"wait_agent", "write_stdin", "list_agents"}
 
 
 def parse_timestamp(value: object) -> datetime | None:
@@ -143,6 +144,42 @@ def tool_label(payload: dict) -> str:
     return match.group(1) if match else outer
 
 
+def is_model_poll_tool(tool: str) -> bool:
+    leaf = tool.split(".")[-1].lower()
+    if leaf in MODEL_POLL_TOOL_NAMES:
+        return True
+    lowered = tool.lower()
+    provider_status = ("github" in lowered or "render" in lowered) and any(
+        marker in leaf for marker in ("status", "check", "deployment", "run")
+    )
+    return provider_status
+
+
+def compact_exec_receipt(text: str) -> dict | None:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    tree_sha = value.get("tree_sha")
+    rerun_command = value.get("rerun_command")
+    if not isinstance(tree_sha, str) or not tree_sha:
+        return None
+    if not isinstance(rerun_command, str) or " && " not in rerun_command:
+        return None
+    command = rerun_command.split(" && ", 1)[1]
+    normalized = " ".join(command.split())
+    return {
+        "tree_sha": tree_sha,
+        "normalized_exact_command": normalized,
+        "status": value.get("status"),
+        "exit_code": value.get("exit_code"),
+        "output_file": value.get("output_file"),
+        "attribution_certain": value.get("tree_changed_during_command") is not True,
+    }
+
+
 def record_timestamp(record: dict) -> datetime | None:
     return parse_timestamp(record.get("timestamp"))
 
@@ -199,6 +236,8 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
     pending_order: deque[tuple[str, str, datetime | None, str, int]] = deque()
     largest_outputs: list[dict] = []
     elapsed_by_tool: defaultdict[str, list[int]] = defaultdict(list)
+    model_poll_conditions: Counter[tuple[str, str]] = Counter()
+    validation_receipts: list[dict] = []
     for index, record in enumerate(records):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
         payload_type = payload.get("type")
@@ -220,6 +259,8 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
             digest = normalized_call_digest(payload)
             shape = (tool_name, digest)
             call_shapes[shape] += 1
+            if is_model_poll_tool(tool_name):
+                model_poll_conditions[shape] += 1
             argument_bytes = len(raw_call_arguments(payload).encode())
             call_shape_bytes[shape] = argument_bytes
             call_id = str(payload.get("call_id") or payload.get("id") or "")
@@ -258,6 +299,8 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
                 "normalized_arguments_sha256": digest,
                 "argument_bytes": argument_bytes,
             })
+            if (receipt := compact_exec_receipt(text)) is not None:
+                validation_receipts.append(receipt)
             finished = record_timestamp(record)
             if matched_by_id and started is not None and finished is not None:
                 elapsed_by_tool[tool_name].append(
@@ -328,6 +371,18 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
                    "max": max(values)}
             for tool, values in sorted(elapsed_by_tool.items()) if values
         },
+        "model_polling": {
+            "conditions": [
+                {"tool": tool, "condition_sha256": digest, "count": count}
+                for (tool, digest), count in sorted(model_poll_conditions.items())
+            ],
+            "violations": [
+                {"tool": tool, "condition_sha256": digest, "count": count}
+                for (tool, digest), count in sorted(model_poll_conditions.items())
+                if count > 1
+            ],
+        },
+        "validation_receipts": validation_receipts,
         "forks": forks,
         "fork_turns_modes": dict(sorted(fork_modes.items())),
         "all_forks": all_forks,
@@ -437,6 +492,10 @@ def main() -> None:
         "--before-retro", action="store_true",
         help="exclude the latest user session-retro request and all later records",
     )
+    parser.add_argument(
+        "--enforce-execution-economy", action="store_true",
+        help="exit 2 when repeated model-driven polling is detected",
+    )
     args = parser.parse_args()
     root_records = read_records(args.root_session)
     root_meta = metadata(root_records)
@@ -459,6 +518,8 @@ def main() -> None:
     repeated_calls: Counter[tuple[str, str, int]] = Counter()
     largest_outputs: list[dict] = []
     elapsed_by_tool: defaultdict[str, list[int]] = defaultdict(list)
+    model_poll_conditions: Counter[tuple[str, str]] = Counter()
+    validation_receipts: list[dict] = []
     for session in sessions:
         for key, value in session["usage_unique"].items():
             tree_usage[key] += value
@@ -473,6 +534,9 @@ def main() -> None:
         for tool, values in session["tool_elapsed_ms"].items():
             elapsed_by_tool[tool].extend([values["total"], values["max"],
                                          values["measured_calls"]])
+        for row in session["model_polling"]["conditions"]:
+            model_poll_conditions[(row["tool"], row["condition_sha256"])] += row["count"]
+        validation_receipts.extend(session["validation_receipts"])
     session_ids = {str(session["session_id"]) for session in sessions if session["session_id"]}
     starts = [value for session in sessions
               if (value := parse_timestamp(session.get("started_at"))) is not None]
@@ -485,6 +549,49 @@ def main() -> None:
     whole_tree_usage = {key: tree_usage[key] + external["usage"][key] for key in USAGE_KEYS}
     baselines_complete = all(session["fork_baseline_known"] for session in sessions)
     activity_complete = all(session["activity_boundary_known"] for session in sessions)
+    validation_groups: defaultdict[tuple[str, str], list[dict]] = defaultdict(list)
+    command_trees: defaultdict[str, set[str]] = defaultdict(set)
+    failure_seen_before: set[tuple[str, str]] = set()
+    repaired_keys: set[tuple[str, str]] = set()
+    for receipt in validation_receipts:
+        key = (receipt["tree_sha"], receipt["normalized_exact_command"])
+        validation_groups[key].append(receipt)
+        command_trees[receipt["normalized_exact_command"]].add(receipt["tree_sha"])
+        command = receipt["normalized_exact_command"]
+        if receipt.get("status") == "success" and any(
+            failed_command == command and failed_tree != receipt["tree_sha"]
+            for failed_tree, failed_command in failure_seen_before
+        ):
+            repaired_keys.add(key)
+        if receipt.get("status") == "failure":
+            failure_seen_before.add(key)
+    validation_attribution = []
+    for (tree_sha, command), rows in sorted(validation_groups.items()):
+        statuses = [row.get("status") for row in rows]
+        certain = all(row["attribution_certain"] for row in rows)
+        if not certain:
+            classification = "uncertain_tree_changed_during_command"
+        elif len(rows) > 1:
+            classification = "duplicate_unchanged_tree"
+        elif len(command_trees[command]) > 1:
+            classification = "changed_tree_rerun"
+        else:
+            classification = "initial"
+        if certain and (tree_sha, command) in repaired_keys:
+            classification = "failure_repair_rerun"
+        validation_attribution.append({
+            "tree_sha": tree_sha,
+            "normalized_exact_command": command,
+            "count": len(rows),
+            "statuses": statuses,
+            "classification": classification,
+            "attribution_certain": certain,
+        })
+    polling_violations = [
+        {"tool": tool, "condition_sha256": digest, "count": count}
+        for (tool, digest), count in sorted(model_poll_conditions.items())
+        if count > 1
+    ]
     report = {
         "root_session_id": root_meta.get("id") or root_meta.get("session_id"),
         "agents": len(sessions),
@@ -517,6 +624,12 @@ def main() -> None:
             }
             for tool, values in sorted(elapsed_by_tool.items()) if values
         },
+        "execution_economy": {
+            "compliant": not polling_violations,
+            "model_polling_violations": polling_violations,
+            "allowed_lease_expiry_inspections": 1,
+        },
+        "validation_attribution": validation_attribution,
         "sessions": sessions,
         "external_provider_usage": external,
         "coverage": {
@@ -530,6 +643,8 @@ def main() -> None:
         },
     }
     print(json.dumps(report, separators=(",", ":")))
+    if args.enforce_execution_economy and polling_violations:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

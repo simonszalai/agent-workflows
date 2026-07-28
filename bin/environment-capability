@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Resolve explicit environment topology into a fail-closed verification route."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REGISTRY = ROOT / "config/environment-topology.json"
+REQUIRED_FIELDS = {
+    "project",
+    "repo",
+    "surface",
+    "audience",
+    "staging_available",
+    "verification_environment",
+    "approved_production_verifier_mode",
+}
+
+
+class CapabilityError(ValueError):
+    """Topology metadata is malformed."""
+
+
+def load_registry(path: Path) -> list[dict]:
+    try:
+        root = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CapabilityError(f"cannot read registry: {exc}") from exc
+    if not isinstance(root, dict) or root.get("schema_version") != 1:
+        raise CapabilityError("registry schema_version must equal 1")
+    surfaces = root.get("surfaces")
+    if not isinstance(surfaces, list):
+        raise CapabilityError("registry surfaces must be an array")
+    identities: set[tuple[str, str, str]] = set()
+    for index, entry in enumerate(surfaces):
+        if not isinstance(entry, dict) or set(entry) != REQUIRED_FIELDS:
+            raise CapabilityError(f"surfaces[{index}] must contain exactly the required fields")
+        identity = tuple(entry[field] for field in ("project", "repo", "surface"))
+        if any(not isinstance(value, str) or not value for value in identity):
+            raise CapabilityError(f"surfaces[{index}] identity fields must be non-empty strings")
+        if identity in identities:
+            raise CapabilityError(f"duplicate surface identity: {'/'.join(identity)}")
+        identities.add(identity)
+        if not isinstance(entry["staging_available"], bool):
+            raise CapabilityError(f"surfaces[{index}].staging_available must be boolean")
+        production_only = entry["staging_available"] is False
+        if production_only and entry["verification_environment"] != "production":
+            raise CapabilityError("no-staging entries must verify in production")
+        if production_only and not entry["approved_production_verifier_mode"]:
+            raise CapabilityError("no-staging entries require an approved verifier mode")
+    return surfaces
+
+
+def resolve(args: argparse.Namespace, surfaces: list[dict]) -> dict:
+    identity = (args.project, args.repo, args.surface)
+    entry = next(
+        (
+            item
+            for item in surfaces
+            if tuple(item[field] for field in ("project", "repo", "surface")) == identity
+        ),
+        None,
+    )
+    default = {
+        "route": "staging_first",
+        "production_visible_surface_allowed": False,
+        "reason": "topology_missing_or_not_production_only",
+        "identity": {"project": args.project, "repo": args.repo, "surface": args.surface},
+    }
+    if entry is None or entry["staging_available"] is not False:
+        return default
+    gates = {
+        "topology_production_only": True,
+        "production_acceptance_contract": args.production_contract,
+        "user_authorized": args.user_authorized,
+        "verifier_mode_matches": args.verifier_mode
+        == entry["approved_production_verifier_mode"],
+    }
+    route_allowed = all(gates.values())
+    visible_surface_gates = {
+        "short_expiry_enforced": args.short_expiry_enforced,
+        "mutation_denied": args.mutation_denied,
+        "project_scoped": args.project_scoped,
+        "secret_safe_transport": args.secret_safe_transport,
+        "real_browser_available": args.real_browser_available,
+        "producers_preflighted": args.producers_preflighted,
+    }
+    visible_allowed = route_allowed and all(visible_surface_gates.values())
+    return {
+        "route": "production_only" if route_allowed else "staging_first",
+        "production_visible_surface_allowed": visible_allowed,
+        "reason": "all_route_gates_pass" if route_allowed
+        else "production_exception_gate_missing",
+        "identity": {"project": args.project, "repo": args.repo, "surface": args.surface},
+        "topology": entry,
+        "gates": gates,
+        "visible_surface_gates": visible_surface_gates,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="environment-capability")
+    parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--surface", required=True)
+    parser.add_argument("--production-contract", action="store_true")
+    parser.add_argument("--user-authorized", action="store_true")
+    parser.add_argument("--verifier-mode", default="")
+    parser.add_argument("--short-expiry-enforced", action="store_true")
+    parser.add_argument("--mutation-denied", action="store_true")
+    parser.add_argument("--project-scoped", action="store_true")
+    parser.add_argument("--secret-safe-transport", action="store_true")
+    parser.add_argument("--real-browser-available", action="store_true")
+    parser.add_argument("--producers-preflighted", action="store_true")
+    args = parser.parse_args()
+    try:
+        result = resolve(args, load_registry(args.registry))
+    except CapabilityError as exc:
+        print(json.dumps({"status": "invalid", "error": str(exc)}, separators=(",", ":")))
+        return 2
+    print(json.dumps({"status": "valid", **result}, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -79,6 +79,19 @@ def validate_file_reference(value: object, field: str, *, max_bytes: int | None 
 def validate_dispatch(dispatch: dict, *, allow_expired: bool = False) -> dict:
     require_string(dispatch.get("phase_name"), "phase_name")
     generation = require_int(dispatch.get("rotation_generation"), "rotation_generation")
+    require_int(dispatch.get("coordinator_generation"), "coordinator_generation")
+    fork_mode = require_string(dispatch.get("fork_mode"), "fork_mode")
+    if fork_mode == "all":
+        raise ContractError("fork_mode=all is prohibited")
+    if fork_mode != "none" and not fork_mode.isdigit():
+        raise ContractError("fork_mode must be none or a positive numeric recent-turn count")
+    if fork_mode.isdigit() and int(fork_mode) < 1:
+        raise ContractError("numeric fork_mode must be >= 1")
+    compaction_signal = dispatch.get("compaction_signal")
+    if compaction_signal not in {"available", "unavailable"}:
+        raise ContractError("compaction_signal must be available or unavailable")
+    if require_int(dispatch.get("compactions_observed"), "compactions_observed") != 0:
+        raise ContractError("dispatch compactions_observed must equal 0")
     require_string(dispatch.get("first_incomplete_unit"), "first_incomplete_unit")
 
     budget = dispatch.get("budget")
@@ -123,8 +136,21 @@ def validate_dispatch(dispatch: dict, *, allow_expired: bool = False) -> dict:
 def validate_result(result: dict, dispatch: dict) -> dict:
     phase_name = require_string(result.get("phase_name"), "phase_name")
     generation = require_int(result.get("rotation_generation"), "rotation_generation")
+    coordinator_generation = require_int(
+        result.get("coordinator_generation"), "coordinator_generation"
+    )
     if phase_name != dispatch["phase_name"] or generation != dispatch["rotation_generation"]:
         raise ContractError("result phase_name/rotation_generation do not match dispatch")
+    if coordinator_generation != dispatch["coordinator_generation"]:
+        raise ContractError("result coordinator_generation does not match dispatch")
+    fork_mode = require_string(result.get("fork_mode"), "fork_mode")
+    if fork_mode != dispatch["fork_mode"]:
+        raise ContractError("result fork_mode does not match dispatch")
+    compactions_observed = require_int(
+        result.get("compactions_observed"), "compactions_observed"
+    )
+    if dispatch["compaction_signal"] == "unavailable" and compactions_observed:
+        raise ContractError("compactions_observed must be 0 when signal is unavailable")
 
     status = result.get("status")
     if status not in TERMINAL_STATUSES:
@@ -179,6 +205,8 @@ def validate_result(result: dict, dispatch: dict) -> dict:
             raise ContractError("elapsed_budget requires the elapsed budget to be reached")
         if reason == "token_budget" and not exceeded_tokens:
             raise ContractError("token_budget requires an available token ceiling to be reached")
+        if reason == "first_compaction" and compactions_observed < 1:
+            raise ContractError("first_compaction requires an observed compaction")
     else:
         if reason is not None:
             raise ContractError("non-rotation results must set reason to null")
@@ -188,6 +216,13 @@ def validate_result(result: dict, dispatch: dict) -> dict:
             raise ContractError("complete must have empty remaining_scope")
         if status in {"blocked", "failed"} and not remaining_scope:
             raise ContractError(f"{status} must name remaining_scope")
+    if compactions_observed and (
+        status != "rotate_required" or reason != "first_compaction"
+    ):
+        raise ContractError(
+            "work after the first observed compaction must return "
+            "rotate_required with reason=first_compaction"
+        )
     if len(completed_scope) + len(remaining_scope) == 0:
         raise ContractError("result must name completed_scope or remaining_scope")
     return result

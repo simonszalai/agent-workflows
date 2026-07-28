@@ -306,10 +306,17 @@ canary) are not evidence that **this** ticket's flow ran. Confirm the rows were 
 deployment under verification (matching deployment/run id, scraper id, or source marker) before
 crediting them.
 
-### 5b. Visible-surface (UI) acceptance is graded on STAGING, never production
+### 5b. Visible-surface (UI) acceptance is staging-first with one production-only exception
 
 Load and follow `../references/verify-visible-surfaces.md` only when acceptance includes a UI,
-rendered document, email preview, chart, public page, or other browser-visible state.
+rendered document, email preview, chart, public page, or other browser-visible state. Production
+browser grading is permitted only when `bin/environment-capability` confirms no staging, the
+acceptance contract is explicitly production-only, the user authorized it, and the exact approved
+verifier mode matches. Require server-enforced short expiry, read-only mutation denial, narrow
+project/surface scope, secret-safe token transport, and real-browser screenshot evidence. A
+backdoor is authentication only: separately preflight browser execution capability and every
+other evidence producer. Missing/unknown topology or any failed gate remains staging-first and
+fails closed.
 
 ### 5. Collect evidence
 
@@ -471,8 +478,9 @@ items:
   required producing deployment is not registered in the target environment, or an
   on-demand/non-scheduled deployment has never run since the activation boundary and the bounded
   on-demand canary/shadow run exception does not apply or failed to start; or (c) a UI/visible-surface
-  scope's change is not deployed to **staging** (§5b), so its rendering cannot be graded — reason:
-  **needs to be deployed to staging as well, not only main**. Cases (b) and (c) are
+  scope's change is not deployed to **staging** (§5b), and no fully gated production-only topology
+  exception applies, so its rendering cannot be graded — reason: **needs to be deployed to staging
+  as well, not only main**. Cases (b) and (c) are
   deploy-prerequisite gaps, **not** `NEEDS_MORE_TIME`: waiting alone will never produce evidence
   because nothing is scheduled to run. The reason must name the exact unblock action (run the
   milestone deploy via `/milestone-flow`; `prefect deploy` + trigger the deployment; or land/deploy the
@@ -549,6 +557,11 @@ confidence, and classification, then either dispatch a direct fix (standalone st
 the strict low-risk gate passes — the fix goes through `builder` + `/ticket-deploy staging`,
 never through this skill mutating environments) or propose 2–4 ranked remediation routes. The
 FAIL verdict and evidence artifacts are never rewritten by this step.
+
+Production or epic remediation that changes code/config/auth must create a new fix ticket/epic
+step attached to the failed milestone. Ticketless `/lfg` and untracked auxiliary branches are
+prohibited as the final route. Record separate owners and truth for `implemented`, `landed`,
+`configured`, `deployed`, and `producer available`; no earlier stage may be called “unblocked.”
 
 ### 10 / 10a. Deferred post-verification cleanup (production PASS only)
 
