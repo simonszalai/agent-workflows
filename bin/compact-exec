@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import shlex
 import signal
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -26,10 +28,42 @@ def git_metadata(cwd: Path) -> dict[str, str | None]:
         )
         return result.stdout.strip() if result.returncode == 0 else None
 
+    head_tree_sha = read("rev-parse", "HEAD^{tree}")
+    index_tree_sha = read("write-tree")
+    working_tree_sha = head_tree_sha
+    git_index = read("rev-parse", "--git-path", "index")
+    if git_index:
+        index_path = Path(git_index)
+        if not index_path.is_absolute():
+            index_path = cwd / index_path
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_index = Path(directory) / "index"
+            if index_path.is_file():
+                shutil.copy2(index_path, temporary_index)
+            environment = os.environ.copy()
+            environment["GIT_INDEX_FILE"] = str(temporary_index)
+            staged = subprocess.run(
+                ["git", "-C", str(cwd), "add", "-A"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            if staged.returncode == 0:
+                written = subprocess.run(
+                    ["git", "-C", str(cwd), "write-tree"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env=environment,
+                )
+                if written.returncode == 0:
+                    working_tree_sha = written.stdout.strip()
     return {
         "head_sha": read("rev-parse", "HEAD"),
-        "tree_sha": read("rev-parse", "HEAD^{tree}"),
-        "index_tree_sha": read("write-tree"),
+        "head_tree_sha": head_tree_sha,
+        "tree_sha": working_tree_sha,
+        "index_tree_sha": index_tree_sha,
         "working_tree_dirty": bool(read("status", "--porcelain")),
     }
 
@@ -54,6 +88,7 @@ def main() -> None:
     output_path = run_path / "output.log"
     output_path.touch(mode=0o600)
     output_path.chmod(0o600)
+    metadata_before = git_metadata(Path.cwd())
     started = time.monotonic()
     timed_out = False
     with output_path.open("wb") as output:
@@ -84,6 +119,7 @@ def main() -> None:
         output.seek(max(0, size - args.tail_bytes))
         tail = output.read().decode("utf-8", errors="replace")
     status = "timeout" if timed_out else ("success" if exit_code == 0 else "failure")
+    metadata_after = git_metadata(Path.cwd())
     summary = {
         "run_id": run_id,
         "status": status,
@@ -95,7 +131,11 @@ def main() -> None:
         "rerun_command": f"cd {shlex.quote(str(Path.cwd()))} && {shlex.join(command)}",
         "tail_truncated": size > args.tail_bytes,
         "tail": tail,
-        **git_metadata(Path.cwd()),
+        **metadata_before,
+        "post_tree_sha": metadata_after["tree_sha"],
+        "tree_changed_during_command": (
+            metadata_before["tree_sha"] != metadata_after["tree_sha"]
+        ),
     }
     print(json.dumps(summary, separators=(",", ":")))
     raise SystemExit(exit_code)

@@ -36,18 +36,21 @@ build_todo artifacts. Everything else (research depth, template, quality bar) is
 Before doing any work, validate ALL prerequisites. Stop immediately if any fail.
 
 ```
-# 1. Load ticket
-ticket = mcp__autodev-memory__get_ticket(
+# 1. Load the manifest and cache its context_version plus artifact IDs
+manifest = mcp__autodev-memory__get_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  detail="full",
-  artifact_types=["source", "plan", "investigation", "deployment_guide"],
+  detail="light",
   include_events=false
 )
 # If not found: STOP - ticket not found
 
-# 2. Check plan artifact exists
-# Look for artifact with type="plan" in ticket response
+# 2. Check plan artifact exists in the manifest
 # If missing: STOP - run /ticket-plan first
+
+# 3. Load exactly the required bodies by manifest artifact_id
+source = mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=SOURCE_ID)
+plan = mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=PLAN_ID)
+# Load investigation/deployment_guide only when their manifest rows exist and are relevant.
 ```
 
 **If any prerequisite fails:**
@@ -68,10 +71,13 @@ ticket = mcp__autodev-memory__get_ticket(
    - Same ID resolution as `/ticket-plan`
    - Error if the plan artifact doesn't exist
 
-2. **Read context** from `get_ticket` response:
+2. **Read context** from exact `get_artifact` responses:
    - Plan artifact - The approved architecture plan
    - Source artifact - Original problem/feature description
    - Investigation artifact - Production findings (if exists)
+   - Cache and reuse the manifest `context_version` and artifact IDs for the entire run. Reload
+     the light manifest only when an artifact changed outside this workflow; pass immutable packet
+     paths to children instead of making them repeat MCP reads.
 
 3. **Spawn build-planner agent** for deep research:
    - Agent searches memory service exhaustively

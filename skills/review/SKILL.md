@@ -305,10 +305,13 @@ provider polling.
 
 ## Process
 
-1. **Gather context:**
-   - Load ticket once with `detail="full"`,
-     `artifact_types=["source", "plan", "build_todo", "review_todo"]`, and
-     `include_events=false`; cache and reuse that response throughout the review.
+1. **Gather context manifest-first:**
+   - Load the ticket once with `detail="light"` and `include_events=false`.
+   - Cache its `context_version` and exact source/plan/build_todo/review_todo artifact IDs.
+   - Load only required bodies individually with
+     `mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=ARTIFACT_ID)`.
+   - Reload the light manifest only when a relevant artifact changed outside the workflow. Pass
+     immutable packet paths and hashes to children rather than letting them reload ticket context.
    - Read plan artifact for intended approach
    - Run `git diff --name-only` to identify changed files
    - Read build_todo artifact completion notes — collect every **Deviations** entry; the

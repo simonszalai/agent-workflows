@@ -271,6 +271,10 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             dispatch = {
                 "phase_name": "implementation",
                 "rotation_generation": 1,
+                "coordinator_generation": 1,
+                "fork_mode": "none",
+                "compaction_signal": "available",
+                "compactions_observed": 0,
                 "first_incomplete_unit": "todo-2",
                 "started_at_epoch": time.time(),
                 "budget": {
@@ -295,6 +299,9 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             result = {
                 "phase_name": "implementation",
                 "rotation_generation": 1,
+                "coordinator_generation": 1,
+                "fork_mode": "none",
+                "compactions_observed": 0,
                 "status": "rotate_required",
                 "reason": "turn_budget",
                 "checkpoint": reference(checkpoint),
@@ -325,6 +332,35 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             )
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("must be rotate_required", rejected.stdout)
+
+            dispatch["fork_mode"] = "all"
+            dispatch_path.write_text(json.dumps(dispatch))
+            rejected = run_script("phase-contract", "dispatch", str(dispatch_path))
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("prohibited", rejected.stdout)
+
+            dispatch["fork_mode"] = "none"
+            dispatch_path.write_text(json.dumps(dispatch))
+            result.update({
+                "status": "complete",
+                "reason": None,
+                "remaining_scope": [],
+                "usage": {
+                    "turns_used": 1,
+                    "checkpoints_used": 1,
+                    "elapsed_seconds": 1,
+                    "productive_seconds": 1,
+                    "stall_seconds": 0,
+                    "tokens_used": None,
+                },
+                "compactions_observed": 1,
+            })
+            result_path.write_text(json.dumps(result))
+            rejected = run_script(
+                "phase-contract", "result", str(result_path), "--dispatch", str(dispatch_path)
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("first observed compaction", rejected.stdout)
 
     def test_e0003_r1_deployment_ownership_contract_and_workflow_surfaces(self) -> None:
         plan = (ROOT / "skills/epic-plan/SKILL.md").read_text()
@@ -761,6 +797,41 @@ class WorkflowEfficiencyTest(unittest.TestCase):
                 ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
             ).stdout.strip())
             self.assertIsNotNone(summary["tree_sha"])
+
+    def test_compact_exec_tree_sha_tracks_uncommitted_working_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"],
+                           cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            target = repo / "value.txt"
+            target.write_text("before\n")
+            subprocess.run(["git", "add", "value.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "initial"], cwd=repo, check=True)
+            clean = subprocess.run(
+                [str(ROOT / "bin/compact-exec"), "--", "true"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            )
+            clean_summary = json.loads(clean.stdout)
+            self.assertEqual(clean_summary["tree_sha"], clean_summary["head_tree_sha"])
+            target.write_text("after\n")
+            dirty = subprocess.run(
+                [str(ROOT / "bin/compact-exec"), "--", "true"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            )
+            dirty_summary = json.loads(dirty.stdout)
+            self.assertNotEqual(dirty_summary["tree_sha"], dirty_summary["head_tree_sha"])
+            self.assertTrue(dirty_summary["working_tree_dirty"])
+            self.assertFalse(dirty_summary["tree_changed_during_command"])
+            mutating = subprocess.run(
+                [str(ROOT / "bin/compact-exec"), "--", "/bin/sh", "-c",
+                 "printf 'later\\n' > value.txt"],
+                cwd=repo, capture_output=True, text=True, check=True,
+            )
+            mutating_summary = json.loads(mutating.stdout)
+            self.assertTrue(mutating_summary["tree_changed_during_command"])
+            self.assertNotEqual(mutating_summary["tree_sha"], mutating_summary["post_tree_sha"])
 
     def test_noisy_command_linter_rejects_raw_and_accepts_compact_examples(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1489,6 +1560,214 @@ class WorkflowEfficiencyTest(unittest.TestCase):
                             "--memory-context-file", "/missing")
         self.assertEqual(result.returncode, 2)
         self.assertIn("--orchestrator-thread-id", result.stderr)
+
+    def test_e0006_production_only_topology_is_exact_and_fail_closed(self) -> None:
+        allowed = run_script(
+            "environment-capability",
+            "--project", "autodev", "--repo", "autodev-dashboard",
+            "--surface", "dashboard", "--production-contract", "--user-authorized",
+            "--verifier-mode", "read_only_backdoor_browser",
+        )
+        self.assertEqual(allowed.returncode, 0, allowed.stdout)
+        allowed_result = json.loads(allowed.stdout)
+        self.assertEqual(allowed_result["route"], "production_only")
+        self.assertFalse(allowed_result["production_visible_surface_allowed"])
+
+        visible_allowed = run_script(
+            "environment-capability",
+            "--project", "autodev", "--repo", "autodev-dashboard",
+            "--surface", "dashboard", "--production-contract", "--user-authorized",
+            "--verifier-mode", "read_only_backdoor_browser",
+            "--short-expiry-enforced", "--mutation-denied", "--project-scoped",
+            "--secret-safe-transport", "--real-browser-available", "--producers-preflighted",
+        )
+        self.assertTrue(
+            json.loads(visible_allowed.stdout)["production_visible_surface_allowed"]
+        )
+
+        missing_gate = run_script(
+            "environment-capability",
+            "--project", "autodev", "--repo", "autodev-dashboard",
+            "--surface", "dashboard", "--production-contract",
+            "--verifier-mode", "read_only_backdoor_browser",
+        )
+        self.assertEqual(json.loads(missing_gate.stdout)["route"], "staging_first")
+
+        unknown = run_script(
+            "environment-capability",
+            "--project", "ordinary", "--repo", "app", "--surface", "web",
+            "--production-contract", "--user-authorized",
+            "--verifier-mode", "read_only_backdoor_browser",
+        )
+        self.assertEqual(json.loads(unknown.stdout)["route"], "staging_first")
+
+        epic = (ROOT / "skills/epic-flow/SKILL.md").read_text()
+        ticket = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        for contract in (epic, ticket):
+            self.assertIn("bin/environment-capability", contract)
+            self.assertIn("staging-first", contract)
+        self.assertIn("thin coordinator", epic)
+        self.assertIn("immutable packet", epic)
+
+    def test_e0006_visible_surface_production_exception_requires_every_gate(self) -> None:
+        visible = (ROOT / "skills/references/verify-visible-surfaces.md").read_text()
+        verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
+        for phrase in (
+            "server enforces a short expiry",
+            "read-only",
+            "exact project/surface",
+            "secret-safe",
+            "real browser",
+            "backdoor is authentication only",
+        ):
+            self.assertIn(phrase, visible)
+        self.assertIn("Missing/unknown topology or any failed gate", verify)
+        self.assertIn("real-browser screenshot evidence", verify)
+
+    def test_e0006_resolver_is_partitioned_bounded_and_checkpointed(self) -> None:
+        resolve = (ROOT / "skills/resolve-review/SKILL.md").read_text()
+        for phrase in (
+            "coherent subsystem/write-scope chains",
+            "Max turns",
+            "Max checkpoints",
+            "Max elapsed",
+            "Max tokens when exposed",
+            "bin/phase-contract dispatch",
+            "bin/phase-contract result",
+            "Checkpoint each finding separately",
+            "first observable compaction",
+            'fresh `fork_turns: "none"` replacement',
+            "orchestrator owns the final validation gate",
+        ):
+            self.assertIn(phrase, resolve)
+        self.assertIn("Never put every gated or", resolve)
+
+    def test_e0006_ticket_context_examples_are_manifest_first_and_linted(self) -> None:
+        for path in (
+            "skills/create-build-todos/SKILL.md",
+            "skills/build/SKILL.md",
+            "skills/review/SKILL.md",
+        ):
+            contract = (ROOT / path).read_text()
+            self.assertIn('detail="light"', contract, path)
+            self.assertIn("context_version", contract, path)
+            self.assertIn("get_artifact", contract, path)
+            self.assertIn("immutable packet", contract, path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills/demo/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text('get_ticket(project="x", detail="full")\n')
+            rejected = run_script("workflow-ticket-context-check", "--root", str(root))
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("unfiltered_full_ticket_read", rejected.stdout)
+            skill.write_text(
+                'get_ticket(project="x", detail="full", artifact_types=["plan"])\n'
+            )
+            accepted = run_script("workflow-ticket-context-check", "--root", str(root))
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+
+    def test_e0006_progress_policy_rejects_model_polling_and_accepts_waiter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "receipt.json"
+            repeated = {
+                "observations": [
+                    {"actor": "model", "operation": "wait_agent", "condition": "child-1",
+                     "lease_expiry_inspection": True},
+                    {"actor": "model", "operation": "wait_agent", "condition": "child-1",
+                     "lease_expiry_inspection": True},
+                ]
+            }
+            receipt.write_text(json.dumps(repeated))
+            rejected = run_script("progress-lease", "policy", str(receipt))
+            self.assertEqual(rejected.returncode, 2)
+            self.assertFalse(json.loads(rejected.stdout)["execution_economy_compliant"])
+
+            waiter = {
+                "observations": [
+                    {"actor": "deterministic_waiter", "operation": "github_status",
+                     "condition": "pr-12", "lease_expiry_inspection": False},
+                    {"actor": "deterministic_waiter", "operation": "github_status",
+                     "condition": "pr-12", "lease_expiry_inspection": False},
+                    {"actor": "model", "operation": "wait_agent", "condition": "waiter-leaf",
+                     "lease_expiry_inspection": True},
+                ]
+            }
+            receipt.write_text(json.dumps(waiter))
+            accepted = run_script("progress-lease", "policy", str(receipt))
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+            self.assertTrue(json.loads(accepted.stdout)["execution_economy_compliant"])
+
+    def test_e0006_report_detects_polling_and_attributes_validation_by_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repeated = json.dumps({"target": "child-1"})
+            command = "cd /repo && bin/check-agent-workflows"
+            receipt_a = json.dumps({
+                "tree_sha": "a" * 40, "rerun_command": command,
+                "status": "success", "exit_code": 0, "output_file": "/tmp/a",
+            })
+            receipt_b = json.dumps({
+                "tree_sha": "b" * 40, "rerun_command": command,
+                "status": "success", "exit_code": 0, "output_file": "/tmp/b",
+            })
+            repair_command = "cd /repo && pytest -q"
+            receipt_failed = json.dumps({
+                "tree_sha": "c" * 40, "rerun_command": repair_command,
+                "status": "failure", "exit_code": 1, "output_file": "/tmp/c",
+            })
+            receipt_repaired = json.dumps({
+                "tree_sha": "d" * 40, "rerun_command": repair_command,
+                "status": "success", "exit_code": 0, "output_file": "/tmp/d",
+            })
+            self.write_session(root / "root.jsonl", {"id": "root"}, [
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "wait_agent", "call_id": "w1", "arguments": repeated}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "w1", "output": "pending"}},
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "wait_agent", "call_id": "w2", "arguments": repeated}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "w2", "output": "pending"}},
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "exec_command", "call_id": "v1", "arguments": "{}"}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "v1", "output": receipt_a}},
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "exec_command", "call_id": "v2", "arguments": "{}"}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "v2", "output": receipt_a}},
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "exec_command", "call_id": "v3", "arguments": "{}"}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "v3", "output": receipt_b}},
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "exec_command", "call_id": "v4", "arguments": "{}"}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "v4", "output": receipt_failed}},
+                {"type": "response_item", "payload": {"type": "function_call",
+                    "name": "exec_command", "call_id": "v5", "arguments": "{}"}},
+                {"type": "response_item", "payload": {"type": "function_call_output",
+                    "call_id": "v5", "output": receipt_repaired}},
+            ])
+            result = run_script(
+                "workflow-efficiency-report", str(root / "root.jsonl"),
+                "--sessions-root", str(root), "--enforce-execution-economy",
+            )
+            self.assertEqual(result.returncode, 2)
+            report = json.loads(result.stdout)
+            self.assertFalse(report["execution_economy"]["compliant"])
+            classes = {row["classification"] for row in report["validation_attribution"]}
+            self.assertEqual(classes, {
+                "duplicate_unchanged_tree",
+                "changed_tree_rerun",
+                "failure_repair_rerun",
+            })
+
+    def test_e0006_build_budget_block_occurs_once(self) -> None:
+        build = (ROOT / "skills/build/SKILL.md").read_text()
+        self.assertEqual(build.count("| whole implementation owner |"), 1)
 
 
 if __name__ == "__main__":

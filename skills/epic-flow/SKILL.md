@@ -11,7 +11,7 @@ entire epic, continue across milestones, or do it without further human interven
 
 ## Operating modes
 
-`/epic-flow` has two modes:
+`/epic-flow` has three modes:
 
 - **Full-auto** — enabled by `--full-auto` or by an explicit user request like "execute the whole
   epic" / "without me". This mode is authorized to invoke milestone-flow, which itself deploys and
@@ -21,9 +21,16 @@ entire epic, continue across milestones, or do it without further human interven
   splits, and stops before invoking a milestone gate if the user has not authorized deploy/verify.
   Do not call `/milestone-flow` in gate-stop as a "build-only" substitute; milestone-flow is a
   deploy+verify command.
+- **Production-only** — selected only when `bin/environment-capability` resolves an exact topology
+  entry with `staging_available: false`, `verification_environment: production`, a matching
+  approved verifier mode, an explicitly production-only acceptance contract, and explicit user
+  authorization. It runs production milestone gates instead of inventing staging. Never select
+  this mode because staging is down, absent from a deploy, or unreachable.
 
 Never silently choose gate-stop when the user explicitly asked for a hands-off/full-auto epic.
-Never advance to a later milestone until the current milestone's staging gate has passed.
+Never advance to a later milestone until the current milestone's selected environment gate has
+passed. That is staging normally; in production-only mode it is the exact production gate verdict.
+Unknown or missing topology remains fail-closed on the normal staging-first path.
 
 ## This skill does not own design
 
@@ -49,6 +56,7 @@ it became a milestone gate criterion and a required test, and it never worked in
 /epic-flow E0007 --staging-only    # stop after every milestone is staged and verified
 /epic-flow E0007 --milestone M2    # run one milestone and its gate
 /epic-flow E0007 --stop-at-gates   # plan/split/readiness only; stop before milestone-flow deploy+verify
+/epic-flow E0007 --production-only # valid only after environment-capability passes every gate
 ```
 
 ## References
@@ -61,11 +69,16 @@ Read before acting:
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
 - `../references/deployment-ownership.md`
+- `../references/environment-topology.md`
 
 ## Full-auto process
 
 ### 1. Load and normalize the epic
 
+- Resolve `(project, repo, surface)` through `bin/environment-capability` before choosing the
+  environment route. Record its JSON result in the immutable milestone packet. Production-only
+  selection requires `--production-contract`, `--user-authorized`, and the exact registered
+  verifier mode; a non-passing or unknown result follows staging-first behavior.
 - Load `get_epic(project, epic_id, detail="light")` for structure/manifests. Request only the
   needed `plan`, `deployment_guide`, or `verification_evidence` bodies with `detail="full"`,
   selected `artifact_types`, and an explicit `response_byte_budget`.
@@ -101,9 +114,10 @@ Read before acting:
 - If milestones, step tickets, dependency edges, cross-repo contracts, ticket-level plan
   artifacts, or step ticket `planned` statuses are missing or stale, run `/epic-split`.
 - Re-check the plan after splitting. A milestone is valid only when it is an independently
-  stageable/observable risk boundary: it has acceptance criteria, deployment-guide evidence for
-  staging and production, and does not require unbuilt later milestones to pass its gate. If that
-  is not true, improve the plan/split before building; do not paper over the gap with a fake gate.
+  observable risk boundary: it has acceptance criteria, deployment-guide evidence for staging and
+  production in normal mode (production evidence only in validated no-staging mode), and does not
+  require unbuilt later milestones to pass its gate. If that is not true, improve the plan/split
+  before building; do not paper over the gap with a fake gate.
 - Before the first build, create and validate the non-mutating deployment/config ownership
   inventory. A fully autonomous straight-to-production run uses `mode="straight_to_prod"` and
   blocks on unresolved owners, missing owner workspaces, absent third-repo config steps, or an
@@ -116,12 +130,15 @@ For each milestone in dependency order:
 
 1. If the milestone already has a recorded staging `PASS` and every included step still matches
    the verified commits, skip to the next milestone.
-2. Run `/milestone-flow <EPIC_ID> <MILESTONE>` to execute the step-ticket DAG **and the staging
-   gate**. That skill owns ticket parallelism, gate package creation, `/auto-deploy <EPIC_ID>
-   staging`, `/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote`, and
-   any milestone-local fix/redeploy/reverify loop. Dispatch it with `fork_turns: "none"` and only
-   the active milestone packet path/version/hash plus the exact command and expected result schema.
-3. Accept milestone success only when `/milestone-flow` reports a staging `PASS` and artifact ids
+2. Run `/milestone-flow <EPIC_ID> <MILESTONE>` to execute the step-ticket DAG and environment gate.
+   Normally that is the staging gate: `/auto-deploy <EPIC_ID> staging` then `/ticket-verify staging
+   --epic <EPIC_ID> --milestone <MILESTONE> --no-promote`. In validated production-only mode, the
+   immutable packet instead delegates the reviewed production deploy/verification command and
+   verifier mode. Dispatch with `fork_turns: "none"` and only the active milestone packet
+   path/version/hash plus the exact command and result schema. The accumulated root thread never
+   performs production verification or remediation piecemeal.
+3. Accept milestone success only when `/milestone-flow` reports the selected environment `PASS`
+   (staging normally, production only after the mechanical capability gate) and artifact ids
    for all required evidence destinations:
 
    - canonical milestone-gate `verification_evidence` artifact on the epic;
@@ -135,7 +152,7 @@ For each milestone in dependency order:
    later milestone breaks earlier verified behavior, treat `/milestone-flow` as failed/incomplete
    and keep the fix loop inside that milestone before continuing.
 
-### 3. Production promotion after all staging gates pass
+### 3. Production promotion after all normal staging gates pass
 
 After the final milestone has a staging `PASS`:
 
@@ -155,6 +172,11 @@ order, using isolated worktrees and the repo's production deployment instruction
 silently include unrelated staging work. `/ticket-verify production --epic` is the final evidence
 gate; mark the epic complete only after it passes.
 
+In production-only mode, milestone owners already landed/deployed/verified the production gates
+from immutable packets. Do not run a fictional staging promotion or duplicate the final production
+verification. After the last production milestone PASS, re-read lifecycle/evidence truth and close
+only when every required production gate artifact exists.
+
 ## Gate-stop process
 
 When running with `--stop-at-gates`, do planning/splitting/readiness checks only, then stop before
@@ -164,8 +186,8 @@ calling `/milestone-flow` and print the exact command that would run the full de
 /milestone-flow <EPIC_ID> <MILESTONE>
 ```
 
-Do not claim the milestone is complete until `/milestone-flow` actually runs and the staging gate
-passes.
+Do not claim the milestone is complete until `/milestone-flow` actually runs and the selected
+environment gate passes.
 
 ## Parallelism
 
@@ -202,6 +224,15 @@ parent blocks once per lease. At expiry it performs one inspection only: termina
 consumed, one renewal is allowed only after checkpoint/tool-receipt advancement, and stale or
 hard-deadline work is interrupted and rotated. Sleep/paused/unknown time is reported, not mislabeled
 as execution failure.
+
+Production-only phase owners are always fresh delegated generations from immutable packets. The
+root is a thin coordinator: it validates topology, packet hashes, phase results, lifecycle state,
+and evidence IDs, but performs no browser, deploy, fix, or status-read work itself.
+
+Any production or epic remediation that changes code/config/auth becomes a new fix ticket/epic
+step attached to the failed milestone. It must pass normal build, review, landing, config/secret
+ownership, deploy, and re-verification stages. Never finish through ticketless `/lfg`, an
+untracked auxiliary branch, or a detached verifier implementation.
 
 ## Output
 

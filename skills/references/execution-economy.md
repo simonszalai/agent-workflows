@@ -33,7 +33,9 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
 - Active workflow examples are mechanically checked by `bin/workflow-noisy-command-check`.
   A raw noisy command is invalid unless the example demonstrates a small explicit output bound.
   `bin/compact-exec` reports `status`, `exit_code`, absolute `output_file`, bounded diagnostic
-  `tail`, exact `rerun_command`, and the current `head_sha`/`tree_sha` when run in a Git checkout.
+  `tail`, exact `rerun_command`, and the current `head_sha`, committed `head_tree_sha`, exact
+  input working `tree_sha`, `post_tree_sha`, `tree_changed_during_command`, and `index_tree_sha`
+  when run in a Git checkout.
 - Bound code search by paths/globs and byte or result caps. Narrow broad searches after the first
   capped sample; never dump an entire repository or generated artifact into model context.
 - Bound every SQL/data query by time window, selected columns, row limit, and payload size. Start
@@ -42,10 +44,13 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   environment config, prior-memory packet, deploy guide, and query results. Record the source and
   freshness boundary; invalidate only when the underlying branch, artifact, deploy, or time window
   changes.
-- The orchestrator retrieves shared ticket context once. Use lightweight artifact manifests for
-  routing, selected full artifact types for execution, and event history only for explicit audit
-  work. Pass cached file paths or bounded extracts to children; never make each child reload the
-  same ticket or embed the same large artifact body in every delegated prompt.
+- The orchestrator retrieves shared ticket context once. Start with `detail="light"` to obtain the
+  manifest, cache its `context_version` and artifact IDs, then call `get_artifact` for each exact
+  body needed. Event history is only for explicit audit work. Pass immutable cached packet paths
+  plus hashes to children; never make each child reload the same ticket or embed the same large
+  artifact body in every delegated prompt. Active examples are checked by
+  `bin/workflow-ticket-context-check`; unfiltered `detail="full"` reads fail unless a narrowly
+  documented exception is present.
 
 ## Waiting and polling
 
@@ -89,6 +94,8 @@ records:
 
 - `phase_name`, zero-based `rotation_generation`, `first_incomplete_unit`, `started_at_epoch`, and
   `deadline_epoch` (exactly start plus the elapsed budget);
+- `fork_mode`, `coordinator_generation`, `compaction_signal` (`available` or `unavailable`), and
+  dispatch-time `compactions_observed: 0`; `fork_mode: "all"` is mechanically rejected;
 - a finite positive `max_turns`, `max_checkpoints`, `max_elapsed_seconds`, and
   `max_packet_bytes`;
 - `token_usage: "available"` plus a finite positive `max_tokens` when the provider exposes usage,
@@ -109,6 +116,9 @@ run `bin/phase-contract result <result.json> --dispatch <envelope.json>` before 
 {
   "phase_name": "implementation",
   "rotation_generation": 0,
+  "coordinator_generation": 0,
+  "fork_mode": "none",
+  "compactions_observed": 0,
   "status": "rotate_required",
   "reason": "turn_budget",
   "checkpoint": {"path": "/absolute/checkpoint.json", "sha256": "<sha256>"},
@@ -137,6 +147,9 @@ run `bin/phase-contract result <result.json> --dispatch <envelope.json>` before 
   before any further implementation, review, deploy, or verification action, persist the safe
   checkpoint, and return `rotate_required` with `reason: "first_compaction"`. There is no portable
   way to infer an invisible host compaction; do not claim otherwise.
+- `bin/phase-contract` rejects any result after an observed first compaction unless it is
+  `rotate_required` with `reason: "first_compaction"` and a valid checkpoint. It also rejects an
+  all-history fork or a result whose fork/coordinator/rotation generation differs from dispatch.
 - On valid `rotate_required`, the parent first persists/validates the returned completion mapping
   and next immutable checkpoint, then dispatches one fresh `fork_turns: "none"` replacement using
   only that checkpoint and its bounded packet. Increment `rotation_generation`. The old owner is
@@ -170,6 +183,16 @@ Represent `sleep`, `paused`, and `unknown` truthfully. Elapsed wall time alone i
 failure. There are no heartbeat loops, duplicate waits, repeated inspections, or unbounded
 fallbacks; `rotate_required` and the finite phase budgets above remain authoritative.
 
+Write an execution-economy receipt for every wait/status sequence and validate it with
+`bin/progress-lease policy <receipt.json>`. The receipt identifies actor (`model` or
+`deterministic_waiter`), operation, stable pending-condition key, and whether the observation was
+the one lease-expiry inspection. Repeated model `wait_agent`, `write_stdin`, `list_agents`,
+Render/GitHub status reads, or equivalent same-condition reads make compliance fail. A
+deterministic bounded waiter may poll internally; the model consumes its terminal result once.
+Outer closeout must run the policy check (or
+`bin/workflow-efficiency-report --enforce-execution-economy`) and cannot claim compliant success
+when the receipt/report fails. This is enforcement, never an instruction for the model to poll.
+
 ## Secret-safe operations
 
 - Never run credential/profile/config introspection in an agent-visible shell (`prefect profile
@@ -196,6 +219,11 @@ fallbacks; `rotate_required` and the finite phase budgets above remain authorita
   still does not validate; the orchestrator reruns the failed gate once on the changed tree and
   records that failure-driven rerun. Focused diagnostics used to isolate a gate failure are also
   orchestrator-owned and keyed by `(tree SHA, exact command)`.
+- `bin/workflow-efficiency-report` parses compact-exec receipts and reports validation executions
+  keyed by `(tree_sha, normalized_exact_command)`. It classifies duplicate unchanged-tree full
+  gates separately from changed-tree and failure-repair reruns. Attribution is diagnostic only:
+  never suppress validation automatically unless both tree and exact-command attribution are
+  certain.
 - Removal/decommission work closes with a **negative inventory**, not only passing tests: record the
   before inventory of old entrypoints/writers/config/deployments, then prove every scoped item is
   absent after the final deploy. Search code and config, query live registrations/routes/jobs where

@@ -84,7 +84,25 @@ builder queue.
    - **manual queue:** First check whether the decision is already recorded; otherwise present options
    - **advisory:** Mark as skipped (already reported)
 
-3. **Spawn builder for safe_auto fixes** (model `sonnet` — safe_auto stays cheap):
+   Within each approved queue, partition again into coherent subsystem/write-scope chains. Findings
+   may share one chain only when they touch the same subsystem, have compatible write scopes, and
+   can be checkpointed independently in sequence. Split schema/auth/deploy-config/security work,
+   unrelated subsystems, independent branches, and conflicting writes. Never put every gated or
+   manual finding into one unbounded Opus resolver.
+
+   Every resolver generation uses `max_packet_bytes: 16384` and these hard limits:
+
+   | Generation | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
+   |---|---:|---:|---:|---:|
+   | one finding chain | 40 | 6 | 45 min | 90,000 |
+
+   Write an immutable chain packet and JSON envelope, recording the first incomplete finding,
+   predecessor tree/checkpoint, and exact orchestrator-owned validation commands. Run
+   `bin/phase-contract dispatch` before dispatch and `bin/phase-contract result` before accepting
+   the return. Resolver builders never run regression/full validation; they may add regression
+   tests, while the orchestrator owns the final validation gate.
+
+3. **Spawn one builder per safe_auto chain** (model `sonnet` — safe_auto stays cheap):
 
    ```
    Agent(
@@ -97,7 +115,7 @@ builder queue.
        Project: {PROJECT}
        Repo: {REPO}
 
-       Apply these SAFE AUTO fixes (no approval needed):
+       Apply only this coherent SAFE AUTO subsystem/write-scope chain:
 
        {for each safe_auto review_todo artifact:}
        - Finding #{sequence}: {title}
@@ -116,6 +134,9 @@ builder queue.
        - For each p1 correctness fix: add a regression test (failing-then-passing)
          or state an explicit reason why it is untestable
        - Do NOT set review_todo artifact status — return structured JSON instead
+       - Checkpoint each finding separately at its safe boundary
+       - At the first observable compaction, stop before more work and return
+         rotate_required with reason=first_compaction and the valid checkpoint
 
        Return the resolve-mode JSON array defined in agents/builder.md.
      "
@@ -160,7 +181,7 @@ builder queue.
    4. Skip — not worth fixing
    ```
 
-6. **Spawn builder for approved gated/manual fixes** (model `opus` — gated_auto/manual fixes
+6. **Spawn one builder per approved gated/manual chain** (model `opus` — gated_auto/manual fixes
    change behavior/contracts and warrant the stronger model):
 
    ```
@@ -174,7 +195,7 @@ builder queue.
        Project: {PROJECT}
        Repo: {REPO}
 
-       Apply these APPROVED fixes:
+       Apply only this coherent APPROVED subsystem/write-scope chain:
 
        {for each approved finding:}
        - Finding #{sequence}: {title}
@@ -192,6 +213,9 @@ builder queue.
        - For each p1 correctness fix: add a regression test (failing-then-passing)
          or state an explicit reason why it is untestable
        - Do NOT set review_todo artifact status — return structured JSON instead
+       - Checkpoint each finding separately at its safe boundary
+       - At the first observable compaction, stop before more work and return
+         rotate_required with reason=first_compaction and the valid checkpoint
 
        Return the resolve-mode JSON array defined in agents/builder.md.
      "
@@ -215,6 +239,12 @@ builder queue.
    to the user. Same trust model as build mode: an artifact is never marked resolved on the
    builder's say-so alone. These statuses record that the accepted fix was applied; the caller's
    final health gate owns validation truth for the changed tree.
+
+   A valid `rotate_required` checkpoints only structurally valid leading findings, then dispatches
+   a fresh `fork_turns: "none"` replacement from the first incomplete finding using the immutable
+   packet/checkpoint. The old resolver is terminal and receives no follow-up. Any generation at
+   its turn/checkpoint/elapsed/token limit, or any observed first compaction, must rotate rather
+   than continue. Hosts without a compaction signal remain bounded by the finite limits above.
 
 7. **After builder returns — capture learnings:**
    - Run `/compound` to analyze the fixes
