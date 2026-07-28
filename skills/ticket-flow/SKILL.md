@@ -4,7 +4,7 @@ description: >-
   Autonomous single-ticket execution with MCP ticket tracking: runs ticket-plan, ticket-build,
   and ticket-deploy in sequence. Default stops after staging verification; the optional `prod`
   argument continues through production promotion, verification, and completion.
-max_turns: 100
+max_turns: 60
 ---
 
 # Ticket Flow
@@ -113,9 +113,10 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
 - If the ticket's `repo` does not match the current repo, switch only to an available linked
   Conductor directory for that repo after checking its git remote; otherwise stop and report the
   missing repo workspace. Do not implement a ticket for one repo inside another repo.
-- If input is a ticket ID, load it once via `get_ticket(detail="full",
-  artifact_types=["source", "investigation", "plan"], include_events=false)` and cache the
-  response until the workflow changes one of those artifacts.
+- If input is a ticket ID, load it once via
+  `get_ticket(detail="light", include_events=false)`, cache `context_version` plus exact artifact
+  IDs, and fetch only the required source/investigation/plan bodies by artifact ID. A refresh must
+  send the cached version and is valid only when a new `context_version` is returned.
 - If input is an issue/conversation, search existing tickets first; create a new ticket only
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
@@ -165,6 +166,13 @@ retrieval here instead (search `mcp__autodev-memory__search` across the ticket's
 boundaries — schema/defaults/raw SQL, decrypt-proxy/tailnet/auth, Prefect deployment/runtime,
 encryption/plaintext fields, external API contracts — not just `search_tickets` /
 `get_similar_tickets`), because the single owner must always run exactly once.
+
+Maintain one runtime context receipt for the ticket. It records the light manifest read(s), direct
+artifact IDs/hashes, bounded excerpts/packet hashes passed to children, and canonical artifact
+updates. Validate it with
+`bin/workflow-ticket-context-check receipt <receipt.json>` before each phase dispatch. Repeated
+same-version reads fail. Plan and deployment-guide updates are bounded replacements; their older
+revisions remain in MCP artifact history, not appended to the current body.
 
 ### 2. Plan
 
@@ -245,17 +253,38 @@ Epic-specific invariants (hold on both paths):
 A `merged` epic step alone is not proof the milestone is deployed or verified; only the
 `/milestone-flow` gate PASS proves that.
 
-### 4a. Phase rotation budget
+### 4a. Fanout and phase rotation contract
+
+The default per-ticket shape is one investigator, one builder chain, one review wave, and one
+verifier. Every additional role must cite a recorded escalation trigger in the phase envelope's
+`fanout_budget`. A same-risk follow-up revision uses exactly one delta builder and one delta
+reviewer. Reset to full/heavy review, retain the matching specialist, and name the new boundary
+when the diff first crosses security, auth, runtime protocol, migration, destructive-data, or
+browser-patch risk. Economy never removes specialist coverage for a genuinely new boundary.
+The same budget records activation/contract keys and prior staging revision IDs; from revision
+three it is invalid without the prior failure class and exact contract delta. This preflight runs
+before builder dispatch, not after another code mutation.
 
 Planning, build/review/local verification, and deploy/environment verification are durable phase
-boundaries. Apply the validated dispatch/result/rotation contract in `execution-economy.md` with
-`max_packet_bytes: 16384` and these default hard per-generation budgets:
+boundaries. Before every active phase dispatch, write an envelope with
+`contract_profile: "ticket-flow"`, the validated runtime `context_receipt`, and `fanout_budget`,
+then run:
+
+```text
+bin/phase-contract ticket-dispatch <envelope.json>
+```
+
+Accept the phase result only after
+`bin/phase-contract result <result.json> --dispatch <envelope.json>` passes. The ticket-dispatch
+profile mechanically rejects all-history forks, excess fanout without triggers, repeated
+same-version context receipts, missing delta/full-review transitions, and these hard
+per-generation ceilings (`max_packet_bytes: 16384`):
 
 | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
 |---|---:|---:|---:|---:|
-| planning | 60 | 4 | 90 min | 100,000 |
-| build/review/local verification | 90 | 12 | 180 min | 160,000 |
-| deploy/environment verification | 80 | 8 | 180 min | 140,000 |
+| `planning` | 30 | 4 | 45 min | 60,000 |
+| `build_review` | 40 | 12 | 60 min | 90,000 |
+| `deploy_verify` | 20 | 8 | 45 min | 60,000 |
 
 This table is the required fixed context/token budget. An observable first compaction is an
 immediate `rotate_required` boundary.

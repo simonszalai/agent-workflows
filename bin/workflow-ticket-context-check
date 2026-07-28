@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from pathlib import Path
+
+
+class ContractError(ValueError):
+    """A runtime ticket-context receipt violates the bounded ownership contract."""
 
 
 def call_blocks(text: str) -> list[tuple[int, str]]:
@@ -27,10 +32,176 @@ def call_blocks(text: str) -> list[tuple[int, str]]:
     return blocks
 
 
-def main() -> int:
+def require_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{field} must be a non-empty string")
+    return value
+
+
+def require_int(value: object, field: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ContractError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def require_hash(value: object, field: str) -> str:
+    digest = require_string(value, field)
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ContractError(f"{field} must be a lowercase SHA-256")
+    return digest
+
+
+def require_closed(value: dict, field: str, allowed: set[str]) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        raise ContractError(f"{field} has unsupported fields: {sorted(unknown)}")
+
+
+def validate_runtime_receipt(path: Path) -> dict:
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractError(f"cannot read receipt {path}: {exc}") from exc
+    if not isinstance(receipt, dict):
+        raise ContractError("receipt root must be an object")
+    require_closed(
+        receipt,
+        "receipt",
+        {
+            "schema_version",
+            "scope",
+            "context_owner",
+            "manifest_reads",
+            "artifact_reads",
+            "child_packets",
+            "canonical_updates",
+        },
+    )
+    if receipt.get("schema_version") != 1:
+        raise ContractError("schema_version must equal 1")
+    require_string(receipt.get("scope"), "scope")
+    require_string(receipt.get("context_owner"), "context_owner")
+
+    manifest_reads = receipt.get("manifest_reads")
+    if not isinstance(manifest_reads, list) or not manifest_reads:
+        raise ContractError("manifest_reads must be a non-empty array")
+    seen_versions: set[str] = set()
+    prior_version: str | None = None
+    for index, read in enumerate(manifest_reads):
+        field = f"manifest_reads[{index}]"
+        if not isinstance(read, dict):
+            raise ContractError(f"{field} must be an object")
+        require_closed(read, field, {"detail", "context_version", "known_version"})
+        if read.get("detail") != "light":
+            raise ContractError(f"{field}.detail must equal light")
+        version = require_string(read.get("context_version"), f"{field}.context_version")
+        if version in seen_versions:
+            raise ContractError(f"{field} repeats same context_version {version}")
+        known_version = read.get("known_version")
+        if index == 0:
+            if known_version is not None:
+                raise ContractError(f"{field}.known_version must be null for the initial read")
+        elif known_version != prior_version:
+            raise ContractError(
+                f"{field}.known_version must equal the preceding context_version"
+            )
+        seen_versions.add(version)
+        prior_version = version
+
+    artifact_reads = receipt.get("artifact_reads")
+    if not isinstance(artifact_reads, list) or not artifact_reads:
+        raise ContractError("artifact_reads must be a non-empty array")
+    artifact_hashes: dict[str, str] = {}
+    for index, read in enumerate(artifact_reads):
+        field = f"artifact_reads[{index}]"
+        if not isinstance(read, dict):
+            raise ContractError(f"{field} must be an object")
+        require_closed(read, field, {"artifact_id", "sha256", "excerpt_bytes"})
+        artifact_id = require_string(read.get("artifact_id"), f"{field}.artifact_id")
+        if artifact_id in artifact_hashes:
+            raise ContractError(f"{field}.artifact_id is duplicated")
+        artifact_hashes[artifact_id] = require_hash(read.get("sha256"), f"{field}.sha256")
+        excerpt_bytes = require_int(read.get("excerpt_bytes"), f"{field}.excerpt_bytes")
+        if excerpt_bytes > 32768:
+            raise ContractError(f"{field}.excerpt_bytes exceeds 32768")
+
+    child_packets = receipt.get("child_packets")
+    if not isinstance(child_packets, list) or not child_packets:
+        raise ContractError("child_packets must be a non-empty array")
+    for index, packet in enumerate(child_packets):
+        field = f"child_packets[{index}]"
+        if not isinstance(packet, dict):
+            raise ContractError(f"{field} must be an object")
+        require_closed(
+            packet,
+            field,
+            {"path", "sha256", "artifact_refs", "excerpt_bytes"},
+        )
+        packet_path = Path(require_string(packet.get("path"), f"{field}.path"))
+        if not packet_path.is_absolute() or not packet_path.is_file():
+            raise ContractError(f"{field}.path must name an existing absolute file")
+        if packet_path.stat().st_size > 16384:
+            raise ContractError(f"{field}.path exceeds 16384 bytes")
+        expected = require_hash(packet.get("sha256"), f"{field}.sha256")
+        if hashlib.sha256(packet_path.read_bytes()).hexdigest() != expected:
+            raise ContractError(f"{field}.sha256 mismatch")
+        excerpt_bytes = require_int(packet.get("excerpt_bytes"), f"{field}.excerpt_bytes")
+        if excerpt_bytes > 8192:
+            raise ContractError(f"{field}.excerpt_bytes exceeds 8192")
+        refs = packet.get("artifact_refs")
+        if not isinstance(refs, list) or not refs:
+            raise ContractError(f"{field}.artifact_refs must be a non-empty array")
+        for ref_index, reference in enumerate(refs):
+            ref_field = f"{field}.artifact_refs[{ref_index}]"
+            if not isinstance(reference, dict):
+                raise ContractError(f"{ref_field} must be an object")
+            require_closed(reference, ref_field, {"artifact_id", "sha256"})
+            artifact_id = require_string(
+                reference.get("artifact_id"), f"{ref_field}.artifact_id"
+            )
+            digest = require_hash(reference.get("sha256"), f"{ref_field}.sha256")
+            if artifact_hashes.get(artifact_id) != digest:
+                raise ContractError(
+                    f"{ref_field} must reference a directly loaded artifact id/hash"
+                )
+
+    updates = receipt.get("canonical_updates")
+    if not isinstance(updates, list):
+        raise ContractError("canonical_updates must be an array")
+    for index, update in enumerate(updates):
+        field = f"canonical_updates[{index}]"
+        if not isinstance(update, dict):
+            raise ContractError(f"{field} must be an object")
+        require_closed(
+            update,
+            field,
+            {"artifact_id", "artifact_type", "update_mode", "body_bytes"},
+        )
+        require_string(update.get("artifact_id"), f"{field}.artifact_id")
+        artifact_type = require_string(
+            update.get("artifact_type"), f"{field}.artifact_type"
+        )
+        if update.get("update_mode") != "replace":
+            raise ContractError(f"{field}.update_mode must equal replace")
+        body_bytes = require_int(update.get("body_bytes"), f"{field}.body_bytes")
+        if body_bytes > 65536:
+            raise ContractError(f"{field}.body_bytes exceeds 65536")
+        if artifact_type in {"plan", "deployment_guide"} and body_bytes > 32768:
+            raise ContractError(f"{field}.body_bytes exceeds the canonical 32768-byte cap")
+    return {
+        "status": "pass",
+        "context_version": prior_version,
+        "manifest_reads": len(manifest_reads),
+        "artifact_reads": len(artifact_reads),
+        "child_packets": len(child_packets),
+        "canonical_updates": len(updates),
+    }
+
+
+def static_check(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="workflow-ticket-context-check")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     violations: list[dict] = []
     for relative_root in ("skills", "agents", "workflows"):
         root = args.root / relative_root
@@ -52,6 +223,22 @@ def main() -> int:
     result = {"status": "pass" if not violations else "fail", "violations": violations}
     print(json.dumps(result, separators=(",", ":")))
     return 0 if not violations else 2
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "receipt":
+        parser = argparse.ArgumentParser(prog="workflow-ticket-context-check receipt")
+        parser.add_argument("receipt", type=Path)
+        args = parser.parse_args(sys.argv[2:])
+        try:
+            result = validate_runtime_receipt(args.receipt)
+        except ContractError as exc:
+            result = {"status": "fail", "error": str(exc)}
+            print(json.dumps(result, separators=(",", ":")))
+            return 2
+        print(json.dumps(result, separators=(",", ":")))
+        return 0
+    return static_check(sys.argv[1:])
 
 
 if __name__ == "__main__":

@@ -51,6 +51,12 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   artifact body in every delegated prompt. Active examples are checked by
   `bin/workflow-ticket-context-check`; unfiltered `detail="full"` reads fail unless a narrowly
   documented exception is present.
+- Ticket orchestrators also persist those reads, packet references, and updates in one runtime
+  receipt and validate it with
+  `bin/workflow-ticket-context-check receipt <receipt.json>`. A repeated same-version manifest
+  read is invalid. Child packets contain artifact IDs, hashes, and bounded excerpts. Current
+  plan/deployment-guide bodies are bounded replacements; old revisions remain in artifact history
+  rather than being appended to the canonical body.
 
 ## Waiting and polling
 
@@ -102,6 +108,11 @@ records:
   otherwise `token_usage: "unavailable"` and `max_tokens: null`;
 - the absolute immutable packet path and SHA-256, plus the prior checkpoint path/hash for every
   replacement generation.
+
+Active `/ticket-flow` phases use the stricter
+`bin/phase-contract ticket-dispatch <envelope.json>` profile. It requires the runtime context
+receipt and fanout budget, and mechanically enforces ticket phase ceilings, the default one-role
+shape, the delta-review path, and full specialist reset at a new risk boundary.
 
 The phase packet repeats those limits and requires the owner to count its turns and safe checkpoint
 advances. Harness `max_turns` and subprocess timeouts remain hard outer caps; set the packet budget
@@ -219,11 +230,18 @@ when the receipt/report fails. This is enforcement, never an instruction for the
   still does not validate; the orchestrator reruns the failed gate once on the changed tree and
   records that failure-driven rerun. Focused diagnostics used to isolate a gate failure are also
   orchestrator-owned and keyed by `(tree SHA, exact command)`.
+- Execute reusable gates through
+  `bin/validation-receipt --owner orchestrator -- <exact command>`. It persists the receipt under a
+  key derived from the exact working-tree SHA and canonical working-directory + argv command. An
+  exact-tree, exact-command PASS is returned without execution; any tree or command change
+  invalidates reuse.
+  An unchanged-tree failure cannot rerun. After a changed-tree repair, the orchestrator may execute
+  the failed gate once. The wrapper mechanically rejects builder/reviewer ownership.
 - `bin/workflow-efficiency-report` parses compact-exec receipts and reports validation executions
-  keyed by `(tree_sha, normalized_exact_command)`. It classifies duplicate unchanged-tree full
-  gates separately from changed-tree and failure-repair reruns. Attribution is diagnostic only:
-  never suppress validation automatically unless both tree and exact-command attribution are
-  certain.
+  keyed by `(tree_sha, normalized_exact_command)`. It classifies `initial_run`,
+  `exact_tree_duplicate`, `changed_tree_run`, and `repair_run`. Attribution is diagnostic only:
+  uncertainty fails open to executing validation, never to suppressing it; reuse requires certain
+  exact tree and command identity.
 - Removal/decommission work closes with a **negative inventory**, not only passing tests: record the
   before inventory of old entrypoints/writers/config/deployments, then prove every scoped item is
   absent after the final deploy. Search code and config, query live registrations/routes/jobs where

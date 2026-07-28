@@ -123,7 +123,16 @@ evidence that proves the change works. Every evidence item MUST be:
 
 - a **reproducible** query or command (copy-pasteable, read-only),
 - with an **expected good output**, and
-- a **bad-output interpretation** (what a failure looks like and what it means).
+- a **bad-output interpretation** (what a failure looks like and what it means),
+- `gate_class: causal_ship_gate | observation`,
+- `acceptance_source.kind: source_criterion | explicit_user_decision |
+  measured_production_baseline | invariant` plus the exact source reference, and
+- the bounded failure class used for routing if the row fails.
+
+High-N/statistical rows are incomplete unless they state the pre-change baseline, why that sample
+size can distinguish the named defect, and the finite units/time/cost budget. They must reference
+an earlier one-unit exact-path canary for the same defect. Missing provenance, a missing canary, or
+a threshold selected after current output keeps the guide DRAFT; it never becomes a tailored PASS.
 
 Generic acceptance ("it works") is not evidence. "Row count in table X for records landed after
 the activation commit is > 0, and `status='ok'` for all of them" is evidence. The contract must
@@ -311,8 +320,19 @@ Process step 3), not placeholders.
 ## Verification Evidence
 
 What proves this works. `/ticket-verify` grades **every** item in the relevant environment and
-writes the actual observations to the fixed `verification_evidence` artifact slot; the verdict is
-PASS only if all rows and all listed edge cases pass.
+writes the actual observations to the fixed `verification_evidence` artifact slot. Every row has
+one gate class and one acceptance source:
+
+- `causal_ship_gate` — fail closed when the shipped revision does not satisfy a source criterion,
+  explicit user decision, measured production baseline, or invariant;
+- `observation` — useful telemetry that is not causally required to ship. Its failure routes to
+  its owner but cannot fail an unrelated causal ship gate.
+
+Record the exact source reference; "best practice" or current output is not an acceptance source.
+Any statistical threshold or sample size greater than one additionally records its pre-change
+baseline, sample-size rationale, finite resource budget, and the defect it distinguishes. Never
+tune a threshold after seeing current output. Put the smallest single-unit exact-path canary before
+the high-N row and name that canary from the high-N row.
 
 ### Activation boundary
 
@@ -331,15 +351,21 @@ the land for runtime-git-pull projects. Measure from the first post-land evidenc
 
 ### Staging
 
-| # | Evidence (reproducible query/command) | Expected good output | Bad output means |
-| - | ------------------------------------- | -------------------- | ---------------- |
-| 1 | {read-only query/command}             | {concrete expected}  | {what failure looks like + interpretation} |
+| # | Gate class | Acceptance source + reference | Evidence (reproducible query/command) | Expected good output | Bad output means |
+| - | ---------- | ----------------------------- | ------------------------------------- | -------------------- | ---------------- |
+| 1 | {causal_ship_gate / observation} | {source criterion / explicit user decision / measured production baseline / invariant}: {exact reference} | {read-only query/command} | {concrete expected} | {defect + failure class} |
 
 ### Production
 
-| # | Evidence (reproducible query/command) | Expected good output | Bad output means |
-| - | ------------------------------------- | -------------------- | ---------------- |
-| 1 | {read-only query/command}             | {concrete expected}  | {what failure looks like + interpretation} |
+| # | Gate class | Acceptance source + reference | Evidence (reproducible query/command) | Expected good output | Bad output means |
+| - | ---------- | ----------------------------- | ------------------------------------- | -------------------- | ---------------- |
+| 1 | {causal_ship_gate / observation} | {source criterion / explicit user decision / measured production baseline / invariant}: {exact reference} | {read-only query/command} | {concrete expected} | {defect + failure class} |
+
+### Statistical / high-N rows (only when applicable)
+
+| Evidence row | Baseline | Sample-size rationale | Resource budget | Defect distinguished | Exact-path canary row |
+| ------------ | -------- | --------------------- | --------------- | -------------------- | --------------------- |
+| {row #} | {measured pre-change value/reference} | {why N is discriminating} | {units/time/cost cap} | {specific defect} | {earlier single-unit row #} |
 
 ## Services / Env / Dependencies (if applicable)
 

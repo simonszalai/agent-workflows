@@ -1,0 +1,590 @@
+#!/usr/bin/env python3
+"""Run one revision-bound deploy/verification manifest to one compact receipt."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+GATE_CLASSES = {"causal_ship_gate", "observation"}
+ACCEPTANCE_SOURCES = {
+    "source_criterion",
+    "explicit_user_decision",
+    "measured_production_baseline",
+    "invariant",
+}
+FAILURE_CLASSES = {
+    "code_defect",
+    "verifier_defect",
+    "environment_capacity",
+    "external_observation",
+    "invalid_evidence",
+    "unknown",
+}
+FAILURE_OWNERS = {
+    "code_defect": "product_build_review",
+    "verifier_defect": "verifier_owner",
+    "environment_capacity": "environment_owner",
+    "external_observation": "observation_owner",
+    "invalid_evidence": "evidence_contract_owner",
+    "unknown": "stop_fail_closed",
+}
+REQUIRED_PREDICATES = {
+    "deploy",
+    "authorization",
+    "exact_transport",
+    "safety",
+    "evidence",
+}
+
+
+class ContractError(ValueError):
+    """The manifest cannot safely drive a verification run."""
+
+
+def require_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{field} must be a non-empty string")
+    return value
+
+
+def require_int(value: object, field: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ContractError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def require_number(value: object, field: str, *, minimum: float = 0) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < minimum:
+        raise ContractError(f"{field} must be a number >= {minimum}")
+    return float(value)
+
+
+def require_argv(value: object, field: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item for item in value)
+    ):
+        raise ContractError(f"{field} must be a non-empty argv array")
+    return value
+
+
+def require_absolute_path(value: object, field: str) -> Path:
+    path = Path(require_string(value, field))
+    if not path.is_absolute():
+        raise ContractError(f"{field} must be an absolute path")
+    return path
+
+
+def load_manifest(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractError(f"cannot read manifest {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ContractError("manifest root must be an object")
+    return value
+
+
+def validate_manifest(manifest: dict) -> dict:
+    if manifest.get("schema_version") != 1:
+        raise ContractError("schema_version must equal 1")
+    require_string(manifest.get("run_id"), "run_id")
+    revision = require_string(manifest.get("revision"), "revision")
+    if len(revision) not in {40, 64} or any(
+        char not in "0123456789abcdef" for char in revision
+    ):
+        raise ContractError("revision must be an exact lowercase commit SHA")
+    if manifest.get("contract_status") != "FINALIZED":
+        raise ContractError("contract_status must equal FINALIZED")
+    predicates = manifest.get("predicate_receipts")
+    if not isinstance(predicates, dict) or set(predicates) != REQUIRED_PREDICATES:
+        raise ContractError(
+            "predicate_receipts must contain exactly deploy, authorization, "
+            "exact_transport, safety, and evidence"
+        )
+    for name in REQUIRED_PREDICATES:
+        require_string(predicates.get(name), f"predicate_receipts.{name}")
+    if manifest.get("environment") not in {"staging", "production"}:
+        raise ContractError("environment must be staging or production")
+    require_string(manifest.get("activation_key"), "activation_key")
+    require_string(manifest.get("contract_version"), "contract_version")
+    working_directory = require_absolute_path(
+        manifest.get("working_directory"), "working_directory"
+    )
+    if not working_directory.is_dir():
+        raise ContractError("working_directory must name an existing directory")
+    staging_revision = require_int(
+        manifest.get("staging_revision"), "staging_revision", minimum=1
+    )
+    prior_revisions = manifest.get("prior_staging_revisions")
+    if (
+        not isinstance(prior_revisions, list)
+        or len(prior_revisions) != staging_revision - 1
+    ):
+        raise ContractError(
+            "prior_staging_revisions length must equal staging_revision - 1"
+        )
+    if len(set(prior_revisions)) != len(prior_revisions):
+        raise ContractError("prior_staging_revisions must be unique")
+    for index, prior_revision in enumerate(prior_revisions):
+        if (
+            not isinstance(prior_revision, str)
+            or len(prior_revision) not in {40, 64}
+            or any(char not in "0123456789abcdef" for char in prior_revision)
+        ):
+            raise ContractError(
+                f"prior_staging_revisions[{index}] must be an exact lowercase commit SHA"
+            )
+    if revision in prior_revisions:
+        raise ContractError("revision is duplicated in prior_staging_revisions")
+    if staging_revision >= 3:
+        stabilization = manifest.get("stabilization")
+        if not isinstance(stabilization, dict):
+            raise ContractError(
+                "stabilization is required from the third staging revision"
+            )
+        failure_class = stabilization.get("failure_class")
+        if failure_class not in FAILURE_CLASSES:
+            raise ContractError("stabilization.failure_class is invalid")
+        require_string(stabilization.get("contract_delta"), "stabilization.contract_delta")
+
+    state_path = require_absolute_path(manifest.get("state_path"), "state_path")
+    log_dir = require_absolute_path(manifest.get("log_dir"), "log_dir")
+    if state_path == log_dir or log_dir in state_path.parents:
+        raise ContractError("state_path must be a file outside log_dir")
+    if ".context" in state_path.parts or ".context" in log_dir.parts:
+        raise ContractError("state_path and log_dir must survive run-scoped .context cleanup")
+    require_int(
+        manifest.get("overall_timeout_seconds"),
+        "overall_timeout_seconds",
+        minimum=1,
+    )
+
+    identity = manifest.get("runtime_identity")
+    if not isinstance(identity, dict):
+        raise ContractError("runtime_identity must be an object")
+    require_argv(identity.get("command"), "runtime_identity.command")
+    expected = require_string(identity.get("expected"), "runtime_identity.expected")
+    if expected != revision:
+        raise ContractError("runtime_identity.expected must equal revision")
+    require_number(
+        identity.get("poll_interval_seconds"),
+        "runtime_identity.poll_interval_seconds",
+        minimum=0.01,
+    )
+    require_int(
+        identity.get("wait_timeout_seconds"),
+        "runtime_identity.wait_timeout_seconds",
+        minimum=1,
+    )
+    require_int(
+        identity.get("command_timeout_seconds"),
+        "runtime_identity.command_timeout_seconds",
+        minimum=1,
+    )
+
+    rows = manifest.get("rows")
+    if not isinstance(rows, list) or not rows or len(rows) > 100:
+        raise ContractError("rows must be a non-empty array with at most 100 items")
+    if not any(isinstance(row, dict) and row.get("gate_class") == "causal_ship_gate"
+               for row in rows):
+        raise ContractError("rows must contain at least one causal_ship_gate")
+
+    seen: dict[str, dict] = {}
+    for index, row in enumerate(rows):
+        field = f"rows[{index}]"
+        if not isinstance(row, dict):
+            raise ContractError(f"{field} must be an object")
+        row_id = require_string(row.get("id"), f"{field}.id")
+        if len(row_id) > 80 or re.fullmatch(r"[A-Za-z0-9_.-]+", row_id) is None:
+            raise ContractError(
+                f"{field}.id must be at most 80 safe filename characters"
+            )
+        if row_id in seen:
+            raise ContractError(f"{field}.id is duplicated")
+        if row.get("gate_class") not in GATE_CLASSES:
+            raise ContractError(f"{field}.gate_class is invalid")
+        source = row.get("acceptance_source")
+        if not isinstance(source, dict):
+            raise ContractError(f"{field}.acceptance_source must be an object")
+        if source.get("kind") not in ACCEPTANCE_SOURCES:
+            raise ContractError(f"{field}.acceptance_source.kind is invalid")
+        require_string(source.get("reference"), f"{field}.acceptance_source.reference")
+        if row.get("surface") != "command":
+            raise ContractError(f"{field}.surface is unsupported; only command is supported")
+        require_argv(row.get("command"), f"{field}.command")
+        require_int(row.get("expected_exit_code"), f"{field}.expected_exit_code")
+        require_int(row.get("timeout_seconds"), f"{field}.timeout_seconds", minimum=1)
+        if row.get("resume_safe") is not True:
+            raise ContractError(
+                f"{field}.resume_safe must be true; unsupported retry semantics fail closed"
+            )
+        sample_size = require_int(row.get("sample_size"), f"{field}.sample_size", minimum=1)
+        if not isinstance(row.get("exact_path_canary"), bool):
+            raise ContractError(f"{field}.exact_path_canary must be boolean")
+        defect = require_string(
+            row.get("distinguishes_defect"), f"{field}.distinguishes_defect"
+        )
+        failure_class = row.get("failure_class_on_failure")
+        if failure_class not in FAILURE_CLASSES:
+            raise ContractError(f"{field}.failure_class_on_failure is invalid")
+
+        canary_id = row.get("canary_row_id")
+        if sample_size > 1:
+            statistical = row.get("statistical_threshold")
+            if not isinstance(statistical, dict):
+                raise ContractError(
+                    f"{field}.statistical_threshold is required for sample_size > 1"
+                )
+            require_string(statistical.get("baseline"), f"{field}.statistical_threshold.baseline")
+            require_string(
+                statistical.get("sample_size_rationale"),
+                f"{field}.statistical_threshold.sample_size_rationale",
+            )
+            require_string(
+                statistical.get("resource_budget"),
+                f"{field}.statistical_threshold.resource_budget",
+            )
+            if require_string(
+                statistical.get("distinguishes_defect"),
+                f"{field}.statistical_threshold.distinguishes_defect",
+            ) != defect:
+                raise ContractError(
+                    f"{field}.statistical_threshold.distinguishes_defect must match the row"
+                )
+            canary_id = require_string(canary_id, f"{field}.canary_row_id")
+            canary = seen.get(canary_id)
+            if (
+                canary is None
+                or canary["sample_size"] != 1
+                or canary["exact_path_canary"] is not True
+                or canary["distinguishes_defect"] != defect
+            ):
+                raise ContractError(
+                    f"{field}.canary_row_id must reference an earlier exact-path "
+                    "single-unit canary for the same defect"
+                )
+        elif canary_id is not None:
+            raise ContractError(f"{field}.canary_row_id must be null for sample_size=1")
+        seen[row_id] = row
+
+    manifest["_state_path"] = state_path
+    manifest["_log_dir"] = log_dir
+    manifest["_working_directory"] = working_directory
+    return manifest
+
+
+def atomic_write(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def run_logged(
+    argv: list[str], output_path: Path, timeout: float, cwd: Path
+) -> tuple[int, bool, str, dict]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.touch(mode=0o600, exist_ok=True)
+    output_path.chmod(0o600)
+    timed_out = False
+    with output_path.open("wb") as output:
+        try:
+            process = subprocess.Popen(
+                argv,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                cwd=cwd,
+                start_new_session=True,
+            )
+            try:
+                exit_code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                exit_code = 124
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    process.wait()
+        except OSError as exc:
+            output.write(f"controller: {exc}\n".encode())
+            exit_code = 127 if isinstance(exc, FileNotFoundError) else 126
+    data = output_path.read_bytes()
+    text = data.decode("utf-8", errors="replace")
+    observed = text.rstrip("\n").splitlines()[-1] if text.rstrip("\n") else ""
+    metadata = {
+        "log_file": str(output_path),
+        "log_sha256": hashlib.sha256(data).hexdigest(),
+        "output_bytes": len(data),
+        "output_tail": data[-512:].decode("utf-8", errors="replace"),
+    }
+    return exit_code, timed_out, observed, metadata
+
+
+def receipt_base(manifest: dict, state: dict) -> dict:
+    return {
+        "schema_version": 1,
+        "run_id": manifest["run_id"],
+        "revision": manifest["revision"],
+        "environment": manifest["environment"],
+        "activation_key": manifest["activation_key"],
+        "contract_version": manifest["contract_version"],
+        "staging_revision": manifest["staging_revision"],
+        "working_directory": str(manifest["_working_directory"]),
+        "manifest_sha256": state["manifest_sha256"],
+        "state_path": str(manifest["_state_path"]),
+        "log_dir": str(manifest["_log_dir"]),
+        "rows": state.get("rows", []),
+        "pending_timeout": state.get("pending_timeout"),
+    }
+
+
+def resume_command(manifest_path: Path) -> str:
+    return shlex.join(
+        [str(Path(__file__).resolve()), "--resume", str(manifest_path.resolve())]
+    )
+
+
+def timeout_receipt(manifest: dict, state: dict, manifest_path: Path, reason: str) -> dict:
+    return {
+        **receipt_base(manifest, state),
+        "status": "timeout",
+        "reason": reason,
+        "resume_command": resume_command(manifest_path),
+    }
+
+
+def wait_for_identity(
+    manifest: dict,
+    state: dict,
+    manifest_path: Path,
+    deadline: float,
+) -> tuple[str | None, dict | None]:
+    identity = manifest["runtime_identity"]
+    identity_deadline = min(
+        deadline, time.monotonic() + identity["wait_timeout_seconds"]
+    )
+    attempt = 0
+    while time.monotonic() < identity_deadline:
+        attempt += 1
+        remaining = max(0.01, identity_deadline - time.monotonic())
+        timeout = min(identity["command_timeout_seconds"], remaining)
+        path = manifest["_log_dir"] / f"identity-wait-{attempt:03d}.log"
+        exit_code, timed_out, observed, _ = run_logged(
+            identity["command"], path, timeout, manifest["_working_directory"]
+        )
+        if not timed_out and exit_code == 0 and observed == manifest["revision"]:
+            return observed, None
+        sleep_for = min(
+            identity["poll_interval_seconds"],
+            max(0, identity_deadline - time.monotonic()),
+        )
+        if sleep_for:
+            time.sleep(sleep_for)
+    state["identity_wait_attempts"] = attempt
+    atomic_write(manifest["_state_path"], state)
+    return None, timeout_receipt(
+        manifest, state, manifest_path, "exact revision was not observed before timeout"
+    )
+
+
+def route_for(failure_class: str) -> str:
+    return FAILURE_OWNERS[failure_class]
+
+
+def finalize(manifest: dict, state: dict, post_identity: str) -> dict:
+    causal_failures = [
+        row for row in state["rows"]
+        if row["gate_class"] == "causal_ship_gate" and row["status"] != "pass"
+    ]
+    observation_failures = [
+        row for row in state["rows"]
+        if row["gate_class"] == "observation" and row["status"] != "pass"
+    ]
+    unknown_failure = any(
+        row.get("failure_class") == "unknown"
+        for row in causal_failures + observation_failures
+    )
+    verdict = "FAIL_CLOSED" if unknown_failure else ("FAIL" if causal_failures else "PASS")
+    ship_gate_passed = not causal_failures
+    return {
+        **receipt_base(manifest, state),
+        "status": "complete",
+        "verdict": verdict,
+        "ship_gate_passed": ship_gate_passed,
+        "promotion_allowed": ship_gate_passed and not unknown_failure,
+        "causal_failures": len(causal_failures),
+        "observation_failures": len(observation_failures),
+        "pre_identity": state["pre_identity"],
+        "post_identity": post_identity,
+        "resume_command": None,
+    }
+
+
+def execute(manifest: dict, manifest_path: Path, *, resume: bool) -> tuple[dict, int]:
+    state_path = manifest["_state_path"]
+    log_dir = manifest["_log_dir"]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    with lock_path.open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if state_path.exists():
+            state = json.loads(state_path.read_text())
+            if not isinstance(state, dict):
+                raise ContractError("existing state root must be an object")
+            if state.get("revision") != manifest["revision"]:
+                raise ContractError("existing state belongs to a different revision")
+            if state.get("manifest_sha256") != manifest_sha256:
+                raise ContractError("manifest changed after controller state was created")
+            if state.get("terminal_receipt"):
+                receipt = state["terminal_receipt"]
+                return receipt, 0 if receipt.get("promotion_allowed") else 3
+            if not resume:
+                raise ContractError("nonterminal state exists; use the emitted resume command")
+        else:
+            state = {
+                "revision": manifest["revision"],
+                "manifest_sha256": manifest_sha256,
+                "next_row_index": 0,
+                "rows": [],
+            }
+            atomic_write(state_path, state)
+
+        deadline = time.monotonic() + manifest["overall_timeout_seconds"]
+        if "pre_identity" not in state:
+            observed, timeout = wait_for_identity(manifest, state, manifest_path, deadline)
+            if timeout:
+                return timeout, 4
+            state["pre_identity"] = observed
+            atomic_write(state_path, state)
+
+        prior_by_id = {row["id"]: row for row in state["rows"]}
+        for index in range(state["next_row_index"], len(manifest["rows"])):
+            row = manifest["rows"][index]
+            canary_id = row.get("canary_row_id")
+            if canary_id and prior_by_id.get(canary_id, {}).get("status") != "pass":
+                result = {
+                    "id": row["id"],
+                    "gate_class": row["gate_class"],
+                    "status": "skipped_canary_failed",
+                    "exit_code": None,
+                    "failure_class": "invalid_evidence",
+                    "next_owner": route_for("invalid_evidence"),
+                    "log_file": None,
+                }
+            else:
+                state.pop("pending_timeout", None)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    atomic_write(state_path, state)
+                    return timeout_receipt(
+                        manifest, state, manifest_path, "overall controller timeout"
+                    ), 4
+                output_path = log_dir / f"row-{index + 1:03d}-{row['id']}.log"
+                exit_code, timed_out, _, log_metadata = run_logged(
+                    row["command"],
+                    output_path,
+                    min(row["timeout_seconds"], remaining),
+                    manifest["_working_directory"],
+                )
+                if timed_out:
+                    state["pending_timeout"] = {
+                        "row_id": row["id"],
+                        **log_metadata,
+                    }
+                    atomic_write(state_path, state)
+                    return timeout_receipt(
+                        manifest, state, manifest_path, f"row {row['id']} timed out"
+                    ), 4
+                passed = exit_code == row["expected_exit_code"]
+                failure_class = None if passed else row["failure_class_on_failure"]
+                result = {
+                    "id": row["id"],
+                    "gate_class": row["gate_class"],
+                    "status": "pass" if passed else "fail",
+                    "exit_code": exit_code,
+                    "failure_class": failure_class,
+                    "next_owner": None if passed else route_for(failure_class),
+                    **log_metadata,
+                }
+            state["rows"].append(result)
+            prior_by_id[row["id"]] = result
+            state["next_row_index"] = index + 1
+            atomic_write(state_path, state)
+
+        post_path = log_dir / "identity-post.log"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return timeout_receipt(
+                manifest, state, manifest_path, "overall controller timeout before reattestation"
+            ), 4
+        identity_exit, timed_out, post_identity, post_metadata = run_logged(
+            manifest["runtime_identity"]["command"],
+            post_path,
+            min(manifest["runtime_identity"]["command_timeout_seconds"], remaining),
+            manifest["_working_directory"],
+        )
+        if timed_out:
+            return timeout_receipt(
+                manifest, state, manifest_path, "runtime identity reattestation timed out"
+            ), 4
+        if identity_exit != 0 or post_identity != manifest["revision"]:
+            state["rows"].append({
+                "id": "runtime-identity-reattest",
+                "gate_class": "causal_ship_gate",
+                "status": "fail",
+                "exit_code": None,
+                "failure_class": "invalid_evidence",
+                "next_owner": route_for("invalid_evidence"),
+                **post_metadata,
+            })
+        receipt = finalize(manifest, state, post_identity)
+        state["terminal_receipt"] = receipt
+        atomic_write(state_path, state)
+        return receipt, 0 if receipt["promotion_allowed"] else 3
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="deploy-verify-controller")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("manifest", type=Path)
+    args = parser.parse_args()
+    try:
+        manifest_path = args.manifest.resolve()
+        if manifest_path.stat().st_size > 262144:
+            raise ContractError("manifest exceeds 262144 bytes")
+        manifest = validate_manifest(load_manifest(manifest_path))
+        receipt, exit_code = execute(manifest, manifest_path, resume=args.resume)
+    except (ContractError, json.JSONDecodeError, BlockingIOError, OSError) as exc:
+        receipt = {"status": "invalid", "error": str(exc)}
+        exit_code = 2
+    print(json.dumps(receipt, separators=(",", ":")))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

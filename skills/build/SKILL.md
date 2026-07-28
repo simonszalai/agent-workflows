@@ -280,17 +280,21 @@ artifact. Children receive immutable packet paths plus hashes; they never reload
      builds, schema pulls, migrations, browser checks, or the project health command. The parent
      orchestrator writes tests, then owns the pre-review and conditional final full gates.
    - For a standalone `/build`, this skill's main/orchestrator (never a builder) runs one canonical
-     full health command against the completed tree, keyed by `(tree SHA, exact command)`.
+     full health command through
+     `bin/validation-receipt --owner orchestrator -- <exact command>`.
 
-   Tests, builds, migrations, large diffs, and other noisy commands use `bin/compact-exec` or an
-   established equally compact stricter wrapper. Preserve the full log and consume only its bounded
-   summary/tail. A failure report includes the absolute `output_file` and exact `rerun_command`.
+   The wrapper persists the receipt keyed by exact working-tree SHA and normalized exact command,
+   delegates execution to `bin/compact-exec`, and returns an exact-tree PASS without rerunning it.
+   Any tree/command change invalidates reuse. Attribution uncertainty executes the gate rather than
+   suppressing it. Preserve the full log and consume only its bounded summary/tail. A failure
+   report includes the absolute `output_file` and exact `rerun_command`.
 
    If the standalone orchestrator health command fails, it may dispatch one narrowly scoped repair
    chain. That builder still does not run validation. After the changed tree returns, the
-   orchestrator reruns the failed gate once, records the failure-driven rerun, and stops if it
-   still fails. Focused diagnostics used to isolate a gate failure are also orchestrator-owned and
-   keyed to `(tree SHA, exact command)`.
+   orchestrator reruns the failed gate once through the receipt wrapper, records the repair run,
+   and stops if it still fails. An unchanged-tree failed gate cannot rerun. Focused diagnostics
+   used to isolate a gate failure are also orchestrator-owned and keyed to
+   `(tree SHA, exact command)`.
 
    Then run the **migration parity sweep** (repo-wide, orchestrator-owned): diff the branch
    against main for the repo's model/schema/migration paths.
@@ -321,7 +325,8 @@ artifact. Children receive immutable packet paths plus hashes; they never reload
 
 7. **After the loop converges:**
    - Do not run validation after an orchestrated handoff. In standalone mode, do not repeat the
-     same full command against an unchanged tree; reuse the PASS keyed by `(tree SHA, command)`.
+     same full command against an unchanged tree; require the persisted exact-tree/exact-command
+     PASS receipt.
    - Record the Completion Summary: ticketed runs update the plan **artifact** via
      `update_artifact`; ticketless runs append it to `.context/plan.md`
    - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow`, `/lfg`) owns
