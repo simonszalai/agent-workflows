@@ -431,14 +431,31 @@ F0131   4      NO            -                         staging_verified STOPPED:
 
 ## Re-converge check (drain divergence debt)
 
-Per-ticket cherry-pick promotion only ADDS `main`/`staging` divergence — it never drains it.
-Mandatory after any emergency schema exception, advisory otherwise:
+Per-ticket cherry-pick promotion only ADDS `main`/`staging` divergence — it never drains it, and
+squash-merged promotions behave identically: the code lands, but the staging commits never become
+ancestors of `main`, so they stay in `git log origin/main..origin/staging` permanently. Divergence
+therefore grows with every promotion, and the phantom commits hide the genuinely undeployed ones.
 
-1. Run `/migration-parity-check` — content/patch equivalence and per-env schema truth.
-2. If it shows residual schema divergence or reconciliation debt from the schema gate,
-   reconcile now (usually a full `staging->main` parity merge with a real `--merge` commit).
-   Do not carry the debt into the next batch.
-3. Record `parity: clean` or the exact outstanding debt in the manifest.
+**Mandatory at the end of every run, in every mode** — not just after a schema exception:
+
+1. Measure `git rev-list --count origin/main..origin/staging` and record the number in the manifest.
+2. Run `/migration-parity-check` when the count is non-zero — content/patch equivalence and
+   per-env schema truth.
+3. Drain when the count exceeds 25, or the parity check reports residual schema divergence or
+   reconciliation debt from the schema gate: a full `staging->main` parity merge with a real
+   `--merge` commit. Never substitute squash or rebase — both create new SHAs with no ancestry
+   link, so they leave the debt in place while appearing to clear it. Do not carry the debt into
+   the next batch.
+4. If the repo forbids merge commits, the drain is impossible: STOP and report it as a repo-policy
+   blocker (Settings -> General -> Pull Requests -> Allow merge commits), never as a reason to
+   substitute squash.
+5. Record `parity: clean`, or the count plus the outstanding debt and how it will be drained.
+
+*Example (ts-prefect, 2026-07-28):* the last real merge commit on `main` was 2026-07-15, and every
+promotion after it was a squash, so `main..staging` reached 165 commits while most of that code was
+already running in production. Separating the ~22 genuinely undeployed files from the phantom ones
+took a full content diff, and two real drifts — a prod-only artifact set and a file deleted on
+staging — had been invisible inside the noise.
 
 ## Failure output
 
