@@ -1051,8 +1051,22 @@ class MemoryClient:
         if envelope.get("jsonrpc") != "2.0" or envelope.get("id") != request_id:
             raise SafeError("memory_mcp_shape_mismatch", exit_code=EXIT_EXTERNAL)
         result = require_object(envelope.get("result"), "memory_mcp_shape_mismatch")
-        if set(result) - {"content", "isError"} or result.get("isError") is True:
+        if set(result) - {"content", "structuredContent", "isError", "_meta"}:
             raise SafeError("memory_tool_failure", exit_code=EXIT_EXTERNAL)
+        if "isError" in result and not isinstance(result["isError"], bool):
+            raise SafeError("memory_mcp_shape_mismatch", exit_code=EXIT_EXTERNAL)
+        if result.get("isError") is True:
+            raise SafeError("memory_tool_failure", exit_code=EXIT_EXTERNAL)
+        if "_meta" in result:
+            require_object(result["_meta"], "memory_mcp_shape_mismatch")
+
+        structured: dict[str, object] | None = None
+        if "structuredContent" in result:
+            structured = require_object(
+                result["structuredContent"],
+                "memory_tool_shape_mismatch",
+            )
+
         content = require_list(result.get("content"), "memory_mcp_shape_mismatch")
         if len(content) != 1:
             raise SafeError("memory_mcp_shape_mismatch", exit_code=EXIT_EXTERNAL)
@@ -1061,10 +1075,14 @@ class MemoryClient:
         if block["type"] != "text":
             raise SafeError("memory_mcp_shape_mismatch", exit_code=EXIT_EXTERNAL)
         text = require_string(block["text"], "memory_mcp_shape_mismatch")
-        return require_object(
+        legacy = require_object(
             parse_json_bytes(text.encode("utf-8"), "memory_tool_shape_mismatch"),
             "memory_tool_shape_mismatch",
         )
+
+        if structured is not None and compact_json(structured) != compact_json(legacy):
+            raise SafeError("memory_tool_shape_mismatch", exit_code=EXIT_EXTERNAL)
+        return structured if structured is not None else legacy
 
     def batch(
         self,
