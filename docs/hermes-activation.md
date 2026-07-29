@@ -1,3 +1,7 @@
+> **RETIRED (2026-07-28).** The mcp-gateway daemon this document activates was booted
+> out of launchd and torn down; the hermes routes died with it. Kept as historical
+> reference only — analyst access needs a new design before re-onboarding.
+
 # Hermes activation provider
 
 `bin/hermes-activation` is the reviewed E0006 M3 provider for creating the two Hermes
