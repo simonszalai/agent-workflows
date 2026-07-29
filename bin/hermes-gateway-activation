@@ -154,7 +154,7 @@ def read_json(path: Path) -> dict[str, object]:
         raise SafeError("receipt_path_invalid")
     try:
         raw = path.read_bytes()
-    except OSError:
+    except (OSError, RuntimeError):
         raise SafeError("receipt_missing") from None
     if len(raw) > MAX_BYTES:
         raise SafeError("receipt_too_large")
@@ -188,26 +188,94 @@ def test_mode() -> bool:
     return os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_MODE") == "1"
 
 
-def gateway_root() -> Path:
-    root = ROOT
+def require_canonical_directory(path: Path, code: str) -> Path:
+    if not path.is_absolute():
+        raise SafeError(code)
+    try:
+        resolved = path.resolve(strict=True)
+        info = path.lstat()
+    except OSError:
+        raise SafeError(code) from None
+    if resolved != path or path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        raise SafeError(code)
+    return path
+
+
+def selected_runtime_root(explicit: Path | None) -> tuple[Path, bool]:
     if test_mode():
+        if explicit is not None:
+            raise SafeError("gateway_runtime_root_invalid")
         override = os.environ.get("HERMES_GATEWAY_ACTIVATION_TEST_ROOT")
         if not override:
             raise SafeError("test_root_missing")
-        root = Path(override).resolve()
-    return root / "mcp-gateway"
+        # Preserve the established test-fixture behavior: the private test override
+        # is canonicalized before use, while production inputs must already be
+        # canonical and may not use this override as a workaround.
+        try:
+            return Path(override).resolve(strict=True), False
+        except (OSError, RuntimeError):
+            raise SafeError("gateway_runtime_root_invalid") from None
+    root = ROOT if explicit is None else explicit
+    return require_canonical_directory(
+        root, "gateway_runtime_root_invalid"
+    ), True
 
 
-def expected_env_path() -> Path:
-    gateway = gateway_root()
+def gateway_root(runtime_root: Path) -> Path:
+    return require_canonical_directory(
+        runtime_root / "mcp-gateway", "gateway_runtime_root_invalid"
+    )
+
+
+def require_regular_file(path: Path, code: str, *, canonical: bool) -> Path:
+    if not path.is_absolute():
+        raise SafeError(code)
+    try:
+        info = path.lstat()
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise SafeError(code) from None
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or (canonical and resolved != path)
+    ):
+        raise SafeError(code)
+    return path
+
+
+def expected_env_path(gateway: Path, *, canonical: bool) -> Path:
     local = gateway / "gateway.local.env"
-    return local if local.is_file() else gateway / "gateway.env"
+    # A malformed local override must fail closed rather than silently selecting
+    # the tracked fallback.
+    selected = local if os.path.lexists(local) else gateway / "gateway.env"
+    return require_regular_file(
+        selected, "gateway_env_path_invalid", canonical=canonical
+    )
 
 
-def require_env_path(path: Path) -> Path:
-    if not path.is_absolute() or path.is_symlink() or path.resolve() != expected_env_path().resolve():
+def require_env_path(path: Path, gateway: Path, *, canonical: bool) -> Path:
+    expected = expected_env_path(gateway, canonical=canonical)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        raise SafeError("gateway_env_path_invalid") from None
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or (canonical and resolved != path)
+        or resolved != expected.resolve(strict=True)
+    ):
         raise SafeError("gateway_env_path_invalid")
     return path
+
+
+def routes_path(gateway: Path, *, canonical: bool = True) -> Path:
+    return require_regular_file(
+        gateway / "routes.json",
+        "gateway_route_contract_mismatch",
+        canonical=canonical,
+    )
 
 
 def validate_env_text(text: str) -> dict[str, str]:
@@ -295,8 +363,16 @@ def remove_refs(path: Path) -> bool:
     return True
 
 
-def route_checks(path: Path) -> None:
-    routes = json.loads((path.parent / "routes.json").read_text(encoding="utf-8"))["routes"]
+def route_checks(gateway: Path, *, canonical: bool) -> None:
+    try:
+        value = json.loads(
+            routes_path(gateway, canonical=canonical).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise SafeError("gateway_route_contract_mismatch") from None
+    routes = value.get("routes") if isinstance(value, dict) else None
+    if not isinstance(routes, dict):
+        raise SafeError("gateway_route_contract_mismatch")
     for prefix in ("hermes/autodev-memory", "hermes/render", "hermes/slack"):
         route = routes.get(prefix)
         if not isinstance(route, dict) or route.get("clientTokenEnv") != "HERMES_GATEWAY_TOKEN":
@@ -306,18 +382,18 @@ def route_checks(path: Path) -> None:
             raise SafeError("gateway_route_contract_mismatch")
 
 
-def config_checks(path: Path) -> None:
+def config_checks(path: Path, gateway: Path, *, canonical: bool) -> None:
     values = validate_env_text(path.read_text(encoding="utf-8"))
     if any(values.get(name) != ref for name, ref in ENV_ROWS):
         raise SafeError("gateway_ref_missing")
-    route_checks(path)
+    route_checks(gateway, canonical=canonical)
 
 
-def rollback_checks(path: Path) -> None:
+def rollback_checks(path: Path, gateway: Path, *, canonical: bool) -> None:
     values = validate_env_text(path.read_text(encoding="utf-8"))
     if any(name in values for name, _ref in ENV_ROWS):
         raise SafeError("gateway_ref_still_present")
-    route_checks(path)
+    route_checks(gateway, canonical=canonical)
 
 
 def safe_output(command: str, result: dict[str, object]) -> dict[str, object]:
@@ -535,10 +611,13 @@ def read_gateway_log_append(descriptor: int, offset: int) -> bytes:
     return payload
 
 
-def render_allowed_tools() -> frozenset[str]:
+def render_allowed_tools(gateway: Path | None = None, *, canonical: bool = True) -> frozenset[str]:
+    gateway = gateway or gateway_root(ROOT)
     try:
-        value = json.loads((ROOT / "mcp-gateway" / "routes.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        value = json.loads(
+            routes_path(gateway, canonical=canonical).read_text(encoding="utf-8")
+        )
+    except (SafeError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         raise SafeError("tools_list_filter_failed", 6) from None
     routes = value.get("routes") if isinstance(value, dict) else None
     route = routes.get("hermes/render") if isinstance(routes, dict) else None
@@ -556,14 +635,20 @@ def render_allowed_tools() -> frozenset[str]:
     return frozenset(tools)
 
 
-def require_filtered_tools_list(body: bytes) -> None:
+def require_filtered_tools_list(
+    body: bytes,
+    gateway: Path | None = None,
+    *,
+    canonical: bool = True,
+    allowed_tools: frozenset[str] | None = None,
+) -> None:
     try:
         message = strict_json(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         raise SafeError("tools_list_filter_failed", 6) from None
     result = message.get("result") if isinstance(message, dict) else None
     tools = result.get("tools") if isinstance(result, dict) else None
-    allowed = render_allowed_tools()
+    allowed = allowed_tools or render_allowed_tools(gateway, canonical=canonical)
     if (
         not isinstance(message, dict)
         or set(message) != {"jsonrpc", "id", "result"}
@@ -617,7 +702,14 @@ def require_tools_list_denial(body: bytes, audit_log: bytes) -> None:
         raise SafeError("tools_list_filter_failed", 6)
 
 
-def probe_tools_list(credential: bytes, secrets: tuple[bytes, ...]) -> bytes:
+def probe_tools_list(
+    credential: bytes,
+    secrets: tuple[bytes, ...],
+    gateway: Path | None = None,
+    *,
+    canonical: bool = True,
+    allowed_tools: frozenset[str] | None = None,
+) -> bytes:
     descriptor: int | None = None
     offset = 0
     try:
@@ -630,7 +722,12 @@ def probe_tools_list(credential: bytes, secrets: tuple[bytes, ...]) -> bytes:
         })
         assert_secret_free([body], secrets)
         if status == 200:
-            require_filtered_tools_list(body)
+            require_filtered_tools_list(
+                body,
+                gateway,
+                canonical=canonical,
+                allowed_tools=allowed_tools,
+            )
         elif status == 403:
             if descriptor is None:
                 raise SafeError("gateway_audit_log_invalid", 6)
@@ -645,7 +742,13 @@ def probe_tools_list(credential: bytes, secrets: tuple[bytes, ...]) -> bytes:
     return body
 
 
-def probe_gateway(state: State) -> None:
+def probe_gateway(
+    state: State,
+    gateway: Path | None = None,
+    *,
+    canonical: bool = True,
+    allowed_tools: frozenset[str] | None = None,
+) -> None:
     hermes = token("HERMES_GATEWAY_TOKEN")
     default = token("MCP_GATEWAY_TOKEN")
     try:
@@ -694,15 +797,33 @@ def probe_gateway(state: State) -> None:
         if status != 403:
             raise SafeError("gateway_bypass_not_denied", 6)
     state.checks.append(CHECKS[3])
-    body = probe_tools_list(hermes, (hermes, default))
+    body = probe_tools_list(
+        hermes,
+        (hermes, default),
+        gateway,
+        canonical=canonical,
+        allowed_tools=allowed_tools,
+    )
     observed.append(body)
     state.checks.append(CHECKS[4])
     assert_secret_free(observed + [json.dumps(asdict(state)).encode()], (hermes, default))
     state.checks.append(CHECKS[5])
 
 
-def prepare_canary(state: State, receipt: Path) -> None:
-    probe_gateway(state)
+def prepare_canary(
+    state: State,
+    receipt: Path,
+    gateway: Path | None = None,
+    *,
+    canonical: bool = True,
+    allowed_tools: frozenset[str] | None = None,
+) -> None:
+    probe_gateway(
+        state,
+        gateway,
+        canonical=canonical,
+        allowed_tools=allowed_tools,
+    )
     client = memory_client()
     created = tool(client, state, "create_ticket", {
         "project": H.PROJECT,
@@ -824,14 +945,17 @@ def parser() -> argparse.ArgumentParser:
     groups = root.add_subparsers(dest="command", required=True)
     prepare = groups.add_parser("prepare", allow_abbrev=False)
     prepare.add_argument("--handoff-receipt", type=Path, required=True)
+    prepare.add_argument("--runtime-root", type=Path)
     prepare.add_argument("--gateway-env", type=Path, required=True)
     prepare.add_argument("--receipt", type=Path, required=True)
     verify = groups.add_parser("verify-config", allow_abbrev=False)
     verify.add_argument("--handoff-receipt", type=Path, required=True)
+    verify.add_argument("--runtime-root", type=Path)
     verify.add_argument("--gateway-env", type=Path, required=True)
     verify.add_argument("--receipt", type=Path, required=True)
     rollback = groups.add_parser("rollback", allow_abbrev=False)
     rollback.add_argument("--handoff-receipt", type=Path, required=True)
+    rollback.add_argument("--runtime-root", type=Path)
     rollback.add_argument("--gateway-env", type=Path, required=True)
     rollback.add_argument("--receipt", type=Path, required=True)
     canary = groups.add_parser("canary", allow_abbrev=False)
@@ -840,26 +964,48 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
     canary.add_argument("--handoff-receipt", type=Path, required=True)
+    canary.add_argument("--runtime-root", type=Path)
     canary.add_argument("--state-receipt", type=Path, required=True)
     return root
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
+    gateway: Path | None = None
+    canonical = True
+    if args.command in {"prepare", "verify-config", "rollback"} or (
+        args.command == "canary" and args.phase == "prepare"
+    ):
+        runtime_root, canonical = selected_runtime_root(args.runtime_root)
+        gateway = gateway_root(runtime_root)
     handoff = validate_handoff(args.handoff_receipt)
     if args.command in {"prepare", "verify-config", "rollback"}:
+        assert gateway is not None
         require_receipt_target(args.receipt)
-        env_path = require_env_path(args.gateway_env)
+        env_path = require_env_path(args.gateway_env, gateway, canonical=canonical)
+        values = validate_env_text(env_path.read_text(encoding="utf-8"))
+        if args.command == "verify-config":
+            if any(values.get(name) != ref for name, ref in ENV_ROWS):
+                raise SafeError("gateway_ref_missing")
+        elif any(
+            name in values and values[name] != ref for name, ref in ENV_ROWS
+        ):
+            raise SafeError("gateway_env_conflicting_ref")
+        # Prepare must not add refs against an invalid runtime route inventory.
+        # Rollback intentionally removes refs before route validation so cleanup
+        # remains possible when runtime config is damaged.
+        if args.command != "rollback":
+            route_checks(gateway, canonical=canonical)
         if args.command == "prepare":
             changed = write_refs(env_path)
-            config_checks(env_path)
+            config_checks(env_path, gateway, canonical=canonical)
             env_status = "refs_present"
         elif args.command == "rollback":
             changed = remove_refs(env_path)
-            rollback_checks(env_path)
+            rollback_checks(env_path, gateway, canonical=canonical)
             env_status = "refs_absent"
         else:
             changed = False
-            config_checks(env_path)
+            config_checks(env_path, gateway, canonical=canonical)
             env_status = "refs_present"
         result = {
             "handoff_schema": HANDOFF_SCHEMA,
@@ -877,6 +1023,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     receipt = args.state_receipt
     require_receipt_target(receipt)
     if args.phase == "prepare":
+        assert gateway is not None
+        # Freeze the selected runtime allowlist before creating state or making
+        # any network request. Both a filtered 200 and an audited fail-closed
+        # 403 therefore prove that the explicit runtime config was valid.
+        allowed_tools = render_allowed_tools(gateway, canonical=canonical)
         if receipt.exists():
             raise SafeError("state_receipt_exists")
         now = time.time()
@@ -886,7 +1037,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
         state.repo = CANARY_PREFIX + state.run_id
         state.save(receipt)
-        prepare_canary(state, receipt)
+        prepare_canary(
+            state,
+            receipt,
+            gateway,
+            canonical=canonical,
+            allowed_tools=allowed_tools,
+        )
     else:
         state = State.load(receipt)
         if args.phase == "after-approval":

@@ -144,6 +144,402 @@ class GatewayActivationTests(unittest.TestCase):
             env=env,
         )
 
+    def write_gateway_fixture(self, root: Path, *, local: bool = False) -> Path:
+        gateway = root / "mcp-gateway"
+        gateway.mkdir()
+        env_path = gateway / ("gateway.local.env" if local else "gateway.env")
+        env_path.write_text("", encoding="utf-8")
+        env_path.chmod(0o640)
+        (gateway / "routes.json").write_text(json.dumps({"routes": {
+            prefix: {
+                "clientTokenEnv": "HERMES_GATEWAY_TOKEN",
+                "allowTools": ["runtime_safe"],
+            }
+            for prefix in (
+                "hermes/autodev-memory",
+                "hermes/render",
+                "hermes/slack",
+            )
+        }}), encoding="utf-8")
+        return env_path
+
+    def run_production_env_command(
+        self,
+        command: str,
+        runtime_root: Path,
+        receipt: Path,
+        handoff_path: Path,
+        env_path: Path,
+    ) -> subprocess.CompletedProcess:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE",
+                "HERMES_GATEWAY_ACTIVATION_TEST_ROOT",
+            }
+        }
+        return subprocess.run(
+            [
+                str(COMMAND),
+                command,
+                "--runtime-root",
+                str(runtime_root),
+                "--handoff-receipt",
+                str(handoff_path),
+                "--gateway-env",
+                str(env_path),
+                "--receipt",
+                str(receipt),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+
+    def test_separate_production_runtime_root_is_narrow_and_effective(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            env_path = self.write_gateway_fixture(root, local=True)
+            tracked = root / "mcp-gateway" / "gateway.env"
+            tracked.write_text("TRACKED=unchanged\n", encoding="utf-8")
+            tracked_before = tracked.read_bytes()
+            handoff_path = root / "handoff.json"
+            self.write_json(handoff_path, handoff())
+
+            prepared = self.run_production_env_command(
+                "prepare", root, root / "prepare.json", handoff_path, env_path
+            )
+            self.assertEqual(
+                prepared.returncode, 0, prepared.stdout + prepared.stderr
+            )
+            result = json.loads(prepared.stdout)["result"]
+            self.assertEqual(
+                result["gateway_env"],
+                {"basename": "gateway.local.env", "status": "refs_present"},
+            )
+            self.assertEqual(result["provider_commit"], GATEWAY.PROVIDER_COMMIT)
+            self.assertEqual(result["provider_tree"], GATEWAY.PROVIDER_TREE)
+            self.assertEqual(tracked.read_bytes(), tracked_before)
+
+            verified = self.run_production_env_command(
+                "verify-config", root, root / "verify.json", handoff_path, env_path
+            )
+            self.assertEqual(
+                verified.returncode, 0, verified.stdout + verified.stderr
+            )
+            rolled_back = self.run_production_env_command(
+                "rollback", root, root / "rollback.json", handoff_path, env_path
+            )
+            self.assertEqual(
+                rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr
+            )
+            self.assertEqual(tracked.read_bytes(), tracked_before)
+
+    def test_production_runtime_root_rejects_invalid_shapes_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            container = Path(temp).resolve()
+            valid_root = container / "valid"
+            valid_root.mkdir()
+            env_path = self.write_gateway_fixture(valid_root)
+            env_path.write_text("UNCHANGED=yes\n", encoding="utf-8")
+            before = env_path.read_bytes()
+            handoff_path = container / "handoff.json"
+            self.write_json(handoff_path, handoff())
+            file_root = container / "file-root"
+            file_root.write_text("", encoding="utf-8")
+            link_root = container / "link-root"
+            link_root.symlink_to(valid_root, target_is_directory=True)
+            cases = (
+                Path("relative"),
+                container / "missing",
+                file_root,
+                link_root,
+                valid_root / ".." / "valid",
+            )
+            for index, runtime_root in enumerate(cases):
+                with self.subTest(runtime_root=runtime_root):
+                    receipt = container / f"invalid-{index}.json"
+                    result = self.run_production_env_command(
+                        "prepare", runtime_root, receipt, handoff_path, env_path
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(
+                        json.loads(result.stdout)["result"]["code"],
+                        "gateway_runtime_root_invalid",
+                    )
+                    self.assertFalse(receipt.exists())
+                    self.assertEqual(env_path.read_bytes(), before)
+
+    def test_runtime_gateway_and_effective_env_fail_closed_on_malformed_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            container = Path(temp).resolve()
+            handoff_path = container / "handoff.json"
+            self.write_json(handoff_path, handoff())
+
+            real_gateway = container / "real-gateway"
+            real_gateway.mkdir()
+            linked_root = container / "linked"
+            linked_root.mkdir()
+            (linked_root / "mcp-gateway").symlink_to(
+                real_gateway, target_is_directory=True
+            )
+            result = self.run_production_env_command(
+                "prepare",
+                linked_root,
+                container / "linked.json",
+                handoff_path,
+                real_gateway / "gateway.env",
+            )
+            self.assertEqual(
+                json.loads(result.stdout)["result"]["code"],
+                "gateway_runtime_root_invalid",
+            )
+
+            for kind in ("directory", "symlink"):
+                with self.subTest(kind=kind):
+                    root = container / kind
+                    root.mkdir()
+                    tracked = self.write_gateway_fixture(root)
+                    local = root / "mcp-gateway" / "gateway.local.env"
+                    if kind == "directory":
+                        local.mkdir()
+                    else:
+                        local.symlink_to(tracked)
+                    before = tracked.read_bytes()
+                    receipt = container / f"{kind}.json"
+                    result = self.run_production_env_command(
+                        "prepare", root, receipt, handoff_path, tracked
+                    )
+                    self.assertEqual(
+                        json.loads(result.stdout)["result"]["code"],
+                        "gateway_env_path_invalid",
+                    )
+                    self.assertFalse(receipt.exists())
+                    self.assertEqual(tracked.read_bytes(), before)
+
+    def test_runtime_root_rejects_env_from_another_root_and_symlinked_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            container = Path(temp).resolve()
+            first = container / "first"
+            second = container / "second"
+            first.mkdir()
+            second.mkdir()
+            first_env = self.write_gateway_fixture(first)
+            second_env = self.write_gateway_fixture(second)
+            handoff_path = container / "handoff.json"
+            self.write_json(handoff_path, handoff())
+            result = self.run_production_env_command(
+                "prepare", first, container / "wrong-env.json", handoff_path, second_env
+            )
+            self.assertEqual(
+                json.loads(result.stdout)["result"]["code"],
+                "gateway_env_path_invalid",
+            )
+
+            routes = first / "mcp-gateway" / "routes.json"
+            real_routes = first / "real-routes.json"
+            routes.replace(real_routes)
+            routes.symlink_to(real_routes)
+            before = first_env.read_bytes()
+            result = self.run_production_env_command(
+                "prepare", first, container / "routes.json", handoff_path, first_env
+            )
+            self.assertEqual(
+                json.loads(result.stdout)["result"]["code"],
+                "gateway_route_contract_mismatch",
+            )
+            self.assertEqual(first_env.read_bytes(), before)
+
+    def test_rollback_removes_refs_even_when_runtime_routes_are_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            env_path = self.write_gateway_fixture(root)
+            env_path.write_text(
+                "".join(f"{name}={ref}\n" for name, ref in GATEWAY.ENV_ROWS),
+                encoding="utf-8",
+            )
+            routes = root / "mcp-gateway" / "routes.json"
+            routes.unlink()
+            routes.symlink_to(root / "missing-routes.json")
+            handoff_path = root / "handoff.json"
+            self.write_json(handoff_path, handoff())
+            result = self.run_production_env_command(
+                "rollback", root, root / "rollback.json", handoff_path, env_path
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(
+                json.loads(result.stdout)["result"]["code"],
+                "gateway_route_contract_mismatch",
+            )
+            text = env_path.read_text(encoding="utf-8")
+            for name, _ref in GATEWAY.ENV_ROWS:
+                self.assertNotIn(f"{name}=", text)
+
+    def test_production_default_remains_reviewed_executable_root(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "",
+                "HERMES_GATEWAY_ACTIVATION_TEST_ROOT": "",
+            },
+            clear=False,
+        ):
+            root, canonical = GATEWAY.selected_runtime_root(None)
+        self.assertEqual(root, ROOT)
+        self.assertTrue(canonical)
+
+    def test_runtime_root_does_not_mix_with_test_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env_path = self.write_gateway_fixture(root)
+            handoff_path = root / "handoff.json"
+            self.write_json(handoff_path, handoff())
+            env = {
+                **os.environ,
+                "HERMES_GATEWAY_ACTIVATION_TEST_MODE": "1",
+                "HERMES_GATEWAY_ACTIVATION_TEST_ROOT": str(root),
+            }
+            result = subprocess.run(
+                [
+                    str(COMMAND),
+                    "prepare",
+                    "--runtime-root",
+                    str(root),
+                    "--handoff-receipt",
+                    str(handoff_path),
+                    "--gateway-env",
+                    str(env_path),
+                    "--receipt",
+                    str(root / "receipt.json"),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(
+                json.loads(result.stdout)["result"]["code"],
+                "gateway_runtime_root_invalid",
+            )
+
+    def test_selected_runtime_routes_drive_canary_allowlist_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            self.write_gateway_fixture(root)
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"tools": [{"name": "runtime_safe"}]},
+            }).encode()
+            GATEWAY.require_filtered_tools_list(
+                body, root / "mcp-gateway", canonical=True
+            )
+            forbidden = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"tools": [{"name": "not_runtime_allowed"}]},
+            }).encode()
+            with self.assertRaisesRegex(GATEWAY.SafeError, "tools_list_filter_failed"):
+                GATEWAY.require_filtered_tools_list(
+                    forbidden, root / "mcp-gateway", canonical=True
+                )
+
+    def test_canary_cleanup_does_not_depend_on_runtime_root(self) -> None:
+        state = GATEWAY.State(
+            GATEWAY.STATE_SCHEMA,
+            "cleanup-run-id",
+            GATEWAY.CANARY_PREFIX + "cleanup-run-id",
+            "F0001",
+            "awaiting_admin_approval",
+            1.0,
+            301.0,
+            list(GATEWAY.CHECKS[:7]),
+            1,
+            1,
+            None,
+        )
+        args = GATEWAY.parser().parse_args([
+            "canary",
+            "--phase",
+            "cleanup",
+            "--runtime-root",
+            "/missing/runtime/root",
+            "--handoff-receipt",
+            "/missing/handoff.json",
+            "--state-receipt",
+            "/missing/state.json",
+        ])
+
+        def complete_cleanup(value: object, _receipt: Path, *, require_reapproval: bool) -> None:
+            self.assertFalse(require_reapproval)
+            value.phase = "complete"
+            value.cleanup = "pass"
+
+        with (
+            mock.patch.object(
+                GATEWAY, "selected_runtime_root",
+                side_effect=AssertionError("cleanup must not validate runtime root"),
+            ),
+            mock.patch.object(GATEWAY, "validate_handoff", return_value=handoff()),
+            mock.patch.object(
+                GATEWAY, "require_receipt_target", side_effect=lambda path: path
+            ),
+            mock.patch.object(GATEWAY.State, "load", return_value=state),
+            mock.patch.object(GATEWAY, "cleanup", side_effect=complete_cleanup),
+            mock.patch.dict(os.environ, {
+                "HERMES_GATEWAY_TOKEN": "gateway-cleanup-token",
+                "MCP_GATEWAY_TOKEN": "default-cleanup-token",
+            }),
+        ):
+            result = GATEWAY.run(args)
+        self.assertEqual(result["result"]["cleanup"], "pass")
+
+    def test_canary_prepare_rejects_runtime_routes_before_state_or_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            self.write_gateway_fixture(root)
+            routes = root / "mcp-gateway" / "routes.json"
+            target = root / "routes-target.json"
+            routes.replace(target)
+            routes.symlink_to(target)
+            handoff_path = root / "handoff.json"
+            state_path = root / "state.json"
+            self.write_json(handoff_path, handoff())
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {
+                    "HERMES_GATEWAY_ACTIVATION_TEST_MODE",
+                    "HERMES_GATEWAY_ACTIVATION_TEST_ROOT",
+                }
+            }
+            result = subprocess.run(
+                [
+                    str(COMMAND),
+                    "canary",
+                    "--phase",
+                    "prepare",
+                    "--runtime-root",
+                    str(root),
+                    "--handoff-receipt",
+                    str(handoff_path),
+                    "--state-receipt",
+                    str(state_path),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 6)
+            self.assertEqual(
+                json.loads(result.stdout)["result"]["code"],
+                "tools_list_filter_failed",
+            )
+            self.assertFalse(state_path.exists())
+
     def test_prepare_writes_only_canonical_refs_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
