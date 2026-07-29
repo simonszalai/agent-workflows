@@ -6,6 +6,7 @@ effort: medium
 max_turns: 50
 memory_types: [gotcha, diagnosis, architecture]
 skills:
+  - autism
   - first-principles
   - autodev-search
 ---
