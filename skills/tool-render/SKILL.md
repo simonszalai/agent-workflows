@@ -60,13 +60,20 @@ memory `216431b0`).
 
 `render-cli logs --help` lists all filters (level, type, statusCode, method, host...).
 
-## Metrics
+## Metrics (REST passthrough)
 
-The CLI has no metrics command. For triage, logs almost always carry the signal
-(exit code -9 = OOM SIGKILL; correlate restarts via `deploys list` + logs). When a
-human needs graphs, give them the service's `dashboardUrl` from `render-cli services
--o json`. If a numeric CPU/memory answer is truly required, say so — the REST metrics
-endpoint can be added to the wrapper, but is deliberately not there yet.
+The CLI has no metrics command; use the wrapper's REST passthrough:
+
+```bash
+render-cli api GET "/v1/metrics/cpu?resource=srv-xxx"
+render-cli api GET "/v1/metrics/memory?resource=srv-xxx"
+render-cli api GET "/v1/metrics/instance-count?resource=srv-xxx"
+render-cli api GET "/v1/metrics/http-request-count?resource=srv-xxx"
+# optional: &startTime=<RFC3339>&endTime=<RFC3339>&resolutionSeconds=300
+```
+
+Output is `[{labels, unit, values:[{timestamp,value}...]}]` — summarize (min/max/last),
+never dump the raw series. `render-cli api` works for any `/v1` endpoint the CLI lacks.
 
 ## Deployment model reminder (ts-prefect)
 
