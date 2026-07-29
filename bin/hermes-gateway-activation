@@ -73,6 +73,9 @@ FORBIDDEN_RENDER = (
     "create_service",
 )
 TOOLS_LIST_DENIAL_BODY = b'{"error":"upstream tools/list response denied"}'
+MERGED_STATUS_DENIAL = (
+    "Restricted principals cannot set status 'merged' during planning"
+)
 TOOLS_LIST_DENIAL_REASONS = frozenset({
     "aggregate_buffer_limit",
     "invalid_jsonrpc_shape",
@@ -445,6 +448,13 @@ def expect_denial(result: dict[str, object]) -> None:
         raise SafeError("canary_denial_missing", 6)
 
 
+def expect_exact_denial(
+    result: dict[str, object], message: str, error_code: str
+) -> None:
+    if set(result) != {"error"} or result["error"] != message:
+        raise SafeError(error_code, 6)
+
+
 def assert_secret_free(payloads: list[bytes], secrets: tuple[bytes, ...]) -> None:
     for payload in payloads:
         lowered = payload.lower()
@@ -708,12 +718,20 @@ def prepare_canary(state: State, receipt: Path) -> None:
     state.ticket_id = str(created.get("ticket_id"))
     get_ticket(client, state, status="backlog", approved=False)
     state.checks.append(CHECKS[6])
-    for update in ({"status": "in_progress"}, {"approve_execution": True}):
-        denied = tool(client, state, "update_ticket", {
-            "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
-            **update, "command": "e0006-m3-gateway-canary", "agent": "hermes",
-        })
-        expect_denial(denied)
+    denied = tool(client, state, "update_ticket", {
+        "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+        "status": "merged", "command": "e0006-m3-gateway-canary", "agent": "hermes",
+    })
+    expect_exact_denial(
+        denied, MERGED_STATUS_DENIAL, "canary_execution_denial_missing"
+    )
+    get_ticket(client, state, status="backlog", approved=False)
+    denied = tool(client, state, "update_ticket", {
+        "project": H.PROJECT, "repo": state.repo, "ticket_id": state.ticket_id,
+        "approve_execution": True,
+        "command": "e0006-m3-gateway-canary", "agent": "hermes",
+    })
+    expect_denial(denied)
     state.checks.append(CHECKS[7])
     human = tool(client, state, "update_ticket", {
         "project": H.PROJECT, "repo": H.HUMAN_TICKET_REPO,
