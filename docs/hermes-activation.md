@@ -306,16 +306,29 @@ closed handoff above and the frozen F0023 merge/tree. `prepare` edits only the e
 adding the two canonical ref names; it never reads either value. The effective file matches gateway
 startup precedence: `gateway.local.env` when present, otherwise `gateway.env`.
 
-After the F0021 PR is merged and its exact main tree is verified, the production operator uses
-private mode-0600 receipt paths:
+After the B0008 remediation is merged and its exact main tree is verified, the production operator
+uses a clean exact-main checkout for reviewed code and the separate launchd checkout for mutable
+runtime config. Both roots must be absolute, canonical, existing non-symlink directories. The
+operator uses private mode-0600 receipt paths:
+
+Before activation, attest that `REVIEWED_ROOT` is clean and exactly the intended landed
+`origin/main` commit/tree, that its `bin/hermes-gateway-activation` blob is the reviewed blob, and
+that launchd still targets `RUNTIME_ROOT`. Prove the effective-env precedence below and snapshot
+the non-effective env without printing, hashing, counting, or inspecting either file's contents.
+The runtime root controls only `mcp-gateway` env/routes validation; provider and canary code always
+come from `REVIEWED_ROOT`. Use fresh F0021 receipts and a new immutable milestone packet—never
+reuse v033 verification rows.
 
 ```bash
-cd mcp-gateway
-GATEWAY_ENV_FILE="$PWD/gateway.env"
-[[ -f "$PWD/gateway.local.env" ]] && GATEWAY_ENV_FILE="$PWD/gateway.local.env"
+REVIEWED_ROOT=/absolute/clean/exact-main/agent-workflows
+RUNTIME_ROOT=/Users/simon/dev/agent-workflows
+cd "$RUNTIME_ROOT/mcp-gateway"
+GATEWAY_ENV_FILE="$RUNTIME_ROOT/mcp-gateway/gateway.env"
+[[ -f "$RUNTIME_ROOT/mcp-gateway/gateway.local.env" ]] && \
+  GATEWAY_ENV_FILE="$RUNTIME_ROOT/mcp-gateway/gateway.local.env"
 NON_EFFECTIVE_FILE=""
 if [[ "${GATEWAY_ENV_FILE:t}" == "gateway.local.env" ]]; then
-  NON_EFFECTIVE_FILE="$PWD/gateway.env"
+  NON_EFFECTIVE_FILE="$RUNTIME_ROOT/mcp-gateway/gateway.env"
 fi
 NON_EFFECTIVE_SNAPSHOT=""
 if [[ -n "$NON_EFFECTIVE_FILE" && -f "$NON_EFFECTIVE_FILE" ]]; then
@@ -325,12 +338,14 @@ if [[ -n "$NON_EFFECTIVE_FILE" && -f "$NON_EFFECTIVE_FILE" ]]; then
 fi
 printf 'effective_env=%s status=selected\n' "${GATEWAY_ENV_FILE:t}"
 
-../bin/hermes-gateway-activation prepare \
+"$REVIEWED_ROOT/bin/hermes-gateway-activation" prepare \
+  --runtime-root "$RUNTIME_ROOT" \
   --handoff-receipt /absolute/private/f0033-handoff.json \
   --gateway-env "$GATEWAY_ENV_FILE" \
   --receipt /absolute/private/f0021-prepare.json
 
-../bin/hermes-gateway-activation verify-config \
+"$REVIEWED_ROOT/bin/hermes-gateway-activation" verify-config \
+  --runtime-root "$RUNTIME_ROOT" \
   --handoff-receipt /absolute/private/f0033-handoff.json \
   --gateway-env "$GATEWAY_ENV_FILE" \
   --receipt /absolute/private/f0021-config.json
@@ -341,11 +356,11 @@ fi
 printf 'non_effective_env_status=unchanged_or_not_present\n'
 
 SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway validation' \
-  ../bin/redacted-exec -- /usr/bin/env \
+  "$REVIEWED_ROOT/bin/redacted-exec" -- /usr/bin/env \
     -u HERMES_AUTODEV_MEMORY_TOKEN -u HERMES_GATEWAY_TOKEN \
     /opt/homebrew/bin/op run --account "${OP_ACCOUNT:-my.1password.com}" \
     --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
-    /bin/zsh "$PWD/finish-start.zsh" --validate
+    /bin/zsh "$RUNTIME_ROOT/mcp-gateway/finish-start.zsh" --validate
 launchctl kickstart -k "gui/$(id -u)/com.simon.mcp-gateway"
 ```
 
@@ -355,11 +370,14 @@ gateway token without printing it:
 
 ```bash
 run_canary() {
+  runtime_args=()
+  [[ "$1" == prepare ]] && runtime_args=(--runtime-root "$RUNTIME_ROOT")
   SENSITIVE_ACCESS_REASON='E0006/M3 F0021 bounded gateway canary' \
-    ../bin/redacted-exec -- /opt/homebrew/bin/op run \
+    "$REVIEWED_ROOT/bin/redacted-exec" -- /opt/homebrew/bin/op run \
       --account "${OP_ACCOUNT:-my.1password.com}" \
       --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
-      ../bin/hermes-gateway-activation canary --phase "$1" \
+      "$REVIEWED_ROOT/bin/hermes-gateway-activation" canary --phase "$1" \
+        "${runtime_args[@]}" \
         --handoff-receipt /absolute/private/f0033-handoff.json \
         --state-receipt /absolute/private/f0021-canary.json
 }
@@ -412,17 +430,18 @@ PY
 case "$CANARY_PHASE" in
   prepare_with_ticket|awaiting_admin_approval|awaiting_admin_reapproval)
     SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway canary rollback cleanup' \
-      ../bin/redacted-exec -- /opt/homebrew/bin/op run \
+      "$REVIEWED_ROOT/bin/redacted-exec" -- /opt/homebrew/bin/op run \
         --account "${OP_ACCOUNT:-my.1password.com}" \
         --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
-        ../bin/hermes-gateway-activation canary --phase cleanup \
+        "$REVIEWED_ROOT/bin/hermes-gateway-activation" canary --phase cleanup \
           --handoff-receipt /absolute/private/f0033-handoff.json \
           --state-receipt "$CANARY_STATE"
     ;;
   complete|missing) ;;
   *) exit 1 ;;
 esac
-../bin/hermes-gateway-activation rollback \
+"$REVIEWED_ROOT/bin/hermes-gateway-activation" rollback \
+  --runtime-root "$RUNTIME_ROOT" \
   --handoff-receipt /absolute/private/f0033-handoff.json \
   --gateway-env "$GATEWAY_ENV_FILE" \
   --receipt /absolute/private/f0021-rollback.json
@@ -430,11 +449,11 @@ if [[ -n "$NON_EFFECTIVE_SNAPSHOT" ]]; then
   cmp -s "$NON_EFFECTIVE_FILE" "$NON_EFFECTIVE_SNAPSHOT" || exit 1
 fi
 SENSITIVE_ACCESS_REASON='E0006/M3 F0021 gateway rollback validation' \
-  ../bin/redacted-exec -- /usr/bin/env \
+  "$REVIEWED_ROOT/bin/redacted-exec" -- /usr/bin/env \
     -u HERMES_AUTODEV_MEMORY_TOKEN -u HERMES_GATEWAY_TOKEN \
     /opt/homebrew/bin/op run --account "${OP_ACCOUNT:-my.1password.com}" \
     --env-file="$GATEWAY_ENV_FILE" --no-masking -- \
-    /bin/zsh "$PWD/finish-start.zsh" --validate
+    /bin/zsh "$RUNTIME_ROOT/mcp-gateway/finish-start.zsh" --validate
 launchctl kickstart -k "gui/$(id -u)/com.simon.mcp-gateway"
 python3 - <<'PY'
 import json
