@@ -71,8 +71,7 @@ must not be persisted or uploaded (prompt hashes use a new random key per run).
 ## Deployment-time evidence gate (not satisfied by this repository's unit tests)
 
 Cloud installation and real-provider delivery are deployment evidence. Do not mark them PASS from
-the synthetic fixtures. In each cloud image/session, pin the reviewed commit and use the same
-transactional installer as local environments:
+the synthetic fixtures. In each pinned cloud image/session, use the transactional installer:
 
 ```bash
 test "$AGENT_WORKFLOWS_COMMIT" = "$(git -C "$AGENT_WORKFLOWS_CLONE" rev-parse HEAD)"

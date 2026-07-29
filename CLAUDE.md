@@ -142,9 +142,13 @@ Shared skills, hooks, tool-specific agents, and this instruction file live in
 **Resolution:** shared skills live under `.agents/skills` and are symlinked into Claude where
 needed. Agent definitions remain tool-specific because Claude and Codex use different formats.
 
-**Local dev links point directly at `~/dev/agent-workflows`** (per-item symlinks in
-`~/.claude/{skills,agents,hooks,workflows}`, `~/.agents/skills`, `~/.codex/{skills,hooks}`,
-and `~/.local/bin`). A merge to remote `main` does **not** update that checkout automatically when
+**Local dev links point directly at `~/dev/agent-workflows`**. Dedicated configuration roots are
+folder symlinks: `~/.claude/{skills,agents,hooks,workflows}`, `~/.agents/skills`, and
+`~/.codex/hooks`. Codex's shared skills root keeps one
+`~/.codex/skills/agent-workflows -> ~/dev/agent-workflows/skills` folder link so Codex-managed and
+personal skills can coexist. `~/.local/bin` is also shared, so its executables remain direct
+per-file links. Adding a skill directory requires no installer rerun. A merge to remote `main`
+does **not** update that checkout automatically when
 its local branch is dirty, ahead, behind, or divergent. Remote merge, local live propagation, and
 already-running session context are three separate states: new cloud sessions receive merged files;
 new local sessions read the live symlink checkout; an ongoing session retains instructions already
