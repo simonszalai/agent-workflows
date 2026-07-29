@@ -44,6 +44,13 @@ EXPECTED_PROJECT_REMOTES = {
     },
 }
 
+EXPECTED_RENDER_REFS = {
+    "amaru": "op://AMARU-sensitive/AMARU_RENDER_API_KEY/value",
+    "autodev": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
+    "ts": "op://TS/TS_RENDER_API_KEY/value",
+    "workflow-pro": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
+}
+
 
 class ProjectToolsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -58,7 +65,7 @@ class ProjectToolsTest(unittest.TestCase):
                         "alpha": {
                             "repo_remotes": ["github.com/acme/alpha"],
                             "render": {
-                                "api_key_ref": "op://ALPHA-sensitive/RENDER/value",
+                                "api_key_ref": "op://ALPHA/RENDER/value",
                                 "workspace": {
                                     "discover_service_names": ["alpha-canary"]
                                 },
@@ -183,11 +190,9 @@ printf 'fake-render-key'
             actual = set(projects[project]["repo_remotes"])
             self.assertEqual(actual, expected)
             claimed.extend(actual)
-            self.assertRegex(
+            self.assertEqual(
                 projects[project]["render"]["api_key_ref"],
-                rf"^op://{project.replace('-', '_').upper()}.*-sensitive/.+/value$"
-                if project != "workflow-pro"
-                else r"^op://WORKFLOW_PRO-sensitive/.+/value$",
+                EXPECTED_RENDER_REFS[project],
             )
         self.assertEqual(len(claimed), len(set(claimed)))
 
@@ -220,7 +225,7 @@ printf 'fake-render-key'
         self.assertIn("project=alpha", result.stdout)
         self.assertIn("remote=github.com/acme/alpha", result.stdout)
         self.assertIn("discover-by-service:alpha-canary", result.stdout)
-        self.assertIn("op://ALPHA-sensitive/RENDER/value", result.stdout)
+        self.assertIn("op://ALPHA/RENDER/value", result.stdout)
         self.assertFalse(self.render_log.exists())
         self.assertFalse(self.op_log.exists())
 
@@ -238,7 +243,7 @@ printf 'fake-render-key'
         self.assertIn("workspace=tea-alpha", result.stderr)
         self.assertEqual(
             self.op_log.read_text().strip(),
-            "read --no-newline op://ALPHA-sensitive/RENDER/value",
+            "read --no-newline op://ALPHA/RENDER/value",
         )
         calls = self.render_log.read_text().splitlines()
         self.assertEqual(calls[0], "|set|workspaces -o json --confirm")
@@ -258,15 +263,26 @@ printf 'fake-render-key'
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("fake-render-key", result.stdout + result.stderr)
 
-    def test_agent_shell_cannot_resolve_sensitive_key_without_approved_env(self) -> None:
+    def test_agent_shell_resolves_service_account_key_for_read(self) -> None:
         result = self.run_render(self.repo, "services", CODEX_THREAD_ID="thread")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.op_log.read_text().strip(),
+            "read --no-newline op://ALPHA/RENDER/value",
+        )
+
+    def test_agent_shell_cannot_resolve_sensitive_key_without_approved_env(self) -> None:
+        sensitive_repo = self.make_repo("git@github.com:acme/beta.git")
+        result = self.run_render(
+            sensitive_repo, "services", CODEX_THREAD_ID="thread"
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("human-only", result.stderr)
         self.assertFalse(self.op_log.exists())
         self.assertFalse(self.render_log.exists())
 
         approved = self.run_render(
-            self.repo,
+            sensitive_repo,
             "services",
             CODEX_THREAD_ID="thread",
             RENDER_API_KEY="approved-test-key",

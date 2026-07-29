@@ -46,7 +46,7 @@
         "github.com/tssoftwareprojects/ts-mobile"
       ],
       "render": {
-        "api_key_ref": "op://TS-sensitive/TS_RENDER_API_KEY/value",
+        "api_key_ref": "op://TS/TS_RENDER_API_KEY/value",
         "workspace": {
           "id": "tea-ct11rp0gph6c73bf2kf0"
         }

@@ -30,11 +30,14 @@ The skill contains no credential. The wrapper:
 It never writes a token to a repository, dotenv file, CLI config, command argument,
 or shell profile. A raw Render CLI login cannot override the selected credential.
 
-The current Render keys are broad `*-sensitive` credentials. Agent shells must not
-trigger Touch ID for them, so the wrapper fails closed there unless an approved
-`RENDER_API_KEY` was provided to that process. A human can run the same wrapper from
-a normal terminal; `bin/op` provides the required reason/notification/Touch ID
-contract. Do not bypass this with `/opt/homebrew/bin/op` or the raw Render CLI.
+Render does not provide per-key read scopes. The TS profile is deliberately routed
+through the service-account-readable `op://TS/TS_RENDER_API_KEY/value` so agents can
+perform unattended infrastructure reads; the wrapper's command allowlist still
+requires an explicit matching project, `--write`, and `--reason` for mutations.
+Profiles whose keys remain in `*-sensitive` are human-only: agent shells fail closed
+unless an approved process-local `RENDER_API_KEY` is provided. A human can run those
+profiles from a normal terminal through the reason/notification/Touch ID contract.
+Do not bypass this with `/opt/homebrew/bin/op` or the raw Render CLI.
 
 Safe, credential-free selection check:
 
@@ -78,7 +81,7 @@ render-cli --project workflow-pro --write \
 
 - the user explicitly instructed the mutation;
 - `--project` names the intended credential profile;
-- `--reason` explains the sensitive access.
+- `--reason` explains the authorized change.
 
 Inside any Git repo, an explicit project must match its registered origin; unregistered
 and mismatching origins are rejected. A deliberate cross-project operation additionally
