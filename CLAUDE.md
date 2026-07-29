@@ -27,6 +27,14 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace
   that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`). The
   `~/dev/*` paths are the main checkouts and must not be touched unless explicitly requested.
+- **After an agent confirms that it merged the PR whose head is the current Conductor workspace
+  branch, clean up that throwaway branch before continuing.** Delete its remote head, then run
+  `align-merged-pr-workspace <pr-number-or-url>`. The command fetches the PR's latest base, performs
+  a guarded zero-commit rebase so squash-merged commits are not replayed, removes the deleted
+  upstream marker, and refuses dirty, mismatched, unmerged, or still-remote heads. Never substitute a
+  normal `git rebase origin/<base>`: a multi-commit squash merge can conflict or replay old work.
+  This rule does not apply when the PR head is a repository-defined long-lived branch; leave that
+  remote head intact, which makes the command fail closed if it is invoked accidentally.
 - **Visible work requires browser screenshots.** If the work changes or verifies anything visible
   to a user — UI, UX, styling, rendered HTML/email/PDF/markdown/docs, charts, screenshots,
   browser-visible errors, or other visual output — capture screenshots from the actual rendered

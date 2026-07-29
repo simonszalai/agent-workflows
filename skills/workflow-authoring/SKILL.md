@@ -47,7 +47,14 @@ is a failure, never a PASS.
    repeated GitHub status reads.
 5. Merge without `--delete-branch`; Conductor often has `main` checked out in another worktree, and
    `gh` branch cleanup can report a local failure after the remote merge succeeded. Confirm the PR is
-   `MERGED`, then delete only the remote throwaway head with `git push origin --delete <head>`.
+   `MERGED`, then delete only the remote throwaway head if it still exists. Do not treat an
+   already-auto-deleted remote head as a failure.
+6. Run `align-merged-pr-workspace <pr>` from the current workspace. It must report `aligned` or
+   `already_aligned`. This guarded zero-commit rebase moves the throwaway local branch to the latest
+   fetched PR base and removes its deleted upstream marker without replaying squash-merged commits.
+   A refusal means cleanup is incomplete and must be reported, never bypassed with a normal rebase
+   or a working-tree-wide reset. This post-merge alignment does not invalidate the recorded PR-head
+   health gate; do not rerun the gate solely because the landed workspace now points at its base.
 
 ## 5. Verify propagation truth
 
@@ -68,5 +75,5 @@ bin/verify-agent-workflows-live <merge-sha>
 
 ## Output
 
-Report PR/merge SHA, final health evidence, workspace cleanliness, and local propagation status as
-separate facts. Never collapse “merged remotely” into “live everywhere.”
+Report PR/merge SHA, final health evidence, post-merge workspace alignment/cleanliness, and local
+propagation status as separate facts. Never collapse “merged remotely” into “live everywhere.”

@@ -320,7 +320,10 @@ gh pr merge <pr_number> --squash                    # or another allowed linear 
 test "$(gh pr view <pr_number> --json state -q .state)" = "MERGED"
 case "$HEAD_BRANCH" in
   staging|main) echo "Head is long-lived ($HEAD_BRANCH) — leave it." ;;
-  *)            git push origin --delete "$HEAD_BRANCH" ;;
+  *)            if git ls-remote --exit-code --heads origin "refs/heads/$HEAD_BRANCH" >/dev/null
+                then git push origin --delete "$HEAD_BRANCH"
+                fi
+                align-merged-pr-workspace <pr_number> ;;
 esac
 
 # all-staging mode — real merge commit; head may be long-lived:
@@ -328,7 +331,10 @@ HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
 gh pr merge <pr_number> --merge                     # do NOT pass --delete-branch
 case "$HEAD_BRANCH" in
   staging|main) echo "Head is long-lived ($HEAD_BRANCH) — leave it." ;;
-  *)            git push origin --delete "$HEAD_BRANCH" ;;
+  *)            if git ls-remote --exit-code --heads origin "refs/heads/$HEAD_BRANCH" >/dev/null
+                then git push origin --delete "$HEAD_BRANCH"
+                fi
+                align-merged-pr-workspace <pr_number> ;;
 esac
 git ls-remote --heads origin staging | grep -q refs/heads/staging \
   || git push origin origin/main:refs/heads/staging   # long-lived-branch safety net
@@ -336,7 +342,8 @@ git ls-remote --heads origin staging | grep -q refs/heads/staging \
 
 Never pass `--delete-branch` to `gh pr merge` from a Conductor worktree. `gh` may try to check out
 the base locally even after the remote merge succeeded, then fail because that base is already used
-by another worktree. Confirm remote `MERGED` first and delete only the remote throwaway head.
+by another worktree. Confirm remote `MERGED` first, delete only the remote throwaway head, then use
+the guarded alignment command. Never replay squash-merged commits with a normal post-merge rebase.
 
 Confirm the landing:
 
