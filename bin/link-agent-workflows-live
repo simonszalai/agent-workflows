@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Link the live agent-workflows checkout into local agent configuration."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+ROOT_LINKS = (
+    (".claude/agents", "agents"),
+    (".claude/skills", "skills"),
+    (".claude/hooks", "hooks"),
+    (".claude/workflows", "workflows"),
+    (".agents/skills", "skills"),
+    (".codex/hooks", "hooks"),
+)
+SHARED_SKILLS_ROOT = ".codex/skills"
+SHARED_SKILLS_LINK = "agent-workflows"
+STORE = ".local/share/agent-workflows"
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _managed_link(path: Path, source: Path, store: Path) -> bool:
+    if not path.is_symlink():
+        return False
+    resolved = path.resolve(strict=False)
+    return _is_under(resolved, source) or _is_under(resolved, store)
+
+
+def _preflight_root(destination: Path, expected: Path, source: Path, store: Path) -> None:
+    if destination.is_symlink():
+        if not _managed_link(destination, source, store):
+            raise SystemExit(f"link-agent-workflows-live: refusing unrelated symlink: {destination}")
+        return
+    if not destination.exists():
+        return
+    if not destination.is_dir():
+        raise SystemExit(f"link-agent-workflows-live: destination is not a directory: {destination}")
+    unmanaged = [child for child in destination.iterdir()
+                 if not _managed_link(child, source, store)]
+    if unmanaged:
+        names = ", ".join(sorted(child.name for child in unmanaged))
+        raise SystemExit(
+            f"link-agent-workflows-live: refusing non-workflow content in {destination}: {names}"
+        )
+
+
+def _replace_root(destination: Path, expected: Path) -> None:
+    if destination.is_symlink():
+        if destination.resolve(strict=False) == expected:
+            return
+        destination.unlink()
+    if destination.exists():
+        for child in destination.iterdir():
+            child.unlink()
+        destination.rmdir()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.symlink_to(expected)
+
+
+def _link_codex_skills(home: Path, source: Path, store: Path) -> None:
+    root = home / SHARED_SKILLS_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    link = root / SHARED_SKILLS_LINK
+    if link.exists() or link.is_symlink():
+        if not link.is_symlink() or link.resolve(strict=False) != source / "skills":
+            raise SystemExit(f"link-agent-workflows-live: refusing collision: {link}")
+
+    managed_children = [
+        child for child in root.iterdir()
+        if child != link and _managed_link(child, source, store)
+    ]
+    for child in managed_children:
+        child.unlink()
+    if not link.is_symlink():
+        link.symlink_to(source / "skills")
+
+
+def _link_bins(home: Path, source: Path, store: Path) -> None:
+    destination = home / ".local/bin"
+    destination.mkdir(parents=True, exist_ok=True)
+    desired: set[Path] = set()
+    for executable in source.joinpath("bin").iterdir():
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            continue
+        link = destination / executable.name
+        desired.add(link)
+        if link.exists() or link.is_symlink():
+            if not _managed_link(link, source, store):
+                raise SystemExit(f"link-agent-workflows-live: refusing collision: {link}")
+            link.unlink()
+        link.symlink_to(executable)
+
+    for child in destination.iterdir():
+        if child not in desired and _managed_link(child, source, store):
+            child.unlink()
+
+
+def _preflight_bins(home: Path, source: Path, store: Path) -> None:
+    destination = home / ".local/bin"
+    for executable in source.joinpath("bin").iterdir():
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            continue
+        link = destination / executable.name
+        if (link.exists() or link.is_symlink()) and not _managed_link(link, source, store):
+            raise SystemExit(f"link-agent-workflows-live: refusing collision: {link}")
+
+
+def _read_settings(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"link-agent-workflows-live: cannot safely merge {path}: {error}")
+    if not isinstance(value, dict):
+        raise SystemExit(f"link-agent-workflows-live: settings must be an object: {path}")
+    hooks = value.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise SystemExit(f"link-agent-workflows-live: hooks must be an object: {path}")
+    for event in ("SessionStart", "PreToolUse"):
+        if event in hooks and not isinstance(hooks[event], list):
+            raise SystemExit(f"link-agent-workflows-live: hooks.{event} must be an array: {path}")
+    return value
+
+
+def _atomic_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _merge_hooks(path: Path, hook_root: Path) -> None:
+    settings = _read_settings(path)
+    hooks = settings.setdefault("hooks", {})
+    desired = {
+        "SessionStart": str(hook_root / "autodev-memory-session-start.sh"),
+        "PreToolUse": str(hook_root / "autodev-memory-pre-agent.sh"),
+    }
+    for event, command in desired.items():
+        values = hooks.setdefault(event, [])
+        if any(command in json.dumps(item) for item in values):
+            continue
+        entry: dict[str, object] = {"hooks": [{"type": "command", "command": command}]}
+        if event == "PreToolUse":
+            entry["matcher"] = "Agent"
+        values.append(entry)
+    _atomic_json(path, settings)
+
+
+def link_live(source: Path, home: Path) -> None:
+    source = source.expanduser().resolve()
+    home = home.expanduser().resolve()
+    store = home / STORE
+    for _, source_name in ROOT_LINKS:
+        if not (source / source_name).is_dir():
+            raise SystemExit(
+                f"link-agent-workflows-live: missing source directory: {source / source_name}"
+            )
+
+    roots = [
+        (home / destination_name, source / source_name)
+        for destination_name, source_name in ROOT_LINKS
+    ]
+    for destination, expected in roots:
+        _preflight_root(destination, expected, source, store)
+
+    codex_link = home / SHARED_SKILLS_ROOT / SHARED_SKILLS_LINK
+    if codex_link.exists() or codex_link.is_symlink():
+        if not codex_link.is_symlink() or codex_link.resolve(strict=False) != source / "skills":
+            raise SystemExit(f"link-agent-workflows-live: refusing collision: {codex_link}")
+    _preflight_bins(home, source, store)
+    settings_paths = (home / ".claude/settings.json", home / ".codex/hooks.json")
+    for path in settings_paths:
+        _read_settings(path)
+
+    for destination, expected in roots:
+        _replace_root(destination, expected)
+    _link_codex_skills(home, source, store)
+    _link_bins(home, source, store)
+    _merge_hooks(settings_paths[0], home / ".claude/hooks")
+    _merge_hooks(settings_paths[1], home / ".codex/hooks")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--home", type=Path, default=Path.home())
+    args = parser.parse_args()
+    link_live(args.source, args.home)
+
+
+if __name__ == "__main__":
+    main()

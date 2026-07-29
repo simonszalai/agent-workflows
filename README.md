@@ -21,7 +21,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 
 | Environment     | Mechanism                                      | Direction |
 | --------------- | ---------------------------------------------- | --------- |
-| Local dev       | Versioned installer + stable per-item symlinks | One-way, rollback-safe |
+| Local dev       | Direct folder symlinks into the live checkout | Two-way |
 | Cloud sessions  | SessionStart hook clones + copies              | One-way   |
 | NanoClaw        | Volume mount into container                    | Two-way   |
 
@@ -29,21 +29,19 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 
 ```bash
 git clone git@github.com:simonszalai/agent-workflows.git ~/dev/agent-workflows
-~/dev/agent-workflows/bin/install-agent-workflows
-
-# Roll back atomically to the previously installed immutable version:
-~/.local/bin/install-agent-workflows --rollback
+~/dev/agent-workflows/bin/link-agent-workflows-live
 ```
 
-The installer exports the exact resolved git commit (never the dirty working tree), validates a
-checksum manifest, and stores the read-only artifact under
-`~/.local/share/agent-workflows/versions/`, atomically switches `current`, creates only
-managed per-item links (it refuses to overwrite unrelated files), and merges Claude/Codex hook
-configuration without deleting unrelated settings. CI tests use `--home <temporary-dir>` for
-fresh install, legacy-root-symlink migration, upgrade, corruption rejection, and rollback; never
-test installation against the operator's real HOME. The complete previous transaction is written
-before activation so a rollback can restore either the previous commit or the documented legacy
-root-symlink layout.
+The live linker makes the dedicated roots (`~/.claude/{agents,skills,hooks,workflows}`,
+`~/.agents/skills`, and `~/.codex/hooks`) folder symlinks to the checkout. Adding any file or
+skill directory under the corresponding repository folder is therefore visible immediately,
+without rerunning an installer. Codex's skills root also contains Codex-managed and personal
+skills, so it keeps that directory and uses one folder link at
+`~/.codex/skills/agent-workflows`. `~/.local/bin` is shared too, so executables remain direct
+per-file links.
+
+`bin/install-agent-workflows` remains available only for pinned, one-way environments. It exports
+an exact commit into an immutable version tree and must not be used for the local live checkout.
 
 `external-agent` shells out to peer provider CLIs (`claude`, `codex`, and/or `grok`), so the
 providers you want as peers must be installed and authenticated. `/review` and `/investigate`
@@ -103,9 +101,8 @@ generations are superseded by the static loopback-proxy URLs above.
 
 ## Updating shared workflows
 
-Edit this repository, commit the change, then run `bin/install-agent-workflows` to atomically
-activate the new version. Installed copies are immutable deployment artifacts, not editing
-surfaces.
+Edit this repository and commit the change. Folder-linked local clients see new files immediately;
+cloud sessions receive the merged revision on their next SessionStart.
 
 In cloud sessions, file changes are ephemeral. Learnings persist via the memory service
 (autodev-memory) instead.
