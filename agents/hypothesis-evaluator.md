@@ -75,9 +75,8 @@ Refer to `AGENTS.md` for project-specific table names and schema.
 
 ### For Resource Hypotheses -> Render MCP
 
-- `mcp__render__get_metrics` - CPU, memory, connections at incident time
-- `mcp__render__list_logs` - Error messages, stack traces
-- `mcp__render__list_log_label_values` - Discover error patterns
+- `render-cli logs -r <srv-id> ... -o json --confirm` - Error messages, stack traces
+  (level/text/time filters; see tool-render. Metrics: log-based triage + dashboardUrl)
 
 Refer to `AGENTS.md` for project-specific service IDs.
 

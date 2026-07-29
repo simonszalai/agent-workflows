@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# tailscale-admin — Tailscale admin (control-plane) API with silent credential
+# injection. Replaces the admin half of the tailscale MCP server; the local half
+# is just the `tailscale` CLI, no credentials needed (see skills/tool-tailscale).
+#
+# USAGE  tailscale-admin <METHOD> </api/v2 path> [curl args...]
+#        tailscale-admin GET  /tailnet/-/devices
+#        tailscale-admin GET  /tailnet/-/keys
+#        tailscale-admin POST /tailnet/-/keys -d '{"capabilities":{...}}'
+#
+# `-` in the path means "the tailnet of the authenticated credential".
+#
+# Credentials: OAuth client (op://TS/TAILSCALE_OAUTH_CLIENT_{ID,SECRET}_MCP),
+# resolved per call via the 1Password service-account token (env
+# TS_OP_SERVICE_ACCOUNT_TOKEN / OP_SERVICE_ACCOUNT_TOKEN, else Mac Keychain item
+# `op-dev-token`) — silent, no Touch ID. The short-lived access token exists only
+# in this process. Never print tokens.
+set -euo pipefail
+
+API="https://api.tailscale.com/api/v2"
+
+[ $# -ge 2 ] || { echo "usage: tailscale-admin <METHOD> </api/v2 path> [curl args...]" >&2; exit 2; }
+METHOD="$1"; APIPATH="$2"; shift 2
+
+tok="${TS_OP_SERVICE_ACCOUNT_TOKEN:-${OP_SERVICE_ACCOUNT_TOKEN:-}}"
+if [ -z "$tok" ] && [ "$(uname -s)" = "Darwin" ]; then
+  tok="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
+fi
+[ -n "$tok" ] || {
+  echo "ERROR: no 1Password service-account token (set TS_OP_SERVICE_ACCOUNT_TOKEN or Keychain op-dev-token)." >&2
+  exit 3
+}
+
+cid="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value")"
+csec="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value")"
+
+access="$(curl -sf --max-time 15 "${API}/oauth/token" \
+  -d grant_type=client_credentials \
+  -d client_id="$cid" -d client_secret="$csec" | jq -r .access_token)"
+[ -n "$access" ] && [ "$access" != "null" ] || { echo "ERROR: OAuth token exchange failed" >&2; exit 4; }
+
+exec curl -sfS --max-time 30 -X "$METHOD" \
+  -H "Authorization: Bearer $access" -H "Content-Type: application/json" \
+  "${API}${APIPATH}" "$@"

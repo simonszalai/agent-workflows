@@ -118,7 +118,7 @@ Examples:
 | Render services/logs/metrics/Postgres | `tool-render` | Workspace bootstrap and log/metric patterns |
 | Postgres MCP/database investigation | `tool-postgres` | Read-only/safety/query patterns |
 
-For Render investigations, always load `tool-render` before `mcp__render__*`.
+For Render investigations, always load `tool-render` before using `render-cli`.
 Run its workspace bootstrap first (currently `list_workspaces`; if there is a
 single workspace it auto-selects it). If multiple workspaces are returned, stop
 and ask the user which workspace to use; do not call `select_workspace`
