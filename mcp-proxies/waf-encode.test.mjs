@@ -1,5 +1,5 @@
 // Tests for the WAF base64 encoder (paired with autodev-memory's decode middleware).
-// Run: node --test mcp-gateway/waf-encode.test.mjs
+// Run: node --test mcp-proxies/waf-encode.test.mjs
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
