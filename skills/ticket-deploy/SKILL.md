@@ -171,6 +171,11 @@ confirmation** before any production mutation; report exactly what makes it risk
 the staging path. With a tiny/safe classification or explicit user confirmation, run
 `/auto-deploy <ID> production`, then `/ticket-verify production <ID>` (§5).
 
+Direct-to-main never leaves staging behind: `/auto-deploy production` includes the mandatory
+main→staging back-sync (its Phase 8b, per `landing-policy.md`) — the same change is merged into
+`staging` and deployed there in the same run. Confirm the back-sync row in auto-deploy's
+verification checklist before reporting the direct-production leg complete.
+
 ### 4b. Preserve ticket-attributed incident cleanup
 
 Before production promotion, inspect the cached bug-ticket source/investigation and cleanup
