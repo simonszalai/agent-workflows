@@ -227,6 +227,23 @@ const forward = (req, res, body, retryDeadline = 0) => {
 }
 
 const server = http.createServer((req, res) => {
+	// OAuth/OIDC discovery probes (Grok, Codex) must be answered here, not forwarded:
+	// the path rewrite below would send them to the MCP endpoint itself, where a remote
+	// upstream hangs long enough (>5s) for Grok to declare the server "Auth required"
+	// and drop it for the whole session. 404 = "no OAuth here", clients proceed bare.
+	if (req.url.startsWith("/.well-known/")) {
+		res.writeHead(404, { "content-type": "application/json" })
+		return res.end("{}")
+	}
+	// Grok's other discovery probe is a bare `GET /` on the server URL. Forwarded to a
+	// remote upstream it hangs past the same 5s budget, so answer it here: 405 is what a
+	// streamable-HTTP server without an open session says to GET, and Grok proceeds with
+	// a plain (auth-free) connection on seeing it. A legitimate SSE re-open GET always
+	// carries mcp-session-id and still passes through.
+	if (req.method === "GET" && !req.headers["mcp-session-id"]) {
+		res.writeHead(405, { allow: "POST" })
+		return res.end()
+	}
 	// Only POST bodies are ever buffered, and only when a feature needs the bytes
 	// (body transform, render preflight's initialize detection, or loopback retry).
 	// Responses are always piped — SSE must stream.
