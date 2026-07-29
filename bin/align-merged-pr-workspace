@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Safely align a merged PR's throwaway workspace branch to its latest base."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+from pathlib import Path
+
+
+def run(repo: Path, *command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command), cwd=repo, capture_output=True, text=True, check=False,
+    )
+
+
+def emit(result: dict[str, object], status: str, reason: str | None, code: int) -> None:
+    result["status"] = status
+    result["reason"] = reason
+    print(json.dumps(result, separators=(",", ":")))
+    raise SystemExit(code)
+
+
+def required_string(payload: dict[str, object], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"missing PR field: {field}")
+    return value
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="align-merged-pr-workspace")
+    parser.add_argument("pr", help="merged pull request number or URL")
+    parser.add_argument("--repo", type=Path, default=Path.cwd(),
+                        help="workspace repository (defaults to current directory)")
+    parser.add_argument("--remote", default="origin")
+    parser.add_argument("--gh", default="gh", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    repo = args.repo.expanduser().resolve()
+    result: dict[str, object] = {
+        "status": "error",
+        "reason": None,
+        "pr": args.pr,
+        "repo": str(repo),
+        "current_branch": None,
+        "head_branch": None,
+        "base_branch": None,
+        "before": None,
+        "after": None,
+        "target": None,
+    }
+
+    top_level = run(repo, "git", "rev-parse", "--show-toplevel")
+    if top_level.returncode:
+        emit(result, "error", "not_a_git_worktree", 2)
+    repo = Path(top_level.stdout.strip()).resolve()
+    result["repo"] = str(repo)
+
+    current = run(repo, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+    if current.returncode:
+        emit(result, "refused", "detached_head", 1)
+    current_branch = current.stdout.strip()
+    result["current_branch"] = current_branch
+
+    dirty = run(repo, "git", "status", "--porcelain=v1", "--untracked-files=all")
+    if dirty.returncode:
+        emit(result, "error", "git_status_failed", 2)
+    if dirty.stdout:
+        emit(result, "refused", "dirty_worktree", 1)
+
+    view = run(
+        repo,
+        args.gh,
+        "pr",
+        "view",
+        args.pr,
+        "--json",
+        "state,baseRefName,headRefName,headRefOid,isCrossRepository",
+    )
+    if view.returncode:
+        emit(result, "error", "pr_lookup_failed", 2)
+    try:
+        payload_object = json.loads(view.stdout)
+        if not isinstance(payload_object, dict):
+            raise ValueError("PR payload is not an object")
+        payload: dict[str, object] = payload_object
+        state = required_string(payload, "state")
+        base_branch = required_string(payload, "baseRefName")
+        head_branch = required_string(payload, "headRefName")
+        merged_head = required_string(payload, "headRefOid")
+    except (json.JSONDecodeError, ValueError):
+        emit(result, "error", "invalid_pr_payload", 2)
+
+    result.update({
+        "head_branch": head_branch,
+        "base_branch": base_branch,
+    })
+    if state != "MERGED":
+        emit(result, "refused", "pr_not_merged", 1)
+    if payload.get("isCrossRepository") is True:
+        emit(result, "refused", "cross_repository_pr", 1)
+    if current_branch != head_branch:
+        emit(result, "refused", "current_branch_is_not_pr_head", 1)
+    if current_branch == base_branch:
+        emit(result, "refused", "pr_head_is_base_branch", 1)
+
+    for branch in (base_branch, head_branch):
+        valid = run(repo, "git", "check-ref-format", "--branch", branch)
+        if valid.returncode:
+            emit(result, "error", "invalid_branch_name", 2)
+
+    remote = run(repo, "git", "remote", "get-url", args.remote)
+    if remote.returncode:
+        emit(result, "error", "remote_not_found", 2)
+
+    remote_head = run(
+        repo, "git", "ls-remote", "--heads", args.remote, f"refs/heads/{head_branch}",
+    )
+    if remote_head.returncode:
+        emit(result, "error", "remote_head_lookup_failed", 2)
+    if remote_head.stdout.strip():
+        emit(result, "refused", "remote_head_still_exists", 1)
+
+    target_ref = f"refs/remotes/{args.remote}/{base_branch}"
+    fetched = run(
+        repo,
+        "git",
+        "fetch",
+        "--prune",
+        args.remote,
+        f"+refs/heads/{base_branch}:{target_ref}",
+    )
+    if fetched.returncode:
+        emit(result, "error", "base_fetch_failed", 2)
+
+    before = run(repo, "git", "rev-parse", "HEAD")
+    target = run(repo, "git", "rev-parse", "--verify", f"{target_ref}^{{commit}}")
+    if before.returncode or target.returncode:
+        emit(result, "error", "revision_lookup_failed", 2)
+    before_oid = before.stdout.strip()
+    target_oid = target.stdout.strip()
+    result.update({"before": before_oid, "target": target_oid})
+
+    if before_oid != target_oid and before_oid != merged_head:
+        contained = run(
+            repo, "git", "merge-base", "--is-ancestor", before_oid, target_oid,
+        )
+        if contained.returncode != 0:
+            emit(result, "refused", "branch_contains_post_merge_commits", 1)
+
+    if before_oid != target_oid:
+        aligned = run(repo, "git", "rebase", "--onto", target_ref, "HEAD")
+        if aligned.returncode:
+            emit(result, "error", "zero_commit_rebase_failed", 2)
+
+    upstream = run(
+        repo, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}",
+    )
+    if upstream.returncode == 0:
+        unset = run(repo, "git", "branch", "--unset-upstream")
+        if unset.returncode:
+            emit(result, "error", "upstream_cleanup_failed", 2)
+
+    after = run(repo, "git", "rev-parse", "HEAD")
+    final_status = run(repo, "git", "status", "--porcelain=v1", "--untracked-files=all")
+    if after.returncode or final_status.returncode:
+        emit(result, "error", "postcondition_lookup_failed", 2)
+    result["after"] = after.stdout.strip()
+    if result["after"] != target_oid:
+        emit(result, "error", "branch_not_aligned_to_base", 2)
+    if final_status.stdout:
+        emit(result, "error", "worktree_dirty_after_alignment", 2)
+
+    status = "already_aligned" if before_oid == target_oid else "aligned"
+    emit(result, status, None, 0)
+
+
+if __name__ == "__main__":
+    main()

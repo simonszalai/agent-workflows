@@ -325,7 +325,18 @@ Determine the merge flag from the repository's authoritative instructions and Gi
 settings. Use `--rebase` only when rebase merges are permitted; use `--squash` for squash-only
 repositories. Never guess a disallowed merge strategy.
 
-Note: If the PR is already merged, skip this phase entirely.
+Confirm the PR state is `MERGED`. When this invocation merged the PR whose head is the current
+Conductor workspace branch, classify that head using the repository's branch policy. For a
+throwaway feature head, delete only its remote branch and run:
+
+```bash
+align-merged-pr-workspace {pr_number}
+```
+
+It must report `aligned` or `already_aligned` before Phase 8. Do not use a normal post-merge rebase:
+multi-commit squash merges can replay or conflict. Do not delete or align `main`, `staging`, or any
+other repository-defined long-lived head. If the PR was already merged before this invocation, skip
+both the merge and current-workspace cleanup.
 
 ### Phase 8: Run Deployment Steps
 

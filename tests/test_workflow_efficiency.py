@@ -793,14 +793,21 @@ class WorkflowEfficiencyTest(unittest.TestCase):
 
     def test_workflow_authoring_and_promotion_contracts_are_worktree_safe(self) -> None:
         authoring = (ROOT / "skills/workflow-authoring/SKILL.md").read_text()
+        deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
         promote = (ROOT / "skills/ticket-promote/SKILL.md").read_text()
+        conventions = (ROOT / "CLAUDE.md").read_text()
 
         self.assertIn("bin/check-agent-workflows", authoring)
         self.assertIn("bin/verify-agent-workflows-live", authoring)
         self.assertIn("bounded discovery", authoring)
+        for contract in (conventions, authoring, deploy, promote):
+            self.assertIn("align-merged-pr-workspace", contract)
+        self.assertIn("zero-commit rebase", conventions)
+        self.assertIn("normal `git rebase origin/<base>`", conventions)
         self.assertNotIn("gh pr merge <pr_number> --squash --delete-branch", promote)
         self.assertIn('test "$(gh pr view <pr_number> --json state -q .state)" = "MERGED"',
                       promote)
+        self.assertTrue(os.access(ROOT / "bin/align-merged-pr-workspace", os.X_OK))
         self.assertTrue(os.access(ROOT / "bin/check-agent-workflows", os.X_OK))
         self.assertTrue(os.access(ROOT / "bin/verify-agent-workflows-live", os.X_OK))
 
