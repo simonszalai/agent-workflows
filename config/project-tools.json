@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "amaru": {
+      "repo_remotes": [
+        "github.com/amaru-wellness/amaru-mcp",
+        "github.com/amaru-wellness/amaru-web",
+        "github.com/amaru-wellness/amaru-website",
+        "github.com/amaru-wellness/amaru_websites",
+        "github.com/amaru-wellness/amaruplatform-website",
+        "github.com/simonszalai/amaru-mobile"
+      ],
+      "render": {
+        "api_key_ref": "op://AMARU-sensitive/AMARU_RENDER_API_KEY/value",
+        "workspace": {
+          "discover_service_names": [
+            "amaru-web",
+            "amaru-web-staging"
+          ]
+        }
+      }
+    },
+    "autodev": {
+      "repo_remotes": [
+        "github.com/simonszalai/autodev-dashboard",
+        "github.com/simonszalai/autodev-memory"
+      ],
+      "render": {
+        "api_key_ref": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
+        "workspace": {
+          "discover_service_names": [
+            "autodev-dashboard",
+            "autodev-memory"
+          ]
+        }
+      }
+    },
+    "ts": {
+      "repo_remotes": [
+        "github.com/ts-value-software/ts-api",
+        "github.com/ts-value-software/ts-dashboard",
+        "github.com/ts-value-software/ts-decrypt-chrome-ext",
+        "github.com/ts-value-software/ts-decrypt-proxy",
+        "github.com/ts-value-software/ts-prefect",
+        "github.com/ts-value-software/ts-scraper",
+        "github.com/tssoftwareprojects/ts-mobile"
+      ],
+      "render": {
+        "api_key_ref": "op://TS-sensitive/TS_RENDER_API_KEY/value",
+        "workspace": {
+          "id": "tea-ct11rp0gph6c73bf2kf0"
+        }
+      }
+    },
+    "workflow-pro": {
+      "repo_remotes": [
+        "github.com/szaboszerszam/workflow-mcp",
+        "github.com/szaboszerszam/workflow-pdf",
+        "github.com/szaboszerszam/workflow_pro"
+      ],
+      "render": {
+        "api_key_ref": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
+        "workspace": {
+          "discover_service_names": [
+            "gmail-rfq-sync",
+            "pdf-renderer",
+            "workflow-pro"
+          ]
+        }
+      }
+    }
+  }
+}

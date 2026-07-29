@@ -16,13 +16,15 @@ INSTALLER = ROOT / "bin/install-agent-workflows"
 class InstallerTest(unittest.TestCase):
     def source_repo(self, root: Path) -> Path:
         source = root / "source"
-        for name in ("agents", "commands", "skills", "hooks", "workflows", "bin"):
+        for name in ("agents", "commands", "skills", "hooks", "workflows", "bin", "config"):
             (source / name).mkdir(parents=True, exist_ok=True)
         for relative in (
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
             "hooks/memory_context.py", "hooks/task_packet.py", "bin/autodev-memory-task-packet",
             "bin/install-agent-workflows", "bin/link-agent-workflows-live",
+            "bin/project-context", "bin/render-cli",
             "bin/.protected-route-security-floor",
+            "config/project-tools.json",
         ):
             shutil.copy2(ROOT / relative, source / relative)
         (source / "agents/builder.md").write_text("builder v1")
@@ -202,6 +204,20 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             installed = home / f".local/share/agent-workflows/versions/{commit}/agents/builder.md"
             self.assertEqual(installed.read_text(), "builder v1")
+
+    def test_invalid_project_tool_registry_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            (source / "config/project-tools.json").write_text(
+                json.dumps({"schema_version": 1, "projects": {}})
+            )
+            commit = self.commit(source, "invalid registry")
+            result = self.run_install(
+                source, root / "home", "--version", commit
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("project tool registry validation failed", result.stderr)
 
     def test_existing_version_checksum_mismatch_and_unsafe_revision_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

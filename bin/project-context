@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Resolve a trusted project/tool profile from an exact Git remote."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import NamedTuple
+from urllib.parse import urlparse
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = ROOT / "config/project-tools.json"
+SCP_REMOTE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(.+)$")
+CANONICAL_REMOTE = re.compile(r"^([^@:/\s]+)/(.*?/.*)$")
+OP_REF = re.compile(r"^op://[^/\s]+/[^/\s]+/value$")
+
+
+class Project(NamedTuple):
+    name: str
+    remotes: tuple[str, ...]
+    tools: dict[str, object]
+
+
+class GitContext(NamedTuple):
+    root: str
+    remote: str
+
+
+def fail(message: str, status: int = 2) -> None:
+    print(f"project-context: {message}", file=sys.stderr)
+    raise SystemExit(status)
+
+
+def normalize_remote(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        fail("empty Git remote")
+
+    if "://" in value:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path
+    elif matched := CANONICAL_REMOTE.fullmatch(value):
+        host = matched.group(1).lower()
+        path = matched.group(2)
+    else:
+        matched = SCP_REMOTE.fullmatch(value)
+        if not matched:
+            fail(f"unsupported Git remote: {value}")
+        host = matched.group(1).lower()
+        path = matched.group(2)
+
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    if not host or not path or "/" not in path:
+        fail(f"unsupported Git remote: {value}")
+    return f"{host}/{path}".lower()
+
+
+def strings(value: object, label: str, *, nonempty: bool = True) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        fail(f"{label} must be an array of strings")
+    result = tuple(value)
+    if nonempty and not result:
+        fail(f"{label} must not be empty")
+    return result
+
+
+def load_projects(path: Path) -> dict[str, Project]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        fail(f"config not found: {path}")
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read config {path}: {error}")
+    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+        fail(f"unsupported config schema in {path}")
+    raw_projects = raw.get("projects")
+    if not isinstance(raw_projects, dict) or not raw_projects:
+        fail(f"projects must be a non-empty object in {path}")
+
+    projects: dict[str, Project] = {}
+    claimed_remotes: dict[str, str] = {}
+    for name, value in raw_projects.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+            fail(f"invalid project id: {name!r}")
+        if not isinstance(value, dict):
+            fail(f"projects.{name} must be an object")
+        remotes = strings(value.get("repo_remotes"), f"projects.{name}.repo_remotes")
+        normalized: list[str] = []
+        for remote in remotes:
+            current = normalize_remote(remote)
+            if current != remote:
+                fail(f"projects.{name} remote is not canonical: {remote}")
+            if current in claimed_remotes:
+                fail(
+                    f"remote {current} belongs to both {claimed_remotes[current]} and {name}"
+                )
+            claimed_remotes[current] = name
+            normalized.append(current)
+
+        tools = {key: item for key, item in value.items() if key != "repo_remotes"}
+        render = tools.get("render")
+        if not isinstance(render, dict):
+            fail(f"projects.{name}.render must be an object")
+        api_ref = render.get("api_key_ref")
+        if not isinstance(api_ref, str) or not OP_REF.fullmatch(api_ref):
+            fail(f"projects.{name}.render.api_key_ref must be a canonical op:// ref")
+        workspace = render.get("workspace")
+        if not isinstance(workspace, dict):
+            fail(f"projects.{name}.render.workspace must be an object")
+        workspace_id = workspace.get("id")
+        discovery = workspace.get("discover_service_names")
+        if workspace_id is not None and discovery is not None:
+            fail(f"projects.{name}.render.workspace must choose id or discovery, not both")
+        if workspace_id is not None:
+            if not isinstance(workspace_id, str) or not workspace_id.startswith("tea-"):
+                fail(f"projects.{name}.render.workspace.id must be a Render workspace id")
+        else:
+            strings(
+                discovery,
+                f"projects.{name}.render.workspace.discover_service_names",
+            )
+        projects[name] = Project(name, tuple(normalized), tools)
+    return projects
+
+
+def git_context(cwd: Path) -> GitContext | None:
+    root = subprocess.run(
+        ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if root.returncode:
+        return None
+    repo_root = root.stdout.strip()
+    remote = subprocess.run(
+        ["git", "-C", repo_root, "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if remote.returncode or not remote.stdout.strip():
+        fail(f"Git repository has no origin remote: {repo_root}")
+    return GitContext(repo_root, normalize_remote(remote.stdout))
+
+
+def resolve(
+    projects: dict[str, Project],
+    cwd: Path,
+    requested: str | None,
+    allow_cross_project: bool,
+) -> tuple[Project, GitContext | None]:
+    context = git_context(cwd)
+    by_remote = {
+        remote: project
+        for project in projects.values()
+        for remote in project.remotes
+    }
+    detected = by_remote.get(context.remote) if context else None
+
+    if requested is None:
+        if context is None:
+            fail("not inside a Git repository; pass --project explicitly")
+        if detected is None:
+            fail(f"unregistered origin remote: {context.remote}")
+        return detected, context
+
+    project = projects.get(requested)
+    if project is None:
+        fail(f"unknown project {requested!r}; choices: {', '.join(sorted(projects))}")
+    if context is not None and detected != project and not allow_cross_project:
+        detected_name = detected.name if detected else "unregistered"
+        fail(
+            f"refusing project {project.name!r} from {detected_name} repository "
+            f"{context.remote}; pass --allow-cross-project to override"
+        )
+    return project, context
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cwd", type=Path, default=Path.cwd())
+    parser.add_argument("--project")
+    parser.add_argument("--allow-cross-project", action="store_true")
+    parser.add_argument("--tool")
+    parser.add_argument("--list-projects", action="store_true")
+    args = parser.parse_args()
+
+    config = Path(os.environ.get("PROJECT_TOOLS_CONFIG", DEFAULT_CONFIG))
+    projects = load_projects(config)
+    if args.list_projects:
+        print("\n".join(sorted(projects)))
+        return
+
+    project, context = resolve(
+        projects,
+        args.cwd,
+        args.project,
+        args.allow_cross_project,
+    )
+    if args.tool and args.tool not in project.tools:
+        fail(f"project {project.name!r} has no {args.tool!r} tool profile")
+    result: dict[str, object] = {
+        "project": project.name,
+        "repo_root": context.root if context else None,
+        "remote": context.remote if context else None,
+        "tools": project.tools,
+    }
+    print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
