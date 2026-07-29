@@ -41,6 +41,15 @@ Direct production (`main`) landing/deployment is acceptable when all of these ar
 If the workspace appears to target `main` but these checks do not pass, route standalone
 ticket-flow to `staging` automatically unless the user explicitly requested direct production.
 
+### Direct-to-main always back-syncs staging
+
+Any change that lands directly on `main` (direct commit or PR to `main`) must also reach
+`staging` as part of the same deploy run. After the production merge/deploy, merge `origin/main`
+into `staging` with a real content-preserving merge (never reset, force-push, or overwrite
+staging-only work) and push, letting the staging deploy pipeline run. `/auto-deploy` owns the
+mechanics (Phase 8b). A direct-production deploy is not complete while staging lacks the change;
+skipping the back-sync silently diverges staging behind main one direct landing at a time.
+
 ## Staging is required when in doubt
 
 Use `staging` when any of these are true:
