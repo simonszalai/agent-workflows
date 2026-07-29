@@ -677,11 +677,18 @@ def main() -> int:
     args = parser.parse_args()
     home = args.home.resolve()
     home.mkdir(parents=True, exist_ok=True)
+    source = args.source.resolve()
+    if not args.rollback and args.version is None:
+        linker = source / "bin/link-agent-workflows-live"
+        completed = subprocess.run(
+            [str(linker), "--source", str(source), "--home", str(home)],
+            check=False,
+        )
+        return completed.returncode
     with installation_lock(home):
         if args.rollback:
             rollback(home)
         else:
-            source = args.source.resolve()
             install(source, home, committed_version(source, args.version))
     return 0
 

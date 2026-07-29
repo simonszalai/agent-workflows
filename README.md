@@ -40,8 +40,9 @@ skills, so it keeps that directory and uses one folder link at
 `~/.codex/skills/agent-workflows`. `~/.local/bin` is shared too, so executables remain direct
 per-file links.
 
-`bin/install-agent-workflows` remains available only for pinned, one-way environments. It exports
-an exact commit into an immutable version tree and must not be used for the local live checkout.
+Running `bin/install-agent-workflows` without `--version` now performs this same live-folder setup,
+so an old setup command cannot silently repin the machine. Pinned, one-way environments must pass
+an explicit `--version <commit>`; that mode exports the exact commit into an immutable version tree.
 
 `external-agent` shells out to peer provider CLIs (`claude`, `codex`, and/or `grok`), so the
 providers you want as peers must be installed and authenticated. `/review` and `/investigate`
