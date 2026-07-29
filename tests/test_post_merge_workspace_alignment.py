@@ -18,6 +18,19 @@ def run(repo: Path, *command: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def upstream(repo: Path) -> str:
+    branch = run(
+        repo, "git", "symbolic-ref", "--quiet", "--short", "HEAD",
+    ).stdout.strip()
+    return run(
+        repo,
+        "git",
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        f"refs/heads/{branch}",
+    ).stdout.strip()
+
+
 class PostMergeWorkspaceAlignmentTests(unittest.TestCase):
     def make_fixture(
         self, root: Path, *, delete_remote_head: bool,
@@ -103,16 +116,9 @@ class PostMergeWorkspaceAlignmentTests(unittest.TestCase):
                 run(workspace, "git", "rev-parse", "origin/main").stdout.strip(),
             )
             self.assertEqual(run(workspace, "git", "status", "--porcelain").stdout, "")
-            self.assertNotEqual(
-                run(
-                    workspace,
-                    "git",
-                    "rev-parse",
-                    "--abbrev-ref",
-                    "--symbolic-full-name",
-                    "@{upstream}",
-                ).returncode,
-                0,
+            self.assertEqual(upstream(workspace), "")
+            self.assertNotIn(
+                "[gone]", run(workspace, "git", "status", "--short", "--branch").stdout,
             )
 
     def test_refuses_to_align_while_remote_head_exists(self) -> None:
@@ -191,16 +197,9 @@ class PostMergeWorkspaceAlignmentTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(completed.stdout)["status"], "already_aligned",
             )
-            self.assertNotEqual(
-                run(
-                    workspace,
-                    "git",
-                    "rev-parse",
-                    "--abbrev-ref",
-                    "--symbolic-full-name",
-                    "@{upstream}",
-                ).returncode,
-                0,
+            self.assertEqual(upstream(workspace), "")
+            self.assertNotIn(
+                "[gone]", run(workspace, "git", "status", "--short", "--branch").stdout,
             )
 
 

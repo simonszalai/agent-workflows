@@ -156,9 +156,15 @@ def main() -> None:
             emit(result, "error", "zero_commit_rebase_failed", 2)
 
     upstream = run(
-        repo, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}",
+        repo,
+        "git",
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        f"refs/heads/{current_branch}",
     )
-    if upstream.returncode == 0:
+    if upstream.returncode:
+        emit(result, "error", "upstream_lookup_failed", 2)
+    if upstream.stdout.strip():
         unset = run(repo, "git", "branch", "--unset-upstream")
         if unset.returncode:
             emit(result, "error", "upstream_cleanup_failed", 2)
