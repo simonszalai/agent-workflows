@@ -18,7 +18,7 @@
 #
 # Args are sanitized: any arg containing '=' is truncated at the '=' (field
 # assignments can carry values); op:// refs and subcommands pass through.
-# mcp-gateway/start-gateway.sh intentionally bypasses this shim via its direct
+# (the retired mcp-gateway used to bypass this shim via a direct
 # absolute op path and owns a separate audit line. Repairing or widening that
 # gateway route is explicitly outside B0002.
 

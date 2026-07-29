@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def python_sources() -> list[Path]:
-    roots = (ROOT / "bin", ROOT / "hooks", ROOT / "mcp-gateway", ROOT / "skills")
+    roots = (ROOT / "bin", ROOT / "hooks", ROOT / "mcp-proxies", ROOT / "skills")
     sources: list[Path] = []
     for root in roots:
         for path in root.rglob("*"):
@@ -54,7 +54,7 @@ def main() -> None:
     run("ticket context contract", [str(ROOT / "bin" / "workflow-ticket-context-check")])
     run("python tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
     node_tests = [str(path.relative_to(ROOT))
-                  for root in (ROOT / "workflows", ROOT / "mcp-gateway")
+                  for root in (ROOT / "workflows", ROOT / "mcp-proxies")
                   for path in sorted(root.glob("*.test.mjs"))]
     if node_tests:
         run("node tests", ["node", "--test", *node_tests])

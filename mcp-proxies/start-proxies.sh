@@ -31,7 +31,7 @@ fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${HERE}/proxies.env"
 PROXY="${HERE}/mcp-proxy.mjs"
-WAF_ENCODER="${HERE}/../mcp-gateway/waf-encode.mjs"
+WAF_ENCODER="${HERE}/waf-encode.mjs"
 
 AUTODEV_PORT=8792
 CONTEXT7_PORT=8793
