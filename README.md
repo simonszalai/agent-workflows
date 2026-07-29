@@ -12,10 +12,10 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   `review-synthesize`, etc.) for
   heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
   equivalent logic inline on Codex/Grok
-- **bin/** - Shared executables including `project-mcp` (legacy/fallback MCP launcher),
-  `external-agent` (cross-provider adapter), `compact-exec` (bounded command output), `wait-ci`
-  (single-call CI waiting), `workflow-efficiency-report` (whole-agent-tree usage accounting), and
-  the reviewed [`hermes-activation`](docs/hermes-activation.md) secret-safe activation provider
+- **bin/** - Shared executables including the CLI service wrappers (`render-cli`,
+  `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter), `compact-exec`
+  (bounded command output), `wait-ci` (single-call CI waiting), and
+  `workflow-efficiency-report` (whole-agent-tree usage accounting)
 
 ## Distribution
 
@@ -97,57 +97,9 @@ resolution (see the matching `skills/tool-*` references):
 | postgres  | per-repo psql wrappers (reference: ts-prefect `scripts/db/sql.sh`) |
 
 The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
-launchd** (2026-07-28); `mcp-gateway/` stays in-tree as history only. Its hermes
-(filtered analyst) routes died with it — analyst access needs a new design before
-re-onboarding.
-
-Legacy MCP configs used to set every `.mcp.json` / `.codex/config.toml` server `command`
-to `~/.local/bin/project-mcp <project> <server>`; a later generation routed through the
-mcp-gateway daemon. Both are superseded by the static loopback-proxy URLs above.
-
-`project-mcp` is retained in-tree as history. The `~/.local/bin/project-mcp` path is a
-**symlink to `bin/project-mcp` in this repo** — so the launcher is versioned here alongside
-the hooks and skills it sits next to.
-
-What it does, per invocation:
-
-1. Resolves secrets from **1Password** — either from a mounted `.env` FIFO (`mount_value`) or a
-   direct vault read by item ID (`op_read`), serialized with a lock so a parallel MCP startup
-   burst raises at most one biometric prompt.
-2. `guard_project_context` refuses to start a project's MCP from another project's workspace
-   (override with `ALLOW_CROSS_PROJECT_MCP=1`).
-3. `exec`s into the real backend: `mcp-remote` for remote HTTP servers (autodev-memory, render,
-   context7) or `postgres-mcp` for databases.
-
-It contains **no secrets** — only 1Password item-ID pointers and a mount path. Safe to commit.
-
-### Where it goes
-
-```bash
-ln -s ~/dev/agent-workflows/bin/project-mcp ~/.local/bin/project-mcp
-chmod +x ~/dev/agent-workflows/bin/project-mcp   # if needed
-```
-
-`~/.local/bin` must be on `PATH`. The mounted 1Password env item must be configured per the
-paths near the top of the script (`TS_MCP_MOUNT_FILE`, etc.).
-
-### mcp-remote orphan reaping
-
-Remote servers run via `npx mcp-remote ... --transport http-only`. Because the launcher
-`exec`s into `mcp-remote` (no trap survives `exec`), a reconnect/crash can orphan the old
-proxy (reparented to PID 1). Orphans accumulate — each holds an HTTP client to a
-single-instance remote — and eventually starve real requests until MCP calls hang.
-
-Two defenses:
-
-- **In-launcher (primary):** `run_remote_bearer` calls `reap_stale_remote "$url"` before
-  spawning, killing stale proxies for that exact URL (scoped; never touches other servers).
-  `mcp-remote` is version-pinned via `MCP_REMOTE_VERSION` for reproducibility.
-- **launchd safety net (per machine, not in this repo):** `~/.local/bin/mcp-remote-reaper`
-  + `~/Library/LaunchAgents/com.simon.mcp-remote-reaper.plist` (runs every 30 min) reaps
-  `mcp-remote` processes that are **both** old (>3h) **and** orphaned (PPID 1), catching the
-  pure-crash case where the launcher never re-runs. An active session's proxy has a live
-  parent and is always spared.
+launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`
+predecessor, the `mcp-remote` reaper, and the hermes analyst routes. All prior MCP config
+generations are superseded by the static loopback-proxy URLs above.
 
 ## Updating shared workflows
 
