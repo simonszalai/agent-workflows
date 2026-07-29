@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# render-cli — official Render CLI with silent credential injection. Replaces the
+# render MCP server (agents use the CLI via Bash; see skills/tool-render).
+#
+# USAGE  render-cli <any render CLI args>
+#        render-cli services -o json
+#        render-cli logs -r srv-xxx --limit 50 -o json
+#
+# Credentials: RENDER_API_KEY resolved per call from op://TS/TS_RENDER_API_KEY via
+# the 1Password service-account token (env TS_OP_SERVICE_ACCOUNT_TOKEN /
+# OP_SERVICE_ACCOUNT_TOKEN, else Mac Keychain item `op-dev-token`) — silent, no
+# Touch ID, key only in this process's memory. Never print the key.
+#
+# Workspace: exactly one (tea-ct11rp0gph6c73bf2kf0); pinned via
+# RENDER_WORKSPACE/--confirm so no interactive selection ever triggers.
+set -euo pipefail
+
+WORKSPACE="tea-ct11rp0gph6c73bf2kf0"
+
+command -v render >/dev/null 2>&1 || {
+  echo "ERROR: render CLI not installed." >&2
+  case "$(uname -s)" in
+    Darwin) echo "  Install with: brew install render" >&2 ;;
+    *) echo "  Install per https://render.com/docs/cli (e.g. curl -fsSL https://raw.githubusercontent.com/render-oss/cli/refs/heads/main/bin/install.sh | sh)" >&2 ;;
+  esac
+  exit 3
+}
+
+tok="${TS_OP_SERVICE_ACCOUNT_TOKEN:-${OP_SERVICE_ACCOUNT_TOKEN:-}}"
+if [ -z "$tok" ] && [ "$(uname -s)" = "Darwin" ]; then
+  tok="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
+fi
+[ -n "$tok" ] || {
+  echo "ERROR: no 1Password service-account token (set TS_OP_SERVICE_ACCOUNT_TOKEN or Keychain op-dev-token)." >&2
+  exit 3
+}
+
+key="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TS_RENDER_API_KEY/value")"
+exec env RENDER_API_KEY="$key" RENDER_WORKSPACE="$WORKSPACE" CI=true render "$@"

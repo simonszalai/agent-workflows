@@ -1,6 +1,6 @@
 ---
 name: tool-postgres
-description: Postgres access reference for database investigation — psql wrapper (ts-prefect) or Postgres MCP tools (other projects).
+description: Postgres access reference for database investigation — psql wrappers via the Bash tool (all Postgres MCP servers are retired).
 ---
 
 # Postgres Access Reference
@@ -14,11 +14,12 @@ querying only. Data modifications must go through application code (flows, scrip
 the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos
 may still use Alembic/Prisma migrations).
 
-## Primary interface: `scripts/db/sql.sh` (ts-prefect, since 2026-07-28)
+## Primary interface: the repo's psql wrapper (`scripts/db/sql.sh`)
 
-In ts-prefect (and any repo that ships it), database access is a checked-in psql wrapper
-run via the Bash tool — the dbhub `postgres` MCP server was removed (it lost the client
-tool-registry race on cloud VMs, leaving sessions with no DB tools):
+Database access is a checked-in psql wrapper run via the Bash tool. All Postgres MCP
+servers (dbhub behind the gateway) are retired — the MCP approach lost the client
+tool-registry race on cloud VMs, leaving sessions with no DB tools; a CLI self-heals
+on first use. ts-prefect ships the reference implementation:
 
 ```
 scripts/db/sql.sh <dev|staging|prod> "<SQL>"          # run a query (CSV output)
@@ -30,20 +31,21 @@ scripts/db/sql.sh <dev|staging|prod> search "<term>"  # find tables/columns/inde
 - Prod is read-only (ts_readonly role + read-only transaction GUC); 30s statement timeout
   everywhere; output capped at 50 KB with a TRUNCATED marker — add LIMIT, don't retry
   without one.
+- `psql` missing? `brew install libpq && brew link --force libpq` (Mac) or
+  `apt-get install -y postgresql-client` (Linux) — the wrapper prints this too.
+- A repo without a wrapper yet: copy ts-prefect's `scripts/db/sql.sh` and swap the
+  op:// item names; do not hand-roll `psql "$DSN"` with a value in argv.
 
 **CRITICAL:** When told to investigate a specific environment, pass that tier argument.
 Never default to `prod` when staging or dev was requested.
 
-## MCP tool layout (projects still on Postgres MCP / Mac gateway transition)
+## The autodev-memory global database (special case)
 
-Other projects still expose one `postgres` MCP server (DBHub behind the mcp-gateway) with
-the environment as a tool-name suffix: `mcp__postgres__execute_sql_<env>` and
-`mcp__postgres__search_objects_<env>` (env = prod/staging/dev; ts adds `prod_prefect` and
-`autodev_ts`). Prod tools are read-only. The shared autodev-memory global database is its
-own server: `mcp__postgres_autodev_global__execute_sql` / `__search_objects`. Older
-sessions may expose legacy per-environment servers (`mcp__postgres_prod__execute_sql`
-etc.) — same rules apply. If both the wrapper and MCP tools are available, prefer the
-wrapper.
+Its DSN lives in `op://AUTODEV-sensitive` — deliberately Touch-ID-gated (data-exposing
+prod DB), so there is NO silent CLI path. For routine knowledge/ticket operations use
+the autodev-memory MCP tools (one of the two MCP servers that remain). Direct SQL
+against that DB is rare and interactive-only: follow the sensitive-vault-access skill
+(reason required) and run psql under `op run` in Simon's terminal.
 
 ## Mandatory query and payload bounds
 
@@ -65,15 +67,8 @@ unbounded read safe or token-efficient.
 If an exact full export is required, use a project-approved file/object-store export
 path rather than routing it through MCP or model context.
 
-## Available Tools (per source)
-
-| Tool (replace `{env}` with prod/staging/dev/...) | Purpose |
-| ------------------------------------------------ | ------- |
-| `mcp__postgres__execute_sql_{env}` | Run SQL (multiple statements allowed, `;`-separated) |
-| `mcp__postgres__search_objects_{env}` | Search/explore schemas, tables, columns, indexes, procedures |
-
-Everything else is plain SQL — see the recipes below for what the old dedicated tools
-used to do.
+Everything is plain SQL through the wrapper — the recipes below cover what the old
+dedicated MCP tools used to do.
 
 ## Data Investigation Patterns
 
@@ -167,8 +162,8 @@ FROM pg_stat_user_indexes ORDER BY idx_scan ASC, pg_relation_size(indexrelid) DE
 
 ## Schema Exploration
 
-Prefer `scripts/db/sql.sh <tier> search "<term>"` (or `search_objects_{env}` on MCP
-projects) for interactive exploration. SQL equivalents:
+Prefer `scripts/db/sql.sh <tier> search "<term>"` for interactive exploration. SQL
+equivalents:
 
 ```sql
 -- list schemas

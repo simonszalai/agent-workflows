@@ -84,7 +84,7 @@ uv run prefect flow-run logs <run-id>
 
 #### 2b: Service Errors
 
-Use `mcp__render__list_logs` (or the project's log tool) to search for error-level logs on
+Use `render-cli logs -r <srv-id> --level error -o json --confirm` (or the project's log tool) to search for error-level logs on
 affected services since `$DEPLOY_TIME`, bounded per the log rules.
 
 #### 2c: Database Error Indicators

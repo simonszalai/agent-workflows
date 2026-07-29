@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# slack-api — Slack Web API with silent credential injection. Replaces the slack
+# MCP server (agents call Web API methods via Bash; see skills/tool-slack).
+#
+# USAGE  slack-api <method> [key=value ...]
+#        slack-api conversations.list types=public_channel limit=20
+#        slack-api conversations.history channel=C0123456789 limit=10
+#        slack-api chat.postMessage channel=C0123456789 text='hello'
+#        slack-api search.messages query='deploy failed' count=5
+#
+# key=value pairs are form-encoded (Slack's preferred encoding for all methods).
+# Output is raw API JSON; pipe to jq to trim. Always check `"ok": true/false`.
+#
+# Credentials: user token (op://MCP/SLACK_MCP_USER_TOKEN) resolved per call via
+# the 1Password service-account token (env TS_OP_SERVICE_ACCOUNT_TOKEN /
+# OP_SERVICE_ACCOUNT_TOKEN, else Mac Keychain item `op-dev-token`) — silent, no
+# Touch ID. Never print the token.
+set -euo pipefail
+
+[ $# -ge 1 ] || { echo "usage: slack-api <method> [key=value ...]" >&2; exit 2; }
+METHOD="$1"; shift
+
+tok="${TS_OP_SERVICE_ACCOUNT_TOKEN:-${OP_SERVICE_ACCOUNT_TOKEN:-}}"
+if [ -z "$tok" ] && [ "$(uname -s)" = "Darwin" ]; then
+  tok="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
+fi
+[ -n "$tok" ] || {
+  echo "ERROR: no 1Password service-account token (set TS_OP_SERVICE_ACCOUNT_TOKEN or Keychain op-dev-token)." >&2
+  exit 3
+}
+
+slack_tok="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://MCP/SLACK_MCP_USER_TOKEN/value")"
+
+args=()
+for kv in "$@"; do
+  args+=(--data-urlencode "$kv")
+done
+
+# ${args[@]+...} keeps macOS bash 3.2's set -u happy when no key=value args were given.
+exec curl -sfS --max-time 30 "https://slack.com/api/${METHOD}" \
+  -H "Authorization: Bearer $slack_tok" ${args[@]+"${args[@]}"}

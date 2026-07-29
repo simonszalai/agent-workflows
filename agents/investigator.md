@@ -49,8 +49,8 @@ run it via Bash with the environment as the tier argument:
 Schema exploration: `scripts/db/sql.sh <tier> search "<term>"`.
 
 Projects still on Postgres MCP expose one `postgres` server with tool-name suffixes:
-`mcp__postgres__execute_sql_<env>` / `mcp__postgres__search_objects_<env>` (older
-sessions: legacy `mcp__postgres_<env>__execute_sql` servers — same rule applies).
+the repo's psql wrapper (`scripts/db/sql.sh <env> ...`) — the Postgres MCP servers
+are retired; same environment-discipline rule applies.
 
 **If the prompt says "Environment: staging", use the staging tier/tools exclusively.**
 Never fall back to production when a different environment is specified.
@@ -63,7 +63,7 @@ Never fall back to production when a different environment is specified.
 | Staging     | `*-staging` suffix          |
 
 **If the prompt says "Environment: staging", only investigate staging services.** Use
-`mcp__render__list_services` and filter results by name to find the correct service IDs.
+`render-cli services -o json` and filter results by name to find the correct service IDs.
 
 ## Project Context
 
@@ -110,7 +110,7 @@ GROUP BY hour ORDER BY hour;
 
 ### Discovering Services
 
-Use `mcp__render__list_services` to get current service IDs, then focus on the services
+Use `render-cli services -o json` to get current service IDs, then focus on the services
 relevant to the investigation and the specified environment.
 
 ### Memory exhaustion patterns
