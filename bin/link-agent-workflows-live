@@ -31,6 +31,12 @@ def _is_under(path: Path, root: Path) -> bool:
 def _managed_link(path: Path, source: Path, store: Path) -> bool:
     if not path.is_symlink():
         return False
+    raw_target = Path(os.readlink(path))
+    immediate = raw_target if raw_target.is_absolute() else path.parent / raw_target
+    immediate = Path(os.path.abspath(immediate))
+    immediate = immediate.parent.resolve(strict=False) / immediate.name
+    if _is_under(immediate, source) or _is_under(immediate, store):
+        return True
     resolved = path.resolve(strict=False)
     return _is_under(resolved, source) or _is_under(resolved, store)
 

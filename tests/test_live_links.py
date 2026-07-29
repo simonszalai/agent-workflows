@@ -40,6 +40,9 @@ class LiveLinksTest(unittest.TestCase):
             settings = home / ".claude/settings.json"
             settings.parent.mkdir(parents=True)
             settings.write_text(json.dumps({"unrelated": {"keep": True}}))
+            external = root / "external-skill"
+            external.mkdir()
+            (source / "skills/external").symlink_to(external)
             store = home / ".local/share/agent-workflows/current"
             for name in ("agents", "skills", "hooks", "workflows", "bin"):
                 (store / name).mkdir(parents=True)
@@ -52,6 +55,7 @@ class LiveLinksTest(unittest.TestCase):
             ):
                 destination.mkdir(parents=True)
                 (destination / "example").symlink_to(store / "skills/example")
+            (home / ".claude/skills/external").symlink_to(source / "skills/external")
             codex_system = home / ".codex/skills/.system"
             codex_system.mkdir()
             (home / ".local/bin").mkdir(parents=True)
