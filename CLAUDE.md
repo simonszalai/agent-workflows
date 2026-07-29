@@ -153,10 +153,11 @@ its local branch is dirty, ahead, behind, or divergent. Remote merge, local live
 already-running session context are three separate states: new cloud sessions receive merged files;
 new local sessions read the live symlink checkout; an ongoing session retains instructions already
 loaded into its context, though explicit later file reads see filesystem changes.
-**Do NOT run `bin/install-agent-workflows` locally**: it re-pins those links to a frozen
-snapshot under `~/.local/share/agent-workflows/versions/<commit>`, after which repo edits and
-merges silently stop reaching live sessions (this caused PRs #36/#37 to sit dormant). The
-installer remains valid only for environments that intentionally deploy pinned commits.
+Running `bin/install-agent-workflows` locally without `--version` repairs this live folder-link
+layout. Never pass `--version` locally: explicit-version mode pins the links to a frozen snapshot
+under `~/.local/share/agent-workflows/versions/<commit>`, after which repo edits and merges silently
+stop reaching live sessions (this caused PRs #36/#37 to sit dormant). Explicit-version mode is only
+for environments that intentionally deploy pinned commits.
 
 ### Where to Make Changes
 

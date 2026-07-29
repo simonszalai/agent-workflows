@@ -21,7 +21,7 @@ class InstallerTest(unittest.TestCase):
         for relative in (
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
             "hooks/memory_context.py", "hooks/task_packet.py", "bin/autodev-memory-task-packet",
-            "bin/install-agent-workflows",
+            "bin/install-agent-workflows", "bin/link-agent-workflows-live",
             "bin/.protected-route-security-floor",
         ):
             shutil.copy2(ROOT / relative, source / relative)
@@ -42,10 +42,37 @@ class InstallerTest(unittest.TestCase):
                               capture_output=True, text=True, check=True).stdout.strip()
 
     def run_install(self, source: Path, home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        effective_args = list(args)
+        if not effective_args:
+            commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            effective_args = ["--version", commit]
         return subprocess.run(
-            [str(INSTALLER), "--source", str(source), "--home", str(home), *args],
+            [str(INSTALLER), "--source", str(source), "--home", str(home), *effective_args],
             capture_output=True, text=True,
         )
+
+    def test_default_install_uses_live_folder_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            home = root / "home"
+            result = subprocess.run(
+                [str(INSTALLER), "--source", str(source), "--home", str(home)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((home / ".claude/skills").resolve(), (source / "skills").resolve())
+            self.assertFalse((home / ".local/share/agent-workflows").exists())
+
+            (source / "skills/added-later").mkdir()
+            (source / "skills/added-later/SKILL.md").write_text("live")
+            self.assertTrue((home / ".claude/skills/added-later/SKILL.md").is_file())
 
     def test_fresh_upgrade_and_rollback_in_temporary_home(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
