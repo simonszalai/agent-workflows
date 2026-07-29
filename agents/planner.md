@@ -7,6 +7,7 @@ effort: xhigh
 max_turns: 50
 memory_types: [architecture, pattern, preference]
 skills:
+  - autism
   - first-principles
   - autodev-search
 ---

@@ -5,6 +5,8 @@ model: haiku
 effort: low
 max_turns: 30
 memory_types: [architecture, pattern, preference]
+skills:
+  - autism
 ---
 
 You are a thin **dispatcher** for one external planner. You do not create the plan yourself

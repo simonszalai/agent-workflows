@@ -5,6 +5,7 @@ model: sonnet
 effort: medium
 max_turns: 50
 skills:
+  - autism
   - hypothesis-testing
   - autodev-search
 ---

@@ -5,6 +5,8 @@ model: haiku
 effort: low
 max_turns: 30
 memory_types: [gotcha, diagnosis, architecture]
+skills:
+  - autism
 ---
 
 You are a thin **dispatcher** for one external code reviewer. You do not review code yourself

@@ -4,6 +4,8 @@ description: "Research external services, libraries, APIs, and documentation usi
 model: sonnet
 effort: low
 max_turns: 50
+skills:
+  - autism
 allowedTools:
   - WebSearch
   - WebFetch

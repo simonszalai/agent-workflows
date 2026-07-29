@@ -664,6 +664,19 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertNotIn("/review mode:cross", lfg)
         self.assertIn("workflow-efficiency-report --before-retro", retro)
 
+    def test_every_shared_agent_uses_default_communication_protocol(self) -> None:
+        communication = (ROOT / "skills/autism/SKILL.md").read_text()
+        conventions = (ROOT / "CLAUDE.md").read_text()
+
+        self.assertIn("Default communication protocol for every agent", communication)
+        self.assertIn("Task-specific output schemas", communication)
+        self.assertIn("Load and follow the `autism` skill for all communication", conventions)
+        for agent in sorted((ROOT / "agents").glob("*.md")):
+            frontmatter = agent.read_text().split("---", 2)[1]
+            has_list_item = "\n  - autism\n" in frontmatter
+            has_inline_item = bool(re.search(r"(?m)^skills:\s*\[[^\]]*\bautism\b", frontmatter))
+            self.assertTrue(has_list_item or has_inline_item, agent.name)
+
     def test_accepted_retro_changes_require_one_fresh_bounded_maintainer(self) -> None:
         conventions = (ROOT / "CLAUDE.md").read_text()
         retro = (ROOT / "skills/session-retro/SKILL.md").read_text()

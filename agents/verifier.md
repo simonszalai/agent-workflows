@@ -5,7 +5,7 @@ model: sonnet
 effort: medium
 max_turns: 50
 memory_types: [gotcha, diagnosis, reference]
-skills: [tool-postgres, tool-render, autodev-search]
+skills: [autism, tool-postgres, tool-render, autodev-search]
 ---
 
 # Verifier Agent
