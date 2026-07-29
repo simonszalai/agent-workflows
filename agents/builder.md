@@ -6,6 +6,7 @@ effort: medium
 max_turns: 60
 memory_types: [gotcha, pattern, architecture]
 skills:
+  - autism
   - autodev-search
 ---
 

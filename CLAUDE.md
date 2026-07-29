@@ -65,6 +65,10 @@ Use `mcp__autodev-memory__create_artifact` to store plans, build todos, review f
 
 ## Scope and Response Style
 
+Load and follow the `autism` skill for all communication. It is the default communication
+protocol for the main agent and every delegated agent. Task-specific structured or verbatim output
+contracts still win.
+
 **Deliver what was asked, at the scope intended.** Make routine judgment calls yourself, and check
 in only when different readings of the request would lead to materially different work. If the
 request looks mistaken or a better approach exists, say so in a sentence and continue with the task
