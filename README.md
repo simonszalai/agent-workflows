@@ -16,6 +16,8 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter), `compact-exec`
   (bounded command output), `wait-ci` (single-call CI waiting), and
   `workflow-efficiency-report` (whole-agent-tree usage accounting)
+- **config/** - Trusted non-secret registries used by shared wrappers, including exact
+  repository-to-project credential mappings
 
 ## Distribution
 
@@ -90,11 +92,18 @@ resolution (see the matching `skills/tool-*` references):
 
 | Service   | Access |
 | --------- | ------ |
-| render    | `bin/render-cli` (official CLI + `render-cli api GET /v1/...` REST passthrough) |
+| render    | `bin/render-cli` (project-aware official CLI + guarded `/v1` REST passthrough) |
 | tailscale | `tailscale` CLI (local, credential-free) + `bin/tailscale-admin` (control-plane API) |
 | slack     | `bin/slack-api` (any Web API method) |
 | github    | `gh` CLI |
 | postgres  | per-repo psql wrappers (reference: ts-prefect `scripts/db/sql.sh`) |
+
+`render-cli` never trusts the raw Render CLI's user-global login. It matches the exact
+Git origin against `config/project-tools.json`, selects the corresponding 1Password
+reference and Render workspace, and passes the credential only to the child process.
+Run `render-cli context` for a credential-free selection check. Mutations require an
+explicit project, `--write`, and `--reason`; unknown repos and project mismatches fail
+closed. See `skills/tool-render/SKILL.md`.
 
 The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
 launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`

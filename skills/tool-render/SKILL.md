@@ -1,6 +1,6 @@
 ---
 name: tool-render
-description: Render CLI reference for infrastructure investigation (render-cli wrapper — the render MCP server was retired). Portable to any project using Render.
+description: Project-aware Render CLI reference for infrastructure investigation across TS, Autodev, Amaru, and WorkFlow Pro.
 ---
 
 # Render CLI Reference
@@ -8,19 +8,56 @@ description: Render CLI reference for infrastructure investigation (render-cli w
 How to inspect Render infrastructure via the CLI. The render MCP server was retired
 (2026-07-28) — use `render-cli` (agent-workflows/bin, on PATH) through the Bash tool.
 
-## The wrapper: `render-cli`
+## Project and authentication contract
 
-`render-cli` is the official Render CLI with credentials injected silently per call
-(1Password service-account token; no Touch ID, nothing stored in your environment).
-It pins the single workspace and never prompts. Pass any official CLI args through it:
+Never call the raw `render` binary for project work. Its locally logged-in token and
+workspace are user-global and may belong to a different project.
+
+`render-cli` resolves the exact Git `origin` through the committed
+`config/project-tools.json` registry. There is no default profile and no fuzzy
+directory-name matching. The registered projects are `amaru`, `autodev`, `ts`, and
+`workflow-pro`; every known repository remote for those projects maps to exactly one
+profile.
+
+The skill contains no credential. The wrapper:
+
+1. selects the project from the exact repository remote;
+2. reads only that profile's committed `op://...` reference through the audited
+   `bin/op` shim, or accepts an already-approved process-local `RENDER_API_KEY`;
+3. discovers or pins the matching Render workspace;
+4. exports the key and workspace only to the official CLI child process.
+
+It never writes a token to a repository, dotenv file, CLI config, command argument,
+or shell profile. A raw Render CLI login cannot override the selected credential.
+
+The current Render keys are broad `*-sensitive` credentials. Agent shells must not
+trigger Touch ID for them, so the wrapper fails closed there unless an approved
+`RENDER_API_KEY` was provided to that process. A human can run the same wrapper from
+a normal terminal; `bin/op` provides the required reason/notification/Touch ID
+contract. Do not bypass this with `/opt/homebrew/bin/op` or the raw Render CLI.
+
+Safe, credential-free selection check:
+
+```bash
+render-cli context
+```
+
+Authenticated profile/workspace check:
+
+```bash
+render-cli doctor
+```
+
+Read commands auto-detect the project:
 
 ```bash
 render-cli services -o json                                  # list all services
 render-cli deploys list <srv-id> -o json --confirm           # deploy history
 render-cli logs -r <srv-id> --limit 50 -o json --confirm     # recent logs
-render-cli psql <postgres-id>                                # never use for app DBs — use the project's sql wrapper
 ```
 
+- **Do not use `render-cli psql` for application databases** — use the project's
+  reviewed SQL wrapper.
 - **Always pass `-o json --confirm`** on list/query commands: `-o json` gives parseable
   output, `--confirm` suppresses interactive prompts (headless safety).
 - Pipe through `jq` and bound output — logs and service lists are large. Never dump
@@ -28,16 +65,28 @@ render-cli psql <postgres-id>                                # never use for app
 - If `render-cli` reports the CLI missing: `brew install render` (Mac) or the
   install script it prints (Linux/cloud).
 
-## Access rules (unchanged from the MCP era)
+## Mutation and override guardrails
 
-**Render read access is durably pre-authorized by Simon**: services, deploys, logs,
-metrics, and env-var **names**. Never ask "may I read X" — even when a plan or ticket
-lists the Render step as "parked" or "pending approval"; treat reads as already
-approved. Env-var **values** stay unprintable; mutations (env-var changes, triggering
-deploys, service changes) require explicit instruction.
+The wrapper maintains a read-command allowlist. Unknown, interactive, or mutating
+commands fail unless all three safeguards are present:
 
-There is exactly ONE workspace: `tea-ct11rp0gph6c73bf2kf0` ("Thomas's workspace") —
-the wrapper pins it; workspace selection can never be a reason to stop or ask.
+```bash
+render-cli --project workflow-pro --write \
+  --reason "Restart the reviewed workflow-pro service for F0123" \
+  restart srv-xxx --confirm
+```
+
+- the user explicitly instructed the mutation;
+- `--project` names the intended credential profile;
+- `--reason` explains the sensitive access.
+
+Inside any Git repo, an explicit project must match its registered origin; unregistered
+and mismatching origins are rejected. A deliberate cross-project operation additionally
+requires `--allow-cross-project`; do not use it to work around a mapping error. Fix
+`config/project-tools.json` instead.
+
+Env-var **values** remain unprintable. Service, deploy, log, metrics, and env-var-name
+reads may be performed only through an available approved credential route.
 
 Render inventory is account-scoped, not global. `ts-decrypt-proxy` production is
 intentionally owned in Thomas's separate security boundary and may be absent from this
@@ -56,7 +105,9 @@ memory `216431b0`).
 | Error logs | `render-cli logs -r srv-xxx --level error --limit 50 -o json --confirm` |
 | Time-windowed logs | `render-cli logs -r srv-xxx --start 2026-01-13T14:00:00Z --end 2026-01-13T15:00:00Z -o json --confirm` |
 | Text search in logs | `render-cli logs -r srv-xxx --text "ConnectionError" --limit 50 -o json --confirm` |
-| Restart service (mutation — explicit instruction only) | `render-cli restart srv-xxx --confirm` |
+| Show selected profile without auth | `render-cli context` |
+| Validate credential and workspace | `render-cli doctor` |
+| Restart service (mutation — explicit instruction only) | `render-cli --project <id> --write --reason "<purpose>" restart srv-xxx --confirm` |
 
 `render-cli logs --help` lists all filters (level, type, statusCode, method, host...).
 
@@ -74,6 +125,8 @@ render-cli api GET "/v1/metrics/http-request-count?resource=srv-xxx"
 
 Output is `[{labels, unit, values:[{timestamp,value}...]}]` — summarize (min/max/last),
 never dump the raw series. `render-cli api` works for any `/v1` endpoint the CLI lacks.
+Non-GET/HEAD API calls are mutations and require the normal explicit project, write,
+and reason flags; their JSON request body is read from stdin.
 
 ## Deployment model reminder (ts-prefect)
 

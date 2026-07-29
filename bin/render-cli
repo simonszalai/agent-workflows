@@ -1,53 +1,307 @@
 #!/usr/bin/env bash
-# render-cli — official Render CLI with silent credential injection. Replaces the
-# render MCP server (agents use the CLI via Bash; see skills/tool-render).
-#
-# USAGE  render-cli <any render CLI args>
-#        render-cli services -o json
-#        render-cli logs -r srv-xxx --limit 50 -o json
-#        render-cli api GET "/v1/metrics/cpu?resource=srv-xxx" [curl args...]
-#          — REST passthrough for what the CLI lacks (metrics, etc.)
-#
-# Credentials: RENDER_API_KEY resolved per call from op://TS/TS_RENDER_API_KEY via
-# the 1Password service-account token (env TS_OP_SERVICE_ACCOUNT_TOKEN /
-# OP_SERVICE_ACCOUNT_TOKEN, else Mac Keychain item `op-dev-token`) — silent, no
-# Touch ID, key only in this process's memory. Never print the key.
-#
-# Workspace: exactly one (tea-ct11rp0gph6c73bf2kf0); pinned via
-# RENDER_WORKSPACE/--confirm so no interactive selection ever triggers.
+# Project-aware wrapper for the official Render CLI.
+case "$-" in *x*) set +x ;; esac
 set -euo pipefail
 
-WORKSPACE="tea-ct11rp0gph6c73bf2kf0"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_CONTEXT="$HERE/project-context"
+OP_WRAPPER="$HERE/op"
 
-command -v render >/dev/null 2>&1 || {
-  echo "ERROR: render CLI not installed." >&2
-  case "$(uname -s)" in
-    Darwin) echo "  Install with: brew install render" >&2 ;;
-    *) echo "  Install per https://render.com/docs/cli (e.g. curl -fsSL https://raw.githubusercontent.com/render-oss/cli/refs/heads/main/bin/install.sh | sh)" >&2 ;;
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  render-cli [wrapper options] <render arguments...>
+  render-cli [wrapper options] api <GET|HEAD|POST|PUT|PATCH|DELETE> </v1/...>
+  render-cli [wrapper options] context
+  render-cli [wrapper options] doctor
+
+wrapper options (must precede the command):
+  --project <id>            Explicit project profile
+  --allow-cross-project     Permit an explicit profile outside its registered repos
+  --write                   Permit a mutating/interactive command
+  --reason <text>           Sensitive-access reason (required for writes)
+
+Read commands auto-detect the project from the exact Git origin. Mutations require
+both --write and --project. There is no default project or credential.
+EOF
+}
+
+fail() {
+  echo "render-cli: $*" >&2
+  exit "${2:-2}"
+}
+
+project=""
+project_explicit=0
+allow_cross=0
+write_allowed=0
+reason=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      [[ $# -ge 2 ]] || fail "--project requires a value"
+      project="$2"; project_explicit=1; shift 2 ;;
+    --project=*)
+      project="${1#*=}"; project_explicit=1; shift ;;
+    --allow-cross-project)
+      allow_cross=1; shift ;;
+    --write)
+      write_allowed=1; shift ;;
+    --reason)
+      [[ $# -ge 2 ]] || fail "--reason requires a value"
+      reason="$2"; shift 2 ;;
+    --reason=*)
+      reason="${1#*=}"; shift ;;
+    --help-wrapper)
+      usage; exit 0 ;;
+    --)
+      shift; break ;;
+    *)
+      break ;;
   esac
-  exit 3
+done
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+
+resolve_render_bin() {
+  render_bin="${RENDER_CLI_BIN:-}"
+  if [[ -z "$render_bin" ]]; then
+    if [[ -x /opt/homebrew/bin/render ]]; then
+      render_bin=/opt/homebrew/bin/render
+    else
+      render_bin="$(command -v render 2>/dev/null || true)"
+    fi
+  fi
+  [[ -n "$render_bin" && -x "$render_bin" ]] || {
+    echo "render-cli: official Render CLI not installed." >&2
+    case "$(uname -s)" in
+      Darwin) echo "  Install with: brew install render" >&2 ;;
+      *) echo "  Install per https://render.com/docs/cli" >&2 ;;
+    esac
+    exit 3
+  }
 }
 
-tok="${TS_OP_SERVICE_ACCOUNT_TOKEN:-${OP_SERVICE_ACCOUNT_TOKEN:-}}"
-if [ -z "$tok" ] && [ "$(uname -s)" = "Darwin" ]; then
-  tok="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
+# Help and version never need project or credential resolution.
+case "$1" in
+  -h|--help|-v|--version|help)
+    resolve_render_bin
+    exec "$render_bin" "$@"
+    ;;
+esac
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help)
+      resolve_render_bin
+      exec "$render_bin" "$@"
+      ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || fail "jq is required" 3
+[[ -x "$PROJECT_CONTEXT" ]] || fail "missing project resolver: $PROJECT_CONTEXT" 3
+
+context_args=(--cwd "$PWD" --tool render)
+if [[ "$project_explicit" == 1 ]]; then
+  context_args+=(--project "$project")
 fi
-[ -n "$tok" ] || {
-  echo "ERROR: no 1Password service-account token (set TS_OP_SERVICE_ACCOUNT_TOKEN or Keychain op-dev-token)." >&2
-  exit 3
-}
+if [[ "$allow_cross" == 1 ]]; then
+  context_args+=(--allow-cross-project)
+fi
+context="$("$PROJECT_CONTEXT" "${context_args[@]}")"
+project="$(jq -er '.project' <<<"$context")"
+remote="$(jq -r '.remote // "explicit-outside-git"' <<<"$context")"
+key_ref="$(jq -er '.tools.render.api_key_ref' <<<"$context")"
+workspace_id="$(jq -r '.tools.render.workspace.id // empty' <<<"$context")"
+discovery_names="$(
+  jq -r '.tools.render.workspace.discover_service_names[]?' <<<"$context"
+)"
 
-key="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TS_RENDER_API_KEY/value")"
+if [[ "$1" == "context" ]]; then
+  [[ $# -eq 1 ]] || fail "context takes no arguments"
+  if [[ -n "$workspace_id" ]]; then
+    workspace_description="$workspace_id"
+  else
+    discovery_csv="$(printf '%s\n' "$discovery_names" | paste -sd, -)"
+    workspace_description="discover-by-service:$discovery_csv"
+  fi
+  printf 'project=%s\nremote=%s\nworkspace=%s\ncredential_ref=%s\n' \
+    "$project" "$remote" "$workspace_description" "$key_ref"
+  exit 0
+fi
 
-# `api` subcommand: REST passthrough to api.render.com for endpoints the CLI does
-# not cover (notably /v1/metrics/*). render-cli api <METHOD> <path+query> [curl args]
-if [ "${1:-}" = "api" ]; then
+resolve_render_bin
+
+services_command_is_read_only() {
+  local mode="list" target_seen=0 argument
   shift
-  [ $# -ge 2 ] || { echo "usage: render-cli api <METHOD> </v1/...> [curl args...]" >&2; exit 2; }
-  METHOD="$1"; APIPATH="$2"; shift 2
-  exec curl -sfS --max-time 30 -X "$METHOD" \
-    -H "Authorization: Bearer $key" -H "Accept: application/json" \
-    "https://api.render.com${APIPATH}" "$@"
+  while [[ $# -gt 0 ]]; do
+    argument="$1"
+    case "$argument" in
+      -o|--output|-e|--environment-ids)
+        [[ $# -ge 2 ]] || return 1
+        shift 2
+        ;;
+      -o=*|--output=*|-e=*|--environment-ids=*|--include-previews|--confirm)
+        shift
+        ;;
+      instances)
+        [[ "$mode" == "list" ]] || return 1
+        mode="instances"
+        shift
+        ;;
+      -*)
+        # Unknown flags fail closed because a future flag could consume a
+        # mutating subcommand-looking value.
+        return 1
+        ;;
+      *)
+        if [[ "$mode" == "instances" && "$target_seen" == 0 ]]; then
+          target_seen=1
+          shift
+        else
+          return 1
+        fi
+        ;;
+    esac
+  done
+  return 0
+}
+
+is_read_command() {
+  local first="${1:-}" second="${2:-}"
+  case "$first" in
+    docs|environments|logs|projects|whoami|workspaces) return 0 ;;
+    services)
+      services_command_is_read_only "$@" ;;
+    deploys|jobs)
+      [[ "$second" == "list" ]] ;;
+    postgres|pg|keyvalues|kv)
+      [[ "$second" == "get" || "$second" == "list" ]] ;;
+    workspace)
+      [[ "$second" == "current" ]] ;;
+    workflows)
+      [[ "$second" == "list" ]] ;;
+    blueprints)
+      [[ "$second" == "validate" ]] ;;
+    api)
+      second="$(printf '%s' "$second" | tr '[:lower:]' '[:upper:]')"
+      case "$second" in GET|HEAD) return 0 ;; *) return 1 ;; esac ;;
+    doctor) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+read_only=0
+if is_read_command "$@"; then read_only=1; fi
+if [[ "$read_only" != 1 ]]; then
+  [[ "$write_allowed" == 1 ]] || fail \
+    "command is mutating, interactive, or unknown; pass --write and an explicit --project"
+  [[ "$project_explicit" == 1 ]] || fail \
+    "mutating commands require explicit --project <id>"
+  [[ -n "$reason" ]] || fail "mutating commands require --reason <text>"
 fi
 
-exec env RENDER_API_KEY="$key" RENDER_WORKSPACE="$WORKSPACE" CI=true render "$@"
+if [[ -n "${RENDER_API_KEY:-}" ]]; then
+  key="$RENDER_API_KEY"
+  credential_source="process-environment"
+else
+  if [[ "$key_ref" == op://*-sensitive/* ]]; then
+    if [[ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CODEX_THREAD_ID:-}${CODEX_CI:-}${CONDUCTOR_WORKSPACE:-}${CONDUCTOR_WORKSPACE_NAME:-}${CONDUCTOR_SESSION_ID:-}" ]]; then
+      fail "credential $key_ref is human-only; run this command from a normal terminal or provide an approved RENDER_API_KEY environment"
+    fi
+    if [[ -z "$reason" ]]; then
+      reason="Read Render infrastructure for project $project"
+    fi
+  fi
+  [[ -x "$OP_WRAPPER" ]] || fail "missing 1Password wrapper: $OP_WRAPPER" 3
+  key="$(SENSITIVE_ACCESS_REASON="$reason" "$OP_WRAPPER" read --no-newline "$key_ref")"
+  [[ -n "$key" ]] || fail "1Password returned an empty credential for $project" 3
+  credential_source="$key_ref"
+fi
+
+# The provider child needs only the resolved Render key. Never forward any
+# broader 1Password machine/session credential that the wrapper inherited.
+unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
+for variable_name in "${!OP_SESSION_@}"; do
+  unset "$variable_name"
+done
+
+render_json() {
+  local selected_workspace="${1:-}"
+  shift
+  RENDER_API_KEY="$key" RENDER_WORKSPACE="$selected_workspace" CI=true \
+    "$render_bin" "$@" -o json --confirm
+}
+
+service_matches() {
+  local services="$1" expected
+  while IFS= read -r expected; do
+    [[ -n "$expected" ]] || continue
+    if jq -e --arg expected "$expected" '
+      any(.[];
+        (.service.name? // .name? // "") == $expected
+      )
+    ' >/dev/null <<<"$services"; then
+      return 0
+    fi
+  done <<<"$discovery_names"
+  return 1
+}
+
+if [[ -z "$workspace_id" ]]; then
+  workspaces="$(RENDER_API_KEY="$key" CI=true "$render_bin" workspaces -o json --confirm)"
+  candidate_ids="$(jq -er '.[].id' <<<"$workspaces")"
+  [[ -n "$candidate_ids" ]] || fail "credential exposes no Render workspaces" 3
+  matches=""
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    services="$(render_json "$candidate" services)"
+    if service_matches "$services"; then
+      matches="${matches}${matches:+$'\n'}${candidate}"
+    fi
+  done <<<"$candidate_ids"
+  match_count="$(printf '%s\n' "$matches" | awk 'NF { count++ } END { print count + 0 }')"
+  if [[ "$match_count" -ne 1 ]]; then
+    fail "workspace discovery for $project matched $match_count workspaces; update config/project-tools.json with an explicit workspace id" 3
+  fi
+  workspace_id="$(printf '%s\n' "$matches" | awk 'NF { print; exit }')"
+fi
+
+printf 'Render context: project=%s remote=%s workspace=%s credential=%s\n' \
+  "$project" "$remote" "$workspace_id" "$credential_source" >&2
+
+if [[ "$1" == "doctor" ]]; then
+  [[ $# -eq 1 ]] || fail "doctor takes no arguments"
+  services="$(render_json "$workspace_id" services)"
+  if [[ -n "$discovery_names" ]] && ! service_matches "$services"; then
+    fail "workspace $workspace_id does not contain a configured canary service" 3
+  fi
+  printf 'render-cli doctor: OK project=%s workspace=%s\n' "$project" "$workspace_id"
+  exit 0
+fi
+
+if [[ "$1" == "api" ]]; then
+  shift
+  [[ $# -eq 2 ]] || fail "usage: render-cli [options] api <METHOD> </v1/...>"
+  method="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  path="$2"
+  case "$method" in GET|HEAD|POST|PUT|PATCH|DELETE) ;; *) fail "unsupported HTTP method: $method" ;; esac
+  [[ "$path" == /v1/* && "$path" != *$'\n'* && "$path" != *"://"* ]] || \
+    fail "API path must be a relative /v1/... path"
+  unset RENDER_API_KEY
+  exec 3< <(
+    printf 'Authorization: Bearer %s\nAccept: application/json\n' "$key"
+  )
+  if [[ "$method" == "GET" || "$method" == "HEAD" ]]; then
+    exec curl -fsS --max-time 30 -X "$method" \
+      -H @/dev/fd/3 \
+      "https://api.render.com${path}"
+  fi
+  exec curl -fsS --max-time 30 -X "$method" \
+    -H @/dev/fd/3 -H "Content-Type: application/json" --data-binary @- \
+    "https://api.render.com${path}"
+fi
+
+export RENDER_API_KEY="$key" RENDER_WORKSPACE="$workspace_id" CI=true
+exec "$render_bin" "$@"

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 
-MANAGED = ("agents", "commands", "skills", "hooks", "workflows", "bin")
+MANAGED = ("agents", "commands", "skills", "hooks", "workflows", "bin", "config")
 DESTINATIONS = (
     (".claude/agents", "agents"), (".claude/commands", "commands"),
     (".claude/skills", "skills"), (".claude/hooks", "hooks"),
@@ -181,17 +181,41 @@ def _validate_artifact(root: Path) -> None:
         root / "hooks/memory_context.py",
         root / "bin/autodev-memory-task-packet",
         root / "bin/install-agent-workflows",
+        root / "bin/project-context",
+        root / "bin/render-cli",
+        root / "config/project-tools.json",
     )
     if not all(path.is_file() for path in required):
         raise SystemExit("install-agent-workflows: staged artifact is missing required files")
     for path in (root / "hooks/memory_context.py", root / "hooks/task_packet.py",
-                 root / "bin/autodev-memory-task-packet", root / "bin/install-agent-workflows"):
+                 root / "bin/autodev-memory-task-packet", root / "bin/install-agent-workflows",
+                 root / "bin/project-context"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for path in (root / "hooks/autodev-memory-session-start.sh",
-                 root / "hooks/autodev-memory-pre-agent.sh"):
+                 root / "hooks/autodev-memory-pre-agent.sh", root / "bin/render-cli"):
         check = subprocess.run(["bash", "-n", str(path)], capture_output=True)
         if check.returncode:
             raise SystemExit(f"install-agent-workflows: shell validation failed for {path.name}")
+    try:
+        project_tools = json.loads(
+            (root / "config/project-tools.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(
+            f"install-agent-workflows: invalid project tool registry: {error}"
+        )
+    if not isinstance(project_tools, dict) or project_tools.get("schema_version") != 1:
+        raise SystemExit("install-agent-workflows: unsupported project tool registry")
+    registry_check = subprocess.run(
+        [str(root / "bin/project-context"), "--list-projects"],
+        capture_output=True,
+        env={
+            **os.environ,
+            "PROJECT_TOOLS_CONFIG": str(root / "config/project-tools.json"),
+        },
+    )
+    if registry_check.returncode:
+        raise SystemExit("install-agent-workflows: project tool registry validation failed")
 
 
 def _make_immutable(root: Path) -> None:
