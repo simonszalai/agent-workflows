@@ -645,6 +645,144 @@ class GatewayActivationTests(unittest.TestCase):
             with self.assertRaisesRegex(GATEWAY.SafeError, "canary_deadline_exceeded"):
                 GATEWAY.tool(mock.MagicMock(), state, "get_ticket", {})
 
+    def test_prepare_canary_denies_merged_does_not_deny_in_progress_and_reads_back_safe_state(
+        self,
+    ) -> None:
+        state = GATEWAY.State(
+            GATEWAY.STATE_SCHEMA,
+            "policy-run",
+            GATEWAY.CANARY_PREFIX + "policy-run",
+            None,
+            "prepare",
+            1.0,
+            301.0,
+            list(GATEWAY.CHECKS[:6]),
+            0,
+            0,
+            None,
+        )
+        calls: list[tuple[str, dict[str, object]]] = []
+        ticket = {
+            "id": "F0001",
+            "repo": state.repo,
+            "origin": "hermes",
+            "status": "backlog",
+            "execution_approved_at": None,
+            "execution_approved_by": None,
+        }
+
+        class Client:
+            def tool(
+                self, name: str, arguments: dict[str, object]
+            ) -> dict[str, object]:
+                calls.append((name, arguments))
+                if name == "create_ticket":
+                    return {"ticket_id": "F0001"}
+                if name == "get_ticket":
+                    return {"ticket": dict(ticket)}
+                if name == "update_ticket" and arguments.get("status") == "merged":
+                    return {"error": GATEWAY.MERGED_STATUS_DENIAL}
+                if name == "update_ticket" and arguments.get("approve_execution") is True:
+                    return {"error": "Execution approval requires the admin principal"}
+                if name == "update_ticket" and arguments.get("repo") != state.repo:
+                    return {
+                        "error": (
+                            "This principal may mutate only tickets created by the same origin"
+                        )
+                    }
+                if name == "create_artifact":
+                    return {"artifact_id": "artifact-plan"}
+                if name == "update_ticket" and arguments.get("status") == "planned":
+                    ticket["status"] = "planned"
+                    return {"status": "updated"}
+                if name == "next_ticket":
+                    return {"ticket": None}
+                raise AssertionError((name, arguments))
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            GATEWAY, "probe_gateway"
+        ), mock.patch.object(
+            GATEWAY, "memory_client", return_value=Client()
+        ), mock.patch.object(
+            GATEWAY.time, "time", return_value=2.0
+        ):
+            GATEWAY.prepare_canary(state, Path(temp) / "receipt.json")
+
+        status_updates = [
+            arguments["status"]
+            for name, arguments in calls
+            if name == "update_ticket" and "status" in arguments
+        ]
+        self.assertEqual(status_updates, ["merged", "planned"])
+        self.assertNotIn("in_progress", status_updates)
+        merged_index = next(
+            index
+            for index, (name, arguments) in enumerate(calls)
+            if name == "update_ticket" and arguments.get("status") == "merged"
+        )
+        self.assertEqual(calls[merged_index + 1][0], "get_ticket")
+        self.assertEqual(state.checks, list(GATEWAY.CHECKS[:10]))
+        self.assertEqual(state.phase, "awaiting_admin_approval")
+
+    def test_exact_merged_denial_rejects_wrong_envelopes_and_messages(self) -> None:
+        invalid = (
+            {},
+            {"status": "updated"},
+            {"error": GATEWAY.MERGED_STATUS_DENIAL, "code": "ticket_status_denied"},
+            {"error": "Execution approval requires the admin principal"},
+        )
+        for result in invalid:
+            with self.subTest(result=result), self.assertRaisesRegex(
+                GATEWAY.SafeError, "canary_execution_denial_missing"
+            ):
+                GATEWAY.expect_exact_denial(
+                    result,
+                    GATEWAY.MERGED_STATUS_DENIAL,
+                    "canary_execution_denial_missing",
+                )
+
+    def test_post_merged_denial_readback_rejects_changed_or_approved_ticket(self) -> None:
+        state = GATEWAY.State(
+            GATEWAY.STATE_SCHEMA,
+            "readback-run",
+            GATEWAY.CANARY_PREFIX + "readback-run",
+            "F0001",
+            "prepare",
+            1.0,
+            301.0,
+            list(GATEWAY.CHECKS[:7]),
+            0,
+            0,
+            None,
+        )
+        base = {
+            "id": state.ticket_id,
+            "repo": state.repo,
+            "origin": "hermes",
+            "status": "backlog",
+            "execution_approved_at": None,
+            "execution_approved_by": None,
+        }
+        unsafe = (
+            {**base, "status": "in_progress"},
+            {
+                **base,
+                "execution_approved_at": "2026-07-29T00:00:00Z",
+                "execution_approved_by": "admin",
+            },
+        )
+        for ticket in unsafe:
+            client = mock.MagicMock()
+            client.tool.return_value = {"ticket": ticket}
+            with self.subTest(ticket=ticket), mock.patch.object(
+                GATEWAY.time, "time", return_value=2.0
+            ), self.assertRaisesRegex(
+                GATEWAY.SafeError, "canary_ticket_state_mismatch"
+            ):
+                GATEWAY.get_ticket(
+                    client, state, status="backlog", approved=False
+                )
+
     def test_closed_matrix_includes_server_approval_pickup_and_cleanup(self) -> None:
         self.assertEqual(len(GATEWAY.CHECKS), len(set(GATEWAY.CHECKS)))
         self.assertEqual(GATEWAY.CHECKS, (
