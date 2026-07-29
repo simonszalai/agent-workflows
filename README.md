@@ -38,7 +38,8 @@ skill directory under the corresponding repository folder is therefore visible i
 without rerunning an installer. Codex's skills root also contains Codex-managed and personal
 skills, so it keeps that directory and uses one folder link at
 `~/.codex/skills/agent-workflows`. `~/.local/bin` is shared too, so executables remain direct
-per-file links.
+per-file links. The migration deletes the superseded immutable snapshot store after every live
+link has been switched, so stale pinned copies cannot become active again.
 
 Running `bin/install-agent-workflows` without `--version` now performs this same live-folder setup,
 so an old setup command cannot silently repin the machine. Pinned, one-way environments must pass

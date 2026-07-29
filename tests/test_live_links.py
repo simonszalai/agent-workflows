@@ -79,6 +79,7 @@ class LiveLinksTest(unittest.TestCase):
                 len(json.loads((home / ".codex/hooks.json").read_text())["hooks"]["PreToolUse"]),
                 1,
             )
+            self.assertFalse((home / ".local/share/agent-workflows").exists())
 
             (source / "skills/new-skill").mkdir()
             (source / "skills/new-skill/SKILL.md").write_text("new")
