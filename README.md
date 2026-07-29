@@ -69,143 +69,43 @@ the adapter's ambient-hook suppression automatically. See
 [`docs/memory-provider-matrix.md`](docs/memory-provider-matrix.md). Fable is a workflow/model
 variant, not a fourth provider.
 
-### MCP gateway daemon — 1Password secrets loaded once (once per machine)
+### MCP access — two loopback proxies + CLI wrappers (2026-07-28 consolidation)
 
-Postgres and the remote MCP servers (autodev-memory, render, context7) get their secrets from
-**1Password**. Without the daemon, every `.mcp.json` server spawns a fresh `project-mcp` child
-**per session**, and each postgres child **re-reads 1Password on every spawn** — so launching
-several Conductor workspaces fires a *burst* of biometric prompts (with ~25 workspaces × 5 DBs
-that was ~114 `postgres-mcp` processes and a wall of prompts on every multi-workspace launch).
-
-The `mcp-gateway` launchd daemon fixes this: it resolves **all** MCP secrets from 1Password
-**once at daemon start** (a single biometric prompt), holds them in one long-lived process, and
-fronts every MCP server over localhost HTTP/SSE. Clients connect to `127.0.0.1:8765` and carry
-**no secrets** — so starting a workspace never re-prompts. Install it once per machine:
+Only two MCP servers exist: **autodev-memory** (`127.0.0.1:8792`) and **context7**
+(`127.0.0.1:8793`). Each is a single-upstream loopback auth proxy
+(`mcp-proxies/mcp-proxy.mjs`) started under `op run` with the Keychain
+service-account token (`op-dev-token`) — silent, no biometric prompts; credentials
+live only in the proxy's process memory. Repos check in static-URL project configs
+(`.mcp.json`, `.codex/config.toml`, `.grok/config.toml`); clients hold no secrets
+and there is no user-scope MCP config. Install once per machine:
 
 ```bash
-cd ~/dev/agent-workflows/mcp-gateway
-cp com.simon.mcp-gateway.plist ~/Library/LaunchAgents/
-launchctl load -w ~/Library/LaunchAgents/com.simon.mcp-gateway.plist
-# first start = ONE 1Password prompt; then verify (all 5 postgres children should be alive):
-curl -s http://127.0.0.1:8765/healthz | python3 -m json.tool
-
-# Clients read the local listener token from the shell env — export it from your rc file:
-echo 'export MCP_GATEWAY_TOKEN="$(cat ~/dev/agent-workflows/mcp-gateway/.gateway-token)"' >> ~/.zshrc
+cp ~/dev/agent-workflows/mcp-proxies/com.simon.mcp-proxies.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.simon.mcp-proxies.plist
+~/dev/agent-workflows/mcp-proxies/start-proxies.sh status   # both healthy
 ```
 
-After that, `.mcp.json` / `~/.claude.json` server entries point at the gateway
-(`type: http` for remote servers, `type: sse` for postgres) instead of running `project-mcp`.
-See **`mcp-gateway/README.md`** for the full client-config entries, the per-DB route table, the
-deliberate cutover plan, rollback, and troubleshooting. `project-mcp` (below) still works
-unchanged as the fallback / rollback path for any server not yet migrated.
+Everything else is a **CLI via the shell**, with the same silent per-call credential
+resolution (see the matching `skills/tool-*` references):
 
-**On a teammate's non-Mac machine (Windows / WSL / Linux):** the daemon is plain Node and runs
-anywhere — only the launchd wrapper and the 1Password FIFO mount are Mac-specific. The
-`mcp-gateway/README.md` section **"Running on Windows / WSL / Linux"** has the agent-installable
-recipe: a systemd user service (launchd replacement), running it under WSL2 on Windows, the
-1Password biometric prerequisites per OS, and how to source secrets via `op read` (e.g. the
-read-only analyst item) when the Mac FIFO mount isn't present.
+| Service   | Access |
+| --------- | ------ |
+| render    | `bin/render-cli` (official CLI + `render-cli api GET /v1/...` REST passthrough) |
+| tailscale | `tailscale` CLI (local, credential-free) + `bin/tailscale-admin` (control-plane API) |
+| slack     | `bin/slack-api` (any Web API method) |
+| github    | `gh` CLI |
+| postgres  | per-repo psql wrappers (reference: ts-prefect `scripts/db/sql.sh`) |
 
-### Cloud setup (automatic)
-
-Each project's `deploy/cloud-setup.sh` handles cloning this repo and copying files into
-the tool-specific config directory when running in a remote environment. The GitHub app for
-that environment must be installed on this repo for the clone to work.
-Cloud setup must pin the reviewed commit and invoke `bin/install-agent-workflows --home "$HOME"
---version "$AGENT_WORKFLOWS_COMMIT"`; a clone/copy alone is not activation evidence. The required
-real-provider canaries and metadata-only evidence contract are documented in
-[`docs/memory-provider-matrix.md`](docs/memory-provider-matrix.md#deployment-time-evidence-gate-not-satisfied-by-this-repositorys-unit-tests).
-
-### NanoClaw setup
-
-Mount this repo's directories into the container at the tool-specific config locations:
-
-```yaml
-volumes:
-  - source: /path/to/agent-workflows/agents
-    target: /home/user/.claude/agents
-  - source: /path/to/agent-workflows/commands
-    target: /home/user/.claude/commands
-  - source: /path/to/agent-workflows/skills
-    target: /home/user/.claude/skills
-```
-
-## Resolution precedence
-
-Claude Code checks project `.claude/` first, then user `~/.claude/`. Project-specific
-agents/skills/commands override shared ones of the same name.
-
-Codex reads shared skills from `.agents/skills` and tool-specific agents from `.codex/agents`.
-Keep skills shared, but keep agent definitions in the format each tool expects.
-
-## Adding items
-
-Put new shared skills and hooks directly in this repo. They become available immediately in
-all projects locally via symlinks, and in cloud sessions on next session start. Keep new
-agents tool-specific unless/until a generator owns the conversion.
-
-## Project-specific items
-
-Items that only make sense for one project stay in that project's config directories:
-
-- Project-specific agents (e.g., `investigator-prefect.md` in ts-prefect)
-- Project-specific skills (e.g., `tool-prefect` in ts-prefect)
-- Legacy Claude command wrappers, only when a slash command still needs to exist
-
-## Hooks
-
-Memory system hooks live in `hooks/` and are symlinked to `~/.claude/hooks/` and
-`~/.codex/hooks/`.
-
-### Required: `~/.config/autodev-memory/.env`
-
-Hooks need API credentials to reach the autodev-memory service. These **must** be
-in a dedicated `.env` file — not just in `~/.zshrc` — because hooks run as bash
-subprocesses that do not inherit zsh shell exports (especially when launched from
-GUI apps like Conductor).
-
-```bash
-# Create once per machine:
-mkdir -p ~/.config/autodev-memory
-cat > ~/.config/autodev-memory/.env << 'EOF'
-AUTODEV_MEMORY_API_TOKEN=<your-token>
-AUTODEV_MEMORY_API_URL=https://autodev-memory.onrender.com
-EOF
-```
-
-`mem-lib.sh` sources this file on every hook invocation (line 83-85). Without it,
-hooks fail silently on resume/compact triggers with "AUTODEV_MEMORY_API_TOKEN not set".
-
-### Hook files
-
-| File | Event | Purpose |
-|---|---|---|
-| `autodev-memory-session-start.sh` | SessionStart | Validates/injects one server-rendered packet v2 (bounded v1 digest fallback) |
-| `autodev-memory-pre-agent.sh` | PreToolUse (Agent) | Adds one <=3K skill-scoped task packet to managed Claude children |
-| `memory_context.py` | helper | Validates counts/hash, renders wrappers, manages atomic 0600 session cache |
-| `task_packet.py` | helper | Calls strict repo-scoped `/entries/by-skill` and renders task packets |
-| `mem-lib.sh` | (shared library) | Logging, env parsing, HTTP, entry loading |
-| `mem-err-trap.sh` | (shared library) | Error trapping for clean hook output |
-
-
-## project-mcp launcher (`bin/project-mcp`)
-
-> **Note:** the **mcp-gateway daemon** (above) is now the preferred path — it loads 1Password
-> secrets once instead of re-prompting per spawn. `project-mcp` remains the fallback for servers
-> not yet cut over to the gateway, and the rollback target. It is still the canonical record of
-> *which* 1Password items back each server.
+The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
+launchd** (2026-07-28); `mcp-gateway/` stays in-tree as history only. Its hermes
+(filtered analyst) routes died with it — analyst access needs a new design before
+re-onboarding.
 
 Legacy MCP configs used to set every `.mcp.json` / `.codex/config.toml` server `command`
-to `~/.local/bin/project-mcp <project> <server>` (e.g. `shared autodev-memory`,
-`ts postgres_prod`). New configs should prefer **`mcp-gateway`** instead:
+to `~/.local/bin/project-mcp <project> <server>`; a later generation routed through the
+mcp-gateway daemon. Both are superseded by the static loopback-proxy URLs above.
 
-- Claude / `.mcp.json`: HTTP servers use direct gateway URLs; postgres uses gateway SSE URLs.
-- Codex / `.codex/config.toml`: HTTP servers use direct `url = "http://127.0.0.1:8765/…"`
-  entries; postgres still needs a stdio bridge because Codex's `url` transport is streamable
-  HTTP and does not speak the gateway's legacy SSE endpoint directly, so use pinned
-  `mcp-remote@0.1.38 …/sse --transport sse-only --silent`.
-
-`project-mcp` remains the rollback/fallback target. The `~/.local/bin/project-mcp` path is a
+`project-mcp` is retained in-tree as history. The `~/.local/bin/project-mcp` path is a
 **symlink to `bin/project-mcp` in this repo** — so the launcher is versioned here alongside
 the hooks and skills it sits next to.
 
