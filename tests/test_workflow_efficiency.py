@@ -1189,6 +1189,20 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn('cleanup_kind="flow_run_cleanup"', guide)
         self.assertIn("only after production behavior PASS", guide)
 
+    def test_ticket_cleanup_contract_supports_large_content_addressed_manifests(self) -> None:
+        cleanup = (ROOT / "skills/references/verify-deferred-cleanup.md").read_text()
+
+        self.assertIn("scope_manifest_reference", cleanup)
+        self.assertIn("same parent ticket/epic", cleanup)
+        self.assertIn("sorted_utf8_lines_v1", cleanup)
+        self.assertIn("must equal the resolved manifest exactly", cleanup)
+        self.assertIn("Immediately before mutation, re-fetch", cleanup)
+        self.assertIn("each internal batch is at", cleanup)
+        self.assertIn("most 200 IDs", cleanup)
+        self.assertIn("A partial batch resume is allowed only when", cleanup)
+        self.assertIn("zero-target dry-run", cleanup)
+        self.assertIn("never truncate the inline list", cleanup)
+
     def test_redacted_exec_never_emits_environment_or_labeled_secrets(self) -> None:
         environment = os.environ.copy()
         environment["PREFECT_API_AUTH_STRING"] = "operator:actual-production-secret"

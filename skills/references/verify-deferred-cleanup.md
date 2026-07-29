@@ -59,7 +59,14 @@ name is retired; flow-run deletion is now just a `deferred_cleanup` with
 ```json
 {
   "cleanup_command": "<command; run with --artifact <temp-file> --fix-time <activation boundary §4> --execute plus any documented non-interactive flags (e.g. --yes)>",
-  "scope_manifest": ["<exactly what the command may touch: tables, deployments, paths, ids>"],
+  "scope_manifest": [],
+  "scope_manifest_reference": {
+    "artifact_id": "<same-parent artifact containing the exact manifest>",
+    "metadata_path": "<dot-delimited path to the array, e.g. cleanup_preflight.target_ids>",
+    "count": 0,
+    "sha256": "<sorted_utf8_lines_v1 digest>",
+    "encoding": "sorted_utf8_lines_v1"
+  },
   "reversibility": "reversible | destructive (missing/unknown => destructive)",
   "data_criticality": "noncritical | critical (missing/unknown => critical)",
   "cleanup_kind": "<e.g. flow_run_cleanup, deployment_retirement, table_drop>",
@@ -72,36 +79,64 @@ name is retired; flow-run deletion is now just a `deferred_cleanup` with
 
 Execution rules:
 
-1. Fetch the artifact and write its JSON body to a temp file under the run-scoped scratch
-   directory from §5; delete it as part of §9a cleanup.
-2. **Dry-run first, independently checked:** run `cleanup_command` WITHOUT `--execute` and diff
-   its declared targets against `scope_manifest` BEFORE any mutating run. Anything out of scope
-   → ABORT here; never reach `--execute`.
-3. Run `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation boundary
+1. Resolve exactly one scope source: either a non-empty inline `scope_manifest` or
+   `scope_manifest_reference`. An empty inline array is treated as absent when a reference is
+   present. Two populated sources, or neither source, is an invalid contract.
+2. A reference is eligible only when it names an artifact on the same parent ticket/epic, its
+   `metadata_path` resolves to an array of unique strings, `count` is exact, and `sha256` matches
+   `sorted_utf8_lines_v1`: sort the unique strings lexically, UTF-8 encode each value followed by
+   one `\n`, concatenate, then SHA-256 the result. Do not accept a local path, URL, mutable
+   "latest" lookup, hash-only reference, truncated excerpt, or cross-ticket artifact. For
+   `flow_run_cleanup`, every value must parse as a flow-run UUID.
+3. Fetch the cleanup artifact and the exact scope source by ID. Materialize their JSON under the
+   run-scoped scratch directory from §5 without manually transcribing targets; delete both as part
+   of §9a cleanup. Persist the reference, encoding, count, digest, and resolved artifact ID in the
+   verification evidence before mutation.
+4. **Dry-run first, independently checked:** run `cleanup_command` WITHOUT `--execute`. On the
+   first execution, its declared target set must equal the resolved manifest exactly, not merely
+   be a subset. Anything missing, additional, duplicated, malformed, or outside the activation
+   boundary → ABORT here; never reach `--execute`.
+5. Immediately before mutation, re-fetch the referenced artifact by the same ID, recompute the
+   count/digest, and repeat the dry-run. Any reference, digest, or target-set drift → ABORT.
+6. Run `cleanup_command`, appending `--artifact <temp-file>`, `--fix-time <activation boundary
    from §4>`, `--execute`, and any documented non-interactive flags.
-4. **Scope enforcement is not self-report alone:** after execution, re-diff reported effects
-   against `scope_manifest` AND corroborate with the out-of-band read-only checks from
+7. Large destructive target sets must use the maintained command's bounded internal batching,
+   never repeated model-driven one-ID deletes. For `flow_run_cleanup`, each internal batch is at
+   most 200 IDs. Persist the fixed batch size, total batch count, exact command target IDs, and
+   deleted/already-gone totals; derive the error total as
+   `target_count - deleted - already_gone`. A nonzero error total blocks completion and requires
+   the partial-resume checks below before another mutating command.
+8. **Scope enforcement is not self-report alone:** after execution, re-diff reported effects
+   against the resolved manifest AND corroborate with the out-of-band read-only checks from
    `evidence_contract` (before/after inventory) rather than trusting the command's own counts.
    Any out-of-scope effect → ABORT/blocked, capture the diff into `blocked_context`, do not
    re-run. A command whose executed effects cannot be independently observed is not eligible for
    automatic destructive cleanup, whatever its label says.
-5. Fold the command's reported counts into the verdict output.
+9. A partial batch resume is allowed only when the next dry-run is a subset of the original
+   resolved manifest, every omitted original target is independently confirmed absent, and no
+   additional target appears. Keep the original content-addressed manifest fixed; never replace
+   it with the smaller remainder merely to make the diff pass.
+10. Completion requires both a zero-target dry-run and an independent check that every original
+    target is absent. Fold the command's batch and aggregate counts into the verdict output.
 
 **Automatic same-cycle path:** after production PASS, the orchestrator runs cleanup without
 operator approval when either condition holds:
 
 - it is concretely reversible (`revert_ref` or `revert_command` is present); or
 - it is destructive but `data_criticality="noncritical"`, its dry-run yields an exact bounded
-  target set wholly inside `scope_manifest`, and the before/after `evidence_contract` can
-  independently observe every effect.
+  target set exactly equal to the resolved inline or content-addressed scope manifest, and the
+  before/after `evidence_contract` can independently observe every effect.
 
 `flow_run_cleanup` that deletes only terminal Prefect flow-run history (run metadata/logs, not
 deployments, schedules, blocks, artifacts, or application rows) is a built-in noncritical cleanup
 kind. It is automatically eligible even when a legacy artifact omits `data_criticality`. Before
 executing a legacy artifact, normalize it in place with `cleanup_kind="flow_run_cleanup"`,
-`data_criticality="noncritical"`, the dry-run's exact run IDs as `scope_manifest`, and read-only
-before/after checks as its `evidence_contract`. The command must enforce the ticket selector and
-activation/fix-time boundary; otherwise leave the item blocked as an invalid cleanup contract.
+`data_criticality="noncritical"`, the dry-run's exact run IDs as an inline `scope_manifest` or
+eligible `scope_manifest_reference`, and read-only before/after checks as its
+`evidence_contract`. Use the reference form when the exact inline list exceeds an artifact input
+boundary; never truncate the inline list or substitute only a count/hash. The command must enforce
+the ticket selector and activation/fix-time boundary; otherwise leave the item blocked as an
+invalid cleanup contract.
 
 Missing/unknown criticality remains critical for every other destructive cleanup kind. Those
 items use the §10a approval-gated path. A `noncritical` label never bypasses dry-run, exact scope,
