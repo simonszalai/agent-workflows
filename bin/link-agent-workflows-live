@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,22 @@ def _link_bins(home: Path, source: Path, store: Path) -> None:
             child.unlink()
 
 
+def _remove_pinned_store(store: Path) -> None:
+    if not store.exists():
+        return
+    if store.is_symlink() or not store.is_dir():
+        raise SystemExit(f"link-agent-workflows-live: refusing unsafe pinned store: {store}")
+    for path in sorted(store.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_file():
+            path.chmod(0o600)
+        elif path.is_dir():
+            path.chmod(0o700)
+    store.chmod(0o700)
+    shutil.rmtree(store)
+
+
 def _preflight_bins(home: Path, source: Path, store: Path) -> None:
     destination = home / ".local/bin"
     for executable in source.joinpath("bin").iterdir():
@@ -206,6 +223,7 @@ def link_live(source: Path, home: Path) -> None:
     _link_bins(home, source, store)
     _merge_hooks(settings_paths[0], home / ".claude/hooks")
     _merge_hooks(settings_paths[1], home / ".codex/hooks")
+    _remove_pinned_store(store)
 
 
 def main() -> None:
