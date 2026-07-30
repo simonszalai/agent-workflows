@@ -50,6 +50,45 @@ Read and follow:
 - `../references/ci-self-heal.md`
 - the called skills' own boundaries
 
+### Fresh deployment-owner boundary
+
+The initial caller is a dispatcher only. Unless its packet explicitly says
+`mode: deployment_owner`, it must not execute any deploy, promotion, verification, CI repair, or
+remote mutation itself:
+
+1. Load the ticket once with `detail="light", include_events=false`, then fetch only the exact
+   artifact bodies named by that manifest. Hash every body. At minimum include the current
+   `deployment_guide`.
+2. Write one immutable packet of at most 16 KiB. It contains the ticket ID, normalized target,
+   current head and working-tree identities, deployment-guide artifact ID and SHA-256,
+   dependencies, evidence gates, lifecycle entry state, and required terminal return shape.
+3. Record the light manifest read, exact artifact reads, and packet reference in a
+   `workflow-ticket-context-check receipt` contract.
+4. Create a `contract_profile: "bounded-owner"` envelope with `phase_name: "deployment"`,
+   `fork_mode: "none"`, `owner_role: "deployment_owner"`, `dispatch_depth: 0`,
+   `redispatch_allowed: false`, and
+   `context_strategy: "light_manifest_exact_artifacts"`. Validate it before dispatch:
+
+   ```text
+   bin/phase-contract owner-dispatch <absolute-envelope-path>
+   ```
+
+5. Dispatch exactly one fresh owner and block once for its terminal result:
+
+   ```text
+   Agent(
+     subagent_type="general-purpose",
+     fork_turns="none",
+     prompt="Use /ticket-deploy in deployment_owner mode. Read only the packet and envelope."
+   )
+   ```
+
+Capture that result once and validate it with
+`bin/phase-contract result <result-path> --dispatch <envelope-path>` before accepting it.
+An invocation already marked `mode: deployment_owner` must verify the validated envelope, then
+continue with the process below. It must never dispatch another deployment owner. This marker and
+the envelope's `redispatch_allowed: false` are the recursion guard.
+
 All CI and Prefect waits must use one bounded waiter process. In Conductor, dispatch only the wait
 to one fresh leaf with `fork_turns: "none"`, then block once for its terminal result. Never poll a
 resumable process session or re-sample the parent model while the external run is pending.
@@ -85,6 +124,17 @@ and resume automatically. A red CI check alone is never a terminal outcome.
 Load the standalone ticket once with `detail="light", include_events=false`. Cache the artifact
 manifest, including any `deferred_cleanup` or legacy flow-run-cleanup artifact. Refuse epic
 members, source tickets, abandoned tickets, and ambiguous repository scope.
+
+Before the first remote mutation, compile the cached FINALIZED guide into the machine contract
+defined by `/create-deployment-guide` and run:
+
+```text
+deployment-guide-contract --environment <staging|production|full> <absolute-contract-path>
+```
+
+This validation must precede `/auto-deploy`, `/ticket-promote`, schema/config mutation, evidence
+producer triggers, and every other remote mutation. An invalid, DRAFT, stale, or incomplete
+contract is a hard stop. Never repair the guide after mutation and retroactively call it valid.
 
 Enter from lifecycle truth rather than repeating completed legs:
 
