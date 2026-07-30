@@ -14,6 +14,7 @@ import time
 
 
 TERMINAL_FAILURE = {"fail", "cancel"}
+TERMINAL_CHECK_BUCKETS = {"pass", "fail", "cancel", "skipping"}
 RUN_SUCCESS = {"success", "neutral", "skipped"}
 
 
@@ -42,6 +43,28 @@ def main() -> None:
     run: dict = {}
     status = "timeout"
     error = None
+    prior_terminal_check_keys: set[tuple[str, str]] | None = None
+
+    def check_fields() -> dict:
+        status_counts: dict[str, int] = {}
+        failed_checks = []
+        pending = 0
+        for item in checks:
+            if not isinstance(item, dict):
+                continue
+            bucket = str(item.get("bucket") or "pending").lower()
+            status_counts[bucket] = status_counts.get(bucket, 0) + 1
+            if bucket not in TERMINAL_CHECK_BUCKETS:
+                pending += 1
+            if bucket in TERMINAL_FAILURE:
+                failed_checks.append(
+                    {key: item.get(key) for key in ("name", "state", "bucket", "link")}
+                )
+        return {
+            "checks_pending": pending,
+            "status_counts": dict(sorted(status_counts.items())),
+            "failed_checks": failed_checks,
+        }
 
     def resume_command() -> str:
         elapsed = time.monotonic() - started
@@ -66,6 +89,7 @@ def main() -> None:
             "checks": [{key: item.get(key) for key in ("name", "state", "bucket", "link")}
                        for item in checks[:100] if isinstance(item, dict)],
             "checks_truncated": len(checks) > 100,
+            **check_fields(),
             "run": {key: run.get(key) for key in
                     ("name", "status", "conclusion", "url")} if run else None,
             "error": f"interrupted by signal {signum} before a terminal CI state",
@@ -101,7 +125,7 @@ def main() -> None:
             status, error = "error", str(exception)[-1000:]
             break
         polls += 1
-        if result.returncode not in ((0,) if args.run_id else (0, 8)):
+        if result.returncode not in ((0,) if args.run_id else (0, 1, 8)):
             status = "error"
             error = (result.stderr or "gh CI query failed").strip()[-1000:]
             break
@@ -120,12 +144,20 @@ def main() -> None:
             checks = parsed if isinstance(parsed, list) else []
             buckets = {str(item.get("bucket", "pending")).lower() for item in checks
                        if isinstance(item, dict)}
-            if buckets & TERMINAL_FAILURE:
-                status = "failure"
-                break
-            if checks and buckets <= {"pass", "skipping"}:
-                status = "success"
-                break
+            check_keys = {
+                (str(item.get("name") or ""), str(item.get("link") or ""))
+                for item in checks if isinstance(item, dict)
+            }
+            all_terminal = bool(checks) and buckets <= TERMINAL_CHECK_BUCKETS
+            # Two consecutive terminal observations of the same set prevent a partial early set
+            # from looking complete before GitHub has registered the remaining required jobs.
+            if all_terminal:
+                if prior_terminal_check_keys == check_keys:
+                    status = "failure" if buckets & TERMINAL_FAILURE else "success"
+                    break
+                prior_terminal_check_keys = check_keys
+            else:
+                prior_terminal_check_keys = None
         now = time.monotonic()
         if now >= deadline:
             break
@@ -141,6 +173,7 @@ def main() -> None:
         "checks": [{key: item.get(key) for key in ("name", "state", "bucket", "link")}
                    for item in checks[:100] if isinstance(item, dict)],
         "checks_truncated": len(checks) > 100,
+        **check_fields(),
         "run": {key: run.get(key) for key in
                 ("name", "status", "conclusion", "url")} if run else None,
         "error": error,

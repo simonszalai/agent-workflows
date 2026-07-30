@@ -86,6 +86,12 @@ terminal result or one timeout.
 - Run the waiter or poller as one blocking foreground tool call whenever the harness supports it.
   Resume model reasoning only after the process reaches a terminal predicate or its deadline.
 - If the harness yields a resumable command session, do not build a model loop around the session.
+  For a local command expected to finish within five minutes, issue exactly one blocking
+  `write_stdin` observation with the full remaining deadline. If that observation is still
+  nonterminal, stop with the exact resume command or rotate the deterministic command to one
+  minimal bounded owner. A second model-driven poll for the same `session_id`, `cell_id`, active
+  child set, or explicit progress-lease key is invalid. Validate the observation sequence with
+  `bin/progress-lease policy <receipt.json>`.
   Use one supported long blocking wait. If that is unavailable, delegate only the deterministic
   waiter process to one fresh `fork_turns: "none"` leaf whose packet contains the identifiers,
   deadline, and exact command. The parent blocks once for the leaf's terminal result. If neither

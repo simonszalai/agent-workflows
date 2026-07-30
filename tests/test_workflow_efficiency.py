@@ -941,7 +941,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             summary = json.loads(result.stdout)
             self.assertEqual(summary["status"], "success")
-            self.assertEqual(summary["polls"], 2)
+            self.assertEqual(summary["polls"], 3)
             self.assertEqual(result.stdout.count("\n"), 1)
 
     def test_shared_waiters_are_portable_from_an_unrelated_consumer_repo(self) -> None:

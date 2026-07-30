@@ -9,9 +9,11 @@ GitHub Actions runs are the expensive outer loop; the goal is that the first pus
 green. Before the **first** push of any branch that will trigger CI, and before **every** re-push
 inside the repair loop:
 
-1. Run `bin/ci-local --run` at the exact tree being pushed. It extracts the repo's own workflow
-   `run:` steps (skipping setup actions) and executes them locally; a repo-local `bin/ci-local`
-   or `scripts/ci-local` override wins automatically.
+1. Run `bin/ci-local --run --receipt <absolute-receipt-path>` at the exact tree being pushed. It
+   extracts the repo's own workflow `run:` steps (skipping setup actions), executes them locally,
+   and atomically records head/tree SHA, jobs, results, explicit skips, timestamps, and overall
+   terminal status. A repo-local `bin/ci-local` or `scripts/ci-local` override wins automatically
+   and must honor the same receipt contract.
 2. Treat the tool as scaffolding, not an oracle — apply judgment to its SKIPs:
    - Jobs skipped for `services:` (e.g. Postgres): if the service is already available locally,
      force the job with `--run --job <name>`; otherwise note the gap.
@@ -21,8 +23,11 @@ inside the repair loop:
    - If an extracted command fails for a purely local-environment reason (missing local tool,
      stale local cache), fix the local environment or adapt the command on the fly — do not
      "fix" repo code to satisfy a broken local setup, and never weaken the check itself.
-3. Push only after every locally reproducible job passes. Record which jobs passed locally and
-   which were skipped as not locally reproducible.
+3. Push only after every locally reproducible job passes. Immediately before the first push and
+   every re-push, run
+   `bin/ci-local --require-receipt <absolute-receipt-path>`. A missing, failed, or stale-tree
+   receipt is a hard stop. Record which jobs passed locally and which were explicitly skipped as
+   not locally reproducible.
 
 A local parity PASS never replaces the real check set; it only makes round-trips rare. Deploy-only
 jobs (branch-gated migrate/release jobs) are out of scope for the local gate.

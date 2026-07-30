@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Validate a finalized deployment-guide contract before remote mutation."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+GATE_CLASSES = {"causal_ship_gate", "observation"}
+ENVIRONMENTS = {"staging", "production"}
+
+
+class ContractError(ValueError):
+    """The deployment guide cannot safely authorize mutation."""
+
+
+def require_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"{field} must be a non-empty string")
+    return value
+
+
+def require_value_or_na(value: object, field: str) -> object:
+    if isinstance(value, str) and value.strip():
+        return value
+    if not isinstance(value, dict) or value.get("status") != "N/A":
+        raise ContractError(f"{field} must be a non-empty string or justified N/A")
+    require_string(value.get("justification"), f"{field}.justification")
+    if set(value) != {"status", "justification"}:
+        raise ContractError(f"{field} N/A may contain only status and justification")
+    return value
+
+
+def load(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ContractError("contract root must be an object")
+    return value
+
+
+def validate(value: dict, required_environment: str | None = None) -> dict:
+    if value.get("schema_version") != 1:
+        raise ContractError("schema_version must equal 1")
+    if value.get("status") != "FINALIZED":
+        raise ContractError("status must equal FINALIZED")
+    require_value_or_na(value.get("activation_boundary"), "activation_boundary")
+    environments = value.get("environments")
+    if not isinstance(environments, dict) or set(environments) != ENVIRONMENTS:
+        raise ContractError("environments must contain exactly staging and production")
+
+    counts: dict[str, int] = {}
+    for environment in sorted(ENVIRONMENTS):
+        contract = environments[environment]
+        prefix = f"environments.{environment}"
+        if isinstance(contract, dict) and contract.get("status") == "N/A":
+            require_value_or_na(contract, prefix)
+            counts[environment] = 0
+            continue
+        if not isinstance(contract, dict) or set(contract) != {"rows"}:
+            raise ContractError(f"{prefix} must contain rows or be a justified N/A")
+        rows = contract["rows"]
+        if not isinstance(rows, list) or not rows:
+            raise ContractError(f"{prefix}.rows must be a non-empty array")
+        seen: set[str] = set()
+        for index, row in enumerate(rows):
+            field = f"{prefix}.rows[{index}]"
+            if not isinstance(row, dict):
+                raise ContractError(f"{field} must be an object")
+            row_id = require_string(row.get("id"), f"{field}.id")
+            if row_id in seen:
+                raise ContractError(f"{field}.id is duplicated")
+            seen.add(row_id)
+            require_string(row.get("exact_command"), f"{field}.exact_command")
+            require_string(row.get("expected_result"), f"{field}.expected_result")
+            require_string(row.get("bad_interpretation"), f"{field}.bad_interpretation")
+            if row.get("gate_class") not in GATE_CLASSES:
+                raise ContractError(
+                    f"{field}.gate_class must be causal_ship_gate or observation"
+                )
+            require_value_or_na(row.get("bounded_producer"), f"{field}.bounded_producer")
+            require_value_or_na(row.get("cleanup"), f"{field}.cleanup")
+        counts[environment] = len(rows)
+    required = {
+        "staging": {"staging"},
+        "production": {"production"},
+        "full": ENVIRONMENTS,
+    }.get(required_environment, set())
+    missing = sorted(environment for environment in required if counts[environment] == 0)
+    if missing:
+        raise ContractError(
+            "required environment rows are N/A: " + ", ".join(missing)
+        )
+    if not any(counts.values()):
+        raise ContractError("at least one environment must contain evidence rows")
+    return {
+        "status": "valid",
+        "contract_status": "FINALIZED",
+        "environment_row_counts": counts,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="deployment-guide-contract")
+    parser.add_argument(
+        "--environment",
+        choices=("staging", "production", "full"),
+        help="require evidence rows for the selected deployment target",
+    )
+    parser.add_argument("contract", type=Path)
+    args = parser.parse_args()
+    try:
+        result = validate(load(args.contract.resolve()), args.environment)
+    except ContractError as exc:
+        print(json.dumps({"status": "invalid", "error": str(exc)}, separators=(",", ":")))
+        return 2
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
