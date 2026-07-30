@@ -14,6 +14,7 @@ from pathlib import Path
 NONTERMINAL_STATES = {"running", "sleep", "paused", "unknown"}
 TERMINAL_STATES = {"complete", "blocked", "failed", "rotate_required"}
 POLLING_OPERATIONS = {
+    "wait",
     "wait_agent",
     "write_stdin",
     "list_agents",

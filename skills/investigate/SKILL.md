@@ -60,11 +60,15 @@ Pass `--memory-context-file "$MEMORY_PACKET"` and
 ```
 mcp__autodev-memory__get_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  detail="full", artifact_types=["source", "investigation", "verification_evidence"],
+  detail="light",
   include_events=false
 )
 ```
 
+- Cache the light manifest and its `context_version`. Fetch the exact `source` artifact by its
+  manifest ID with `mcp__autodev-memory__get_artifact`. Fetch `investigation` or
+  `verification_evidence` only when its exact manifest row is needed. Record artifact IDs and
+  SHA-256 hashes; never reload the ticket broadly in a child.
 - Read the source artifact for context
 - If status is `backlog`, update to `in_progress`:
   ```
@@ -195,6 +199,17 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
    ```
 
 4. **Run the selected investigation:**
+
+   Before every native, Workflow, or provider investigation spawn, create a self-contained packet
+   of at most 16 KiB and a runtime ticket-context receipt proving the one light manifest read,
+   exact artifact reads, packet path, and immutable hashes. Create a
+   `contract_profile: "bounded-owner"` envelope with `phase_name: "investigation"`,
+   `fork_mode: "none"`, `owner_role: "investigator"`, `dispatch_depth: 0`,
+   `redispatch_allowed: false`, `context_strategy: "light_manifest_exact_artifacts"`, current head
+   and tree SHA, target environment, dependencies, and evidence/prediction gates. Run
+   `bin/phase-contract owner-dispatch <absolute-envelope-path>` before the spawn. An invalid
+   envelope is a hard stop. An investigator packet is owner mode and cannot recursively dispatch
+   another investigator.
 
    **Light:** spawn exactly ONE relevant native agent from the dispatch table with
    `fork_turns: "none"` and a self-contained packet containing symptom, environment, collected
@@ -458,9 +473,10 @@ artifacts.
 
 **Sub-agents (investigator, investigator-prefect) must:**
 
-- **RETURN findings directly** in your response - do NOT create files
+- **RETURN findings directly** with the bounded evidence-envelope path and compact evidence rows
 - The parent agent will synthesize all findings into a single investigation artifact
-- Never create local work_items folders or investigation files yourself
+- Create only the scratch logs/result envelope required by the bounded-output contract. Never
+  create local work_items folders, ticket artifacts, or investigation documents.
 
 **Only the orchestrating agent** (invoked via `/investigate {number}`) writes the final
 investigation artifact to the ticket via `mcp__autodev-memory__create_artifact`.

@@ -21,11 +21,14 @@ is exec'd instead (unless --no-override).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -163,12 +166,161 @@ def print_plan(jobs: list[Job]) -> None:
             print(f"       $ {first_line}" + (f"  (+{extra} lines)" if extra else "") + marker)
 
 
-def run_job(job: Job, repo_root: Path) -> bool:
+def git_read(repo_root: Path, *args: str, env: dict[str, str] | None = None) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def git_identity(
+    repo_root: Path,
+    *,
+    exclude_paths: tuple[Path, ...] = (),
+) -> dict[str, str | None]:
+    head_sha = git_read(repo_root, "rev-parse", "HEAD")
+    tree_sha = git_read(repo_root, "rev-parse", "HEAD^{tree}")
+    index_path_value = git_read(repo_root, "rev-parse", "--git-path", "index")
+    if index_path_value:
+        index_path = Path(index_path_value)
+        if not index_path.is_absolute():
+            index_path = repo_root / index_path
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_index = Path(directory) / "index"
+            if index_path.is_file():
+                shutil.copy2(index_path, temporary_index)
+            environment = os.environ.copy()
+            environment["GIT_INDEX_FILE"] = str(temporary_index)
+            staged = subprocess.run(
+                ["git", "-C", str(repo_root), "add", "-A"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            if staged.returncode == 0:
+                for excluded in exclude_paths:
+                    try:
+                        relative = excluded.resolve().relative_to(repo_root)
+                    except ValueError:
+                        continue
+                    if git_read(
+                        repo_root, "ls-files", "--error-unmatch", str(relative)
+                    ) is not None:
+                        continue
+                    subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(repo_root),
+                            "reset",
+                            "-q",
+                            "HEAD",
+                            "--",
+                            str(relative),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env=environment,
+                    )
+                tree_sha = git_read(repo_root, "write-tree", env=environment)
+    return {"head_sha": head_sha, "tree_sha": tree_sha}
+
+
+def atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def validate_receipt(path: Path, repo_root: Path) -> tuple[dict, int]:
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "invalid", "error": f"cannot read receipt: {exc}"}, 2
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != 1:
+        return {"status": "invalid", "error": "receipt schema_version must equal 1"}, 2
+    required = {
+        "started_at": str,
+        "completed_at": str,
+        "head_sha": str,
+        "tree_sha": str,
+        "post_tree_sha": str,
+        "tree_changed_during_run": bool,
+        "executed_jobs": list,
+        "jobs": list,
+        "explicit_skips": list,
+        "overall_status": str,
+    }
+    for field, expected_type in required.items():
+        if not isinstance(receipt.get(field), expected_type):
+            return {
+                "status": "invalid",
+                "error": f"receipt {field} has an invalid type",
+            }, 2
+    for field in ("head_sha", "tree_sha", "post_tree_sha"):
+        digest = receipt[field]
+        if len(digest) not in {40, 64} or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            return {
+                "status": "invalid",
+                "error": f"receipt {field} is not a git identity",
+            }, 2
+    if receipt.get("overall_status") not in {"passed", "passed_with_skips"}:
+        return {"status": "invalid", "error": "receipt is not a passing terminal result"}, 2
+    if receipt["tree_changed_during_run"] or receipt["post_tree_sha"] != receipt["tree_sha"]:
+        return {"status": "invalid", "error": "receipt tree changed during the CI run"}, 2
+    allowed_results = {"passed", "partial", "skipped", "failed"}
+    if any(
+        not isinstance(row, dict) or row.get("result") not in allowed_results
+        for row in receipt["jobs"]
+    ):
+        return {"status": "invalid", "error": "receipt jobs are malformed"}, 2
+    if any(row["result"] == "failed" for row in receipt["jobs"]):
+        return {"status": "invalid", "error": "receipt contains a failed job"}, 2
+    if receipt["overall_status"] == "passed" and receipt["explicit_skips"]:
+        return {
+            "status": "invalid",
+            "error": "passing receipt cannot conceal explicit skips",
+        }, 2
+    current = git_identity(repo_root, exclude_paths=(path,))
+    if not current["tree_sha"]:
+        return {"status": "invalid", "error": "current git tree identity is unavailable"}, 2
+    if receipt.get("tree_sha") != current["tree_sha"]:
+        return {
+            "status": "stale",
+            "error": "receipt tree_sha does not match the current working tree",
+            "receipt_tree_sha": receipt.get("tree_sha"),
+            "current_tree_sha": current["tree_sha"],
+        }, 3
+    return {
+        "status": "current",
+        "receipt_path": str(path.resolve()),
+        "head_sha": current["head_sha"],
+        "tree_sha": current["tree_sha"],
+        "overall_status": receipt["overall_status"],
+    }, 0
+
+
+def run_job(job: Job, repo_root: Path) -> tuple[bool, list[str]]:
     print(f"\n=== job: {job.name} ===", flush=True)
+    skipped_steps: list[str] = []
     for step in job.steps:
         label = step.name or step.command.splitlines()[0]
         if step.needs_expression:
             print(f"--- SKIPPED (needs ${{{{ }}}} substitution): {label}", flush=True)
+            skipped_steps.append(label)
             continue
         print(f"--- {label}", flush=True)
         result = subprocess.run(
@@ -177,9 +329,9 @@ def run_job(job: Job, repo_root: Path) -> bool:
         )
         if result.returncode != 0:
             print(f"FAIL {job.name}: step '{label}' exited {result.returncode}", flush=True)
-            return False
+            return False, skipped_steps
     print(f"PASS {job.name}", flush=True)
-    return True
+    return True, skipped_steps
 
 
 def main() -> int:
@@ -190,9 +342,21 @@ def main() -> int:
                         help="limit to this job (repeatable); forces SKIP-classified jobs")
     parser.add_argument("--no-override", action="store_true",
                         help="ignore a repo-local ci-local override script")
+    parser.add_argument("--receipt", type=Path,
+                        help="atomically write a machine-readable run receipt")
+    parser.add_argument("--require-receipt", type=Path,
+                        help="validate a passing receipt against the current working tree")
     args = parser.parse_args()
 
     repo_root = Path(args.repo).resolve()
+    if args.receipt and not args.run:
+        parser.error("--receipt requires --run")
+    if args.require_receipt:
+        if args.run or args.job or args.receipt:
+            parser.error("--require-receipt is a standalone validation mode")
+        result, exit_code = validate_receipt(args.require_receipt.resolve(), repo_root)
+        print(json.dumps(result, separators=(",", ":")))
+        return exit_code
     if not args.no_override and os.environ.get("CI_LOCAL_OVERRIDE") != "1":
         for override in (repo_root / "bin" / "ci-local", repo_root / "scripts" / "ci-local"):
             if override.is_file() and os.access(override, os.X_OK) \
@@ -220,17 +384,82 @@ def main() -> int:
         print_plan(jobs)
         return 0
 
+    started_at = datetime.now(timezone.utc).isoformat()
+    identity_before = git_identity(
+        repo_root, exclude_paths=(args.receipt.resolve(),)
+    ) if args.receipt else {
+        "head_sha": None, "tree_sha": None
+    }
+    if args.receipt and (
+        identity_before["head_sha"] is None or identity_before["tree_sha"] is None
+    ):
+        print("ci-local: git head/tree identity is required for a receipt", file=sys.stderr)
+        return 2
     results: dict[str, str] = {}
+    job_receipts: list[dict[str, object]] = []
+    explicit_skips: list[dict[str, object]] = []
     for job in jobs:
         if job.skip_reasons and not args.job:
             results[job.name] = "SKIP (" + "; ".join(job.skip_reasons) + ")"
+            skipped = {"job": job.name, "reasons": job.skip_reasons}
+            explicit_skips.append(skipped)
+            job_receipts.append({
+                "name": job.name,
+                "result": "skipped",
+                "skip_reasons": job.skip_reasons,
+                "skipped_steps": [],
+            })
             continue
-        results[job.name] = "PASS" if run_job(job, repo_root) else "FAIL"
+        passed, skipped_steps = run_job(job, repo_root)
+        results[job.name] = "PASS" if passed else "FAIL"
+        if skipped_steps:
+            explicit_skips.append({
+                "job": job.name,
+                "reasons": ["steps require expression substitution"],
+                "steps": skipped_steps,
+            })
+        job_receipts.append({
+            "name": job.name,
+            "result": "failed" if not passed else ("partial" if skipped_steps else "passed"),
+            "skip_reasons": [],
+            "skipped_steps": skipped_steps,
+        })
 
     print("\n=== ci-local summary ===")
     for name, outcome in results.items():
         print(f"{outcome:>4s}  {name}" if outcome in {"PASS", "FAIL"} else f"SKIP  {name}: {outcome[6:-1]}")
-    return 1 if any(outcome == "FAIL" for outcome in results.values()) else 0
+    exit_code = 1 if any(outcome == "FAIL" for outcome in results.values()) else 0
+    if args.receipt:
+        identity_after = git_identity(
+            repo_root, exclude_paths=(args.receipt.resolve(),)
+        )
+        tree_changed = identity_before["tree_sha"] != identity_after["tree_sha"]
+        if exit_code:
+            overall_status = "failed"
+        elif tree_changed:
+            overall_status = "tree_changed"
+            exit_code = 2
+        elif explicit_skips:
+            overall_status = "passed_with_skips"
+        else:
+            overall_status = "passed"
+        receipt = {
+            "schema_version": 1,
+            "started_at": started_at,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "repo_root": str(repo_root),
+            **identity_before,
+            "post_tree_sha": identity_after["tree_sha"],
+            "tree_changed_during_run": tree_changed,
+            "executed_jobs": [
+                row["name"] for row in job_receipts if row["result"] != "skipped"
+            ],
+            "jobs": job_receipts,
+            "explicit_skips": explicit_skips,
+            "overall_status": overall_status,
+        }
+        atomic_json(args.receipt.resolve(), receipt)
+    return exit_code
 
 
 if __name__ == "__main__":

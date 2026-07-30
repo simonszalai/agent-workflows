@@ -165,8 +165,18 @@ def validate_manifest(manifest: dict) -> dict:
     log_dir = require_absolute_path(manifest.get("log_dir"), "log_dir")
     if state_path == log_dir or log_dir in state_path.parents:
         raise ContractError("state_path must be a file outside log_dir")
-    if ".context" in state_path.parts or ".context" in log_dir.parts:
-        raise ContractError("state_path and log_dir must survive run-scoped .context cleanup")
+    receipt_value = manifest.get("receipt_path")
+    receipt_path = (
+        require_absolute_path(receipt_value, "receipt_path")
+        if receipt_value is not None
+        else Path(str(state_path) + ".receipt.json")
+    )
+    if receipt_path in {state_path, log_dir} or log_dir in receipt_path.parents:
+        raise ContractError("receipt_path must be a file outside state_path and log_dir")
+    if any(".context" in path.parts for path in (state_path, log_dir, receipt_path)):
+        raise ContractError(
+            "state_path, log_dir, and receipt_path must survive run-scoped .context cleanup"
+        )
     require_int(
         manifest.get("overall_timeout_seconds"),
         "overall_timeout_seconds",
@@ -283,6 +293,7 @@ def validate_manifest(manifest: dict) -> dict:
 
     manifest["_state_path"] = state_path
     manifest["_log_dir"] = log_dir
+    manifest["_receipt_path"] = receipt_path
     manifest["_working_directory"] = working_directory
     return manifest
 
@@ -355,6 +366,7 @@ def receipt_base(manifest: dict, state: dict) -> dict:
         "working_directory": str(manifest["_working_directory"]),
         "manifest_sha256": state["manifest_sha256"],
         "state_path": str(manifest["_state_path"]),
+        "receipt_path": str(manifest["_receipt_path"]),
         "log_dir": str(manifest["_log_dir"]),
         "rows": state.get("rows", []),
         "pending_timeout": state.get("pending_timeout"),
@@ -443,6 +455,18 @@ def finalize(manifest: dict, state: dict, post_identity: str) -> dict:
     }
 
 
+def persist_terminal_receipt(manifest: dict, state: dict, receipt: dict) -> dict:
+    canonical = {**receipt, "receipt_path": str(manifest["_receipt_path"])}
+    canonical.pop("receipt_sha256", None)
+    atomic_write(manifest["_receipt_path"], canonical)
+    digest = hashlib.sha256(manifest["_receipt_path"].read_bytes()).hexdigest()
+    state["terminal_receipt"] = canonical
+    state["receipt_path"] = str(manifest["_receipt_path"])
+    state["receipt_sha256"] = digest
+    atomic_write(manifest["_state_path"], state)
+    return {**canonical, "receipt_sha256": digest}
+
+
 def execute(manifest: dict, manifest_path: Path, *, resume: bool) -> tuple[dict, int]:
     state_path = manifest["_state_path"]
     log_dir = manifest["_log_dir"]
@@ -461,7 +485,9 @@ def execute(manifest: dict, manifest_path: Path, *, resume: bool) -> tuple[dict,
             if state.get("manifest_sha256") != manifest_sha256:
                 raise ContractError("manifest changed after controller state was created")
             if state.get("terminal_receipt"):
-                receipt = state["terminal_receipt"]
+                receipt = persist_terminal_receipt(
+                    manifest, state, state["terminal_receipt"]
+                )
                 return receipt, 0 if receipt.get("promotion_allowed") else 3
             if not resume:
                 raise ContractError("nonterminal state exists; use the emitted resume command")
@@ -563,8 +589,7 @@ def execute(manifest: dict, manifest_path: Path, *, resume: bool) -> tuple[dict,
                 **post_metadata,
             })
         receipt = finalize(manifest, state, post_identity)
-        state["terminal_receipt"] = receipt
-        atomic_write(state_path, state)
+        receipt = persist_terminal_receipt(manifest, state, receipt)
         return receipt, 0 if receipt["promotion_allowed"] else 3
 
 

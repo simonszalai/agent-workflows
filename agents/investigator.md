@@ -141,5 +141,23 @@ Given the problem description, prioritize:
 3. Verify health metrics (database, services)
 4. Check for locks, long-running queries, or deployment issues
 
-Return findings with record counts, timestamps, log snippets, and your hypothesis about the
-root cause.
+## Bounded result evidence
+
+Run every potentially noisy, credential-safe log query, test, large diff, or diagnostic command
+through `bin/compact-exec -- <command>`. Keep the complete output in its protected log. Return only
+the bounded tail, evidence summary, output byte count, absolute `output_file`, and SHA-256 of that
+file. Never paste a large log or diff into the result. If output may contain credentials, use the
+required redacted boundary instead and do not create a raw log.
+
+Return a JSON evidence envelope and validate it before handoff:
+
+```text
+workflow-noisy-command-check --investigator-result <absolute-result-path>
+```
+
+Every evidence row contains `command`, `status`, `summary`, `output_bytes`, `output_tail`,
+`compact_receipt`, `log_file`, and `log_sha256`. Failed commands preserve a bounded diagnostic
+tail. The parent receives only this compact validated envelope and plain absolute log paths.
+
+Return findings with record counts, timestamps, bounded log evidence, and the confirmed or null
+root-cause hypothesis.

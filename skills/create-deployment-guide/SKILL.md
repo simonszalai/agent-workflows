@@ -231,6 +231,40 @@ resolved incident runs on the failure board without a safe cleanup contract.
 
 ### 5. Write/update the artifact
 
+Before marking or persisting a guide as FINALIZED, compile it into this machine contract and run
+`deployment-guide-contract <absolute-contract-path>`:
+
+```json
+{
+  "schema_version": 1,
+  "status": "FINALIZED",
+  "activation_boundary": "exact branch/run/revision boundary",
+  "environments": {
+    "staging": {
+      "rows": [{
+        "id": "staging-1",
+        "exact_command": "read-only command",
+        "expected_result": "concrete good result",
+        "bad_interpretation": "specific defect and failure meaning",
+        "gate_class": "causal_ship_gate",
+        "bounded_producer": {"status": "N/A", "justification": "read-only evidence"},
+        "cleanup": {"status": "N/A", "justification": "no temporary producer"}
+      }]
+    },
+    "production": {
+      "status": "N/A",
+      "justification": "staging-only ticket with no production delivery"
+    }
+  }
+}
+```
+
+Both environment keys are mandatory. Each applicable environment has at least one row with an
+exact command, expected result, bad-output interpretation, gate class, bounded-producer contract,
+and cleanup contract. Any `N/A` must use the object form above with a non-empty justification.
+Validation must pass before the artifact update/create call. A failed contract remains DRAFT; do
+not repair it after deployment or other remote mutation.
+
 Find the existing draft in the `get_ticket` response (the artifact with
 `artifact_type="deployment_guide"`). If found, **update by its `artifact_id`** (preserve plan
 intent, finalize mechanics, mark FINALIZED):

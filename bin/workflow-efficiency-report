@@ -18,7 +18,7 @@ CALL_TYPES = {"function_call", "custom_tool_call"}
 OUTPUT_TYPES = {"function_call_output", "custom_tool_call_output"}
 COMPACTION_TYPES = {"compacted", "context_compacted"}
 MAX_DIAGNOSTIC_ROWS = 20
-MODEL_POLL_TOOL_NAMES = {"wait_agent", "write_stdin", "list_agents"}
+MODEL_POLL_TOOL_NAMES = {"wait", "wait_agent", "write_stdin", "list_agents"}
 
 
 def parse_timestamp(value: object) -> datetime | None:
@@ -136,6 +136,123 @@ def normalized_call_digest(payload: dict) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def opaque_call_argument(payload: dict, name: str) -> str | None:
+    """Read one opaque identifier without normalizing numeric or UUID-like values."""
+    arguments = call_arguments(payload)
+    value = arguments.get(name)
+    if isinstance(value, (str, int)) and not isinstance(value, bool):
+        return str(value)
+    raw = raw_call_arguments(payload)
+    match = re.search(
+        rf"""(?:["']?{re.escape(name)}["']?)\s*:\s*
+             (?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.:/-]+))""",
+        raw,
+        flags=re.VERBOSE,
+    )
+    if match:
+        return next(group for group in match.groups() if group is not None)
+    return None
+
+
+def active_agents_from_output(text: str) -> set[str] | None:
+    """Return a known active-agent set from list_agents JSON, or None if unattributable."""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    terminal = {"complete", "completed", "done", "failed", "cancelled", "canceled"}
+    found_agent_record = False
+    active: set[str] = set()
+
+    def visit(item: object) -> None:
+        nonlocal found_agent_record
+        if isinstance(item, list):
+            for child in item:
+                visit(child)
+            return
+        if not isinstance(item, dict):
+            return
+        status = item.get("status")
+        identity = next(
+            (
+                item.get(field)
+                for field in ("agent_id", "id", "canonical_name", "task_name", "path")
+                if isinstance(item.get(field), str) and item.get(field)
+            ),
+            None,
+        )
+        if isinstance(status, str) and identity is not None:
+            found_agent_record = True
+            if status.lower() not in terminal:
+                active.add(str(identity))
+        for child in item.values():
+            if isinstance(child, (dict, list)):
+                visit(child)
+
+    visit(value)
+    return active if found_agent_record else None
+
+
+def spawned_agent_from_output(text: str) -> str | None:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    for field in ("agent_id", "id", "canonical_name", "task_name", "path"):
+        candidate = value.get(field)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def polling_condition_digest(
+    payload: dict,
+    tool: str,
+    session_key: str,
+    active_agents: set[str] | None,
+) -> tuple[str, bool]:
+    """Fingerprint the pending condition while preserving opaque process identities."""
+    leaf = tool.split(".")[-1].lower()
+    for field in (
+        "progress_lease_key",
+        "lease_key",
+        "condition_key",
+        "condition",
+        "target",
+    ):
+        if (value := opaque_call_argument(payload, field)) is not None:
+            condition = {
+                "session": session_key,
+                "tool": leaf,
+                "explicit_condition_field": field,
+                "explicit_condition_value": value,
+            }
+            encoded = json.dumps(condition, sort_keys=True, separators=(",", ":"))
+            return hashlib.sha256(encoded.encode()).hexdigest()[:16], False
+    identity_fields = ("session_id", "cell_id")
+    identities = {
+        field: value
+        for field in identity_fields
+        if (value := opaque_call_argument(payload, field)) is not None
+    }
+    if identities:
+        condition = {"session": session_key, "tool": leaf, **identities}
+        encoded = json.dumps(condition, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()[:16], False
+    if leaf == "wait_agent" and active_agents:
+        condition = {
+            "session": session_key,
+            "tool": leaf,
+            "active_agents": sorted(active_agents),
+        }
+        encoded = json.dumps(condition, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()[:16], False
+    # The call shape is still useful diagnostically, but cannot prove a repeated condition.
+    return normalized_call_digest(payload), True
+
+
 def tool_label(payload: dict) -> str:
     outer = str(payload.get("name") or "unknown")
     if outer != "exec":
@@ -246,7 +363,9 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
     pending_order: deque[tuple[str, str, datetime | None, str, int]] = deque()
     largest_outputs: list[dict] = []
     elapsed_by_tool: defaultdict[str, list[int]] = defaultdict(list)
-    model_poll_conditions: Counter[tuple[str, str]] = Counter()
+    model_poll_conditions: Counter[tuple[str, str, bool]] = Counter()
+    active_agents: set[str] | None = None
+    session_key = str(meta.get("id") or meta.get("session_id") or path.resolve())
     validation_receipts: list[dict] = []
     for index, record in enumerate(records):
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
@@ -270,7 +389,10 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
             shape = (tool_name, digest)
             call_shapes[shape] += 1
             if is_model_poll_tool(tool_name):
-                model_poll_conditions[shape] += 1
+                condition_digest, ambiguous = polling_condition_digest(
+                    payload, tool_name, session_key, active_agents
+                )
+                model_poll_conditions[(tool_name, condition_digest, ambiguous)] += 1
             argument_bytes = len(raw_call_arguments(payload).encode())
             call_shape_bytes[shape] = argument_bytes
             call_id = str(payload.get("call_id") or payload.get("id") or "")
@@ -311,6 +433,22 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
             })
             if (receipt := compact_exec_receipt(text)) is not None:
                 validation_receipts.append(receipt)
+            leaf = tool_name.split(".")[-1].lower()
+            if leaf == "list_agents":
+                observed_agents = active_agents_from_output(text)
+                if observed_agents is not None:
+                    active_agents = observed_agents
+            elif leaf == "spawn_agent":
+                spawned_agent = spawned_agent_from_output(text)
+                if spawned_agent is not None:
+                    if active_agents is None:
+                        active_agents = set()
+                    active_agents.add(spawned_agent)
+            elif leaf == "wait_agent":
+                # A wait result can change which children remain active. Unless it returns a
+                # complete attributable set, require a fresh list_agents observation before using
+                # child context for another wait fingerprint.
+                active_agents = active_agents_from_output(text)
             finished = record_timestamp(record)
             if matched_by_id and started is not None and finished is not None:
                 elapsed_by_tool[tool_name].append(
@@ -383,13 +521,18 @@ def summarize(path: Path, is_descendant: bool, before_retro: bool = False) -> di
         },
         "model_polling": {
             "conditions": [
-                {"tool": tool, "condition_sha256": digest, "count": count}
-                for (tool, digest), count in sorted(model_poll_conditions.items())
+                {
+                    "tool": tool,
+                    "condition_sha256": digest,
+                    "count": count,
+                    "attribution": "ambiguous" if ambiguous else "stable",
+                }
+                for (tool, digest, ambiguous), count in sorted(model_poll_conditions.items())
             ],
             "violations": [
                 {"tool": tool, "condition_sha256": digest, "count": count}
-                for (tool, digest), count in sorted(model_poll_conditions.items())
-                if count > 1
+                for (tool, digest, ambiguous), count in sorted(model_poll_conditions.items())
+                if count > 1 and not ambiguous
             ],
         },
         "validation_receipts": validation_receipts,
@@ -528,7 +671,7 @@ def main() -> None:
     repeated_calls: Counter[tuple[str, str, int]] = Counter()
     largest_outputs: list[dict] = []
     elapsed_by_tool: defaultdict[str, list[int]] = defaultdict(list)
-    model_poll_conditions: Counter[tuple[str, str]] = Counter()
+    model_poll_conditions: Counter[tuple[str, str, bool]] = Counter()
     validation_receipts: list[dict] = []
     for session in sessions:
         for key, value in session["usage_unique"].items():
@@ -545,7 +688,13 @@ def main() -> None:
             elapsed_by_tool[tool].extend([values["total"], values["max"],
                                          values["measured_calls"]])
         for row in session["model_polling"]["conditions"]:
-            model_poll_conditions[(row["tool"], row["condition_sha256"])] += row["count"]
+            model_poll_conditions[
+                (
+                    row["tool"],
+                    row["condition_sha256"],
+                    row.get("attribution") == "ambiguous",
+                )
+            ] += row["count"]
         validation_receipts.extend(session["validation_receipts"])
     session_ids = {str(session["session_id"]) for session in sessions if session["session_id"]}
     starts = [value for session in sessions
@@ -599,8 +748,8 @@ def main() -> None:
         })
     polling_violations = [
         {"tool": tool, "condition_sha256": digest, "count": count}
-        for (tool, digest), count in sorted(model_poll_conditions.items())
-        if count > 1
+        for (tool, digest, ambiguous), count in sorted(model_poll_conditions.items())
+        if count > 1 and not ambiguous
     ]
     report = {
         "root_session_id": root_meta.get("id") or root_meta.get("session_id"),

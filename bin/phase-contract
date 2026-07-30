@@ -39,6 +39,20 @@ TICKET_PHASE_BUDGETS = {
         "max_tokens": 60000,
     },
 }
+OWNER_PHASE_BUDGETS = {
+    "investigation": {
+        "max_turns": 30,
+        "max_checkpoints": 6,
+        "max_elapsed_seconds": 2700,
+        "max_tokens": 60000,
+    },
+    "deployment": {
+        "max_turns": 20,
+        "max_checkpoints": 8,
+        "max_elapsed_seconds": 2700,
+        "max_tokens": 60000,
+    },
+}
 FANOUT_ROLES = {
     "investigator",
     "builder_chain",
@@ -286,7 +300,7 @@ def validate_ticket_fanout(value: object) -> dict:
     return value
 
 
-def validate_context_receipt(reference: object) -> None:
+def validate_context_receipt(reference: object) -> dict:
     value = validate_file_reference(
         reference, "context_receipt", max_bytes=65536
     )
@@ -300,6 +314,99 @@ def validate_context_receipt(reference: object) -> None:
     if result.returncode:
         detail = result.stdout.strip() or result.stderr.strip()
         raise ContractError(f"context_receipt is invalid: {detail[:500]}")
+    return load_json(Path(value["path"]))
+
+
+def require_sha(value: object, field: str) -> str:
+    digest = require_string(value, field)
+    if len(digest) not in {40, 64} or any(char not in "0123456789abcdef" for char in digest):
+        raise ContractError(f"{field} must be a lowercase 40- or 64-character SHA")
+    return digest
+
+
+def validate_owner_context(value: object, phase_name: str, context_receipt: dict) -> dict:
+    if not isinstance(value, dict):
+        raise ContractError("owner_context must be an object")
+    owner_role = value.get("owner_role")
+    expected_role = {
+        "investigation": "investigator",
+        "deployment": "deployment_owner",
+    }[phase_name]
+    if owner_role != expected_role:
+        raise ContractError(f"owner_context.owner_role must equal {expected_role}")
+    ticket_id = require_string(value.get("ticket_id"), "owner_context.ticket_id")
+    if context_receipt.get("scope") != ticket_id:
+        raise ContractError("owner_context.ticket_id must match context_receipt.scope")
+    expected_context_owner = (
+        "ticket-deploy" if phase_name == "deployment" else "investigate"
+    )
+    if context_receipt.get("context_owner") != expected_context_owner:
+        raise ContractError(
+            f"context_receipt.context_owner must equal {expected_context_owner}"
+        )
+    target = require_string(value.get("target"), "owner_context.target")
+    allowed_targets = (
+        {"staging", "prod", "production", "full"}
+        if phase_name == "deployment"
+        else {"local", "staging", "prod", "production"}
+    )
+    if target not in allowed_targets:
+        raise ContractError("owner_context.target is invalid for the selected owner")
+    require_sha(value.get("head_sha"), "owner_context.head_sha")
+    require_sha(value.get("tree_sha"), "owner_context.tree_sha")
+    if value.get("context_strategy") != "light_manifest_exact_artifacts":
+        raise ContractError(
+            "owner_context.context_strategy must equal light_manifest_exact_artifacts"
+        )
+    if value.get("dispatch_depth") != 0:
+        raise ContractError("owner_context.dispatch_depth must equal 0")
+    if value.get("redispatch_allowed") is not False:
+        raise ContractError("owner_context.redispatch_allowed must be false")
+    dependencies = require_string_list(
+        value.get("dependencies"), "owner_context.dependencies"
+    )
+    if len(dependencies) != len(set(dependencies)):
+        raise ContractError("owner_context.dependencies must be unique")
+    evidence_gates = require_string_list(
+        value.get("evidence_gates"), "owner_context.evidence_gates"
+    )
+    if not evidence_gates:
+        raise ContractError("owner_context.evidence_gates must not be empty")
+
+    references = value.get("artifact_refs")
+    if not isinstance(references, list) or not references:
+        raise ContractError("owner_context.artifact_refs must be a non-empty array")
+    receipt_hashes = {
+        row["artifact_id"]: row["sha256"]
+        for row in context_receipt["artifact_reads"]
+    }
+    artifact_types: set[str] = set()
+    seen_ids: set[str] = set()
+    for index, reference in enumerate(references):
+        field = f"owner_context.artifact_refs[{index}]"
+        if not isinstance(reference, dict):
+            raise ContractError(f"{field} must be an object")
+        artifact_id = require_string(reference.get("artifact_id"), f"{field}.artifact_id")
+        artifact_type = require_string(
+            reference.get("artifact_type"), f"{field}.artifact_type"
+        )
+        digest = require_sha(reference.get("sha256"), f"{field}.sha256")
+        if len(digest) != 64:
+            raise ContractError(f"{field}.sha256 must be a lowercase SHA-256")
+        if artifact_id in seen_ids:
+            raise ContractError(f"{field}.artifact_id is duplicated")
+        if receipt_hashes.get(artifact_id) != digest:
+            raise ContractError(
+                f"{field} must match an exact artifact read in context_receipt"
+            )
+        seen_ids.add(artifact_id)
+        artifact_types.add(artifact_type)
+    required_type = "deployment_guide" if phase_name == "deployment" else "source"
+    if required_type not in artifact_types:
+        raise ContractError(
+            f"owner_context.artifact_refs must include artifact_type={required_type}"
+        )
+    return value
 
 
 def validate_dispatch(
@@ -357,7 +464,9 @@ def validate_dispatch(
     if not allow_expired and deadline <= now:
         raise ContractError("deadline_epoch must be in the future at dispatch validation")
 
-    validate_file_reference(dispatch.get("packet"), "packet", max_bytes=max_packet_bytes)
+    packet_reference = validate_file_reference(
+        dispatch.get("packet"), "packet", max_bytes=max_packet_bytes
+    )
     checkpoint = dispatch.get("checkpoint")
     if generation:
         validate_file_reference(checkpoint, "checkpoint")
@@ -367,7 +476,7 @@ def validate_dispatch(
     profile = dispatch.get("contract_profile")
     if required_profile is not None and profile != required_profile:
         raise ContractError(f"contract_profile must equal {required_profile}")
-    if profile is not None and profile != "ticket-flow":
+    if profile is not None and profile not in {"ticket-flow", "bounded-owner"}:
         raise ContractError("contract_profile is unsupported")
     if profile == "ticket-flow":
         if phase_name not in TICKET_PHASE_BUDGETS:
@@ -393,6 +502,42 @@ def validate_dispatch(
             raise ContractError("ticket-flow budget.max_packet_bytes exceeds 16384")
         validate_ticket_fanout(dispatch.get("fanout_budget"))
         validate_context_receipt(dispatch.get("context_receipt"))
+    elif profile == "bounded-owner":
+        if phase_name not in OWNER_PHASE_BUDGETS:
+            raise ContractError(
+                "bounded-owner phase_name must be investigation or deployment"
+            )
+        if fork_mode != "none":
+            raise ContractError("bounded-owner fork_mode must equal none")
+        ceiling = OWNER_PHASE_BUDGETS[phase_name]
+        for field, observed in (
+            ("max_turns", max_turns),
+            ("max_checkpoints", max_checkpoints),
+            ("max_elapsed_seconds", max_elapsed),
+        ):
+            if observed > ceiling[field]:
+                raise ContractError(
+                    f"bounded-owner {phase_name} budget.{field} exceeds {ceiling[field]}"
+                )
+        if token_usage == "available" and max_tokens > ceiling["max_tokens"]:
+            raise ContractError(
+                f"bounded-owner {phase_name} budget.max_tokens exceeds "
+                f"{ceiling['max_tokens']}"
+            )
+        if max_packet_bytes > 16384:
+            raise ContractError("bounded-owner budget.max_packet_bytes exceeds 16384")
+        context_receipt = validate_context_receipt(dispatch.get("context_receipt"))
+        if not any(
+            child.get("path") == packet_reference["path"]
+            and child.get("sha256") == packet_reference["sha256"]
+            for child in context_receipt["child_packets"]
+        ):
+            raise ContractError(
+                "bounded-owner packet must match a hashed context_receipt child packet"
+            )
+        validate_owner_context(
+            dispatch.get("owner_context"), phase_name, context_receipt
+        )
     return dispatch
 
 
@@ -498,6 +643,8 @@ def main() -> int:
     dispatch_parser.add_argument("dispatch", type=Path)
     ticket_dispatch_parser = subparsers.add_parser("ticket-dispatch")
     ticket_dispatch_parser.add_argument("dispatch", type=Path)
+    owner_dispatch_parser = subparsers.add_parser("owner-dispatch")
+    owner_dispatch_parser.add_argument("dispatch", type=Path)
     result_parser = subparsers.add_parser("result")
     result_parser.add_argument("result", type=Path)
     result_parser.add_argument("--dispatch", required=True, type=Path)
@@ -509,6 +656,10 @@ def main() -> int:
         elif args.command == "ticket-dispatch":
             validate_dispatch(
                 load_json(args.dispatch), required_profile="ticket-flow"
+            )
+        elif args.command == "owner-dispatch":
+            validate_dispatch(
+                load_json(args.dispatch), required_profile="bounded-owner"
             )
         else:
             dispatch = validate_dispatch(load_json(args.dispatch), allow_expired=True)

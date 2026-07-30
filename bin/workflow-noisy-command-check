@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -29,6 +30,7 @@ PRODUCTION_MUTATION = re.compile(
     r"fly\s+deploy|aws\b.{0,30}\bdeploy|gcloud\b.{0,30}\bdeploy))",
     re.IGNORECASE,
 )
+MAX_INVESTIGATOR_INLINE_BYTES = 8192
 
 
 def violations(root: Path) -> list[dict[str, object]]:
@@ -89,11 +91,74 @@ def violations(root: Path) -> list[dict[str, object]]:
     return found
 
 
+def investigator_result_violations(path: Path) -> list[dict[str, object]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [{"reason": "invalid_result_json", "detail": str(exc)[:240]}]
+    if not isinstance(value, dict) or not isinstance(value.get("evidence"), list):
+        return [{"reason": "result_must_contain_evidence_array"}]
+    found: list[dict[str, object]] = []
+    for index, row in enumerate(value["evidence"]):
+        prefix = f"evidence[{index}]"
+        if not isinstance(row, dict):
+            found.append({"field": prefix, "reason": "evidence_row_must_be_object"})
+            continue
+        command = row.get("command")
+        status = row.get("status")
+        output_bytes = row.get("output_bytes")
+        output_tail = row.get("output_tail")
+        summary = row.get("summary")
+        compact_receipt = row.get("compact_receipt") is True
+        if not isinstance(command, str) or not command.strip():
+            found.append({"field": f"{prefix}.command", "reason": "non_empty_string_required"})
+            command = ""
+        if status not in {"success", "failure"}:
+            found.append({"field": f"{prefix}.status", "reason": "invalid_status"})
+        if isinstance(output_bytes, bool) or not isinstance(output_bytes, int) or output_bytes < 0:
+            found.append({"field": f"{prefix}.output_bytes", "reason": "non_negative_int_required"})
+            output_bytes = 0
+        if not isinstance(output_tail, str) or len(output_tail.encode()) > 8192:
+            found.append({"field": f"{prefix}.output_tail", "reason": "bounded_tail_required"})
+        if not isinstance(summary, str) or len(summary.encode()) > 4096:
+            found.append({"field": f"{prefix}.summary", "reason": "bounded_summary_required"})
+        if status == "failure" and not output_tail:
+            found.append({"field": f"{prefix}.output_tail", "reason": "failure_tail_required"})
+        if NOISY.search(command) and not compact_receipt:
+            found.append({"field": prefix, "reason": "unwrapped_noisy_investigator_command"})
+        if output_bytes > MAX_INVESTIGATOR_INLINE_BYTES and not compact_receipt:
+            found.append({"field": prefix, "reason": "unreferenced_noisy_output"})
+        if compact_receipt:
+            log_file = row.get("log_file")
+            log_sha256 = row.get("log_sha256")
+            log_path = Path(log_file) if isinstance(log_file, str) else None
+            if log_path is None or not log_path.is_absolute() or not log_path.is_file():
+                found.append({
+                    "field": f"{prefix}.log_file",
+                    "reason": "absolute_existing_log_file_required",
+                })
+            elif (
+                not isinstance(log_sha256, str)
+                or len(log_sha256) != 64
+                or hashlib.sha256(log_path.read_bytes()).hexdigest() != log_sha256
+            ):
+                found.append({
+                    "field": f"{prefix}.log_sha256",
+                    "reason": "log_sha256_mismatch",
+                })
+    return found
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="workflow-noisy-command-check")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--investigator-result", type=Path)
     args = parser.parse_args()
-    found = violations(args.root.resolve())
+    found = (
+        investigator_result_violations(args.investigator_result.resolve())
+        if args.investigator_result
+        else violations(args.root.resolve())
+    )
     print(
         json.dumps(
             {"status": "pass" if not found else "fail", "violations": found},
