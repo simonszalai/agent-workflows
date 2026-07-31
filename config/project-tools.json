@@ -60,6 +60,10 @@
         "workspace": {
           "id": "tea-ct11rp0gph6c73bf2kf0"
         }
+      },
+      "tailscale": {
+        "oauth_client_id_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value",
+        "oauth_client_secret_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value"
       }
     },
     "workflow-pro": {

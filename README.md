@@ -94,7 +94,7 @@ resolution (see the matching `skills/tool-*` references):
 | Service   | Access |
 | --------- | ------ |
 | render    | `bin/render-cli` (project-aware official CLI + guarded `/v1` REST passthrough) |
-| tailscale | `tailscale` CLI (local, credential-free) + `bin/tailscale-admin` (control-plane API) |
+| tailscale | `tailscale` CLI (local, credential-free) + `bin/tailscale-admin` (registry-scoped control-plane API) |
 | slack     | `bin/slack-api` (any Web API method) |
 | github    | `gh` CLI |
 | postgres  | per-repo psql wrappers (reference: ts-prefect `scripts/db/sql.sh`) |
@@ -114,6 +114,11 @@ name). There is no fallback chain: an unprefixed ambient `OP_SERVICE_ACCOUNT_TOK
 consulted, the registry rejects unprefixed and duplicated `token_env` names, and running a
 wrapper from another project's repo demands that project's token rather than silently reusing
 the previous one.
+
+Credential *references* are registry-owned too: `render` and the optional `tailscale` profile
+carry their own `op://` refs per project, so no wrapper hardcodes another project's vault path.
+A project without a `tailscale` profile fails closed instead of reaching for someone else's
+tailnet.
 
 The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
 launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`

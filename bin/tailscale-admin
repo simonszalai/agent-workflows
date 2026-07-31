@@ -10,11 +10,13 @@
 #
 # `-` in the path means "the tailnet of the authenticated credential".
 #
-# Credentials: OAuth client (op://TS/TAILSCALE_OAUTH_CLIENT_{ID,SECRET}_MCP),
-# resolved per call via the calling project's 1Password service-account token,
-# named by that project's `service_account` entry in config/project-tools.json —
-# silent, no Touch ID. The short-lived access token exists only in this process.
-# Never print tokens.
+# Credentials: an OAuth client whose op:// refs come from the calling project's
+# `tailscale` profile in config/project-tools.json, resolved per call with that
+# project's own service-account token — silent, no Touch ID. The short-lived access
+# token exists only in this process. Never print tokens.
+#
+# Only projects with their own tailnet declare a `tailscale` profile; everywhere else
+# this fails closed rather than reaching for another project's tailnet.
 set -euo pipefail
 
 API="https://api.tailscale.com/api/v2"
@@ -27,10 +29,12 @@ PROJECT_CONTEXT="$HERE/project-context"
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 3; }
 [ -x "$PROJECT_CONTEXT" ] || { echo "ERROR: missing project resolver: $PROJECT_CONTEXT" >&2; exit 3; }
 
-context="$("$PROJECT_CONTEXT" --cwd "$PWD")"
+context="$("$PROJECT_CONTEXT" --cwd "$PWD" --tool tailscale)"
 project="$(jq -er '.project' <<<"$context")"
 token_env="$(jq -er '.service_account.token_env' <<<"$context")"
 keychain_item="$(jq -r '.service_account.keychain_item // empty' <<<"$context")"
+client_id_ref="$(jq -er '.tools.tailscale.oauth_client_id_ref' <<<"$context")"
+client_secret_ref="$(jq -er '.tools.tailscale.oauth_client_secret_ref' <<<"$context")"
 
 # token_env is registry-validated as <PROJECT>_OP_SERVICE_ACCOUNT_TOKEN, so this
 # indirection is safe. eval keeps macOS bash 3.2 happy; ${!name:-} does not work there.
@@ -43,8 +47,8 @@ fi
   exit 3
 }
 
-cid="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value")"
-csec="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value")"
+cid="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "$client_id_ref")"
+csec="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "$client_secret_ref")"
 
 access="$(curl -sf --max-time 15 "${API}/oauth/token" \
   -d grant_type=client_credentials \
