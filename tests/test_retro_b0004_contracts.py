@@ -40,7 +40,7 @@ class DeployVerifyControllerTest(unittest.TestCase):
         root.mkdir(parents=True, exist_ok=True)
         revision = "a" * 40
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": "ticket-rev-1",
             "revision": revision,
             "contract_status": "FINALIZED",
@@ -81,6 +81,14 @@ class DeployVerifyControllerTest(unittest.TestCase):
                     "timeout_seconds": 2,
                     "resume_safe": True,
                     "sample_size": 1,
+                    "minimum_sufficient_evidence": "one exact-path result",
+                    "causal_failure_meaning": "the shipped behavior is absent",
+                    "evidence_timing": {
+                        "source": "immediate",
+                        "maturity_delay_seconds": 0,
+                        "acquisition_time_seconds": 1,
+                        "verification_deadline_seconds": 10,
+                    },
                     "exact_path_canary": False,
                     "canary_row_id": None,
                     "distinguishes_defect": "causal behavior is absent",
@@ -99,6 +107,13 @@ class DeployVerifyControllerTest(unittest.TestCase):
                     "timeout_seconds": 2,
                     "resume_safe": True,
                     "sample_size": 1,
+                    "minimum_sufficient_evidence": "one telemetry read",
+                    "evidence_timing": {
+                        "source": "immediate",
+                        "maturity_delay_seconds": 0,
+                        "acquisition_time_seconds": 1,
+                        "verification_deadline_seconds": 10,
+                    },
                     "exact_path_canary": False,
                     "canary_row_id": None,
                     "distinguishes_defect": "telemetry unavailable",
@@ -229,17 +244,39 @@ class DeployVerifyControllerTest(unittest.TestCase):
                 manifest_path = root / f"manifest-{index}.json"
                 manifest_path.write_text(json.dumps(manifest))
                 completed = run_script("deploy-verify-controller", str(manifest_path))
-                expected_exit = 3 if failure_class == "unknown" else 0
-                self.assertEqual(completed.returncode, expected_exit, completed.stdout)
+                self.assertEqual(completed.returncode, 0, completed.stdout)
                 receipt = json.loads(completed.stdout)
                 telemetry = next(
                     row for row in receipt["rows"] if row["id"] == "telemetry"
                 )
                 self.assertEqual(telemetry["next_owner"], owner)
                 self.assertTrue(receipt["ship_gate_passed"])
-                self.assertEqual(
-                    receipt["promotion_allowed"], failure_class != "unknown"
-                )
+                self.assertTrue(receipt["promotion_allowed"])
+
+    def test_rejects_infeasible_natural_traffic_causal_gate_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "executed"
+            manifest = self.manifest(root)
+            causal = manifest["rows"][0]
+            causal["command"] = [
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            ]
+            causal["evidence_timing"] = {
+                "source": "natural_traffic",
+                "maturity_delay_seconds": 86400,
+                "acquisition_time_seconds": 345600,
+                "verification_deadline_seconds": 172800,
+                "conservative_eligible_units_per_day": 0.25,
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            completed = run_script("deploy-verify-controller", str(manifest_path))
+            self.assertEqual(completed.returncode, 2, completed.stdout)
+            self.assertIn("infeasible for a causal_ship_gate", completed.stdout)
+            self.assertFalse(marker.exists())
 
 
 class TicketRuntimeContractTest(unittest.TestCase):

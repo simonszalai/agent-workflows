@@ -123,10 +123,49 @@ evidence that proves the change works. Every evidence item MUST be:
   measured_production_baseline | invariant` plus the exact source reference, and
 - the bounded failure class used for routing if the row fails.
 
+Before classifying a row as `causal_ship_gate`, apply the **release-gate minimality test**:
+
+1. Name the shipped defect the row distinguishes.
+2. State why failure proves the shipped behavior is broken, rather than merely leaving confidence
+   incomplete.
+3. Name the smallest sufficient evidence for that defect.
+4. Explain why deterministic checks, one exact-path live case, or a bounded replay are insufficient
+   if the row asks for more.
+5. Identify whether the threshold came from a source criterion or was added by the agent.
+
+If failure would only leave confidence incomplete, or a smaller proof distinguishes the same
+defect, the row is an `observation`. Core behavior stays causal, but its evidence mechanism must be
+the smallest adequate one. Do not remove a real behavior gate merely because a cheaper bounded
+replay or exact-path case can replace a broad natural cohort.
+
+Every row also carries machine-readable feasibility fields: `sample_size`,
+`minimum_sufficient_evidence`, `distinguishes_defect`, `failure_class_on_failure`, and
+`evidence_timing`. Timing declares the source (`immediate`, `bounded_producer`, or
+`natural_traffic`), maturity delay, conservative acquisition time, and verification deadline.
+Natural-traffic rows additionally declare a measured conservative eligible-units/day rate.
+
+For every causal row, prove mechanically:
+
+```text
+maturity_delay_seconds + acquisition_time_seconds <= verification_deadline_seconds
+```
+
+For natural traffic, `acquisition_time_seconds` must be at least
+`ceil(sample_size / conservative_eligible_units_per_day * 86400)`. If either inequality fails,
+classify the row as a longitudinal `observation` or keep the guide DRAFT when the source explicitly
+requires it. Never deploy first and discover that the release evidence needs days or weeks longer
+than the verification lifecycle.
+
 High-N/statistical rows are incomplete unless they state the pre-change baseline, why that sample
 size can distinguish the named defect, and the finite units/time/cost budget. They must reference
 an earlier one-unit exact-path canary for the same defect. Missing provenance, a missing canary, or
 a threshold selected after current output keeps the guide DRAFT; it never becomes a tailored PASS.
+
+Provider success is not evidence of non-empty business yield unless an API contract or measured
+baseline guarantees non-empty output. Likewise, a soak or orphan/stranded-record metric is causal
+only when the shipped change controls it and the ticket explicitly promises it. Valid empty
+provider results, rare calendar states, and noisy recovery metrics default to observations unless
+the acceptance source proves otherwise.
 
 Generic acceptance ("it works") is not evidence. "Row count in table X for records landed after
 the activation commit is > 0, and `status='ok'` for all of them" is evidence. The contract must
@@ -230,7 +269,7 @@ Before marking or persisting a guide as FINALIZED, compile it into this machine 
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "FINALIZED",
   "activation_boundary": "exact branch/run/revision boundary",
   "environments": {
@@ -241,6 +280,23 @@ Before marking or persisting a guide as FINALIZED, compile it into this machine 
         "expected_result": "concrete good result",
         "bad_interpretation": "specific defect and failure meaning",
         "gate_class": "causal_ship_gate",
+        "acceptance_source": {
+          "kind": "source_criterion",
+          "reference": "ticket acceptance criterion 1"
+        },
+        "sample_size": 1,
+        "minimum_sufficient_evidence": "one exact-path post-activation result",
+        "distinguishes_defect": "the shipped behavior is absent",
+        "causal_failure_meaning": "the activated revision does not implement criterion 1",
+        "failure_class_on_failure": "code_defect",
+        "exact_path_canary": false,
+        "canary_row_id": null,
+        "evidence_timing": {
+          "source": "immediate",
+          "maturity_delay_seconds": 0,
+          "acquisition_time_seconds": 60,
+          "verification_deadline_seconds": 3600
+        },
         "bounded_producer": {"status": "N/A", "justification": "read-only evidence"},
         "cleanup": {"status": "N/A", "justification": "no temporary producer"}
       }]
@@ -253,11 +309,12 @@ Before marking or persisting a guide as FINALIZED, compile it into this machine 
 }
 ```
 
-Both environment keys are mandatory. Each applicable environment has at least one row with an
-exact command, expected result, bad-output interpretation, gate class, bounded-producer contract,
-and cleanup contract. Any `N/A` must use the object form above with a non-empty justification.
-Validation must pass before the artifact update/create call. A failed contract remains DRAFT; do
-not repair it after deployment or other remote mutation.
+Both environment keys are mandatory. Each applicable environment has at least one causal row. Each
+row carries the command, expected/bad results, acceptance source, minimum sufficient evidence,
+defect, failure class, sample/canary fields, timing feasibility, bounded producer, and cleanup.
+Any `N/A` must use the object form above with a non-empty justification. Validation must pass
+before the artifact update/create call. A failed contract remains DRAFT; do not repair it after
+deployment or other remote mutation.
 
 Find the existing draft in the `get_ticket` response (the artifact with
 `artifact_type="deployment_guide"`). If found, **update by its `artifact_id`** (preserve plan
@@ -362,6 +419,12 @@ baseline, sample-size rationale, finite resource budget, and the defect it disti
 tune a threshold after seeing current output. Put the smallest single-unit exact-path canary before
 the high-N row and name that canary from the high-N row.
 
+Before FINALIZED, run the release-gate minimality test and evidence-feasibility inequality from
+Process step 4 for every row. A natural cohort that cannot mature and accumulate within its
+deadline is longitudinal monitoring, not a release blocker. A provider call that validly permits
+empty results cannot use non-empty output as a routing gate. A soak measuring a documented
+non-goal cannot be causal.
+
 ### Activation boundary
 
 {How to know the new code is live: commit on origin/{main|staging}; or first flow/job run after
@@ -394,6 +457,12 @@ the land for runtime-git-pull projects. Measure from the first post-land evidenc
 | Evidence row | Baseline | Sample-size rationale | Resource budget | Defect distinguished | Exact-path canary row |
 | ------------ | -------- | --------------------- | --------------- | -------------------- | --------------------- |
 | {row #} | {measured pre-change value/reference} | {why N is discriminating} | {units/time/cost cap} | {specific defect} | {earlier single-unit row #} |
+
+### Evidence feasibility
+
+| Evidence row | Source | Sample | Maturity seconds | Acquisition seconds | Deadline seconds | Conservative eligible units/day | Minimum sufficient evidence | Causal failure meaning |
+| ------------ | ------ | ------ | ---------------- | ------------------- | ---------------- | ------------------------------- | --------------------------- | ---------------------- |
+| {row #} | {immediate / bounded_producer / natural_traffic} | {N} | {seconds} | {seconds} | {seconds} | {rate or N/A} | {smallest proof} | {why failure proves shipped behavior broken, or N/A for observation} |
 
 ## Services / Env / Dependencies (if applicable)
 
