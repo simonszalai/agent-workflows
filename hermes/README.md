@@ -18,12 +18,17 @@ No secret values or secret-fetching commands are committed here.
 
 | Runtime credential | Canonical source | Root-only runtime file |
 |---|---|---|
-| Autodev restricted token | `AUTODEV-sensitive/HERMES_AUTODEV_MEMORY_TOKEN` | `/etc/hermes-mcp/autodev-memory.token` |
+| TS autodev token | `TS/TS_AUTODEV_MEMORY_API_TOKEN` (`value`) | `/etc/hermes-mcp/autodev-memory.token` |
 | Conductor API key | `TS/CONDUCTOR_API_KEY` | `/etc/hermes-conductor/conductor-api.token` |
 
 Both runtime files must be regular, non-empty, `root:root` mode `0400`. systemd `LoadCredential`
 makes each secret readable only by its dedicated service. The `hermes` account and messaging
 platform users receive only unauthenticated loopback MCP URLs.
+
+Autodev-memory uses separate restricted tokens for `ts`, `amaru`, and `workflow_pro`. This Hermes
+endpoint is intentionally TS-scoped: the server pins it to `ts` even if a caller supplies another
+project name. Adding another project requires a separate credential boundary and MCP endpoint; do
+not replace this file with an admin or cross-project token.
 
 ## Layout
 
