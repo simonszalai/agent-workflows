@@ -243,8 +243,7 @@ mcp__autodev-memory__create_artifact(
 
 Use the `create-build-todos` skill's `templates/build-todo.md` for content structure.
 
-**Ticketless mode (lfg):** when the prompt says ticketless, write `.context/build_todos/NN-name.md`
-files instead.
+
 
 Each step MUST include:
 
@@ -264,5 +263,5 @@ framework documentation.
 ## Output
 
 Store build todos per the Output Format section above: MCP build_todo artifacts when a ticket
-exists; `.context/build_todos/NN-name.md` files only in ticketless (lfg) mode. The orchestrator
+exists. The orchestrator
 reports next steps to the user.

@@ -10,9 +10,10 @@ Take a task from the conversation and deliver it as changes in the working tree 
 current branch, spending Fable tokens **only** on orchestration, judgment, and review
 (style: `skills/references/model-prompting.md`). Everything token-heavy — reading code,
 pulling logs, writing code — happens in cheaper subagents. This is the "just do it" tier
-below `/lfg-fable`: no tickets, no `.context/` artifacts, no commits, no deployment guide,
-no multi-round review machinery. For work that deserves a paper trail, use `/lfg-fable` or
-`/ticket-flow-fable`.
+below ticketed delivery: no tickets, no plan MCP artifact, no `.context/` build/review paper
+trail, no commits, no deployment guide, no multi-round review machinery. For work that needs a
+durable plan and ticket audit trail, use `/ticket-flow` (intensity `direct` is the fast ticketed
+path).
 
 You are operating autonomously. For reversible actions that follow from the original
 request, proceed without asking. Before ending your turn, check your last paragraph: if it

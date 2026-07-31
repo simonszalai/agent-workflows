@@ -67,7 +67,7 @@ Apply a fix in the same run **only when all of these hold**:
    `/ticket-deploy staging` — `/ticket-verify` itself never edits environments or deploys.
 
 Production FAILs are never direct-fixed from this skill. Code/config/auth remediation must use the
-tracked lifecycle route in §3b; ticketless `/lfg` and untracked auxiliary branches are prohibited
+tracked lifecycle route in §3b; ticketless `/go-fable` and untracked auxiliary branches are prohibited
 as the final route.
 
 After a direct fix is dispatched, the current run's FAIL verdict and artifacts stand unchanged;

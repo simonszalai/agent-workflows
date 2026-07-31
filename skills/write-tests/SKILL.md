@@ -143,7 +143,7 @@ All tests must pass. If a test is flaky on first run, fix it - don't retry and h
 For a standalone invocation, run the new test files plus the suites covering the touched modules —
 NOT the whole repository suite. Only run the full suite yourself when no orchestrator gate will
 follow and the new tests touch shared fixtures/config that could interfere beyond their modules.
-For an orchestrated ticket/lfg invocation, skip this execution step entirely: the main
+For an orchestrated ticket invocation, skip this execution step entirely: the main
 orchestrator owns the pre-review full gate and the conditional final changed-tree gate.
 
 ### 6. Validate Test Quality
@@ -210,7 +210,7 @@ mcp__autodev-memory__create_entry(
 
 If the MCP tool is unavailable, skip this step silently.
 
-## When Called from an Orchestrator (/ticket-flow, /lfg)
+## When Called from an Orchestrator (/ticket-flow)
 
 This skill is invoked by orchestrators **after** the `/build` loop completes, scoped to the
 **whole change set** from the build phase — not per-todo. Classify all changed code and write
@@ -220,7 +220,4 @@ lint, build, schema pull/migration, browser verification, or health command.** R
 commands the main orchestrator should include in its pre-review gate or failure diagnostics.
 
 The normal self-validation behavior in Steps 5-7 applies only to a standalone `/write-tests`
-invocation with no ticket/lfg orchestrator.
-
-**Ticketless note (lfg):** when running under `/lfg` there is no ticket — make no MCP writes
-(no ticket or artifact updates). Report results back to the orchestrator only.
+invocation with no ticket orchestrator.

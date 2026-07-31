@@ -234,7 +234,7 @@ when the receipt/report fails. This is enforcement, never an instruction for the
 
 - Key expensive validation by `(tree SHA, exact command)`. Builder chains, orchestrated
   test-writers, reviewers, and review-resolution builders do not run validation commands. The main
-  ticket/lfg orchestrator owns one full health gate after initial implementation and test-writing,
+  ticket orchestrator owns one full health gate after initial implementation and test-writing,
   before review. Reuse that recorded PASS when the final tree SHA is unchanged; if review
   resolution changes the tree, run the full gate exactly once on that new final tree. This is at
   most two normal full gates.

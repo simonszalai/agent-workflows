@@ -42,8 +42,7 @@ artifact statuses; the orchestrator still owns all statuses and commits.
 
 ## Prerequisites
 
-- Pending review_todo artifacts exist on the ticket (or, in ticketless lfg mode, finding
-  files exist in `.context/review_todos/`)
+- Pending review_todo artifacts exist on the ticket
 - (Optional) User has filled Decision sections
 
 ## Autofix Classification Routing
@@ -58,7 +57,7 @@ resolution path:
 | `manual` | `downstream-resolver` | **Hand off only while undecided.** A genuine product, scope, tradeoff, secret/schema/infrastructure/cost, or conflict decision remains. |
 | `advisory` | `human` | **Skip.** Already reported during review. No code fix needed. |
 
-**Autonomous runs (ticket-flow / lfg / ticket-deploy).** Severity does not determine
+**Autonomous runs (ticket-flow / ticket-deploy).** Severity does not determine
 decision ownership. Reclassify an incorrectly labeled `manual` finding as `gated_auto` when the
 approved plan and repository rules determine one concrete fix. An autonomous runner may apply a
 `gated_auto` fix when it is plan-conformant and corroborated — multi-reviewer consensus, or a
@@ -327,10 +326,8 @@ builder queue.
 11. **Commit changes (ticketed standalone runs only, submodule-aware):** _(no permission
     needed)_
 
-    **Ticketless (lfg) runs skip this step entirely** — lfg forbids pushing and owns its own
-    commits. The commit/push below applies only to ticketed standalone runs.
-
-    Handle submodules first, then main repo:
+    When `/ticket-build` owns the push, skip this step. For standalone `/resolve-review`,
+    handle submodules first, then main repo:
 
 ```bash
 # Check for submodule changes
@@ -366,16 +363,6 @@ git push
 
 **Important:** Always commit and push submodule changes BEFORE committing the main repo reference to avoid "new commits" state conflicts.
 
-## Ticketless Mode (lfg)
-
-When resolve-review runs without a ticket (e.g. under `/lfg`):
-
-- Findings live as files in `.context/review_todos/` instead of MCP review_todo artifacts.
-- Routing is identical (safe_auto / gated_auto / manual / advisory), and the orchestrator
-  still validates the builder's resolve JSON — it records outcomes in the finding files
-  instead of via `update_artifact`.
-- **No commit/push.** lfg forbids pushing and owns its own commits; step 11 applies only to
-  ticketed standalone runs.
 
 ## Output
 
@@ -387,7 +374,7 @@ Review resolved for {ID}: {title}
 Applied: {N} fixes ({safe_auto} auto, {gated_auto} gated, {manual} manual)
 Skipped: {N} ({advisory} advisory)
 
-Next: deploy via /ticket-flow (/auto-deploy) — or done, if this run is ticketless (lfg)
+Next: deploy via /ticket-flow (/auto-deploy)
 or no deployment is needed
 ```
 

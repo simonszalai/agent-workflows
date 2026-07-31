@@ -396,7 +396,7 @@ After collecting the selected path's evidence, generate testable hypotheses:
 
 ### When to Generate Hypotheses
 
-- **Always for B-prefix tickets** (autonomous bug fixes via `/lfg` or `/ticket-flow`)
+- **Always for B-prefix tickets** (autonomous bug fixes via `/ticket-flow`)
 - **Optional for other bugs** - generate when root cause is uncertain
 - **Never for F-prefix tickets** (features don't use investigation)
 

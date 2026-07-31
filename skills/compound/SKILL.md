@@ -31,7 +31,7 @@ Compound auto-detects the right mode from context:
 | User says "save this", "remember this" | **Save** | Extract from conversation, store |
 | After review findings resolved | **Improve** | Analyze gaps, store knowledge, update workflows |
 | After a bug fix | **Improve** | Analyze root cause, store knowledge |
-| Inside `/ticket-flow` or `/lfg` | **Improve** | Auto-analyze, auto-apply |
+| Inside `/ticket-flow` | **Improve** | Auto-analyze, auto-apply |
 | Ambiguous | **Both** | Save explicit knowledge + analyze for improvements |
 
 ## Save Mode

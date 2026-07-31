@@ -23,7 +23,7 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
   (Atlas reviewed plans, Prisma/Alembic migrations, or the repo-specific equivalent).
   Omitting the schema artifact means the column/object may not exist at runtime.
 - **Never put MCP-tracked ticket artifacts in `.context/`** - see File Storage Rules below.
-  Workflows that run without a ticket (e.g. `/lfg`) may use `.context/` for their own scratch.
+  Workflows that run without a ticket (e.g. `/go-fable`) may use `.context/` for their own scratch.
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace
   that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`). The
   `~/dev/*` paths are the main checkouts and must not be touched unless explicitly requested.
@@ -66,7 +66,7 @@ Use `mcp__autodev-memory__create_artifact` to store plans, build todos, review f
 
 - Temporary data passed between parallel subagents in a single session
 - Scratch computations that are consumed immediately and then discarded
-- Scratch state for ticketless autonomous workflows (e.g. `/lfg`) that have no ticket to write to
+- Scratch state for ticketless autonomous workflows (e.g. `/go-fable`) that have no ticket to write to
 - Browser screenshot evidence for visible work, saved under `.context/screenshots/` and linked
   by absolute path from the final response and durable artifacts. Treat these files as disposable
   local evidence; the durable artifact stores the paths and context.
@@ -249,7 +249,7 @@ When the user mentions these activities, proactively use the corresponding skill
 | "multi-ticket", "batch these related tickets" | Run `/ticket-flow` per ticket, or an epic when coordinated |
 | "milestone flow", "run this milestone"  | Run `/milestone-flow` |
 | "epic flow", "run this epic"            | Run `/epic-flow` |
-| "auto-fix", "fix this bug autonomously" | Run `/lfg`         |
+| "auto-fix", "fix this bug autonomously" | Create/run ticket via `/ticket-flow` (or `/go-fable` for ultra-light untracked edits) |
 
 ### Learning & Correction Detection
 
@@ -422,12 +422,14 @@ create_ticket(
 - `/ticket-flow`: Autonomous single-ticket execution — `/ticket-plan` -> `/ticket-build` ->
   `/ticket-deploy staging`; stops after staging verification by default. With the `prod` argument
   it runs `/ticket-deploy full` instead: production promotion/deploy -> production verification ->
-  completed; stops on failures, blockers, or genuine timing waits
+  completed; stops on failures, blockers, or genuine timing waits. Intensity
+  (`direct`/`standard`/`heavy`, see `skills/references/execution-intensity.md`) is decided once
+  and always requires a plan MCP artifact
 - `/ticket-build`: Implementation phase — build todos -> build -> review -> resolve -> local health gate
 - `/ticket-deploy`: Deploy+verify phase — `staging` (deploy + verify staging), `prod`
   (status-aware production leg; direct-production asks confirmation unless tiny/safe), or `full`
   (staging then production, gated on exact staging PASS)
-- `/lfg`: Autonomous end-to-end on the current branch without tickets; keep its existing `.context` behavior
+- `/go-fable`: Ultra-light ticketless working-tree edits (no plan artifact, no commits/PRs)
 - `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production
   deploy steps, then invokes `/ticket-verify production`. Modes: single ticket (default,

@@ -90,26 +90,18 @@ mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=ARTIFACT_ID)
 No plan artifact → STOP, run `/ticket-plan [id]`. No build_todo artifacts → STOP, run
 `/create-build-todos [id]`.
 
-### Ticketless Mode (lfg)
+This skill is **ticketed only** (MCP plan + build_todo artifacts). Ticketless ultra-light work
+uses `/go-fable` and does not invoke `/build`.
 
-When invoked by `/lfg` (no ticket exists), the filesystem replaces MCP:
-
-- **Prerequisites:** read `.context/plan.md` (plan) and `.context/build_todos/` (todos)
-  instead of `get_ticket`. Missing plan → STOP - run the lfg planning phase first. Missing
-  todos → STOP - run `/create-build-todos` first.
-- **Checkpoints:** on a validated `complete`, update the status header of the todo's file in
-  `.context/build_todos/` (plus Completion Notes) instead of `update_artifact`. That file
-  state is the resume story.
-- **No MCP writes:** skip every `update_ticket` / `update_artifact` call in this skill.
-
-Everything else is identical: coherent sequential chains, dependency order, granular per-todo
-checkpoints, bounded chain-local self-repair (≤2 retries), and orchestrator-owned validation.
-Reuse the cached manifest `context_version` and artifact IDs until this workflow mutates a relevant
-artifact. Children receive immutable packet paths plus hashes; they never reload the ticket.
+Everything else is identical for ticketed runs: coherent sequential chains, dependency order,
+granular per-todo checkpoints, bounded chain-local self-repair (≤2 retries), and
+**orchestrator-owned validation**. Reuse the cached manifest `context_version` and artifact IDs
+until this workflow mutates a relevant artifact. Children receive **immutable packet** paths plus
+hashes; they never reload the ticket.
 
 ## Process
 
-1. **Set ticket status to in_progress** (ticketed runs only — skip in ticketless mode):
+1. **Set ticket status to in_progress**:
    ```
    mcp__autodev-memory__update_ticket(
      project=PROJECT, ticket_id=ID, repo=REPO,
@@ -259,12 +251,8 @@ artifact. Children receive immutable packet paths plus hashes; they never reload
    )
    ```
 
-   In ticketless mode, update the status header of the todo's file in `.context/build_todos/`
-   (plus the same Completion Notes) instead of calling `update_artifact`.
-
    This is the entire resume story: re-running `/build` picks up from the first todo still
-   `pending`. No journal, no scratch file — the MCP artifact (ticketed) or the
-   `.context/build_todos/` file (ticketless) is the source of truth.
+   `pending`. No journal, no scratch file — the MCP `build_todo` artifact is the source of truth.
 
    If a host exposes a compacted-summary/compaction indication, the builder stops before further
    edits and returns `rotate_required` with `reason: "first_compaction"`. Hosts without that signal
@@ -276,7 +264,7 @@ artifact. Children receive immutable packet paths plus hashes; they never reload
    The implementation phase converges when every build_todo is individually checkpointed
    `complete`. Builder-chain results are implementation evidence, **not validation evidence**.
 
-   - When called by `/ticket-build` or `/lfg`, return without running tests, typecheck, lint,
+   - When called by `/ticket-build`, return without running tests, typecheck, lint,
      builds, schema pulls, migrations, browser checks, or the project health command. The parent
      orchestrator writes tests, then owns the pre-review and conditional final full gates.
    - For a standalone `/build`, this skill's main/orchestrator (never a builder) runs one canonical
@@ -327,10 +315,9 @@ artifact. Children receive immutable packet paths plus hashes; they never reload
    - Do not run validation after an orchestrated handoff. In standalone mode, do not repeat the
      same full command against an unchanged tree; require the persisted exact-tree/exact-command
      PASS receipt.
-   - Record the Completion Summary: ticketed runs update the plan **artifact** via
-     `update_artifact`; ticketless runs append it to `.context/plan.md`
-   - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow`, `/lfg`) owns
-     that step after `/build` returns
+   - Record the Completion Summary on the plan **artifact** via `update_artifact`
+   - Do **not** invoke `/write-tests` here — the orchestrator (`/ticket-flow` / `/ticket-build`)
+     owns that step after `/build` returns
 
 ## Status Flow
 
@@ -341,8 +328,8 @@ pending -> in_progress -> complete   (orchestrator sets `complete` after validat
 
 ## Completion Summary Format
 
-After completing all build steps, add this section to the plan (before the Work Log) — the plan
-**artifact** via `update_artifact` for ticketed runs, or `.context/plan.md` for ticketless runs:
+After completing all build steps, add this section to the plan artifact (before the Work Log) via
+`update_artifact`:
 
 ```markdown
 ---
@@ -375,8 +362,7 @@ After completing all build steps, add this section to the plan (before the Work 
 
 ## Work Log Entry Format
 
-After each step, add to the plan's Work Log (plan artifact via `update_artifact` for ticketed
-runs; `.context/plan.md` for ticketless runs):
+After each step, add to the plan's Work Log (plan artifact via `update_artifact`):
 
 ```markdown
 | YYYY-MM-DD | build | Completed step NN: [title] | [result/notes] |
