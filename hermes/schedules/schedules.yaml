@@ -1,0 +1,39 @@
+# Hermes schedule manifest. See README.md in this directory for rules.
+# Times are America/Vancouver.
+
+schedules:
+  - name: nightly-verify-promote
+    cron: "0 2 * * *"
+    prompt: nightly-verify-promote.md
+    workspace:
+      repo: ts-prefect
+      branch: staging
+    slack_channel: "#autodev-nightly"
+    enabled: false
+    blocked_on:
+      - "ticket-verify scheduled/unattended mode (epic ticket)"
+      - "main<->staging merge-base repair + mergeCommitAllowed fix"
+
+  - name: nightly-dream
+    cron: "30 3 * * *"
+    prompt: nightly-dream.md
+    workspace:
+      repo: ts-prefect
+      branch: staging
+    slack_channel: "#autodev-nightly"
+    enabled: false
+    blocked_on:
+      - "night-dream skill (cloud evidence only; epic ticket)"
+      - "ts-graph-dream propose-to-Slack path (epic ticket)"
+
+  - name: health-6h
+    cron: "0 */6 * * *"
+    prompt: health-6h.md
+    workspace:
+      repo: ts-prefect
+      branch: staging
+    slack_channel: "#autodev-health"
+    enabled: false
+    blocked_on:
+      - "health-scrapers folded into health-system (epic ticket)"
+      - "investigate-flow-fails ticket-dedup/extend + workspace spawn (epic ticket)"
