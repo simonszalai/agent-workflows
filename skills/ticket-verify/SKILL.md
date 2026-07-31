@@ -622,7 +622,7 @@ never through this skill mutating environments) or propose 2–4 ranked remediat
 FAIL verdict and evidence artifacts are never rewritten by this step.
 
 Production or epic remediation that changes code/config/auth must create a new fix ticket/epic
-step attached to the failed milestone. Ticketless `/lfg` and untracked auxiliary branches are
+step attached to the failed milestone. Ticketless `/go-fable` and untracked auxiliary branches are
 prohibited as the final route. Record separate owners and truth for `implemented`, `landed`,
 `configured`, `deployed`, and `producer available`; no earlier stage may be called “unblocked.”
 

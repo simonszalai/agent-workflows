@@ -75,7 +75,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         ticket_build = (ROOT / "skills/ticket-build/SKILL.md").read_text()
         phases = (ROOT / "skills/references/execution-phases.md").read_text()
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
-        lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
+        intensity = (ROOT / "skills/references/execution-intensity.md").read_text()
         write_tests = (ROOT / "skills/write-tests/SKILL.md").read_text()
         review = (ROOT / "skills/review/SKILL.md").read_text()
         resolve = (ROOT / "skills/resolve-review/SKILL.md").read_text()
@@ -123,11 +123,14 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("If unchanged, reuse that PASS", ticket_build)
         self.assertIn("one narrowly scoped repair", ticket_build)
         self.assertIn("at most two normal full gates", " ".join(ticket_build.split()))
-        self.assertIn("pre-review health PASS", lfg)
         self.assertIn("Reuse that recorded PASS", economy)
+        self.assertIn("Plan MCP artifact is mandatory", intensity)
+        self.assertIn("direct", intensity)
+        self.assertIn("standard", intensity)
+        self.assertIn("heavy", intensity)
 
         active_contracts = "\n".join((
-            build, ticket_build, phases, lfg, economy, write_tests, review, resolve, builder,
+            build, ticket_build, phases, intensity, economy, write_tests, review, resolve, builder,
             reviewer, external_build, external_agent, create_todos, build_planner,
             test_strategy, review_template,
         ))
@@ -215,31 +218,28 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertNotIn(obsolete, active)
         self.assertEqual([], model_polling_guidance_violations(active))
 
-    def test_lfg_enforces_bounded_dispatch_rotation_and_terminal_waiters(self) -> None:
-        lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
-        max_turns = re.search(r"^max_turns: (\d+)$", lfg, re.MULTILINE)
-        self.assertIsNotNone(max_turns)
-        self.assertLessEqual(int(max_turns.group(1)), 100)
-        for phase in (
-            "research/investigation",
-            "planning and build-todo creation",
-            "build and test-writing",
-            "review and resolution",
-            "closeout",
-        ):
-            self.assertIn(phase, lfg)
-        for command in ("bin/phase-contract dispatch", "bin/phase-contract result"):
-            self.assertIn(command, lfg)
-        for packet_field in (
-            "objective", "exact scope", "relevant paths", "contract excerpt", "risks",
-            "predecessor tree SHA", "orchestrator-owned validation", "enforced return shape",
-        ):
-            self.assertIn(packet_field, lfg)
-        self.assertIn("first reliable compaction marker", " ".join(lfg.split()))
-        self.assertIn("first incomplete unit", lfg)
-        self.assertIn('exactly one fresh\n`fork_turns: "none"` waiter leaf', lfg)
-        self.assertIn("timeout resume command", lfg)
-        self.assertNotIn('fork_turns: "all"', lfg)
+    def test_execution_intensity_and_ticket_flow_plan_artifact_contract(self) -> None:
+        intensity = (ROOT / "skills/references/execution-intensity.md").read_text()
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        ticket_plan = (ROOT / "skills/ticket-plan/SKILL.md").read_text()
+        ticket_build = (ROOT / "skills/ticket-build/SKILL.md").read_text()
+        milestone = (ROOT / "skills/milestone-flow/SKILL.md").read_text()
+        phases = (ROOT / "skills/references/execution-phases.md").read_text()
+
+        self.assertFalse((ROOT / "skills/lfg/SKILL.md").exists())
+        for level in ("direct", "standard", "heavy"):
+            self.assertIn(level, intensity)
+        self.assertIn("Plan MCP artifact is mandatory", intensity)
+        self.assertIn("intensity_floor", intensity)
+        self.assertIn("execution-intensity.md", ticket_flow)
+        self.assertIn("--intensity", ticket_flow)
+        self.assertIn("plan MCP artifact before build", ticket_flow)
+        self.assertIn("MANDATORY", ticket_plan)
+        self.assertIn("every intensity, including `direct`", ticket_plan)
+        self.assertIn("intensity-aware", ticket_build)
+        self.assertIn("intensity_floor: standard", milestone)
+        self.assertIn("plan MCP artifact (mandatory", phases)
+        self.assertNotIn('fork_turns: "all"', ticket_flow)
 
     def test_active_workflow_docs_never_enable_all_history_dispatch(self) -> None:
         assignment = re.compile(r"fork_turns\s*(?:=|:)\s*[\"']?all\b", re.IGNORECASE)
@@ -652,16 +652,18 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         for sample in allowed:
             self.assertEqual([], model_polling_guidance_violations(sample), sample)
 
-    def test_skill_contracts_keep_routine_and_lfg_paths_bounded(self) -> None:
+    def test_skill_contracts_keep_routine_and_ticket_paths_bounded(self) -> None:
         review = (ROOT / "skills/review/SKILL.md").read_text()
-        lfg = (ROOT / "skills/lfg/SKILL.md").read_text()
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        intensity = (ROOT / "skills/references/execution-intensity.md").read_text()
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
         retro = (ROOT / "skills/session-retro/SKILL.md").read_text()
         self.assertIn('fork_turns: "none"', economy)
         self.assertIn("Conductor enforcement", economy)
         self.assertIn("must not poll the parent session itself", economy)
         self.assertIn("plain review starts native-only", review)
-        self.assertNotIn("/review mode:cross", lfg)
+        self.assertNotIn("/review mode:cross", ticket_flow)
+        self.assertIn("Plan MCP artifact is mandatory", intensity)
         self.assertIn("workflow-efficiency-report --before-retro", retro)
 
     def test_every_shared_agent_uses_default_communication_protocol(self) -> None:

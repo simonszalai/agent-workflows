@@ -220,7 +220,7 @@ When reporting test coverage or claiming tests pass:
 1. **Cite specific file paths**: "Tests in `tests/pdf.test.ts` cover..." not "comprehensive
    tests were written"
 2. **Show owner-correct test evidence**: A standalone `/write-tests` run includes actual test
-   output. In an orchestrated ticket/lfg run, the test-writer names the exact command as pending
+   output. In an orchestrated ticket run, the test-writer names the exact command as pending
    and the main orchestrator attaches its pre-review gate output; the subagent never runs it.
 3. **Distinguish test types**: Unit tests of a client don't verify the integration works.
    Testing that `renderPdf()` makes a fetch call doesn't prove the PDF service accepts it.

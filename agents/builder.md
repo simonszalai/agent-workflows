@@ -1,6 +1,6 @@
 ---
 name: builder
-description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, /ticket-flow, and /lfg with task-specific prompts."
+description: "Code builder. Implements build todos or resolves review findings. Spawned by /build, /resolve-review, and /ticket-flow with task-specific prompts."
 model: inherit
 effort: medium
 max_turns: 60

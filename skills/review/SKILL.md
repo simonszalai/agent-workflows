@@ -28,6 +28,9 @@ call. The adapter fails loudly when the identifier is absent or empty; never rel
 environment inference for usage attribution.
 
 Review implementation with a genuinely light native path and conditional specialized fanout.
+When the parent packet carries `intensity` from `../references/execution-intensity.md`,
+honor it: `direct`/`standard` start light; `heavy` uses the heavy path gate; safety
+surfaces still upgrade coverage. Resolve-round caps are owned by `/ticket-build`.
 Supports multiple
 modes for different contexts (interactive, autonomous, read-only, programmatic).
 
@@ -162,9 +165,6 @@ code). Classify them `gated_auto` when the approved plan determines the implemen
 `manual` only when completing the scope requires a genuine unresolved human choice. Unsound
 deviations are p1/p2 per impact. Findings flow
 through the same schema, dedup, gate, and partitions as every other reviewer.
-
-In ticketless mode (lfg) the inputs come from `.context/source.md`, `.context/plan.md`, and
-`.context/build_todos/` status headers instead of MCP artifacts.
 
 **Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching):
 
@@ -473,18 +473,12 @@ polling.
 
    If a related entry exists, use `mcp__autodev-memory__update_entry` to append instead.
 
-   This is critical for autonomous workflows (lfg, ticket-flow) in cloud environments
+   This is critical for autonomous workflows (ticket-flow) in cloud environments
    where review findings would otherwise be lost after the session ends.
    If the MCP tool is unavailable, skip this step silently.
 
 8. **Update plan artifact** with review log entry via `update_artifact`
 
-### Ticketless Mode (lfg)
-
-When the review runs without a ticket (e.g. under `/lfg`), there is no MCP ticket to attach
-review_todo artifacts to. Store findings as files in `.context/review_todos/` instead (one
-file per finding, using `templates/review-todo.md`). Everything else is unchanged — the
-memory-persistence step (`create_entry` for P1/P2 findings) still applies.
 
 ---
 

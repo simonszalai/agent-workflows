@@ -34,8 +34,11 @@ Pass `--memory-context-file "$MEMORY_PACKET"` and
 `--orchestrator-thread-id "$ORCHESTRATOR_THREAD_ID"` to `external-agent --task plan`.
 
 The planning workflow. Picks up a `backlog` or `up_next` ticket (or creates one), researches the
-codebase, selects a light or heavy native planning path, conditionally escalates peers for risk or
-uncertainty, writes a plan artifact and a DRAFT deployment guide, and marks the ticket `planned`.
+codebase, selects intensity (`direct` / `standard` / `heavy` per
+`../references/execution-intensity.md`), maps it to a light or heavy native planning path,
+conditionally escalates peers for risk or uncertainty, **always writes a plan MCP artifact**
+(including on `direct` / light path), optionally drafts a deployment guide, and marks the ticket
+`planned`.
 
 For a Hermes-origin ticket, planning may create or update the plan and leave the ticket `planned`,
 but the restricted principal cannot self-approve or move it into an execution status. Admin
@@ -54,8 +57,9 @@ standards (audits, checklists, synthesis guidelines) live in
 /ticket-plan #123                     # Find or create ticket from GitHub issue
 /ticket-plan                          # Create ticket from conversation context
 /ticket-plan F0009 additional context # Ticket with extra context
-/ticket-plan F0009 --deep             # Force heavy path (plan-fanout workflow)
-/ticket-plan F0009 --light            # Force one-planner light path
+/ticket-plan F0009 --deep             # Force intensity heavy (plan-fanout workflow)
+/ticket-plan F0009 --light            # Force intensity direct (one-planner light path)
+/ticket-plan F0009 --intensity standard
 /ticket-plan F0009 --solo             # Disable conditional peer-provider escalation
 /ticket-plan F0009                    # Re-run on a planned ticket: revise the plan to address
                                     #   the user's open dashboard review comments, then resolve them
@@ -112,9 +116,9 @@ standards (audits, checklists, synthesis guidelines) live in
 3.  Set Status       -> Update to "in_progress"
 4.  Research         -> /research for features, /investigate for bugs
 5.  Prior Knowledge  -> Memory + past-ticket search, rendered into a shared blob
-6.  Complexity Gate  -> Choose light (inline) or heavy (plan-fanout) path
+6.  Intensity Gate   -> Choose direct/standard/heavy; map to light or heavy plan path
 7.  Plan             -> Native planning; escalate peers for risk/uncertainty/disagreement
-8.  Persist          -> Orchestrator writes plan artifact + DRAFT deployment_guide
+8.  Persist          -> Orchestrator ALWAYS writes plan artifact; DRAFT deployment_guide when needed
 9.  Set Status       -> Update to "planned" with summary_bullets
 ```
 
@@ -268,24 +272,25 @@ relevant turns up — never fabricate entries.
   verification_evidence artifact for the failed rows, don't guess from the title>
 ```
 
-### Phase 5: Complexity and peer-escalation gates
+### Phase 5: Intensity and peer-escalation gates
 
-The light path is one native inline planner with no critic panel and no peer providers. The heavy
-path adds multiple native framings and completeness/correctness/YAGNI critics. Peer providers are
-an independent escalation used only for explicit high risk, material uncertainty, or disagreement.
-Prompt length alone is never a complexity signal.
+Load `../references/execution-intensity.md`. Prefer the intensity already recorded by
+`/ticket-flow` in the phase packet. When running standalone, decide intensity with that
+reference (user flags, floors, safety surfaces). Map:
 
-Use this path gate (top-to-bottom, first match wins):
-
-| Condition | Path |
+| Intensity | Plan path |
 | --- | --- |
-| User passed `--deep` | Heavy |
-| User passed `--light` | Light |
-| New system/app, multi-component/cross-repo work, schema/data migration, or epic step | Heavy |
-| Shared infra, auth, billing, destructive data, or other high blast radius | Heavy |
-| Conflicting requirements or no established implementation pattern | Heavy |
-| Bounded change following an existing pattern or investigated bug fix | Light |
-| Otherwise | Light |
+| `direct` | Light — one native inline planner; no critic panel |
+| `standard` | Light — one native inline planner; no critic panel |
+| `heavy` | Heavy — multi-framing + completeness/correctness/YAGNI critics |
+
+Peer providers are an independent escalation used only for explicit high risk, material
+uncertainty, or disagreement. Prompt length alone is never an intensity signal.
+
+**Hard rule:** every intensity, including `direct`, must produce a persisted MCP `plan` artifact
+in Phase 7. Intensity never authorizes plan-skipping.
+
+Announce: `Intensity: {direct|standard|heavy} ({reason}; floor=...); Plan path: {light|heavy}`.
 
 Escalate peer providers only when at least one trigger is recorded:
 
@@ -296,8 +301,7 @@ Escalate peer providers only when at least one trigger is recorded:
 4. two native framings/critics materially disagree and repository evidence does not settle it.
 
 `--solo` disables peers, but not the heavy native critic panel or any project-required safety
-review. Announce both decisions: `Plan path: light; peers: no trigger` or
-`Plan path: heavy; peers: escalated for schema safety`.
+review. Announce peers separately: `peers: no trigger` or `peers: escalated for schema safety`.
 
 ### Phase 6: Plan, critique, and conditionally converge
 
@@ -400,11 +404,13 @@ on path.
 - For the heavy path, prefer to satisfy open questions BEFORE re-running rather than running
   the workflow twice (it's not idempotent and not cheap).
 
-### Phase 7: Persist the Plan Artifact (orchestrator writes it)
+### Phase 7: Persist the Plan Artifact (orchestrator writes it) — MANDATORY
 
 The **orchestrator** — not the planner agent — renders the converged plan as markdown per
-`templates/plan.md` and persists it. The final plan artifact must be concise and answer three
-questions clearly:
+`templates/plan.md` and persists it. This step is **required on every intensity**, including
+`direct` / light path. Building without a plan artifact is a contract failure.
+
+The final plan artifact must be concise and answer three questions clearly:
 
 1. **What** will be done (high-level, 2-3 sentences)
 2. **How** it will be done (approach, key decisions)
@@ -553,8 +559,9 @@ searches past tickets automatically as part of its research phase.
 
 Auto-plan complete for {ticket_id}: {title}
 
+Intensity: {direct|standard|heavy} ({reason}; floor={none|standard|heavy})
 Plan path: {light|heavy} — {one-line reason}
-Plan artifact created. Review and approve to proceed to build.
+Plan artifact created (mandatory). Review and approve to proceed to build.
 
 Status: planned (waiting for approval)
 

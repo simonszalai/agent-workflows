@@ -231,8 +231,10 @@ and evidence IDs, but performs no browser, deploy, fix, or status-read work itse
 
 Any production or epic remediation that changes code/config/auth becomes a new fix ticket/epic
 step attached to the failed milestone. It must pass normal build, review, landing, config/secret
-ownership, deploy, and re-verification stages. Never finish through ticketless `/lfg`, an
-untracked auxiliary branch, or a detached verifier implementation.
+ownership, deploy, and re-verification stages. Never finish through ticketless `/go-fable`, an
+untracked auxiliary branch, or a detached verifier implementation. Child step tickets receive
+`intensity_floor: standard` (or higher when the step plan names a safety surface) per
+`../references/execution-intensity.md`.
 
 ## Output
 
