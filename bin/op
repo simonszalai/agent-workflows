@@ -22,9 +22,58 @@
 # absolute op path and owns a separate audit line. Repairing or widening that
 # gateway route is explicitly outside B0002.
 
-REAL_OP="/opt/homebrew/bin/op"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG="$LOG_DIR/op-audit.log"
+
+script_dir="${BASH_SOURCE[0]%/*}"
+[[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
+HERE="$(cd "$script_dir" && pwd)"
+
+resolve_real_op() {
+  local path_entry=""
+  local remaining_path="${PATH:-}"
+  local candidate=""
+  local last_path_entry=0
+
+  if [[ -n "${OP_REAL_BIN:-}" ]]; then
+    if [[ "$OP_REAL_BIN" != /* || ! -f "$OP_REAL_BIN" || ! -x "$OP_REAL_BIN" ||
+          "$OP_REAL_BIN" -ef "$HERE/op" ]]; then
+      echo "ERROR: OP_REAL_BIN must name an absolute executable 1Password CLI path," >&2
+      echo "not the op audit shim." >&2
+      return 127
+    fi
+    REAL_OP="$OP_REAL_BIN"
+    return 0
+  fi
+
+  while (( last_path_entry == 0 )); do
+    if [[ "$remaining_path" == *:* ]]; then
+      path_entry="${remaining_path%%:*}"
+      remaining_path="${remaining_path#*:}"
+    else
+      path_entry="$remaining_path"
+      last_path_entry=1
+    fi
+    [[ -n "$path_entry" ]] || path_entry="."
+    candidate="$path_entry/op"
+    if [[ -f "$candidate" && -x "$candidate" && ! "$candidate" -ef "$HERE/op" ]]; then
+      REAL_OP="$candidate"
+      return 0
+    fi
+  done
+
+  for candidate in /opt/homebrew/bin/op /usr/local/bin/op /usr/bin/op; do
+    if [[ -f "$candidate" && -x "$candidate" && ! "$candidate" -ef "$HERE/op" ]]; then
+      REAL_OP="$candidate"
+      return 0
+    fi
+  done
+
+  echo "ERROR: no real 1Password CLI found. Install op or set OP_REAL_BIN." >&2
+  return 127
+}
+
+resolve_real_op || exit $?
 
 inspect_file_mode() {
   local path="$1"
@@ -207,9 +256,6 @@ if [[ -n "$sensitive_vault" ]]; then
   done
 fi
 
-script_dir="${BASH_SOURCE[0]%/*}"
-[[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
-HERE="$(cd "$script_dir" && pwd)"
 mkdir -p "$LOG_DIR" 2>/dev/null
 
 parent="$(ps -o comm= -p "$PPID" 2>/dev/null | tail -1 | tr -d ' ')"
