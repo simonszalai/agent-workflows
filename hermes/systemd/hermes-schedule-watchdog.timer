@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Hermes schedule watchdog every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* *:07/30:00 America/Vancouver
+Persistent=true
+
+[Install]
+WantedBy=timers.target

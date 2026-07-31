@@ -29,9 +29,13 @@ completed.
 /ticket-verify staging --epic E0007 --milestone M2 --no-promote
 /ticket-verify production --epic E0007
 /ticket-verify production --epic E0007 --milestone M2
+
+/ticket-verify --scheduled            # unattended nightly: full default queue, staging AND production, verify-only
+/ticket-verify staging --scheduled    # unattended, one environment
 ```
 
-First argument must be `staging`, `prod`, or `production`.
+First argument must be `staging`, `prod`, or `production` — except with `--scheduled`, where
+omitting the environment means both (staging first, then production).
 
 `--produce-evidence` is staging-only and must be explicitly supplied by a human-authorized wrapper
 such as `/ticket-deploy` (targets `staging`/`full`) or by the user. It does not authorize production flow triggers.
@@ -77,6 +81,46 @@ such as `/ticket-deploy` (targets `staging`/`full`) or by the user. It does not 
   post-verification cleanup that runs only after the PASS verdict is recorded. Bounded
   noncritical cleanup may run automatically even when irreversible; critical/unknown destructive
   cleanup remains approval-gated (see §10).
+
+## Scheduled mode (`--scheduled`)
+
+Unattended nightly invocation (Hermes `hermes/schedules/nightly-verify-promote.md`). The run
+inherits the full unattended contract in `../references/scheduled-run.md` — mutation boundary,
+Slack one-line + thread format, `SCHEDULED_RUN_RESULT` ending, `rc_fingerprint` dedup. This
+section only states what changes relative to an interactive run; everything else in this skill
+applies unchanged.
+
+- **Verify-only. §9b auto-promotion is SUPPRESSED — unconditionally.** Never load
+  `verify-staging-promotion.md`, never invoke `/ticket-promote`, in any mode, for any tier
+  (including `tiny_safe`). Merging to `main` is a de-facto production deploy for ts-prefect
+  (flows `git_clone` at runtime), so a scheduled run never merges or pushes to long-lived
+  branches. A standalone staging PASS sets `staging_verified` and reports
+  `promotion-ready — prod promotion awaiting Simon` with the exact
+  `/ticket-promote <ID>` command; a human runs it.
+- **No interactive questions.** Anything that would need human input, approval, or a credential
+  not already held ends that scope as `BLOCKED` with `blocked_on` naming the exact command or
+  manual action — never a prompt, never improvisation around the boundary.
+- **Strictly read-only evidence collection.** The bounded on-demand canary/shadow exception and
+  `--produce-evidence` are **not available** in scheduled mode: no flow triggers in any
+  environment (a schedule is not the human-authorized wrapper §Usage requires). Do NOT trigger
+  production flows. Scopes whose contract requires an on-demand producer run end `BLOCKED`
+  naming the bounded trigger a human should run. §10/§10a deferred cleanup does not execute
+  from a scheduled run either — a production PASS holding cleanup rests at
+  `prod_verified_needs_cleanup` and reports the pending cleanup command.
+- **Bounded queue.** Cap the default queue explicitly per run (e.g. `--limit N` scopes or an
+  explicit lookback window); never run an unbounded sweep. Report anything left unprocessed as
+  carried-over in the thread.
+- **Prod DB reads only via `TS/PROD_POSTGRES_URL_RO`.** Never a read-write credential from a
+  scheduled context. Nothing that can raise a 1Password/Touch ID prompt (no `*-sensitive`
+  reads).
+- **Environments.** With no environment argument, run the staging default queue first, then the
+  production default queue, in one run.
+- **Slack report to `#autodev-nightly`** (channel ID from `hermes/schedules/schedules.yaml`):
+  one summary line in the channel, per-scope detail as thread replies. The summary line ends
+  with either `all verified` (no scope is awaiting promotion) or
+  `promotion-ready — prod promotion awaiting Simon` (at least one staging PASS is resting at
+  `staging_verified`). FAIL/BLOCKED routing to `#autodev-incidents` per scheduled-run.md §2.
+  The session's final message ends with the `SCHEDULED_RUN_RESULT` block (scheduled-run.md §3).
 
 ## Process
 
@@ -635,7 +679,9 @@ create.
 ### 9b. Auto-promotion gate (standalone staging PASS only)
 
 Load `../references/verify-staging-promotion.md` only for a standalone staging PASS when
-`--no-promote` and batch/epic holds do not already prohibit promotion.
+`--no-promote` and batch/epic holds do not already prohibit promotion. In `--scheduled` mode this
+gate is suppressed unconditionally (see §Scheduled mode): never load the reference, never invoke
+`/ticket-promote`; report `promotion-ready — prod promotion awaiting Simon` instead.
 
 ### 9c. Capture failure knowledge (FAIL verdicts, staging or production)
 

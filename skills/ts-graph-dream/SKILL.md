@@ -9,6 +9,8 @@ description: Production-only whole-system knowledge graph consolidation for ts-g
 
 Default stance: **read-only report first**. Mutate only after explicit user approval or an explicit apply request.
 
+> Scheduled invocation: `/night-dream` runs this skill propose-only — the cleanup plan is posted to Slack with zero `graph_*` mutations; applying it is always a separate human-approved session.
+
 **Scope boundary: production only.** Every run targets the canonical production TS database
 `ts_znde_hu05` (Render Postgres `dpg-d1rh6dmmcj7s73e4qigg-a`). Never query, compare, audit, clean,
 or report on any non-production graph database. If the production database cannot be

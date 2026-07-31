@@ -1,0 +1,29 @@
+[Unit]
+Description=Hermes scheduled agent run (%i)
+After=network-online.target hermes-conductor.service
+Wants=network-online.target hermes-conductor.service
+OnFailure=hermes-schedule-alert@%i.service
+
+[Service]
+Type=oneshot
+User=hermes-schedules
+Group=hermes-schedules
+WorkingDirectory=/opt/hermes-schedules
+LoadCredential=slack.token:/etc/hermes-schedules/slack.token
+StateDirectory=hermes-schedules
+StateDirectoryMode=0700
+TimeoutStartSec=10h
+ExecStart=/opt/hermes-schedules/venv/bin/python /opt/hermes-schedules/runner.py run %i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077

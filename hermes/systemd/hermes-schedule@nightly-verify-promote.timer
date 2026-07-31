@@ -1,0 +1,10 @@
+# cron "0 2 * * *" from hermes/schedules/schedules.yaml (America/Vancouver).
+[Unit]
+Description=Hermes schedule timer: nightly-verify-promote
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 America/Vancouver
+Persistent=true
+
+[Install]
+WantedBy=timers.target

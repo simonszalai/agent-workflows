@@ -30,6 +30,10 @@ It is an **orchestrator**, not a rewrite of the existing skills. It reuses their
 | Ticket failure patterns | — (new) | recurring root causes across tickets become candidates |
 | Memory ⇄ skill migration | — (new) | promote reusable methodology up; evict project leakage down |
 
+> Scheduled subset: `/night-dream` runs the cloud-safe slice (tickets + memory only, no session
+> logs, no skill edits) unattended; deep-dream, heal-workflows, and autodev-improve stay
+> manual-local.
+
 ## What it is NOT
 
 - **Not a code change tool.** It never edits project application code. Its only side effects are

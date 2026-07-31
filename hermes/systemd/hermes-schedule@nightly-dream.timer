@@ -1,0 +1,10 @@
+# cron "30 3 * * *" from hermes/schedules/schedules.yaml (America/Vancouver).
+[Unit]
+Description=Hermes schedule timer: nightly-dream
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/Vancouver
+Persistent=true
+
+[Install]
+WantedBy=timers.target
