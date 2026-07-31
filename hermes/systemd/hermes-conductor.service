@@ -1,0 +1,33 @@
+[Unit]
+Description=Hermes Conductor API MCP loopback service
+After=network-online.target
+Wants=network-online.target
+Before=hermes-gateway.service
+
+[Service]
+Type=simple
+User=hermes-conductor
+Group=hermes-conductor
+WorkingDirectory=/opt/hermes-conductor
+LoadCredential=conductor-api.token:/etc/hermes-conductor/conductor-api.token
+StateDirectory=hermes-conductor
+StateDirectoryMode=0700
+ExecStart=/opt/hermes-conductor/venv/bin/python /opt/hermes-conductor/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
