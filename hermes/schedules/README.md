@@ -18,6 +18,8 @@ Rules:
   requiring prod-touch or human approval stops and reports to Slack instead of proceeding.
 - An `enabled: false` entry is staged but not yet runnable — its `blocked_on` field says
   what must land first.
+- The full unattended contract (mutation boundary, Slack report format, PASS/FAIL ending
+  schema, `rc_fingerprint` dedup) is canonical in `skills/references/scheduled-run.md`.
 
 Slack destinations:
 
