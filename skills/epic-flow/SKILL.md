@@ -57,7 +57,15 @@ it became a milestone gate criterion and a required test, and it never worked in
 /epic-flow E0007 --milestone M2    # run one milestone and its gate
 /epic-flow E0007 --stop-at-gates   # plan/split/readiness only; stop before milestone-flow deploy+verify
 /epic-flow E0007 --production-only # valid only after environment-capability passes every gate
+/epic-flow E0007 --executor hermes # place unresolved-repo milestone steps via Hermes workspaces
 ```
+
+`--executor` (`local` default, `hermes`) is passed through unchanged to every `/milestone-flow`
+invocation; see `../references/conductor-multi-repo.md` §Executor modes. Auto-select `hermes` only
+when the run was started by a Hermes scheduled agent. A Hermes-scheduled unattended run defaults
+to `--staging-only`: production promotion under `--executor hermes` additionally requires the
+explicit production authorization in the run's own instruction (a standing "full-auto" schedule is
+not that authorization).
 
 ## References
 
@@ -85,20 +93,23 @@ Read before acting:
 - Cache that response/version as the orchestration snapshot and pass bounded milestone extracts to
   milestone-flow. Reload only after `/epic-plan`, `/epic-split`, or a completed milestone mutates
   the epic; do not re-read the unchanged full epic between routing decisions.
-- Create one active bounded, versioned shared packet per milestone under
-  `.context/epic-flow/<EPIC_ID>/<MILESTONE>/`. Store immutable packet bodies as
-  `packets/v<NNN>.md` and atomically replace `current.json`, which names the version, relative path,
-  and SHA-256 of the exact packet bytes. Write a temporary packet, hash it, move it to its immutable
-  versioned path, then write and atomically rename the manifest. Never edit a published version.
+- Create one active bounded, versioned shared packet per milestone as an **epic artifact** titled
+  `milestone-packet <EPIC_ID> <MILESTONE>` (artifact_type `deployment_guide`, metadata
+  `kind: "milestone_packet"`). The body's first line records `packet_version: v<NNN>` and
+  `sha256: <hash of the exact body bytes>`; publish new versions only via `update_artifact`, whose
+  history keeps prior versions immutable. Never store the packet under `.context/` — hermes-executed
+  children have no shared filesystem, and the artifact transport is the single mechanism for both
+  executors. Gate-package readers must filter by title/metadata so the packet is never mistaken
+  for the milestone gate package.
 - The packet contains only the parent plan/acceptance contract, step/DAG summary, repo/path/branch
   map, relevant knowledge, activation/deploy constraints, and required return/checkpoint schemas.
   Cap the packet body at 16 KiB; summarize or reference immutable artifact IDs/paths rather than
-  exceeding the cap. Delegated work receives the active packet path, version, and SHA-256, not
+  exceeding the cap. Delegated work receives the packet artifact id, version, and SHA-256, not
   duplicated epic history. Every consumer verifies the hash and records the version/hash it used in
   its terminal result.
 - Advance the packet version only when a source artifact, epic structure, contract, relevant
   knowledge, or completed milestone checkpoint changes. Consumers reload MCP/source context only
-  after the manifest advances or when a specifically named missing fact is required. Route a
+  after the packet version advances or when a specifically named missing fact is required. Route a
   missing-fact request to the orchestrator for a bounded packet update; do not independently reload
   the whole epic.
 - If the epic spans multiple repos, resolve every involved repo to an actual Conductor workspace
@@ -106,8 +117,11 @@ Read before acting:
   **positive evidence of absence**: check the Conductor workspace map, linked directories inside
   the current workspace, and the sibling workspace paths named by `conductor-multi-repo.md`, and
   record the exact paths checked. A failed first lookup is not "missing" — false positives here
-  have wrongly blocked milestones. Only after that full sweep still finds nothing, stop before
-  invoking milestone-flow and report the missing repo/path requirement plus the checked paths.
+  have wrongly blocked milestones. Only after that full sweep still finds nothing: under the
+  `local` executor, stop before invoking milestone-flow and report the missing repo/path
+  requirement plus the checked paths; under `--executor hermes`, record the repo as
+  hermes-placed — milestone-flow will create its Conductor workspace per
+  `conductor-multi-repo.md` §Executor modes instead of stopping.
 - If no canonical epic plan exists, or milestone pass conditions are missing/vague/stale, run
   `/epic-plan`; that skill owns synchronizing milestone gate criteria from source tickets and
   artifacts.
@@ -130,12 +144,13 @@ For each milestone in dependency order:
 
 1. If the milestone already has a recorded staging `PASS` and every included step still matches
    the verified commits, skip to the next milestone.
-2. Run `/milestone-flow <EPIC_ID> <MILESTONE>` to execute the step-ticket DAG and environment gate.
+2. Run `/milestone-flow <EPIC_ID> <MILESTONE>` (appending `--executor hermes` when that mode is
+   active) to execute the step-ticket DAG and environment gate.
    Normally that is the staging gate: `/auto-deploy <EPIC_ID> staging` then `/ticket-verify staging
    --epic <EPIC_ID> --milestone <MILESTONE> --no-promote`. In validated production-only mode, the
    immutable packet instead delegates the reviewed production deploy/verification command and
    verifier mode. Dispatch with `fork_turns: "none"` and only the active milestone packet
-   path/version/hash plus the exact command and result schema. The accumulated root thread never
+   artifact id/version/hash plus the exact command and result schema. The accumulated root thread never
    performs production verification or remediation piecemeal.
 3. Accept milestone success only when `/milestone-flow` reports the selected environment `PASS`
    (staging normally, production only after the mechanical capability gate) and artifact ids
@@ -156,7 +171,8 @@ For each milestone in dependency order:
 
 After the final milestone has a staging `PASS`:
 
-- If `--staging-only` is set, stop and report that production was intentionally not touched.
+- If `--staging-only` is set — including its default under a Hermes-scheduled unattended run —
+  stop and report that production was intentionally not touched.
 - Immediately before promotion, rebuild the ownership inventory from current tracked files and
   workspaces with `mode="promotion"`, `recheck_of`, and `rechecked_at_epoch`, then validate it.
   Promotion blocks on any newly unresolved owner/workspace/guide gap.
@@ -214,7 +230,7 @@ per-generation budgets:
 
 Use `max_packet_bytes: 16384`. If a milestone needs more than eight safe work-unit checkpoints,
 slice it into bounded execution-wave generations rather than enlarging the session. Persist the
-current epic artifact/checkpoint and packet manifest at every safe boundary. A valid
+current epic artifact/checkpoint and packet artifact version at every safe boundary. A valid
 `rotate_required` result causes an immediate fresh `fork_turns: "none"` replacement from the first
 incomplete unit; the old owner gets no follow-up work. Preserve passed milestones, landing state,
 deploy state, and verification artifacts rather than rerunning them.
@@ -247,7 +263,8 @@ blocked, and failed runs use their accurate non-complete banner.
 
 Always report:
 
-- epic id and current mode (`full-auto` or `gate-stop`);
+- epic id, current mode (`full-auto` or `gate-stop`), and executor (`local` or `hermes`, with
+  created workspace/session ids for hermes-placed steps);
 - current milestone and gate verdict;
 - step tickets and statuses changed;
 - deploy/promote commands run and their evidence artifacts;

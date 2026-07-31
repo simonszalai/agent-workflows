@@ -35,7 +35,15 @@ and the verifier. The deploy is idempotent, so re-entering after a partial run i
 ```text
 /milestone-flow E0007 M2
 /milestone-flow E0007 --next
+/milestone-flow E0007 M2 --executor hermes   # place unresolved-repo steps via Hermes workspaces
 ```
+
+`--executor` selects how step ticket-flows are placed and awaited per
+`../references/conductor-multi-repo.md` §Executor modes: `local` (default; linked
+directories + same-workspace `fork_turns: "none"` subagents) or `hermes` (one Conductor
+workspace/session per unresolved step repo via the Hermes Conductor MCP). Auto-select `hermes`
+only when the run was started by a Hermes scheduled agent. Everything else in this skill —
+packets, waves, gates, budgets, evidence — is executor-independent.
 
 ## References
 
@@ -54,16 +62,20 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 - This first response and its version are the run cache. Reuse it through wave construction and
   pass bounded milestone/step extracts to delegated ticket-flows; reload only after a workflow in
   this run mutates epic structure or gate artifacts.
-- Resolve the milestone's active shared packet from
-  `.context/epic-flow/<EPIC_ID>/<MILESTONE>/current.json`. If direct entry has no packet, create it
-  from this bounded response using the `epic-flow` packet contract: immutable `packets/v<NNN>.md`,
-  SHA-256 of its exact bytes, and an atomically renamed current manifest. Verify the hash before
-  use. This milestone-flow is the sole packet writer while it owns the milestone.
-- Give children only the active packet path, version, and SHA-256. Require every result/checkpoint
-  to record that version/hash. Reload MCP/source data only when the manifest version changed or a
-  child identifies one specifically missing fact. Update by publishing a new immutable version and
-  atomically advancing the manifest; never mutate the active packet or duplicate epic history in a
-  child prompt.
+- Resolve the milestone's active shared packet: the epic artifact titled
+  `milestone-packet <EPIC_ID> <MILESTONE>` (artifact_type `deployment_guide`, metadata
+  `kind: "milestone_packet"`). If direct entry finds none, create it from this bounded response
+  using the `epic-flow` packet contract: the body's first line states `packet_version: v<NNN>` and
+  `sha256: <hash of the exact body bytes>`. Publish a new version only via `update_artifact` (the
+  artifact history keeps prior versions immutable); verify the recorded hash against the body
+  before use. This milestone-flow is the sole packet writer while it owns the milestone. Packet
+  readers must filter gate-package reads by title/metadata so the packet is never mistaken for the
+  milestone gate package. Do not use `.context/` for the packet: hermes-executed children have no
+  shared filesystem, and the artifact transport is the single mechanism for both executors.
+- Give children only the packet artifact id, version, and SHA-256. Require every result/checkpoint
+  to record that version/hash. Reload MCP/source data only when the packet version advanced or a
+  child identifies one specifically missing fact. Update by publishing a new version with a new
+  recorded hash; never duplicate epic history in a child prompt.
 - Resolve milestone by display id (`M2`) or choose the first incomplete milestone for `--next`.
 - Load all step tickets in that milestone.
 - Read parent epic plan, milestone acceptance criteria, blockers, and contracts.
@@ -75,8 +87,10 @@ Stop if:
 - epic has unresolved planning open questions;
 - any required blocker from an earlier milestone is not complete/merged;
 - cross-repo contracts are missing;
-- any step repo in the milestone cannot be resolved to the primary workspace, a linked Conductor
-  directory, or an explicit user-provided repo root;
+- (`local` executor only) any step repo in the milestone cannot be resolved to the primary
+  workspace, a linked Conductor directory, or an explicit user-provided repo root. Under
+  `--executor hermes` an unresolved repo is not a stop: resolve it by creating a Conductor
+  workspace per `conductor-multi-repo.md` §Executor modes;
 - two same-repo steps are marked parallel but touch overlapping/conflicting areas;
 - the milestone has no staging evidence contract. Ask `/epic-flow`/planning to repair the
   milestone before build work continues.
@@ -89,9 +103,11 @@ Stop if:
 
 Create waves from the blocker -> blocked DAG:
 
-Before executing a wave, record each step's `repo -> path -> branch -> target/base` mapping.
-Do not start a repo's ticket-flow unless that repo root is available and its current branch is the
-branch intended for that repo's step.
+Before executing a wave, record each step's `repo -> path (or workspace/session id) -> branch ->
+target/base` mapping. In `local` mode, do not start a repo's ticket-flow unless that repo root is
+available and its current branch is the branch intended for that repo's step. In `hermes` mode,
+create/reuse the step's Conductor workspace on that branch first and record its workspace id in
+the mapping.
 
 **Knowledge retrieval gate for the wave.** Before dispatching any step, run an
 `mcp__autodev-memory__search` query per repo/risk-boundary represented in the wave (schema/raw SQL,
@@ -105,10 +121,13 @@ handoff so later audits can distinguish "searched and none found" from "Codex/Gr
 - same-repo steps default to serial unless their write scopes are demonstrably disjoint;
 - if unsure, serialize.
 
-Every ticket-flow dispatch uses `fork_turns: "none"` plus the active shared packet and its exact
-step scope. A history fork is permitted only when a self-contained packet is genuinely impossible;
-record the reason first and use the smallest explicit numeric count of recent turns. Never use an
-all-history fork.
+Every `local` ticket-flow dispatch uses `fork_turns: "none"` plus the active shared packet and its
+exact step scope. A history fork is permitted only when a self-contained packet is genuinely
+impossible; record the reason first and use the smallest explicit numeric count of recent turns.
+Never use an all-history fork. Every `hermes` dispatch is one workspace + one session + one prompt
+carrying the identical command line, packet artifact id/version/hash, knowledge briefing, and
+result schema; a remote session is always packet-only (it has no parent history to fork), and it
+is awaited under the same lease rules as a local leaf.
 
 ### 4. Execute each wave
 
@@ -116,7 +135,7 @@ For each step ticket that is **not already `merged`**, run `/ticket-flow <ID> --
 --target staging` (or the milestone's configured integration target). Skip steps already
 `merged` (e.g. when entered via the ticket-flow hand-off). The `--epic-context` flag is required:
 it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand back into
-`/milestone-flow`. The dispatch packet carries the active shared-packet path/version/hash rather
+`/milestone-flow`. The dispatch carries the active shared-packet artifact id/version/hash rather
 than copied parent context, plus `intensity_floor: standard` (raise to `heavy` when the step
 plan/source names schema, auth, secrets, billing, deploy-config, or cross-repo contracts) per
 `../references/execution-intensity.md`. Each non-skipped ticket-flow must:
@@ -237,8 +256,8 @@ milestone it was asked to execute.
 ### 9. Durable phase checkpoints and rotation
 
 Treat readiness, each execution wave, the gate package, staging deploy, and staging verification as
-durable phase boundaries. At each boundary, persist the canonical step/epic artifact and active
-packet manifest. Apply the validated dispatch/result/rotation contract in `execution-economy.md`
+durable phase boundaries. At each boundary, persist the canonical step/epic artifact and the
+current packet artifact version. Apply the validated dispatch/result/rotation contract in `execution-economy.md`
 with `max_packet_bytes: 16384` and these default hard per-generation budgets:
 
 | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
@@ -273,6 +292,7 @@ the matching red-X banner and includes partial step/ticket changes and the safes
 
 ```text
 Milestone flow complete: E0007 M2
+Executor: local | hermes (workspace/session ids for any hermes-placed steps)
 Steps: 3/3 merged
 Gate package: deployment_guide artifact updated
 Deploy: PASS (/auto-deploy E0007 staging)

@@ -16,9 +16,38 @@ or when the system context says directories are linked into the current Conducto
 - Do **not** assume repos live at `~/dev/{repo}`. That may be true for source workflow repos, but
   Conductor work happens in `/Users/.../conductor/workspaces/...` plus linked directories.
 - If a required repo is not accessible as the primary workspace, a linked directory, or an explicit
-  path, stop before implementation and report the exact missing repo(s). Ask the user to start/link
-  the missing workspace or run the repo's step in a separate Conductor workspace. Do not fake the
-  work inside another repo.
+  path, the outcome depends on the executor mode (below). In `local` mode, stop before
+  implementation and report the exact missing repo(s); ask the user to start/link the missing
+  workspace or run the repo's step in a separate Conductor workspace. Do not fake the work inside
+  another repo. In `hermes` mode, an unresolved repo is not a blocker — it is an instruction to
+  create the workspace.
+
+## Executor modes
+
+Multi-repo orchestrators (`/epic-flow`, `/milestone-flow`) run under one of two executors. The
+DAG, contracts, packets, gates, budgets, and evidence rules are identical in both; only how a
+child run is placed and awaited differs.
+
+- **`local`** (default): every step repo must resolve to the primary workspace, a linked
+  directory, or an explicit user-provided path per the resolution rules above. Step dispatch is a
+  same-workspace `fork_turns: "none"` subagent.
+- **`hermes`**: the session has the Hermes Conductor MCP facade (workspace/session tools such as
+  `create_workspace`, `create_session`, `send_session_message`, `get_session_status`). A step repo
+  that does not resolve locally is placed by **creating a Conductor workspace on that repo** with
+  the step's intended branch, creating one session in it, and sending exactly one prompt: the same
+  `/ticket-flow` (or delegated) command line the local executor would run, plus the packet
+  artifact id/version/hash and result schema. Await the session under the normal
+  `execution-economy.md` progress lease: one bounded block per lease, one expiry inspection of
+  `get_session_status`/terminal transcript, at most one renewal after real checkpoint advancement.
+  Never busy-poll session status between lease boundaries.
+
+Select `hermes` only when explicitly requested (`--executor hermes`) or when the run was started
+by a Hermes scheduled agent; otherwise use `local`. Hermes-executed runs are unattended: they must
+never ask interactive questions, must stay on the silent Keychain 1Password service-account path
+(no `op://*-sensitive/...` access, no operations requiring Touch ID or commit-signing approval),
+and must report results to their configured channel instead of assuming a watching user. Archive
+or name created workspaces so a re-run reuses an existing open workspace for the same step ticket
+instead of spawning duplicates; record every created workspace/session id in the run report.
 
 ## Step and branch boundaries
 
@@ -47,7 +76,7 @@ or when the system context says directories are linked into the current Conducto
 
 For any multi-repo run, report a compact table with:
 
-| Repo | Path | Branch | Target/base | Step ticket | Status | PR/commit |
+| Repo | Path or workspace/session id | Branch | Target/base | Step ticket | Executor | Status | PR/commit |
 
 Also report cross-repo contracts in provider -> consumer order and identify any missing workspace
 or manual deploy blocker explicitly.

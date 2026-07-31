@@ -126,17 +126,18 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
   source text. If found, load `get_epic` once and cache its version plus the step's
-  milestone/contracts. Consume the milestone's active shared packet from
-  `.context/epic-flow/<EPIC_ID>/<MILESTONE>/current.json`; verify the referenced immutable packet's
-  SHA-256 and record its version/hash in every phase result. Delegated phases receive only that
-  packet path/version/hash plus their exact step scope, not copied epic history.
-- On a direct epic-step entry, if the packet is absent, create the initial immutable version and
-  atomic manifest from the bounded `get_epic` snapshot before planning. A delegated
-  `--epic-context` run treats a missing packet as a caller-contract failure and returns to
-  milestone-flow; it must not invent a sibling packet.
+  milestone/contracts. Consume the milestone's active shared packet: the epic artifact titled
+  `milestone-packet <EPIC_ID> <MILESTONE>` (artifact_type `deployment_guide`, metadata
+  `kind: "milestone_packet"`); verify the SHA-256 recorded in the packet body against the exact
+  body bytes and record its version/hash in every phase result. Delegated phases receive only that
+  packet artifact id/version/hash plus their exact step scope, not copied epic history.
+- On a direct epic-step entry, if the packet is absent, create the initial packet artifact from
+  the bounded `get_epic` snapshot before planning. A delegated `--epic-context` run treats a
+  missing packet as a caller-contract failure and returns to milestone-flow; it must not invent a
+  sibling packet.
 - If an epic-step phase identifies a specifically missing fact, request a new packet version from
-  the owning milestone orchestrator. Reload MCP/source context only when the atomic current
-  manifest advances or that exact missing fact is required. Never edit a published packet or let
+  the owning milestone orchestrator. Reload MCP/source context only when the packet version
+  advances or that exact missing fact is required. Never rewrite the packet from a child or let
   sibling ticket-flows create divergent milestone packets.
 - Decide and record the delivery target using `landing-policy.md`.
 - **Decide and record intensity** using `execution-intensity.md` before planning/building:

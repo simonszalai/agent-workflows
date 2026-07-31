@@ -617,10 +617,12 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertIn("rerun_command", contract)
 
         for contract in (epic, milestone, ticket_flow):
-            self.assertIn("current.json", contract)
+            self.assertIn("milestone-packet", contract)
             self.assertIn("SHA-256", contract)
-            self.assertIn("packet path", contract)
+            self.assertIn("packet artifact id", contract)
             self.assertIn("version/hash", contract)
+            self.assertNotIn("current.json", contract)
+            self.assertNotIn(".context/epic-flow", contract)
         self.assertIn("16 KiB", epic)
 
     def test_workflow_guidance_has_no_model_driven_polling_instructions(self) -> None:
