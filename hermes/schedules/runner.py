@@ -342,12 +342,21 @@ def record_run(name: str, status: str, workspace_id: str | None) -> None:
 def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None]:
     workspace_spec = cast(JsonObject, entry.get("workspace") or {})
     repo = cast(str, workspace_spec.get("repo"))
-    project_id = resolve_project_id(repo)
     stamp = utc_now().strftime("%Y%m%d-%H%M")
+    # Orgs without Conductor projects create workspaces from a repository URL;
+    # supply exactly one of project_id / repository_url (server enforces this).
+    source: JsonObject
+    try:
+        source = {"project_id": resolve_project_id(repo)}
+    except RunnerError:
+        repo_url = workspace_spec.get("repo_url")
+        if not isinstance(repo_url, str) or not repo_url:
+            raise
+        source = {"repository_url": repo_url}
     workspace = conductor_call(
         "create_workspace",
         {
-            "project_id": project_id,
+            **source,
             "branch": workspace_spec.get("branch"),
             "name": f"sched-{name}-{stamp}",
             "session_name": f"{name} {stamp}",
