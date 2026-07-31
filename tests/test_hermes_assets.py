@@ -159,6 +159,11 @@ class HermesAssetTests(unittest.TestCase):
             mode = (HERMES / relative).stat().st_mode
             self.assertTrue(mode & stat.S_IXUSR, relative)
 
+    def test_runbook_names_the_current_ts_scoped_token(self) -> None:
+        runbook = (HERMES / "README.md").read_text()
+        self.assertIn("TS/TS_AUTODEV_MEMORY_API_TOKEN", runbook)
+        self.assertNotIn("AUTODEV-sensitive/HERMES_AUTODEV_MEMORY_TOKEN", runbook)
+
 
 if __name__ == "__main__":
     unittest.main()
