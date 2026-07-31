@@ -36,13 +36,15 @@ step it must load the parent epic context and honor the milestone contracts.
   requires an explicit `/ticket-flow <ID> prod` or `/ticket-deploy <ID> prod|full`.
 - Must not advance an epic/milestone gate; epic skills own that.
 - Must not use `.context/` for ticket artifacts; use MCP artifacts.
-- `/lfg` remains the ticketless/current-branch workflow and is not changed by this skill.
+- Must always produce a plan MCP artifact before build (every intensity, including `direct`).
+- Ticketless ultra-light edits are `/go-fable`, not this skill. There is no `/lfg`.
 
 ## References
 
 Read before acting:
 
 - `../references/execution-economy.md`
+- `../references/execution-intensity.md`
 - `../references/ticket-lifecycle.md`
 - `../references/landing-policy.md`
 - `../references/environment-topology.md`
@@ -60,6 +62,9 @@ Read before acting:
 /ticket-flow                       # create ticket from conversation
 /ticket-flow F0123 --no-land       # build/review only; do not merge or deploy
 /ticket-flow F0123 --skip-local-verify
+/ticket-flow F0123 --intensity direct|standard|heavy
+/ticket-flow F0123 --light         # alias → intensity direct
+/ticket-flow F0123 --deep          # alias → intensity heavy
 ```
 
 Invoking with `prod` is the explicit human authorization for production promotion/deploy after
@@ -134,10 +139,17 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   manifest advances or that exact missing fact is required. Never edit a published packet or let
   sibling ticket-flows create divergent milestone packets.
 - Decide and record the delivery target using `landing-policy.md`.
+- **Decide and record intensity** using `execution-intensity.md` before planning/building:
+  parse `--intensity` / `--light` / `--deep`; apply epic-step floor (`standard` minimum when
+  `--epic-context` or epic membership is present); raise to `heavy` on safety surfaces. Write
+  `intensity`, `intensity_reason`, and `intensity_floor` into every phase envelope and child
+  packet. Escalate only if later phases discover a new floor trigger; never silently downgrade.
+  Intensity never skips the plan artifact.
 - **Resume from lifecycle truth**: skip phases whose artifacts and status already exist (a
   `planned` ticket with a plan artifact enters at build; a built, locally verified ticket enters
   at deploy). Do not resume past a `verify_*_failed` status without a new explicit user
-  instruction.
+  instruction. When resuming at build, re-derive intensity from the packet or the same gate and
+  pass it into `/ticket-build`.
 - For a Hermes-origin ticket, consume only server-returned pickup/approval truth. The restricted
   principal cannot self-approve or set execution statuses; an admin approval pair authorizes the
   current live plan, and any later Hermes edit clears it. Do not add a client-side origin filter or
@@ -176,25 +188,28 @@ revisions remain in MCP artifact history, not appended to the current body.
 
 ### 2. Plan
 
-Run `/ticket-plan <ID>` (the single planning skill) with its complexity-based light/heavy gate.
-Force deep planning when the ticket is an epic step, cross-repo contract consumer/provider,
-schema/data change, or otherwise high risk. Heavy path only: adversarial plan critique until no
-critical unresolved findings remain; peer planning follows `/ticket-plan`'s explicit
-risk/uncertainty/disagreement escalation gate. The plan lands as an MCP `plan` artifact with
-`summary_bullets` set on the ticket.
+Run `/ticket-plan <ID>` with the recorded intensity packet (`intensity`, `intensity_reason`,
+`intensity_floor`). `/ticket-plan` maps intensity to its light/heavy path and **always**
+persists an MCP `plan` artifact (including `direct`). Force `heavy` when the intensity gate or
+floor says so (epic step floor, cross-repo contract, schema/data, other high risk). Heavy path
+only: adversarial plan critique until no critical unresolved findings remain; peer planning
+follows `/ticket-plan`'s explicit risk/uncertainty/disagreement escalation gate. Set
+`summary_bullets` on the ticket.
 
 After planning, persist the plan artifact and prior-knowledge checkpoint. End the planning phase
-agent and start build in a fresh `fork_turns: "none"` agent with only the plan/build packet. A
-history fork is allowed only when a self-contained packet is genuinely impossible: record the
-reason and use the smallest explicit numeric count of recent turns, never all history.
+agent and start build in a fresh `fork_turns: "none"` agent with only the plan/build packet
+including intensity fields. A history fork is allowed only when a self-contained packet is
+genuinely impossible: record the reason and use the smallest explicit numeric count of recent
+turns, never all history.
 
 ### 3. Build, review, locally verify
 
-Run `/ticket-build <ID>`. It honors open dashboard review comments before building, creates
-build todos via `/create-build-todos`, implements via `/build`, reviews via `/review`, resolves
-via `/resolve-review`, enforces the artifact persistence gate, runs the local health gate, and
-pushes the feature branch. With `--skip-local-verify`, pass that through (the health gate is
-skipped only on explicit user instruction). Stop for unresolved design decisions.
+Run `/ticket-build <ID>` with the same intensity packet. It honors open dashboard review comments
+before building, materializes build todos per intensity (`direct` minimal; `standard`/`heavy`
+via `/create-build-todos`), implements via `/build`, reviews via `/review`, resolves via
+`/resolve-review`, enforces the artifact persistence gate, runs the local health gate per
+intensity, and pushes the feature branch. With `--skip-local-verify`, pass that through (the
+health gate is skipped only on explicit user instruction). Stop for unresolved design decisions.
 
 After build, persist the final-tree SHA, health evidence, build/review artifacts, and delivery
 checkpoint. Start deploy/verify in another fresh no-history agent with only that checkpoint and the
@@ -337,6 +352,7 @@ Standalone ticket, default (stops after staging verify):
 
 ```text
 Ticket flow complete: F0123
+Intensity: standard (bounded pattern fix; floor=none)
 Phases: /ticket-plan PASS -> /ticket-build PASS -> /ticket-deploy staging
 Landed: PR #456 -> staging
 Staging verification: PASS (evidence artifact <id>)
@@ -349,6 +365,7 @@ Standalone ticket, `prod`:
 
 ```text
 Ticket flow COMPLETE: F0123
+Intensity: heavy (schema migration; floor=none)
 Phases: /ticket-plan -> /ticket-build -> /ticket-deploy full
 Staging: PR #456, verify PASS (artifact <id>)
 Production: promoted via /ticket-promote (PR #457), verify PASS (artifact <id>)

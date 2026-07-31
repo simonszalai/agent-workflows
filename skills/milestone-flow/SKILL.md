@@ -117,7 +117,9 @@ For each step ticket that is **not already `merged`**, run `/ticket-flow <ID> --
 `merged` (e.g. when entered via the ticket-flow hand-off). The `--epic-context` flag is required:
 it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand back into
 `/milestone-flow`. The dispatch packet carries the active shared-packet path/version/hash rather
-than copied parent context. Each non-skipped ticket-flow must:
+than copied parent context, plus `intensity_floor: standard` (raise to `heavy` when the step
+plan/source names schema, auth, secrets, billing, deploy-config, or cross-repo contracts) per
+`../references/execution-intensity.md`. Each non-skipped ticket-flow must:
 
 - load the parent epic plan and milestone contract;
 - build/review/local-verify the step;

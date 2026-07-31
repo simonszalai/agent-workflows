@@ -27,9 +27,8 @@ existing patterns and rules are discovered and followed.
 /create-build-todos R0003                            # Refactor ticket R0003
 ```
 
-**Ticketless mode (lfg):** when invoked from `/lfg` (no ticket exists), skip the MCP
-prerequisites and write build todos as `.context/build_todos/NN-name.md` files instead of
-build_todo artifacts. Everything else (research depth, template, quality bar) is unchanged.
+This skill is ticketed only. Ticketless ultra-light work uses `/go-fable` and does not create
+build todos. Missing plan/ticket is a hard stop.
 
 ## Prerequisites (MUST VALIDATE BEFORE STARTING)
 

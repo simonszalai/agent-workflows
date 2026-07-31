@@ -17,15 +17,9 @@ This artifact is **stored in the MCP ticket system** (`artifact_type="deployment
 a file on disk. Its downstream consumers (`/milestone-flow`, `/auto-deploy`, `/create-pr`,
 `/ticket-verify`, `/ticket-promote`) all read it via `get_ticket`.
 
-## Ticketless mode (lfg)
+This skill is ticketed only. Ticketless ultra-light work (`/go-fable`) does not write a
+deployment guide.
 
-When invoked with **no ticket** (i.e. from `/lfg`), write the filled template to
-`.context/deployment-guide.md` instead of the MCP artifact, and skip every
-`get_ticket`/`create_artifact`/`update_artifact` call (read the plan and todos from
-`.context/ticket-plan.md` and `.context/build_todos/` instead). This is the sanctioned lfg exception
-to the File Storage Rules — lfg has no ticket to write to. Everything else in this skill
-(diff analysis, project-specific deploy mechanics, the evidence contract, the template)
-applies unchanged. Ticketed behavior is unchanged.
 
 ## The artifact is authored progressively
 
@@ -49,7 +43,7 @@ exists (e.g. ticket skipped `/ticket-plan`), create one.
 ## When to Run
 
 - After `/resolve-review` completes (code is final)
-- Automatically as part of `/ticket-flow` and `/lfg` (ticketless mode)
+- Automatically as part of `/ticket-flow` / `/ticket-build` when deploy shape is non-trivial
 - Before `/milestone-flow` deploys/verifies a milestone, or before standalone `/auto-deploy` /
   `/ticket-verify`
 

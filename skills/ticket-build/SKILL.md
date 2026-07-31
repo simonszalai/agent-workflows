@@ -1,69 +1,90 @@
 ---
 name: ticket-build
 description: >-
-  Implementation phase for one planned ticket: build todos, build, adaptive review, resolve
-  findings, and the local health gates. Thin orchestrator over create-build-todos, build,
-  write-tests, review, and resolve-review; does not plan, land, deploy, or verify environments.
+  Implementation phase for one planned ticket: intensity-aware build todos, build, adaptive
+  review, resolve findings, and the local health gates. Thin orchestrator over create-build-todos,
+  build, write-tests, review, and resolve-review; does not plan, land, deploy, or verify
+  environments.
 max_turns: 100
 ---
 
 # Ticket Build
 
-Implement one ticket that already has a `plan` artifact, through a locally verified tree with all
-build/review artifacts persisted. This is an orchestrator over existing phase owners
+Implement one ticket that already has a **plan MCP artifact**, through a locally verified tree
+with all build/review artifacts persisted. This is an orchestrator over existing phase owners
 (`/create-build-todos`, `/build`, `/write-tests`, `/review`, `/resolve-review`); it does not
 reimplement them and does not land, merge, deploy, or run environment verification — those belong
-to `/ticket-deploy`.
+to `/ticket-deploy`. Intensity (`direct` / `standard` / `heavy`) follows
+`../references/execution-intensity.md`.
 
 ## Usage
 
 ```text
 /ticket-build F0123
+/ticket-build F0123 --intensity direct|standard|heavy
+/ticket-build F0123 --light
+/ticket-build F0123 --deep
 ```
 
 ## Prerequisites
 
-- Ticket exists, non-terminal, with a `plan` artifact (run `/ticket-plan` first otherwise).
+- Ticket exists, non-terminal, with a **plan MCP artifact** (run `/ticket-plan` first otherwise).
+  Missing plan is a hard stop at every intensity — never invent a plan here.
 - Repo matches the ticket's `repo`; for epic steps, the caller (normally `/ticket-flow`) supplies
-  the epic context extract.
+  the epic context extract and intensity floor.
 
 ## Process
 
-Follow `../references/execution-phases.md` and `../references/execution-economy.md`.
+Follow `../references/execution-phases.md`, `../references/execution-economy.md`, and
+`../references/execution-intensity.md`.
 
 1. **Load context once.** `get_ticket(detail="full", artifact_types=["source", "plan"],
    include_events=false)`; cache the response. Carry forward the planner's prior-knowledge blob
    into the build and review packets so builders and reviewers inherit the same knowledge without
-   re-searching.
+   re-searching. Resolve intensity from the parent packet or standalone flags/gate; epic steps
+   floor at `standard`. Record `intensity` / `intensity_reason` / `intensity_floor` on every
+   child packet.
 2. **Honor dashboard review comments.** Check `open_comment_count`; if the user left open review
    comments on the plan/source, resolve them (revise via `/ticket-plan` when the plan itself must
    change) before building. Do not build past unresolved feedback. There is no `approved` status;
    leaving `planned` means setting `in_progress`.
-3. **Build todos.** Invoke `/create-build-todos` to derive MCP `build_todo` artifacts from the
-   plan (it also finalizes the `deployment_guide`).
+3. **Build todos (intensity-aware).** Always produce MCP `build_todo` artifacts (audit/resume):
+   - **`direct`:** do **not** spawn the deep build-planner. Materialize minimal todos from the
+     plan (one todo per clear plan step, or a single todo for a one-step plan): objective, files,
+     acceptance, complexity tag. Finalize `deployment_guide` only when deploy shape is
+     non-trivial; otherwise leave/skip draft with an explicit reason.
+   - **`standard`:** invoke `/create-build-todos` (normal depth); a single-step plan may yield
+     one deepened todo.
+   - **`heavy`:** invoke `/create-build-todos` with deep research.
 4. **Implement.** Invoke `/build`: partition the dependency DAG into coherent sequential builder
    chains, checkpoint every covered todo individually, and keep unrelated lint/type fixes in a
    separate commit. Builder-chain subagents implement only; they do not run validation.
-5. **Write tests.** Invoke `/write-tests` in orchestrator mode for the whole initial change set.
+5. **Write tests.** Invoke `/write-tests` in orchestrator mode for the whole initial change set
+   when behavior changed (required on `standard`/`heavy` when the plan/tests surface needs it).
    The test-writing subagent writes tests but does not execute them.
 6. **Pre-review health gate (main orchestrator only).** After all initial implementation and
    test-writing changes are present, run the canonical project health command exactly once. Record
    the PASS by `(tree SHA, exact command)`. A failing gate may dispatch one narrowly scoped repair
    chain; the repair builder still does not validate, and this orchestrator reruns the failed gate
    once on the changed tree. Record that failure-driven rerun and stop if it still fails.
-7. **Review and resolve.** Invoke the `/review` skill (do not hand-roll it): it chooses the
-   light/heavy native path, conditionally escalates peers, synthesizes once, and hands actionable
-   findings to `/resolve-review`. Apply the conditional coverage gate in `execution-phases.md`
-   only when peer escalation fired. Reviewers inspect the diff and recorded evidence only, and
-   resolution builders implement only; neither runs validation. Stop for unresolved design
-   decisions.
+   On **`direct`**, when risk surfaces are absent, this may be the only full gate if review does
+   not change the tree. Never skip health entirely.
+7. **Review and resolve.** Invoke the `/review` skill with the intensity packet (do not hand-roll
+   it): light path for `direct`/`standard` unless safety triggers upgrade; heavy when intensity
+   or the review path gate requires it. Conditionally escalate peers, synthesize once, and hand
+   actionable findings to `/resolve-review`. Resolve rounds: `direct` ≤1, `standard` ≤2,
+   `heavy` ≤3 (stop earlier when no actionable findings remain). Apply the conditional coverage
+   gate in `execution-phases.md` only when peer escalation fired. Reviewers inspect the diff and
+   recorded evidence only, and resolution builders implement only; neither runs validation. Stop
+   for unresolved design decisions. If the diff first crosses a safety floor, escalate intensity
+   for review/resolve and record the new reason.
 8. **Persistence gate (cross-provider MCP paths only).** On Codex or other cross-provider runs
    `create_artifact` can silently no-op, so confirm via `get_ticket(detail="light",
    artifact_types=["build_todo", "review_todo"], include_events=false)` that the ticket carries
    its `build_todo` artifacts and the `review_todo` artifacts the adaptive review wrote, and
    re-issue anything missing. On native runs, trust the `create_artifact` results — this guards a
    known transport failure, it is not a re-read of your own work. Either way, a ticket must not
-   proceed to landing with only a `source` artifact.
+   proceed to landing with only a `source` artifact (plan + build_todos required).
 9. **Final health gate (main orchestrator only).** Compare the final tree SHA to the pre-review
    PASS. If unchanged, reuse that PASS. If review resolution changed the tree, run the same
    canonical full health command exactly once on the new final tree. This makes at most two normal
@@ -81,8 +102,8 @@ Follow `../references/execution-phases.md` and `../references/execution-economy.
 - Build-todo creation, implementation, test-writing, pre-review health, review, review resolution,
   and final health are durable phase boundaries. Persist the current MCP artifacts and tree SHA at
   each boundary, then start the next phase in a fresh `fork_turns: "none"` agent with only its
-  bounded checkpoint/packet. The health phase owner is an orchestrator, never a builder/reviewer/
-  resolver subagent.
+  bounded checkpoint/packet (including intensity fields). The health phase owner is an
+  orchestrator, never a builder/reviewer/resolver subagent.
 - Apply the validated dispatch/result/rotation contract in `execution-economy.md` with
   `max_packet_bytes: 16384` and these default hard per-generation budgets:
 
@@ -110,11 +131,12 @@ Follow `../references/execution-phases.md` and `../references/execution-economy.
 
 ```text
 Ticket build complete: F0123
+Intensity: {direct|standard|heavy} ({reason}; floor={none|standard|heavy})
 Branch: {branch} (pushed)
 Build todos: {n} completed; review: {light|heavy}, {n} findings resolved
 Pre-review health gate: PASS ({command} @ {sha})
 Final health gate: REUSED ({command} @ {sha}) | PASS ({command} @ {final sha})
-Artifacts: build_todo x{n}, review_todo x{n} persisted
+Artifacts: plan present; build_todo x{n}, review_todo x{n} persisted
 Rotations: {count}; reasons: {reason counts}; productive/stall/elapsed: {when available}
 Next: /ticket-deploy F0123 staging|prod|full
 ```

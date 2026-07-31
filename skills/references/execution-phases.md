@@ -1,23 +1,30 @@
 # Shared autonomous execution phases
 
-These phases are shared by ticket-flow and epic milestone execution. `lfg` intentionally keeps
-its existing ticketless `.context` behavior and is not changed by this reference.
+These phases are shared by ticket-flow and epic milestone execution. Intensity
+(`direct` / `standard` / `heavy`) is defined in `execution-intensity.md` and only changes how much
+plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-light edits use
+`/go-fable` and are outside this reference.
 
 ## Phase sequence
 
 1. **Resolve scope** — ticket/issue/conversation input, project, repo, branch, target.
+   Decide and record `intensity` / `intensity_reason` / `intensity_floor` per
+   `execution-intensity.md` once before planning.
 2. **Gather context** — bug investigation / triage and epic-context loading only. When Phase 3
    invokes `/ticket-plan`, do **not** run codebase research or memory/similar-ticket searches here:
    `/ticket-plan` Phases 3-4 are the single owner of knowledge retrieval. Only run that retrieval in
    this phase when the path does not invoke `/ticket-plan`.
-3. **Plan** — run `/ticket-plan` (the single planning skill; complexity-based light/heavy
-   gate) to create/update the plan artifact. Carry `/ticket-plan`'s returned prior-knowledge blob
+3. **Plan** — run `/ticket-plan` (the single planning skill; intensity-driven light/heavy
+   gate) to create/update the **plan MCP artifact (mandatory at every intensity, including
+   `direct`)**. Carry `/ticket-plan`'s returned prior-knowledge blob
    (the applicable rules/patterns it retrieved) forward into the build and review packets so
    downstream agents inherit the same knowledge without re-searching.
-4. **Critic loop (heavy path only)** — adversarially review the plan for complex/cross-cutting
-   work and stop if open questions require user decisions. The light path skips the critic
-   panel and uses one bounded native planner unless a peer-escalation trigger fires.
-5. **Build todos** — create detailed implementation steps with discovered patterns/gotchas.
+4. **Critic loop (`heavy` intensity only)** — adversarially review the plan for complex/cross-cutting
+   work and stop if open questions require user decisions. `direct` and `standard` skip the critic
+   panel and use one bounded native planner unless a peer-escalation trigger fires.
+5. **Build todos** — per intensity: minimal plan-derived `build_todo` artifacts on `direct`;
+   `/create-build-todos` on `standard`/`heavy` (deep research on `heavy`). Artifacts are always
+   MCP `build_todo`s for ticketed work.
 6. **Build** — invoke the `build` skill: partition the pending todo dependency DAG into the
    smallest reasonable set of coherent sequential chains, assign one fresh builder per chain, and
    checkpoint each covered todo individually. Builder chains implement and inspect code only; they
@@ -26,11 +33,12 @@ its existing ticketless `.context` behavior and is not changed by this reference
    incomplete todo.
    A builder that finds the plan wrong returns `needs_replan` → stop and revise the plan. Keep
    unrelated fixes in a separate commit.
-7. **Write tests** — add focused tests for the changed behavior. In a ticket/lfg orchestrated run,
+7. **Write tests** — add focused tests for the changed behavior. In a ticket-orchestrated run,
    the test-writing subagent writes tests but does not execute them.
 8. **Pre-review health + review/resolve** — after initial implementation and test-writing are
    complete, the main orchestrator runs the canonical full health command once and records the PASS
-   by `(tree SHA, exact command)`. Then invoke the `review` skill rather than hand-rolling review.
+   by `(tree SHA, exact command)` (`direct` may use a single gate when
+   `execution-intensity.md` allows). Then invoke the `review` skill rather than hand-rolling review.
    Reviewers judge the diff and recorded evidence only; resolution builders implement accepted
    fixes only. Neither reviewer nor resolver subagents run validation. Review chooses a
    genuinely light one-reviewer path or a heavy native specialist path and conditionally adds peer
@@ -60,8 +68,9 @@ its existing ticketless `.context` behavior and is not changed by this reference
    risk. Safety-critical native personas and adversarial checks remain mandatory even if peers fail
    or `mode:solo` was explicitly requested.
 
-   The canonical loop definition lives in the `review` skill. Rounds: heavy path ≤3, light
-   path exactly 1. Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
+   The canonical loop definition lives in the `review` skill. Rounds follow intensity
+   (`direct` ≤1, `standard` ≤2, `heavy` ≤3; light review path still one native reviewer unless
+   upgraded). Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
    findings remain, **or when a round's actionable findings were resolved and the adversarial
    verify produced no contested findings** (a second round is spent only to resolve genuine
    adversarial disagreement, not to re-confirm agreed fixes). Stop on unresolved design
@@ -81,13 +90,16 @@ its existing ticketless `.context` behavior and is not changed by this reference
 
 The loop is bounded and evidence-driven:
 
-- use `/ticket-plan`'s complexity-based light/heavy gate for single tickets (critics are a
-  heavy-path step);
-- always use deep mode for epics;
+- use `execution-intensity.md` + `/ticket-plan`'s path gate for single tickets (critics are a
+  `heavy` intensity step);
+- epic planning stays deep via `/epic-plan`; epic **step** tickets use at least `standard`
+  intensity and often `heavy` when safety surfaces apply;
 - have critics check completeness, correctness, YAGNI/scope, contracts, data safety, and
   verification strategy;
 - revise once or a few bounded times until there are no unresolved critical findings;
 - if the critics disagree or expose unknown facts, gather the missing context before building.
+- **never skip the plan artifact** — intensity never authorizes building without a persisted
+  MCP `plan`.
 
 ## No hidden substitutions
 

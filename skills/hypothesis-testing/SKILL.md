@@ -21,7 +21,7 @@ Bug investigations often identify multiple possible causes. This methodology ens
 
 - After `/investigate` generates initial hypotheses
 - Before `/ticket-plan` to confirm the root cause
-- In autonomous `/lfg` workflows (bug path)
+- In autonomous `/ticket-flow` bug paths
 
 ## Hypothesis Quality Criteria
 
@@ -325,7 +325,7 @@ After all evaluations:
 
 ## Integration with LFG
 
-In `/lfg` bug path:
+In ticket-flow bug path:
 
 ```
 /investigate -> generates hypotheses -> hypothesis-evaluator agent -> verdicts
