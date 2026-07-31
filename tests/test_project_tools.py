@@ -44,6 +44,13 @@ EXPECTED_PROJECT_REMOTES = {
     },
 }
 
+EXPECTED_SERVICE_ACCOUNT_TOKEN_ENVS = {
+    "amaru": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
+    "autodev": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN",
+    "ts": "TS_OP_SERVICE_ACCOUNT_TOKEN",
+    "workflow-pro": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
+}
+
 EXPECTED_RENDER_REFS = {
     "amaru": "op://AMARU-sensitive/AMARU_RENDER_API_KEY/value",
     "autodev": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
@@ -64,6 +71,10 @@ class ProjectToolsTest(unittest.TestCase):
                     "projects": {
                         "alpha": {
                             "repo_remotes": ["github.com/acme/alpha"],
+                            "service_account": {
+                                "token_env": "ALPHA_OP_SERVICE_ACCOUNT_TOKEN",
+                                "keychain_item": "op-dev-token-alpha",
+                            },
                             "render": {
                                 "api_key_ref": "op://ALPHA/RENDER/value",
                                 "workspace": {
@@ -73,6 +84,9 @@ class ProjectToolsTest(unittest.TestCase):
                         },
                         "beta": {
                             "repo_remotes": ["github.com/acme/beta"],
+                            "service_account": {
+                                "token_env": "BETA_OP_SERVICE_ACCOUNT_TOKEN"
+                            },
                             "render": {
                                 "api_key_ref": "op://BETA-sensitive/RENDER/value",
                                 "workspace": {"id": "tea-beta"},
@@ -85,6 +99,7 @@ class ProjectToolsTest(unittest.TestCase):
         self.repo = self.make_repo("git@github.com:acme/alpha.git")
         self.render_log = self.root / "render.log"
         self.op_log = self.root / "op.log"
+        self.op_token_log = self.root / "op-token.log"
         self.tool_bin = self.root / "bin"
         self.tool_bin.mkdir()
         self.wrapper = self.tool_bin / "render-cli"
@@ -122,6 +137,7 @@ esac
             """#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$RENDER_FAKE_OP_LOG"
+printf '%s\\n' "${OP_SERVICE_ACCOUNT_TOKEN:-<unset>}" >> "$RENDER_FAKE_OP_TOKEN_LOG"
 printf 'fake-render-key'
 """
         )
@@ -147,6 +163,8 @@ printf 'fake-render-key'
             "CONDUCTOR_WORKSPACE_NAME",
             "CONDUCTOR_SESSION_ID",
             "RENDER_API_KEY",
+            "OP_SERVICE_ACCOUNT_TOKEN",
+            "TS_OP_SERVICE_ACCOUNT_TOKEN",
         ):
             env.pop(name, None)
         env.update(
@@ -155,6 +173,9 @@ printf 'fake-render-key'
                 "RENDER_CLI_BIN": str(self.fake_render),
                 "RENDER_FAKE_LOG": str(self.render_log),
                 "RENDER_FAKE_OP_LOG": str(self.op_log),
+                "RENDER_FAKE_OP_TOKEN_LOG": str(self.op_token_log),
+                "ALPHA_OP_SERVICE_ACCOUNT_TOKEN": "alpha-service-account-token",
+                "BETA_OP_SERVICE_ACCOUNT_TOKEN": "beta-service-account-token",
             }
         )
         env.update(updates)
@@ -194,7 +215,15 @@ printf 'fake-render-key'
                 projects[project]["render"]["api_key_ref"],
                 EXPECTED_RENDER_REFS[project],
             )
+            self.assertEqual(
+                projects[project]["service_account"]["token_env"],
+                EXPECTED_SERVICE_ACCOUNT_TOKEN_ENVS[project],
+            )
         self.assertEqual(len(claimed), len(set(claimed)))
+        token_envs = [
+            projects[project]["service_account"]["token_env"] for project in projects
+        ]
+        self.assertEqual(len(token_envs), len(set(token_envs)))
 
     def test_resolver_normalizes_ssh_origin_and_fails_closed(self) -> None:
         detected = self.run_context(self.repo, "--tool", "render")
@@ -291,6 +320,60 @@ printf 'fake-render-key'
         )
         self.assertEqual(approved.returncode, 0, approved.stderr)
         self.assertFalse(self.op_log.exists())
+
+    def test_project_service_account_token_authenticates_the_credential_read(self) -> None:
+        result = self.run_render(self.repo, "services")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.op_token_log.read_text().strip(), "alpha-service-account-token"
+        )
+        self.assertNotIn("alpha-service-account-token", result.stdout + result.stderr)
+        self.assertNotIn("alpha-service-account-token", self.render_log.read_text())
+
+    def test_unprefixed_ambient_token_is_never_a_fallback(self) -> None:
+        env = self.environment()
+        del env["ALPHA_OP_SERVICE_ACCOUNT_TOKEN"]
+        env["OP_SERVICE_ACCOUNT_TOKEN"] = "ambient-must-not-be-used"
+        env["BETA_OP_SERVICE_ACCOUNT_TOKEN"] = "wrong-project-must-not-be-used"
+        result = subprocess.run(
+            [str(self.wrapper), "services"],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ALPHA_OP_SERVICE_ACCOUNT_TOKEN", result.stderr)
+        self.assertIn("project 'alpha'", result.stderr)
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.render_log.exists())
+
+    def test_registry_rejects_unprefixed_and_duplicated_token_envs(self) -> None:
+        def context_with(alpha_env: str, beta_env: str) -> subprocess.CompletedProcess[str]:
+            broken = self.root / "broken.json"
+            registry = json.loads(self.config.read_text())
+            registry["projects"]["alpha"]["service_account"]["token_env"] = alpha_env
+            registry["projects"]["beta"]["service_account"]["token_env"] = beta_env
+            broken.write_text(json.dumps(registry))
+            env = self.environment(PROJECT_TOOLS_CONFIG=str(broken))
+            return subprocess.run(
+                [str(PROJECT_CONTEXT), "--cwd", str(self.repo)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        unprefixed = context_with(
+            "OP_SERVICE_ACCOUNT_TOKEN", "BETA_OP_SERVICE_ACCOUNT_TOKEN"
+        )
+        self.assertNotEqual(unprefixed.returncode, 0)
+        self.assertIn("project-prefixed", unprefixed.stderr)
+
+        duplicated = context_with(
+            "SHARED_OP_SERVICE_ACCOUNT_TOKEN", "SHARED_OP_SERVICE_ACCOUNT_TOKEN"
+        )
+        self.assertNotEqual(duplicated.returncode, 0)
+        self.assertIn("belongs to both", duplicated.stderr)
 
     def test_mutations_require_explicit_matching_project_write_and_reason(self) -> None:
         implicit = self.run_render(self.repo, "--write", "--reason", "test", "restart", "srv")

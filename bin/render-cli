@@ -116,6 +116,8 @@ workspace_id="$(jq -r '.tools.render.workspace.id // empty' <<<"$context")"
 discovery_names="$(
   jq -r '.tools.render.workspace.discover_service_names[]?' <<<"$context"
 )"
+token_env="$(jq -er '.service_account.token_env' <<<"$context")"
+keychain_item="$(jq -r '.service_account.keychain_item // empty' <<<"$context")"
 
 if [[ "$1" == "context" ]]; then
   [[ $# -eq 1 ]] || fail "context takes no arguments"
@@ -215,7 +217,18 @@ else
     fi
   fi
   [[ -x "$OP_WRAPPER" ]] || fail "missing 1Password wrapper: $OP_WRAPPER" 3
-  key="$(SENSITIVE_ACCESS_REASON="$reason" "$OP_WRAPPER" read --no-newline "$key_ref")"
+  # token_env is registry-validated as <PROJECT>_OP_SERVICE_ACCOUNT_TOKEN, so this
+  # indirection is safe. eval keeps macOS bash 3.2 happy; ${!name:-} does not work there.
+  eval "sa_token=\${$token_env:-}"
+  if [[ -z "$sa_token" && -n "$keychain_item" && "$(uname -s)" == "Darwin" ]]; then
+    sa_token="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+  fi
+  [[ -n "$sa_token" ]] || fail \
+    "no 1Password service-account token for project '$project': set $token_env${keychain_item:+ or store it in the Mac Keychain as $keychain_item}" 3
+  key="$(
+    SENSITIVE_ACCESS_REASON="$reason" OP_SERVICE_ACCOUNT_TOKEN="$sa_token" \
+      "$OP_WRAPPER" read --no-newline "$key_ref"
+  )"
   [[ -n "$key" ]] || fail "1Password returned an empty credential for $project" 3
   credential_source="$key_ref"
 fi

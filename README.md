@@ -105,6 +105,15 @@ Run `render-cli context` for a credential-free selection check. Mutations requir
 explicit project, `--write`, and `--reason`; unknown repos and project mismatches fail
 closed. See `skills/tool-render/SKILL.md`.
 
+All three wrappers authenticate their 1Password reads with the **calling project's own**
+service-account token. Each project in `config/project-tools.json` declares one
+`service_account.token_env` (a project-prefixed `<PROJECT>_OP_SERVICE_ACCOUNT_TOKEN`, set in
+cloud workspaces) and an optional `service_account.keychain_item` (its Mac Keychain service
+name). There is no fallback chain: an unprefixed ambient `OP_SERVICE_ACCOUNT_TOKEN` is never
+consulted, the registry rejects unprefixed and duplicated `token_env` names, and running a
+wrapper from another project's repo demands that project's token rather than silently reusing
+the previous one.
+
 The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
 launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`
 predecessor, the `mcp-remote` reaper, and the hermes analyst routes. All prior MCP config

@@ -10,6 +10,9 @@
         "github.com/amaru-wellness/amaruplatform-website",
         "github.com/simonszalai/amaru-mobile"
       ],
+      "service_account": {
+        "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN"
+      },
       "render": {
         "api_key_ref": "op://AMARU-sensitive/AMARU_RENDER_API_KEY/value",
         "workspace": {
@@ -25,6 +28,9 @@
         "github.com/simonszalai/autodev-dashboard",
         "github.com/simonszalai/autodev-memory"
       ],
+      "service_account": {
+        "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN"
+      },
       "render": {
         "api_key_ref": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
         "workspace": {
@@ -45,6 +51,10 @@
         "github.com/ts-value-software/ts-scraper",
         "github.com/tssoftwareprojects/ts-mobile"
       ],
+      "service_account": {
+        "token_env": "TS_OP_SERVICE_ACCOUNT_TOKEN",
+        "keychain_item": "op-dev-token"
+      },
       "render": {
         "api_key_ref": "op://TS/TS_RENDER_API_KEY/value",
         "workspace": {
@@ -58,6 +68,9 @@
         "github.com/szaboszerszam/workflow-pdf",
         "github.com/szaboszerszam/workflow_pro"
       ],
+      "service_account": {
+        "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN"
+      },
       "render": {
         "api_key_ref": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
         "workspace": {
