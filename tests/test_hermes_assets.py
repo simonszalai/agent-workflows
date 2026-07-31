@@ -8,6 +8,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -18,13 +19,17 @@ HERMES = ROOT / "hermes"
 
 class FakeFastMCP:
     def __init__(self, *args: object, **kwargs: object) -> None:
-        pass
+        self.tools: list[str] = []
 
     def tool(self) -> object:
-        return lambda function: function
+        def register(function: object) -> object:
+            self.tools.append(function.__name__)
+            return function
+
+        return register
 
 
-def load_conductor_server(state_dir: Path) -> types.ModuleType:
+def load_conductor_server(temporary_dir: Path) -> types.ModuleType:
     httpx = types.ModuleType("httpx")
     httpx.Client = object
     mcp = types.ModuleType("mcp")
@@ -40,9 +45,7 @@ def load_conductor_server(state_dir: Path) -> types.ModuleType:
     previous = {name: sys.modules.get(name) for name in modules}
     sys.modules.update(modules)
     old_credentials = os.environ.get("CREDENTIALS_DIRECTORY")
-    old_state = os.environ.get("STATE_DIRECTORY")
-    os.environ["CREDENTIALS_DIRECTORY"] = str(state_dir)
-    os.environ["STATE_DIRECTORY"] = str(state_dir)
+    os.environ["CREDENTIALS_DIRECTORY"] = str(temporary_dir)
     try:
         spec = importlib.util.spec_from_file_location(
             "hermes_conductor_server",
@@ -62,55 +65,134 @@ def load_conductor_server(state_dir: Path) -> types.ModuleType:
             os.environ.pop("CREDENTIALS_DIRECTORY", None)
         else:
             os.environ["CREDENTIALS_DIRECTORY"] = old_credentials
-        if old_state is None:
-            os.environ.pop("STATE_DIRECTORY", None)
-        else:
-            os.environ["STATE_DIRECTORY"] = old_state
+
+
+EXPECTED_CONDUCTOR_OPERATIONS = {
+    "get_current_user": ("GET", "/me"),
+    "list_projects": ("GET", "/v0/projects"),
+    "get_project": ("GET", "/v0/projects/{projectId}"),
+    "list_project_workspaces": ("GET", "/v0/projects/{projectId}/workspaces"),
+    "create_workspace": ("POST", "/v0/workspaces"),
+    "get_workspace": ("GET", "/v0/workspaces/{workspaceId}"),
+    "rename_workspace": ("POST", "/v0/workspaces/{workspaceId}/rename"),
+    "archive_workspace": ("POST", "/v0/workspaces/{workspaceId}/archive"),
+    "list_workspace_sessions": ("GET", "/v0/workspaces/{workspaceId}/sessions"),
+    "create_session": ("POST", "/v0/sessions"),
+    "get_session": ("GET", "/v0/sessions/{sessionId}"),
+    "rename_session": ("POST", "/v0/sessions/{sessionId}/rename"),
+    "archive_session": ("POST", "/v0/sessions/{sessionId}/archive"),
+    "list_session_messages": ("GET", "/v0/sessions/{sessionId}/messages"),
+    "send_session_message": ("POST", "/v0/sessions/{sessionId}/messages"),
+    "get_message": ("GET", "/v0/messages/{messageId}"),
+    "get_workspace_status": ("GET", "/v0/workspaces/{workspaceId}/status"),
+    "get_session_status": ("GET", "/v0/sessions/{sessionId}/status"),
+    "cancel_session": ("POST", "/v0/sessions/{sessionId}/cancel"),
+    "query_conductor_sql": ("POST", "/v0/sql"),
+}
 
 
 class HermesConductorTests(unittest.TestCase):
-    def test_repo_and_branch_scope(self) -> None:
+    def test_every_openapi_operation_has_one_registered_tool(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             server = load_conductor_server(Path(directory))
-            self.assertEqual(server.validate_repo("ts-prefect"), "ts-prefect")
-            self.assertEqual(server.validate_branch(None, "ts-prefect"), "staging")
-            self.assertIsNone(server.validate_branch(None, "ts-dashboard"))
-            for invalid in ("", "../repo", "owner/repo", "https:repo"):
-                with self.subTest(invalid=invalid):
-                    with self.assertRaises(server.SafeError):
-                        server.validate_repo(invalid)
-            for invalid in ("../main", "main..x", "@{x}", "a//b"):
-                with self.subTest(invalid=invalid):
-                    with self.assertRaises(server.SafeError):
-                        server.validate_branch(invalid, "ts-dashboard")
+            self.assertEqual(server.OFFICIAL_OPERATION_TOOLS, EXPECTED_CONDUCTOR_OPERATIONS)
+            self.assertEqual(set(server.mcp.tools), set(EXPECTED_CONDUCTOR_OPERATIONS))
+            self.assertEqual(len(server.mcp.tools), 20)
 
-    def test_message_response_is_bounded(self) -> None:
+    def test_create_workspace_exposes_the_full_request(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             server = load_conductor_server(Path(directory))
-            payload = {
-                "data": [
-                    {
-                        "id": "message_123",
-                        "sessionId": "session_123",
-                        "sessionIndex": 1,
-                        "type": "assistant",
-                        "content": "x" * 90_000,
-                        "receivedAt": "2026-07-31T00:00:00Z",
-                    }
-                ],
-                "offset": 0,
-                "hasMore": False,
-            }
-            result = server.bounded_messages(payload)
-            self.assertLess(len(str(result)), 82_000)
-            self.assertIn("[truncated]", result["messages"][0]["content"])
+            with mock.patch.object(
+                server,
+                "conductor_request",
+                return_value={"workspaceId": "workspace"},
+            ) as request:
+                result = server.create_workspace(
+                    repository_url="https://github.com/example/repo.git",
+                    branch="feature/full-api",
+                    name="full-api",
+                    session_name="initial session",
+                    agent="codex",
+                    model="gpt-5.5",
+                    effort="high",
+                    env={"FEATURE_FLAG": "1"},
+                    channel="beta",
+                )
+            self.assertEqual(result, {"workspaceId": "workspace"})
+            request.assert_called_once_with(
+                "POST",
+                "/v0/workspaces",
+                "workspace.create",
+                params={"channel": "beta"},
+                json_body={
+                    "repositoryUrl": "https://github.com/example/repo.git",
+                    "branch": "feature/full-api",
+                    "name": "full-api",
+                    "sessionName": "initial session",
+                    "agent": "codex",
+                    "model": "gpt-5.5",
+                    "effort": "high",
+                    "env": {"FEATURE_FLAG": "1"},
+                },
+            )
 
-    def test_database_initializes_without_launching(self) -> None:
+    def test_create_workspace_requires_exactly_one_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             server = load_conductor_server(Path(directory))
-            server.init_db()
-            self.assertTrue((Path(directory) / "workspaces.sqlite3").is_file())
-            self.assertEqual(server.list_launches(), {"launches": []})
+            for arguments in (
+                {},
+                {"project_id": "project", "repository_url": "https://example.com/repo.git"},
+            ):
+                with self.subTest(arguments=arguments):
+                    with self.assertRaises(server.SafeError):
+                        server.create_workspace(**arguments)
+
+    def test_path_ids_are_encoded_and_message_pagination_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_conductor_server(Path(directory))
+            with mock.patch.object(
+                server,
+                "conductor_request",
+                return_value={"data": []},
+            ) as request:
+                server.list_session_messages(
+                    "session/with space",
+                    limit=12,
+                    after_message_id="message-1",
+                )
+            request.assert_called_once_with(
+                "GET",
+                "/v0/sessions/session%2Fwith%20space/messages",
+                "session.messages.list",
+                params={"limit": 12, "after": "message-1"},
+            )
+            with self.assertRaises(server.SafeError):
+                server.list_session_messages(
+                    "session",
+                    offset=1,
+                    after_message_id="message-1",
+                )
+
+    def test_sql_tool_passes_read_only_api_query(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            server = load_conductor_server(Path(directory))
+            with mock.patch.object(
+                server,
+                "conductor_request",
+                return_value={"rows": [], "rowCount": 0, "truncated": False},
+            ) as request:
+                result = server.query_conductor_sql(
+                    "SELECT workspace_id FROM session_transcripts_view"
+                )
+            self.assertEqual(result["rowCount"], 0)
+            request.assert_called_once_with(
+                "POST",
+                "/v0/sql",
+                "sql.query",
+                json_body={
+                    "query": "SELECT workspace_id FROM session_transcripts_view",
+                },
+            )
 
 
 class HermesAssetTests(unittest.TestCase):
@@ -143,15 +225,11 @@ class HermesAssetTests(unittest.TestCase):
             module.configure(config)
             self.assertEqual(config.read_text(), first)
             data = yaml.safe_load(first)
+            with tempfile.TemporaryDirectory() as server_directory:
+                server = load_conductor_server(Path(server_directory))
             self.assertEqual(
-                data["mcp_servers"]["conductor"]["tools"]["include"],
-                [
-                    "get_launch_policy",
-                    "launch_workspace",
-                    "list_launches",
-                    "get_session_status",
-                    "read_session_messages",
-                ],
+                set(data["mcp_servers"]["conductor"]["tools"]["include"]),
+                set(server.OFFICIAL_OPERATION_TOOLS),
             )
 
     def test_executables_have_execute_bits(self) -> None:
