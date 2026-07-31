@@ -10,9 +10,10 @@ schedules:
       branch: staging
     slack_channel: "#autodev-nightly"
     enabled: false
+    # VERIFY-ONLY (E0029 locked decision): merging to main is a de-facto prod
+    # deploy for ts-prefect (git_clone at runtime), so scheduled runs never merge.
     blocked_on:
-      - "ticket-verify scheduled/unattended mode (epic ticket)"
-      - "main<->staging merge-base repair + mergeCommitAllowed fix"
+      - "E0029 F0002: ticket-verify --scheduled (verify-only, §9b suppressed)"
 
   - name: nightly-dream
     cron: "30 3 * * *"
