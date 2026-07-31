@@ -80,9 +80,11 @@ class SensitiveAccessFixture:
                 "OP_SENSITIVE_NOTIFICATION_SENT",
                 "OP_HUMAN_ACCOUNT",
                 "OP_BIN",
+                "OP_REAL_BIN",
                 "CONDUCTOR_SESSION_ID",
             } or name in CREDENTIALS or name.startswith("OP_SESSION_"):
                 self.base_env.pop(name, None)
+        self.base_env["OP_REAL_BIN"] = str(self.real_op)
 
     def close(self) -> None:
         self._temporary_directory.cleanup()
@@ -94,10 +96,7 @@ class SensitiveAccessFixture:
         self.close()
 
     def _copy_scripts(self) -> None:
-        shim = (ROOT / "bin" / "op").read_text().replace(
-            'REAL_OP="/opt/homebrew/bin/op"', f'REAL_OP="{self.real_op}"'
-        )
-        self.op.write_text(shim)
+        shutil.copy2(ROOT / "bin" / "op", self.op)
         self.op.chmod(0o755)
         shutil.copy2(ROOT / "bin" / "op-env", self.op_env)
         self.op_env.chmod(0o755)
@@ -429,6 +428,39 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
         self.assertFalse(account_config.is_symlink())
         self.assertEqual(account_config.read_bytes(), (CANONICAL_ACCOUNT + "\n").encode())
         self.assertEqual(stat.S_IMODE(account_config.stat().st_mode), 0o644)
+
+    def test_op_resolves_first_path_binary_after_skipping_itself(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            path_op = fixture.fake_path / "op"
+            shutil.copy2(fixture.real_op, path_op)
+            result = fixture.run_op(
+                ["item", "list"],
+                credentials=True,
+                env_updates={
+                    "OP_REAL_BIN": "",
+                    "PATH": (
+                        f"{fixture.bin_dir}:{fixture.fake_path}:"
+                        f"{fixture.base_env.get('PATH', '')}"
+                    ),
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(fixture.events, ["real"])
+            self.assertEqual(fixture.child_calls[0]["argv"], ["item", "list"])
+
+    def test_op_rejects_override_that_points_back_to_shim(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            result = fixture.run_op(
+                ["item", "list"],
+                credentials=True,
+                env_updates={"OP_REAL_BIN": str(fixture.op)},
+            )
+
+            self.assertEqual(result.returncode, 127)
+            self.assertIn("not the op audit shim", result.stderr)
+            self.assertEqual(fixture.events, [])
+            self.assertEqual(fixture.child_calls, [])
 
     def assert_sensitive_child(
         self,
