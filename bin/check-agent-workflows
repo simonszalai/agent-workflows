@@ -13,7 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def python_sources() -> list[Path]:
-    roots = (ROOT / "bin", ROOT / "hooks", ROOT / "mcp-proxies", ROOT / "skills")
+    roots = (
+        ROOT / "bin",
+        ROOT / "hermes",
+        ROOT / "hooks",
+        ROOT / "mcp-proxies",
+        ROOT / "skills",
+    )
     sources: list[Path] = []
     for root in roots:
         for path in root.rglob("*"):

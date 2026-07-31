@@ -1,0 +1,34 @@
+[Unit]
+Description=Hermes restricted autodev-memory MCP loopback proxy
+After=network-online.target
+Wants=network-online.target
+Before=hermes-gateway.service
+
+[Service]
+Type=simple
+User=hermes-mcp
+Group=hermes-mcp
+LoadCredential=autodev-memory.token:/etc/hermes-mcp/autodev-memory.token
+Environment=MCP_PROXY_PORT=8792
+Environment=MCP_PROXY_UPSTREAM=https://autodev-memory.onrender.com/mcp
+Environment=MCP_PROXY_AUTH_ENV=AUTODEV_MEMORY_API_TOKEN
+Environment=MCP_PROXY_BODY_TRANSFORM=/opt/hermes-mcp/waf-encode.mjs
+ExecStart=/opt/hermes-mcp/run-autodev-memory
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

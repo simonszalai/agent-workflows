@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+token="$(cat "$CREDENTIALS_DIRECTORY/autodev-memory.token")"
+[ -n "$token" ] || {
+  echo "credential is empty" >&2
+  exit 1
+}
+export AUTODEV_MEMORY_API_TOKEN="$token"
+unset token
+exec /usr/bin/node /opt/hermes-mcp/mcp-proxy.mjs autodev-memory

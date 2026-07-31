@@ -18,6 +18,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   `workflow-efficiency-report` (whole-agent-tree usage accounting)
 - **config/** - Trusted non-secret registries used by shared wrappers, including exact
   repository-to-project credential mappings
+- **hermes/** - Reproducible, secret-safe systemd services and configuration for the Hermes host
 
 ## Distribution
 
@@ -73,8 +74,8 @@ variant, not a fourth provider.
 
 ### MCP access — two loopback proxies + CLI wrappers (2026-07-28 consolidation)
 
-Only two MCP servers exist: **autodev-memory** (`127.0.0.1:8792`) and **context7**
-(`127.0.0.1:8793`). Each is a single-upstream loopback auth proxy
+Only two shared development MCP servers exist: **autodev-memory** (`127.0.0.1:8792`) and
+**context7** (`127.0.0.1:8793`). Each is a single-upstream loopback auth proxy
 (`mcp-proxies/mcp-proxy.mjs`) started under `op run` with the Keychain
 service-account token (`op-dev-token`) — silent, no biometric prompts; credentials
 live only in the proxy's process memory. Repos check in static-URL project configs
@@ -118,6 +119,11 @@ The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
 launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`
 predecessor, the `mcp-remote` reaper, and the hermes analyst routes. All prior MCP config
 generations are superseded by the static loopback-proxy URLs above.
+
+The separate Hermes host reuses the same autodev-memory proxy and also runs a dedicated
+Conductor API MCP. Its reviewed source, hardened systemd units, installer, and operational
+contract live in [`hermes/`](hermes/README.md); these host-specific services are not added to
+developer MCP client configurations.
 
 ## Updating shared workflows
 
