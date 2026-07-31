@@ -5,12 +5,13 @@ large retired `mcp-gateway`/activation subsystem with two small loopback service
 
 - `hermes-autodev-mcp`: the shared `mcp-proxies/mcp-proxy.mjs` plus WAF encoder, configured with
   Hermes' restricted autodev-memory credential.
-- `hermes-conductor`: a dedicated MCP server wrapping the official Conductor API.
+- `hermes-conductor`: a complete typed MCP facade over the official Conductor API.
 
-The Conductor tools can launch arbitrary tasks in any `TS-Value-Software` repository, list
-Hermes-created launches, inspect session status, and read session messages. Repository URLs are
-constructed server-side, caller-supplied environment variables are not supported, and
-`ts-prefect` defaults to `staging`.
+The Conductor MCP covers every operation in the current public OpenAPI contract: account and
+project reads; workspace listing, creation, status, rename, archive, and sessions; session
+creation, status, rename, archive, cancel, transcript reads, and messages; plus organization-wide
+read-only transcript SQL. Workspace creation supports either a Conductor project or repository URL
+and includes the official branch, agent, model, effort, channel, and environment options.
 
 ## Secret boundary
 
@@ -68,13 +69,11 @@ sudo -u hermes -H /home/hermes/.hermes/hermes-agent/venv/bin/python \
 ss -ltn | grep -E '127[.]0[.]0[.]1:(8792|8794)'
 ```
 
-Expected Conductor tools:
-
-- `get_launch_policy`
-- `launch_workspace`
-- `list_launches`
-- `get_session_status`
-- `read_session_messages`
+Expected Conductor tools are locked by `OFFICIAL_OPERATION_TOOLS` in
+`hermes/conductor/server.py`. There is one typed tool for each current OpenAPI operation. Use
+`list_projects` followed by `list_project_workspaces` to enumerate cloud workspaces. For
+organization-wide activity, use `query_conductor_sql` over `session_transcripts_view`, then resolve
+workspace IDs with `get_workspace`.
 
 ## Rotation
 

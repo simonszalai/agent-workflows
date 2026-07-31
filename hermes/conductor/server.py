@@ -1,52 +1,89 @@
 #!/usr/bin/env python3
-"""Secret-safe Conductor API tools for Hermes."""
+"""Full, secret-safe MCP facade over the official Conductor API."""
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import sqlite3
-import threading
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Literal, cast
+from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-CONDUCTOR_API = "https://api.conductor.build/v0"
-USER_AGENT = "Hermes-Conductor-Launcher/2.0"
-GITHUB_ORG = "TS-Value-Software"
-STATE_DIR = Path(os.environ.get("STATE_DIRECTORY", "/var/lib/hermes-conductor"))
-DB_PATH = STATE_DIR / "workspaces.sqlite3"
+API_ROOT = "https://api.conductor.build"
+USER_AGENT = "Hermes-Conductor-MCP/3.0"
 TOKEN_PATH = Path(os.environ["CREDENTIALS_DIRECTORY"]) / "conductor-api.token"
-REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
-BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,128}$")
-ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,160}$")
-ALLOWED_AGENTS = {"codex", "claude", "cursor", "acp"}
-ALLOWED_MODELS = {
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
+MAX_ERROR_CHARS = 500
+
+Channel = Literal["prod", "alpha", "alpha-chromium", "beta", "patch", "dev"]
+Agent = Literal["claude", "codex", "cursor", "acp"]
+Effort = Literal["none", "low", "medium", "high", "xhigh", "max", "ultra"]
+Model = Literal[
+    "fable-5",
+    "opus-5-1m",
+    "opus-4-8-1m",
+    "opus-4-8",
+    "opus-4-7-1m",
+    "opus-4-7",
+    "opus-1m",
     "opus",
+    "opus-4-6-1m",
+    "sonnet-5-1m",
+    "sonnet-4-6-1m",
     "sonnet",
     "haiku",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.3-codex-spark",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
     "auto",
+    "composer-2.5",
+    "grok-4.5",
+]
+JsonObject = dict[str, object]
+
+# One typed MCP tool covers every operation in the 2026-07-31 OpenAPI contract.
+# Tests lock this inventory so a partial facade cannot be described as complete.
+OFFICIAL_OPERATION_TOOLS = {
+    "get_current_user": ("GET", "/me"),
+    "list_projects": ("GET", "/v0/projects"),
+    "get_project": ("GET", "/v0/projects/{projectId}"),
+    "list_project_workspaces": ("GET", "/v0/projects/{projectId}/workspaces"),
+    "create_workspace": ("POST", "/v0/workspaces"),
+    "get_workspace": ("GET", "/v0/workspaces/{workspaceId}"),
+    "rename_workspace": ("POST", "/v0/workspaces/{workspaceId}/rename"),
+    "archive_workspace": ("POST", "/v0/workspaces/{workspaceId}/archive"),
+    "list_workspace_sessions": ("GET", "/v0/workspaces/{workspaceId}/sessions"),
+    "create_session": ("POST", "/v0/sessions"),
+    "get_session": ("GET", "/v0/sessions/{sessionId}"),
+    "rename_session": ("POST", "/v0/sessions/{sessionId}/rename"),
+    "archive_session": ("POST", "/v0/sessions/{sessionId}/archive"),
+    "list_session_messages": ("GET", "/v0/sessions/{sessionId}/messages"),
+    "send_session_message": ("POST", "/v0/sessions/{sessionId}/messages"),
+    "get_message": ("GET", "/v0/messages/{messageId}"),
+    "get_workspace_status": ("GET", "/v0/workspaces/{workspaceId}/status"),
+    "get_session_status": ("GET", "/v0/sessions/{sessionId}/status"),
+    "cancel_session": ("POST", "/v0/sessions/{sessionId}/cancel"),
+    "query_conductor_sql": ("POST", "/v0/sql"),
 }
-ALLOWED_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max", "ultra"}
-DEFAULT_BRANCHES = {"ts-prefect": "staging"}
-LOCK = threading.Lock()
 
 mcp = FastMCP(
     "hermes-conductor",
     instructions=(
-        "Launch Conductor workspaces for arbitrary tasks in repositories owned by "
-        "the TS-Value-Software GitHub organization. You can list Hermes launches, "
-        "check a Conductor session's status, and read its messages. The service "
-        "never exposes the Conductor credential and never accepts environment variables."
+        "This server exposes the complete current Conductor API. Use list_projects "
+        "then list_project_workspaces to enumerate cloud workspaces. Use "
+        "query_conductor_sql over session_transcripts_view for organization-wide "
+        "activity and transcript searches. To launch work, create_workspace then "
+        "send_session_message. Supervise with get_session_status and incremental "
+        "list_session_messages(after_message_id=...). A queued prompt reports idle "
+        "until it starts; observe working or a transcript reply before treating idle "
+        "as complete. The API key remains inside this loopback service."
     ),
     host="127.0.0.1",
     port=8794,
@@ -58,34 +95,7 @@ mcp = FastMCP(
 
 
 class SafeError(RuntimeError):
-    pass
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def init_db() -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as db:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS workspaces (
-              launch_id TEXT PRIMARY KEY,
-              repo TEXT NOT NULL,
-              branch TEXT,
-              workspace_name TEXT NOT NULL,
-              task_summary TEXT NOT NULL,
-              state TEXT NOT NULL,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              workspace_id TEXT,
-              session_id TEXT,
-              deep_link TEXT,
-              error TEXT
-            )
-            """
-        )
+    """An error whose message may cross the MCP boundary."""
 
 
 def read_token() -> str:
@@ -97,7 +107,7 @@ def read_token() -> str:
 
 def conductor_client() -> httpx.Client:
     return httpx.Client(
-        base_url=CONDUCTOR_API,
+        base_url=API_ROOT,
         headers={
             "Authorization": f"Bearer {read_token()}",
             "User-Agent": USER_AGENT,
@@ -107,267 +117,397 @@ def conductor_client() -> httpx.Client:
     )
 
 
+def safe_upstream_message(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    message = payload.get("userMessage")
+    if not isinstance(message, str) or not message.strip():
+        return None
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", message).strip()[:MAX_ERROR_CHARS]
+
+
 def conductor_request(
-    client: httpx.Client, method: str, path: str, **kwargs: Any
-) -> dict[str, Any]:
-    response = client.request(method, path, **kwargs)
+    method: Literal["GET", "POST"],
+    path: str,
+    operation: str,
+    *,
+    params: JsonObject | None = None,
+    json_body: JsonObject | None = None,
+) -> JsonObject:
+    with conductor_client() as client:
+        response = client.request(method, path, params=params, json=json_body)
     if response.status_code >= 400:
-        # Do not relay upstream response bodies: they may contain sensitive text.
+        detail = safe_upstream_message(response)
+        suffix = f": {detail}" if detail else ""
         raise SafeError(
-            f"Conductor API {method} {path} failed with HTTP {response.status_code}."
+            f"Conductor {operation} failed with HTTP {response.status_code}{suffix}"
         )
     result = response.json()
     if not isinstance(result, dict):
-        raise SafeError("Conductor returned an unexpected response.")
-    return result
+        raise SafeError(f"Conductor {operation} returned an unexpected response.")
+    return cast(JsonObject, result)
 
 
-def validate_repo(repo: str) -> str:
-    repo = repo.strip()
-    if not REPO_RE.fullmatch(repo):
-        raise SafeError("Invalid TS repository name.")
-    return repo
-
-
-def validate_branch(branch: str | None, repo: str) -> str | None:
-    branch = branch.strip() if branch else DEFAULT_BRANCHES.get(repo)
-    if branch is None:
-        return None
-    forbidden = ("..", "@{", "//")
-    if (
-        not BRANCH_RE.fullmatch(branch)
-        or any(piece in branch for piece in forbidden)
-        or branch.startswith(("/", "."))
-        or branch.endswith(("/", "."))
-    ):
-        raise SafeError("Invalid git branch.")
-    return branch
-
-
-def validate_id(value: str, label: str) -> str:
-    if not ID_RE.fullmatch(value):
-        raise SafeError(f"Invalid {label}.")
+def clean_text(value: str, label: str) -> str:
+    value = value.strip()
+    if not value:
+        raise SafeError(f"{label} must not be empty.")
     return value
 
 
-def safe_error(exc: Exception) -> str:
-    return str(exc)[:500] if isinstance(exc, SafeError) else type(exc).__name__
+def path_id(value: str, label: str) -> str:
+    return quote(clean_text(value, label), safe="")
 
 
-def row_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "launch_id": row["launch_id"],
-        "repo": row["repo"],
-        "branch": row["branch"],
-        "workspace_name": row["workspace_name"],
-        "task_summary": row["task_summary"],
-        "state": row["state"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "workspace_id": row["workspace_id"],
-        "session_id": row["session_id"],
-        "deep_link": row["deep_link"],
-        "error": row["error"],
-    }
+def optional_body(**values: object) -> JsonObject:
+    return {key: value for key, value in values.items() if value is not None}
 
 
-def bounded_messages(payload: dict[str, Any]) -> dict[str, Any]:
-    """Bound pathological transcripts while retaining complete normal messages."""
-    output: list[dict[str, Any]] = []
-    budget = 80_000
-    used = 0
-    for message in payload.get("data", []):
-        item = {
-            key: message.get(key)
-            for key in ("id", "sessionId", "sessionIndex", "type", "content", "receivedAt")
-        }
-        encoded = json.dumps(item, ensure_ascii=False, default=str)
-        if used + len(encoded) > budget:
-            remaining = max(0, budget - used)
-            item["content"] = encoded[:remaining] + "…[truncated]"
-            output.append(item)
-            break
-        output.append(item)
-        used += len(encoded)
-    return {
-        "messages": output,
-        "offset": payload.get("offset"),
-        "has_more": payload.get("hasMore", False),
-        "response_truncated": len(output) < len(payload.get("data", [])),
-    }
+def page_params(
+    limit: int,
+    offset: int,
+    channel: Channel | None = None,
+) -> JsonObject:
+    if limit < 1:
+        raise SafeError("limit must be at least 1.")
+    if offset < 0:
+        raise SafeError("offset must be non-negative.")
+    return optional_body(limit=limit, offset=offset, channel=channel)
 
 
 @mcp.tool()
-def get_launch_policy() -> dict[str, Any]:
-    """Describe the server-enforced launch scope and defaults."""
-    return {
-        "github_organization": GITHUB_ORG,
-        "repository_scope": f"any {GITHUB_ORG} repository name",
-        "default_agent": "codex",
-        "default_model": "gpt-5.5",
-        "default_effort": "high",
-        "repo_branch_defaults": DEFAULT_BRANCHES,
-        "arbitrary_tasks_allowed": True,
-        "environment_variables_allowed": False,
-    }
+def get_current_user() -> JsonObject:
+    """Get the authenticated Conductor user, organization, and API-key metadata."""
+    return conductor_request("GET", "/me", "me.get")
 
 
 @mcp.tool()
-def launch_workspace(
-    repo: str,
-    task: str,
+def list_projects(limit: int = 100, offset: int = 0) -> JsonObject:
+    """List repositories available for Conductor cloud workspace creation."""
+    return conductor_request(
+        "GET",
+        "/v0/projects",
+        "projects.list",
+        params=page_params(limit, offset),
+    )
+
+
+@mcp.tool()
+def get_project(project_id: str) -> JsonObject:
+    """Get one Conductor project by ID."""
+    identifier = path_id(project_id, "project_id")
+    return conductor_request("GET", f"/v0/projects/{identifier}", "project.get")
+
+
+@mcp.tool()
+def list_project_workspaces(
+    project_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """List a project's cloud workspaces, including deep links and activity times."""
+    identifier = path_id(project_id, "project_id")
+    return conductor_request(
+        "GET",
+        f"/v0/projects/{identifier}/workspaces",
+        "project.workspaces.list",
+        params=page_params(limit, offset, channel),
+    )
+
+
+@mcp.tool()
+def create_workspace(
+    project_id: str | None = None,
+    repository_url: str | None = None,
     branch: str | None = None,
-    workspace_name: str | None = None,
-    agent: str = "codex",
-    model: str = "gpt-5.5",
-    effort: str = "high",
-) -> dict[str, Any]:
-    """Launch an arbitrary task in any TS-Value-Software repository.
+    name: str | None = None,
+    session_name: str | None = None,
+    agent: Agent | None = None,
+    model: Model | None = None,
+    effort: Effort | None = None,
+    env: dict[str, str] | None = None,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """Create a cloud workspace and its first session.
 
-    `repo` is a repository name, not a URL. The service fixes the GitHub
-    organization and does not permit caller-supplied environment variables.
-    Branch is optional; ts-prefect defaults to staging and other repositories
-    use their configured default branch when omitted.
+    Supply exactly one of project_id or repository_url. This is the full official
+    operation, including branch, agent, model, effort, and environment variables.
+    Send the initial task separately with send_session_message.
     """
-    repo = validate_repo(repo)
-    branch = validate_branch(branch, repo)
-    task = task.strip()
-    if not task or len(task) > 40_000:
-        raise SafeError("Task must contain 1 to 40,000 characters.")
-    if agent not in ALLOWED_AGENTS:
-        raise SafeError("Unsupported Conductor agent.")
-    if model not in ALLOWED_MODELS:
-        raise SafeError("Unsupported Conductor model.")
-    if effort not in ALLOWED_EFFORTS:
-        raise SafeError("Unsupported reasoning effort.")
-    if workspace_name:
-        workspace_name = workspace_name.strip()
-        if not workspace_name or len(workspace_name) > 100:
-            raise SafeError("Workspace name must contain 1 to 100 characters.")
+    has_project = bool(project_id and project_id.strip())
+    has_repository = bool(repository_url and repository_url.strip())
+    if has_project == has_repository:
+        raise SafeError("Supply exactly one of project_id or repository_url.")
+    source: JsonObject
+    if has_project:
+        source = {"projectId": clean_text(cast(str, project_id), "project_id")}
     else:
-        workspace_name = f"{repo}-hermes-{uuid.uuid4().hex[:6]}"
-
-    launch_id = uuid.uuid4().hex
-    timestamp = now_iso()
-    summary = " ".join(task.split())[:240]
-    with LOCK, sqlite3.connect(DB_PATH) as db:
-        db.execute(
-            """
-            INSERT INTO workspaces
-              (launch_id, repo, branch, workspace_name, task_summary, state,
-               created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?)
-            """,
-            (launch_id, repo, branch, workspace_name, summary, timestamp, timestamp),
-        )
-
-    try:
-        workspace_request: dict[str, Any] = {
-            "repositoryUrl": f"https://github.com/{GITHUB_ORG}/{repo}.git",
-            "name": workspace_name,
-            "sessionName": summary[:100] or f"Hermes task in {repo}",
-            "agent": agent,
-            "model": model,
-            "effort": effort,
+        source = {
+            "repositoryUrl": clean_text(
+                cast(str, repository_url),
+                "repository_url",
+            )
         }
-        if branch:
-            workspace_request["branch"] = branch
-        with conductor_client() as client:
-            created = conductor_request(
-                client, "POST", "/workspaces", json=workspace_request
-            )
-            workspace_id = created["workspaceId"]
-            session_id = created["sessionId"]
-            deep_link = created["deepLink"]
-            conductor_request(
-                client,
-                "POST",
-                f"/sessions/{session_id}/messages",
-                json={"message": task},
-            )
-        state, error = "launched", None
-    except Exception as exc:
-        # Keep ambiguous failures in history so they can be reconciled rather
-        # than silently issuing a duplicate paid launch.
-        workspace_id = locals().get("workspace_id")
-        session_id = locals().get("session_id")
-        deep_link = locals().get("deep_link")
-        state = "launch_unknown" if not workspace_id else "message_failed"
-        error = safe_error(exc)
-
-    with LOCK, sqlite3.connect(DB_PATH) as db:
-        db.row_factory = sqlite3.Row
-        db.execute(
-            """
-            UPDATE workspaces SET state=?, updated_at=?, workspace_id=?,
-              session_id=?, deep_link=?, error=? WHERE launch_id=?
-            """,
-            (
-                state,
-                now_iso(),
-                workspace_id,
-                session_id,
-                deep_link,
-                error,
-                launch_id,
-            ),
-        )
-        row = db.execute(
-            "SELECT * FROM workspaces WHERE launch_id=?", (launch_id,)
-        ).fetchone()
-    return row_dict(row)
-
-
-@mcp.tool()
-def list_launches(limit: int = 20) -> dict[str, Any]:
-    """List recent workspaces launched through Hermes, newest first."""
-    limit = max(1, min(limit, 100))
-    with sqlite3.connect(DB_PATH) as db:
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
-            "SELECT * FROM workspaces ORDER BY created_at DESC LIMIT ?", (limit,)
-        ).fetchall()
-    return {"launches": [row_dict(row) for row in rows]}
-
-
-@mcp.tool()
-def get_session_status(session_id: str) -> dict[str, Any]:
-    """Read live status for any Conductor session visible to this API account."""
-    session_id = validate_id(session_id, "session ID")
-    with conductor_client() as client:
-        status = conductor_request(client, "GET", f"/sessions/{session_id}/status")
-    return {
-        key: status.get(key)
-        for key in (
-            "workspaceId",
-            "sessionId",
-            "status",
-            "updatedAt",
-            "errorMessage",
-            "lastError",
-            "lastErrorAt",
-        )
-        if key in status
+    body = {
+        **source,
+        **optional_body(
+            branch=branch,
+            name=name,
+            sessionName=session_name,
+            agent=agent,
+            model=model,
+            effort=effort,
+            env=env,
+        ),
     }
+    return conductor_request(
+        "POST",
+        "/v0/workspaces",
+        "workspace.create",
+        params=optional_body(channel=channel),
+        json_body=body,
+    )
 
 
 @mcp.tool()
-def read_session_messages(
-    session_id: str, limit: int = 20, after_message_id: str | None = None
-) -> dict[str, Any]:
-    """Read transcript messages from any Conductor session visible to the account."""
-    session_id = validate_id(session_id, "session ID")
-    limit = max(1, min(limit, 100))
-    params: dict[str, Any] = {"limit": limit}
-    if after_message_id:
-        params["after"] = validate_id(after_message_id, "message ID")
-    with conductor_client() as client:
-        payload = conductor_request(
-            client, "GET", f"/sessions/{session_id}/messages", params=params
-        )
-    return bounded_messages(payload)
+def get_workspace(
+    workspace_id: str,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """Get a workspace, including its name, timestamps, and deep link."""
+    identifier = path_id(workspace_id, "workspace_id")
+    return conductor_request(
+        "GET",
+        f"/v0/workspaces/{identifier}",
+        "workspace.get",
+        params=optional_body(channel=channel),
+    )
+
+
+@mcp.tool()
+def rename_workspace(
+    workspace_id: str,
+    name: str,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """Rename a workspace."""
+    identifier = path_id(workspace_id, "workspace_id")
+    return conductor_request(
+        "POST",
+        f"/v0/workspaces/{identifier}/rename",
+        "workspace.rename",
+        params=optional_body(channel=channel),
+        json_body={"name": clean_text(name, "name")},
+    )
+
+
+@mcp.tool()
+def archive_workspace(workspace_id: str) -> JsonObject:
+    """Archive a workspace, stopping its machine and hiding it in the app."""
+    identifier = path_id(workspace_id, "workspace_id")
+    return conductor_request(
+        "POST",
+        f"/v0/workspaces/{identifier}/archive",
+        "workspace.archive",
+    )
+
+
+@mcp.tool()
+def list_workspace_sessions(
+    workspace_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """List all agent sessions in one workspace."""
+    identifier = path_id(workspace_id, "workspace_id")
+    return conductor_request(
+        "GET",
+        f"/v0/workspaces/{identifier}/sessions",
+        "workspace.sessions.list",
+        params=page_params(limit, offset, channel),
+    )
+
+
+@mcp.tool()
+def create_session(
+    workspace_id: str,
+    agent: Agent,
+    name: str | None = None,
+    session_id: str | None = None,
+    model: Model | None = None,
+    effort: Effort | None = None,
+    fast_mode: bool | None = None,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """Create another agent session inside an existing workspace."""
+    body = optional_body(
+        workspaceId=clean_text(workspace_id, "workspace_id"),
+        agent=agent,
+        name=name,
+        sessionId=session_id,
+        model=model,
+        effort=effort,
+        fastMode=fast_mode,
+    )
+    return conductor_request(
+        "POST",
+        "/v0/sessions",
+        "session.create",
+        params=optional_body(channel=channel),
+        json_body=body,
+    )
+
+
+@mcp.tool()
+def get_session(
+    session_id: str,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """Get one agent session, including model, effort, name, and deep link."""
+    identifier = path_id(session_id, "session_id")
+    return conductor_request(
+        "GET",
+        f"/v0/sessions/{identifier}",
+        "session.get",
+        params=optional_body(channel=channel),
+    )
+
+
+@mcp.tool()
+def rename_session(
+    session_id: str,
+    name: str,
+    channel: Channel | None = None,
+) -> JsonObject:
+    """Rename an agent session."""
+    identifier = path_id(session_id, "session_id")
+    return conductor_request(
+        "POST",
+        f"/v0/sessions/{identifier}/rename",
+        "session.rename",
+        params=optional_body(channel=channel),
+        json_body={"name": clean_text(name, "name")},
+    )
+
+
+@mcp.tool()
+def archive_session(session_id: str) -> JsonObject:
+    """Archive a session and cancel its queued messages."""
+    identifier = path_id(session_id, "session_id")
+    return conductor_request(
+        "POST",
+        f"/v0/sessions/{identifier}/archive",
+        "session.archive",
+    )
+
+
+@mcp.tool()
+def list_session_messages(
+    session_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    after_message_id: str | None = None,
+) -> JsonObject:
+    """Read a session transcript, optionally after one message ID."""
+    if limit < 1:
+        raise SafeError("limit must be at least 1.")
+    if offset < 0:
+        raise SafeError("offset must be non-negative.")
+    if after_message_id is not None and offset != 0:
+        raise SafeError("after_message_id cannot be combined with a non-zero offset.")
+    identifier = path_id(session_id, "session_id")
+    params = optional_body(limit=limit)
+    if after_message_id is None:
+        params["offset"] = offset
+    else:
+        params["after"] = clean_text(after_message_id, "after_message_id")
+    return conductor_request(
+        "GET",
+        f"/v0/sessions/{identifier}/messages",
+        "session.messages.list",
+        params=params,
+    )
+
+
+@mcp.tool()
+def send_session_message(
+    session_id: str,
+    message: str,
+    message_id: str | None = None,
+) -> JsonObject:
+    """Send a prompt or follow-up to an agent session."""
+    identifier = path_id(session_id, "session_id")
+    return conductor_request(
+        "POST",
+        f"/v0/sessions/{identifier}/messages",
+        "message.create",
+        json_body=optional_body(
+            message=clean_text(message, "message"),
+            messageId=message_id,
+        ),
+    )
+
+
+@mcp.tool()
+def get_message(message_id: str) -> JsonObject:
+    """Get one transcript message by ID."""
+    identifier = path_id(message_id, "message_id")
+    return conductor_request("GET", f"/v0/messages/{identifier}", "message.get")
+
+
+@mcp.tool()
+def get_workspace_status(workspace_id: str) -> JsonObject:
+    """Get workspace lifecycle status and setup/update errors."""
+    identifier = path_id(workspace_id, "workspace_id")
+    return conductor_request(
+        "GET",
+        f"/v0/workspaces/{identifier}/status",
+        "workspace.status.get",
+    )
+
+
+@mcp.tool()
+def get_session_status(session_id: str) -> JsonObject:
+    """Get whether an agent session is idle, working, or errored."""
+    identifier = path_id(session_id, "session_id")
+    return conductor_request(
+        "GET",
+        f"/v0/sessions/{identifier}/status",
+        "session.status.get",
+    )
+
+
+@mcp.tool()
+def cancel_session(session_id: str) -> JsonObject:
+    """Stop the current agent turn and drop queued messages."""
+    identifier = path_id(session_id, "session_id")
+    return conductor_request(
+        "POST",
+        f"/v0/sessions/{identifier}/cancel",
+        "session.cancel",
+    )
+
+
+@mcp.tool()
+def query_conductor_sql(query: str) -> JsonObject:
+    """Run Conductor's read-only SQL over session_transcripts_view.
+
+    Useful columns include workspace_id, workspace_name, session_title,
+    transcript, and transcript_updated_at. Conductor enforces the read-only view.
+    """
+    return conductor_request(
+        "POST",
+        "/v0/sql",
+        "sql.query",
+        json_body={"query": clean_text(query, "query")},
+    )
 
 
 if __name__ == "__main__":
-    init_db()
     mcp.run(transport="streamable-http")
