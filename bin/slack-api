@@ -11,10 +11,14 @@
 # key=value pairs are form-encoded (Slack's preferred encoding for all methods).
 # Output is raw API JSON; pipe to jq to trim. Always check `"ok": true/false`.
 #
-# Credentials: user token (op://MCP/SLACK_MCP_USER_TOKEN) resolved per call via the
+# Credentials: user token (op://TS/TS_SLACK_MCP_USER_TOKEN) resolved per call via the
 # calling project's 1Password service-account token, named by that project's
 # `service_account` entry in config/project-tools.json — silent, no Touch ID.
 # Never print the token.
+#
+# The token lives in the TS vault, so only the ts service account can read it. Other
+# projects resolve their own token correctly and then fail on the vault, which is the
+# accurate outcome until they get their own Slack credential.
 set -euo pipefail
 
 [ $# -ge 1 ] || { echo "usage: slack-api <method> [key=value ...]" >&2; exit 2; }
@@ -41,7 +45,7 @@ fi
   exit 3
 }
 
-slack_tok="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://MCP/SLACK_MCP_USER_TOKEN/value")"
+slack_tok="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TS_SLACK_MCP_USER_TOKEN/value")"
 
 args=()
 for kv in "$@"; do
