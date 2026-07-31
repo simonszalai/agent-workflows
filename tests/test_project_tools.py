@@ -321,6 +321,40 @@ printf 'fake-render-key'
         self.assertEqual(approved.returncode, 0, approved.stderr)
         self.assertFalse(self.op_log.exists())
 
+    def test_tailscale_profile_is_registry_owned_and_optional(self) -> None:
+        registry = json.loads(REGISTRY.read_text())
+        projects = registry["projects"]
+        self.assertEqual(
+            projects["ts"]["tailscale"],
+            {
+                "oauth_client_id_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value",
+                "oauth_client_secret_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value",
+            },
+        )
+        for project in projects:
+            if project != "ts":
+                self.assertNotIn("tailscale", projects[project])
+
+        absent = self.run_context(self.repo, "--tool", "tailscale")
+        self.assertNotEqual(absent.returncode, 0)
+        self.assertIn("has no 'tailscale' tool profile", absent.stderr)
+
+        broken = self.root / "broken-tailscale.json"
+        fixture = json.loads(self.config.read_text())
+        fixture["projects"]["alpha"]["tailscale"] = {
+            "oauth_client_id_ref": "ALPHA_TAILSCALE_ID",
+            "oauth_client_secret_ref": "op://ALPHA/TAILSCALE_SECRET/value",
+        }
+        broken.write_text(json.dumps(fixture))
+        rejected = subprocess.run(
+            [str(PROJECT_CONTEXT), "--cwd", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.environment(PROJECT_TOOLS_CONFIG=str(broken)),
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("tailscale.oauth_client_id_ref", rejected.stderr)
+
     def test_project_service_account_token_authenticates_the_credential_read(self) -> None:
         result = self.run_render(self.repo, "services")
         self.assertEqual(result.returncode, 0, result.stderr)
