@@ -34,6 +34,28 @@ fully graded on fresh evidence, and no schema/deploy-config/auth category in the
 Higher-risk scopes rest at `staging_verified` until a human invokes this skill explicitly.
 `/epic-flow` calls the epic mode after all milestone staging gates pass.
 
+## Unattended guard (scheduled contexts)
+
+This skill merges to `main` and runs production deploy steps — for ts-prefect, merging to `main`
+IS a production deploy (flows `git_clone` at runtime). Per `../references/scheduled-run.md` §1,
+git merges/pushes to long-lived branches are never allowed unattended.
+
+When invoked from a scheduled context — the session carries a scheduled-run marker
+(Hermes `hermes/schedules/` prompt), the caller is `/ticket-verify --scheduled`, or there is no
+human in the loop to approve a production mutation — **refuse to land or deploy anything**:
+
+1. Perform no merge, push, PR creation, or production deploy step. Discovery/read-only preflight
+   is fine.
+2. Emit the promotion-ready report instead: for each ready scope, the ticket ID, staging PASS
+   evidence artifact ID, ordered commit list, detected deploy categories, and the exact
+   `/ticket-promote <ID>` command a human should run.
+3. Post it per scheduled-run.md §2 (one line + thread) and end
+   `promotion-ready — prod promotion awaiting Simon`.
+
+There is no scheduled bypass flag. If scheduled provenance is uncertain, treat the context as
+scheduled and refuse — a wrongly withheld merge costs one human command; a wrong unattended merge
+is a production deploy.
+
 ## Non-Negotiables
 
 - **Production-impacting. Prefer stopping over guessing.** Every stop must say exactly what
