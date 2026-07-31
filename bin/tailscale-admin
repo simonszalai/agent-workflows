@@ -11,10 +11,10 @@
 # `-` in the path means "the tailnet of the authenticated credential".
 #
 # Credentials: OAuth client (op://TS/TAILSCALE_OAUTH_CLIENT_{ID,SECRET}_MCP),
-# resolved per call via the 1Password service-account token (env
-# TS_OP_SERVICE_ACCOUNT_TOKEN / OP_SERVICE_ACCOUNT_TOKEN, else Mac Keychain item
-# `op-dev-token`) — silent, no Touch ID. The short-lived access token exists only
-# in this process. Never print tokens.
+# resolved per call via the calling project's 1Password service-account token,
+# named by that project's `service_account` entry in config/project-tools.json —
+# silent, no Touch ID. The short-lived access token exists only in this process.
+# Never print tokens.
 set -euo pipefail
 
 API="https://api.tailscale.com/api/v2"
@@ -22,12 +22,24 @@ API="https://api.tailscale.com/api/v2"
 [ $# -ge 2 ] || { echo "usage: tailscale-admin <METHOD> </api/v2 path> [curl args...]" >&2; exit 2; }
 METHOD="$1"; APIPATH="$2"; shift 2
 
-tok="${TS_OP_SERVICE_ACCOUNT_TOKEN:-${OP_SERVICE_ACCOUNT_TOKEN:-}}"
-if [ -z "$tok" ] && [ "$(uname -s)" = "Darwin" ]; then
-  tok="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_CONTEXT="$HERE/project-context"
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 3; }
+[ -x "$PROJECT_CONTEXT" ] || { echo "ERROR: missing project resolver: $PROJECT_CONTEXT" >&2; exit 3; }
+
+context="$("$PROJECT_CONTEXT" --cwd "$PWD")"
+project="$(jq -er '.project' <<<"$context")"
+token_env="$(jq -er '.service_account.token_env' <<<"$context")"
+keychain_item="$(jq -r '.service_account.keychain_item // empty' <<<"$context")"
+
+# token_env is registry-validated as <PROJECT>_OP_SERVICE_ACCOUNT_TOKEN, so this
+# indirection is safe. eval keeps macOS bash 3.2 happy; ${!name:-} does not work there.
+eval "tok=\${$token_env:-}"
+if [ -z "$tok" ] && [ -n "$keychain_item" ] && [ "$(uname -s)" = "Darwin" ]; then
+  tok="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
 fi
 [ -n "$tok" ] || {
-  echo "ERROR: no 1Password service-account token (set TS_OP_SERVICE_ACCOUNT_TOKEN or Keychain op-dev-token)." >&2
+  echo "ERROR: no 1Password service-account token for project '$project': set $token_env${keychain_item:+ or store it in the Mac Keychain as $keychain_item}." >&2
   exit 3
 }
 

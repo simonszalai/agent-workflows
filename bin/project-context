@@ -19,11 +19,14 @@ DEFAULT_CONFIG = ROOT / "config/project-tools.json"
 SCP_REMOTE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(.+)$")
 CANONICAL_REMOTE = re.compile(r"^([^@:/\s]+)/(.*?/.*)$")
 OP_REF = re.compile(r"^op://[^/\s]+/[^/\s]+/value$")
+TOKEN_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_OP_SERVICE_ACCOUNT_TOKEN$")
+KEYCHAIN_ITEM = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 class Project(NamedTuple):
     name: str
     remotes: tuple[str, ...]
+    service_account: dict[str, str]
     tools: dict[str, object]
 
 
@@ -88,6 +91,7 @@ def load_projects(path: Path) -> dict[str, Project]:
 
     projects: dict[str, Project] = {}
     claimed_remotes: dict[str, str] = {}
+    claimed_token_envs: dict[str, str] = {}
     for name, value in raw_projects.items():
         if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             fail(f"invalid project id: {name!r}")
@@ -106,7 +110,29 @@ def load_projects(path: Path) -> dict[str, Project]:
             claimed_remotes[current] = name
             normalized.append(current)
 
-        tools = {key: item for key, item in value.items() if key != "repo_remotes"}
+        service_account = value.get("service_account")
+        if not isinstance(service_account, dict):
+            fail(f"projects.{name}.service_account must be an object")
+        token_env = service_account.get("token_env")
+        if not isinstance(token_env, str) or not TOKEN_ENV.fullmatch(token_env):
+            fail(
+                f"projects.{name}.service_account.token_env must be a project-prefixed "
+                f"<PROJECT>_OP_SERVICE_ACCOUNT_TOKEN name"
+            )
+        keychain_item = service_account.get("keychain_item")
+        if keychain_item is not None and (
+            not isinstance(keychain_item, str) or not KEYCHAIN_ITEM.fullmatch(keychain_item)
+        ):
+            fail(f"projects.{name}.service_account.keychain_item must be a Keychain service name")
+        unknown = set(service_account) - {"token_env", "keychain_item"}
+        if unknown:
+            fail(f"projects.{name}.service_account has unknown keys: {', '.join(sorted(unknown))}")
+
+        tools = {
+            key: item
+            for key, item in value.items()
+            if key not in {"repo_remotes", "service_account"}
+        }
         render = tools.get("render")
         if not isinstance(render, dict):
             fail(f"projects.{name}.render must be an object")
@@ -128,7 +154,13 @@ def load_projects(path: Path) -> dict[str, Project]:
                 discovery,
                 f"projects.{name}.render.workspace.discover_service_names",
             )
-        projects[name] = Project(name, tuple(normalized), tools)
+        if token_env in claimed_token_envs:
+            fail(
+                f"service_account.token_env {token_env} belongs to both "
+                f"{claimed_token_envs[token_env]} and {name}"
+            )
+        claimed_token_envs[token_env] = name
+        projects[name] = Project(name, tuple(normalized), dict(service_account), tools)
     return projects
 
 
@@ -213,6 +245,7 @@ def main() -> None:
         "project": project.name,
         "repo_root": context.root if context else None,
         "remote": context.remote if context else None,
+        "service_account": project.service_account,
         "tools": project.tools,
     }
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
