@@ -470,7 +470,7 @@ class DeployReceiptPersistenceTest(unittest.TestCase):
     def manifest(self, root: Path, *, fails: bool = False) -> dict:
         revision = "a" * 40
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": "run-1",
             "revision": revision,
             "contract_status": "FINALIZED",
@@ -514,6 +514,14 @@ class DeployReceiptPersistenceTest(unittest.TestCase):
                 "timeout_seconds": 2,
                 "resume_safe": True,
                 "sample_size": 1,
+                "minimum_sufficient_evidence": "one exact-path result",
+                "causal_failure_meaning": "the shipped behavior is absent",
+                "evidence_timing": {
+                    "source": "immediate",
+                    "maturity_delay_seconds": 0,
+                    "acquisition_time_seconds": 1,
+                    "verification_deadline_seconds": 10,
+                },
                 "exact_path_canary": False,
                 "canary_row_id": None,
                 "distinguishes_defect": "behavior absent",
@@ -598,6 +606,23 @@ class DeploymentGuideContractTest(unittest.TestCase):
             "expected_result": "one matching row",
             "bad_interpretation": "feature output is absent",
             "gate_class": "causal_ship_gate",
+            "acceptance_source": {
+                "kind": "source_criterion",
+                "reference": "ticket acceptance criterion 1",
+            },
+            "sample_size": 1,
+            "minimum_sufficient_evidence": "one exact-path result",
+            "distinguishes_defect": "feature output is absent",
+            "causal_failure_meaning": "the shipped feature output is absent",
+            "failure_class_on_failure": "code_defect",
+            "exact_path_canary": False,
+            "canary_row_id": None,
+            "evidence_timing": {
+                "source": "immediate",
+                "maturity_delay_seconds": 0,
+                "acquisition_time_seconds": 60,
+                "verification_deadline_seconds": 3600,
+            },
             "bounded_producer": {
                 "status": "N/A",
                 "justification": "read-only evidence",
@@ -608,7 +633,7 @@ class DeploymentGuideContractTest(unittest.TestCase):
             },
         }
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "FINALIZED",
             "activation_boundary": "origin/staging commit abc",
             "environments": {
@@ -660,6 +685,14 @@ class DeploymentGuideContractTest(unittest.TestCase):
                 "expected_result",
                 "bad_interpretation",
                 "gate_class",
+                "acceptance_source",
+                "sample_size",
+                "minimum_sufficient_evidence",
+                "distinguishes_defect",
+                "causal_failure_meaning",
+                "failure_class_on_failure",
+                "exact_path_canary",
+                "evidence_timing",
                 "bounded_producer",
                 "cleanup",
             ):
@@ -686,6 +719,54 @@ class DeploymentGuideContractTest(unittest.TestCase):
                 rejected = self.validate(root, changed)
                 self.assertEqual(rejected.returncode, 2, environment)
                 self.assertIn("environments", rejected.stdout)
+
+    def test_r0059_style_natural_cohort_cannot_be_a_causal_release_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            value = self.complete()
+            canary = value["environments"]["staging"]["rows"][0]
+            canary["id"] = "exact-path-canary"
+            canary["exact_path_canary"] = True
+            canary["distinguishes_defect"] = "price-reaction leakage"
+            cohort = copy.deepcopy(canary)
+            cohort.update({
+                "id": "matured-natural-cohort",
+                "sample_size": 20,
+                "exact_path_canary": False,
+                "canary_row_id": "exact-path-canary",
+                "statistical_threshold": {
+                    "baseline": "24.5% of matured rows qualify",
+                    "sample_size_rationale": "20 qualifying rows compare two cohorts",
+                    "resource_budget": "natural traffic only",
+                    "distinguishes_defect": "price-reaction leakage",
+                },
+                "evidence_timing": {
+                    "source": "natural_traffic",
+                    "maturity_delay_seconds": 86400,
+                    "acquisition_time_seconds": 705307,
+                    "verification_deadline_seconds": 172800,
+                    "conservative_eligible_units_per_day": 2.45,
+                },
+            })
+            value["environments"]["staging"]["rows"].append(cohort)
+            rejected = self.validate(root, value)
+            self.assertEqual(rejected.returncode, 2, rejected.stdout)
+            self.assertIn("infeasible for a causal_ship_gate", rejected.stdout)
+
+            cohort["gate_class"] = "observation"
+            cohort.pop("causal_failure_meaning")
+            accepted = self.validate(root, value)
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+
+    def test_contract_skills_guard_the_three_overspecification_classes(self) -> None:
+        guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()
+        verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
+        self.assertIn("Provider success is not evidence of non-empty business yield", guide)
+        self.assertIn("orphan/stranded-record metric", guide)
+        self.assertIn("bounded replay are insufficient", guide)
+        self.assertIn("BLOCKED: invalid_evidence", verify)
+        self.assertIn("evidence_eligible_at", verify)
+        self.assertIn("never product FAIL", verify)
 
     def test_workflows_validate_before_finalization_and_mutation(self) -> None:
         guide = (ROOT / "skills/create-deployment-guide/SKILL.md").read_text()

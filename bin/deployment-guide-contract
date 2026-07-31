@@ -5,12 +5,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
 
 GATE_CLASSES = {"causal_ship_gate", "observation"}
 ENVIRONMENTS = {"staging", "production"}
+EVIDENCE_SOURCES = {"immediate", "bounded_producer", "natural_traffic"}
+ACCEPTANCE_SOURCES = {
+    "source_criterion",
+    "explicit_user_decision",
+    "measured_production_baseline",
+    "invariant",
+}
+FAILURE_CLASSES = {
+    "code_defect",
+    "verifier_defect",
+    "environment_capacity",
+    "external_observation",
+    "invalid_evidence",
+    "unknown",
+}
 
 
 class ContractError(ValueError):
@@ -21,6 +37,74 @@ def require_string(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ContractError(f"{field} must be a non-empty string")
     return value
+
+
+def require_int(value: object, field: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ContractError(f"{field} must be an integer >= {minimum}")
+    return value
+
+
+def require_positive_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ContractError(f"{field} must be a positive number")
+    return float(value)
+
+
+def validate_acceptance_source(value: object, field: str) -> None:
+    if not isinstance(value, dict):
+        raise ContractError(f"{field} must be an object")
+    if value.get("kind") not in ACCEPTANCE_SOURCES:
+        raise ContractError(f"{field}.kind is invalid")
+    require_string(value.get("reference"), f"{field}.reference")
+
+
+def validate_evidence_timing(
+    value: object,
+    field: str,
+    *,
+    gate_class: str,
+    sample_size: int,
+) -> None:
+    if not isinstance(value, dict):
+        raise ContractError(f"{field} must be an object")
+    source = value.get("source")
+    if source not in EVIDENCE_SOURCES:
+        raise ContractError(f"{field}.source is invalid")
+    maturity = require_int(
+        value.get("maturity_delay_seconds"),
+        f"{field}.maturity_delay_seconds",
+    )
+    acquisition = require_int(
+        value.get("acquisition_time_seconds"),
+        f"{field}.acquisition_time_seconds",
+    )
+    deadline = require_int(
+        value.get("verification_deadline_seconds"),
+        f"{field}.verification_deadline_seconds",
+        minimum=1,
+    )
+    if source == "natural_traffic":
+        rate = require_positive_number(
+            value.get("conservative_eligible_units_per_day"),
+            f"{field}.conservative_eligible_units_per_day",
+        )
+        rate_bound = math.ceil(sample_size * 86400 / rate)
+        if acquisition < rate_bound:
+            raise ContractError(
+                f"{field}.acquisition_time_seconds must be >= {rate_bound} "
+                "for the declared natural-traffic rate"
+            )
+    elif value.get("conservative_eligible_units_per_day") is not None:
+        raise ContractError(
+            f"{field}.conservative_eligible_units_per_day is only valid for natural_traffic"
+        )
+    if gate_class == "causal_ship_gate" and maturity + acquisition > deadline:
+        raise ContractError(
+            f"{field} is infeasible for a causal_ship_gate: maturity + acquisition "
+            "exceeds the verification deadline; classify it as observation or keep "
+            "the guide DRAFT"
+        )
 
 
 def require_value_or_na(value: object, field: str) -> object:
@@ -45,8 +129,8 @@ def load(path: Path) -> dict:
 
 
 def validate(value: dict, required_environment: str | None = None) -> dict:
-    if value.get("schema_version") != 1:
-        raise ContractError("schema_version must equal 1")
+    if value.get("schema_version") != 2:
+        raise ContractError("schema_version must equal 2")
     if value.get("status") != "FINALIZED":
         raise ContractError("status must equal FINALIZED")
     require_value_or_na(value.get("activation_boundary"), "activation_boundary")
@@ -67,7 +151,8 @@ def validate(value: dict, required_environment: str | None = None) -> dict:
         rows = contract["rows"]
         if not isinstance(rows, list) or not rows:
             raise ContractError(f"{prefix}.rows must be a non-empty array")
-        seen: set[str] = set()
+        seen: dict[str, dict] = {}
+        causal_rows = 0
         for index, row in enumerate(rows):
             field = f"{prefix}.rows[{index}]"
             if not isinstance(row, dict):
@@ -75,16 +160,103 @@ def validate(value: dict, required_environment: str | None = None) -> dict:
             row_id = require_string(row.get("id"), f"{field}.id")
             if row_id in seen:
                 raise ContractError(f"{field}.id is duplicated")
-            seen.add(row_id)
             require_string(row.get("exact_command"), f"{field}.exact_command")
             require_string(row.get("expected_result"), f"{field}.expected_result")
             require_string(row.get("bad_interpretation"), f"{field}.bad_interpretation")
-            if row.get("gate_class") not in GATE_CLASSES:
+            gate_class = row.get("gate_class")
+            if gate_class not in GATE_CLASSES:
                 raise ContractError(
                     f"{field}.gate_class must be causal_ship_gate or observation"
                 )
+            if gate_class == "causal_ship_gate":
+                causal_rows += 1
+                require_string(
+                    row.get("causal_failure_meaning"),
+                    f"{field}.causal_failure_meaning",
+                )
+            elif row.get("causal_failure_meaning") is not None:
+                raise ContractError(
+                    f"{field}.causal_failure_meaning is only valid for causal_ship_gate"
+                )
+            validate_acceptance_source(
+                row.get("acceptance_source"),
+                f"{field}.acceptance_source",
+            )
+            require_string(
+                row.get("minimum_sufficient_evidence"),
+                f"{field}.minimum_sufficient_evidence",
+            )
+            defect = require_string(
+                row.get("distinguishes_defect"),
+                f"{field}.distinguishes_defect",
+            )
+            failure_class = row.get("failure_class_on_failure")
+            if failure_class not in FAILURE_CLASSES:
+                raise ContractError(f"{field}.failure_class_on_failure is invalid")
+            sample_size = require_int(
+                row.get("sample_size"),
+                f"{field}.sample_size",
+                minimum=1,
+            )
+            validate_evidence_timing(
+                row.get("evidence_timing"),
+                f"{field}.evidence_timing",
+                gate_class=gate_class,
+                sample_size=sample_size,
+            )
+            exact_path_canary = row.get("exact_path_canary")
+            if not isinstance(exact_path_canary, bool):
+                raise ContractError(f"{field}.exact_path_canary must be boolean")
+            canary_id = row.get("canary_row_id")
+            if sample_size > 1:
+                statistical = row.get("statistical_threshold")
+                if not isinstance(statistical, dict):
+                    raise ContractError(
+                        f"{field}.statistical_threshold is required for sample_size > 1"
+                    )
+                require_string(
+                    statistical.get("baseline"),
+                    f"{field}.statistical_threshold.baseline",
+                )
+                require_string(
+                    statistical.get("sample_size_rationale"),
+                    f"{field}.statistical_threshold.sample_size_rationale",
+                )
+                require_string(
+                    statistical.get("resource_budget"),
+                    f"{field}.statistical_threshold.resource_budget",
+                )
+                if require_string(
+                    statistical.get("distinguishes_defect"),
+                    f"{field}.statistical_threshold.distinguishes_defect",
+                ) != defect:
+                    raise ContractError(
+                        f"{field}.statistical_threshold.distinguishes_defect must "
+                        "match the row"
+                    )
+                canary_id = require_string(canary_id, f"{field}.canary_row_id")
+                canary = seen.get(canary_id)
+                if (
+                    canary is None
+                    or canary["sample_size"] != 1
+                    or canary["exact_path_canary"] is not True
+                    or canary["distinguishes_defect"] != defect
+                ):
+                    raise ContractError(
+                        f"{field}.canary_row_id must reference an earlier exact-path "
+                        "single-unit canary for the same defect"
+                    )
+            elif canary_id is not None:
+                raise ContractError(f"{field}.canary_row_id must be null for sample_size=1")
             require_value_or_na(row.get("bounded_producer"), f"{field}.bounded_producer")
             require_value_or_na(row.get("cleanup"), f"{field}.cleanup")
+            seen[row_id] = {
+                "sample_size": sample_size,
+                "exact_path_canary": exact_path_canary,
+                "distinguishes_defect": defect,
+            }
+        if causal_rows == 0:
+            raise ContractError(f"{prefix}.rows must contain at least one causal_ship_gate")
         counts[environment] = len(rows)
     required = {
         "staging": {"staging"},

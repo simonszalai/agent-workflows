@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -18,6 +19,7 @@ from pathlib import Path
 
 
 GATE_CLASSES = {"causal_ship_gate", "observation"}
+EVIDENCE_SOURCES = {"immediate", "bounded_producer", "natural_traffic"}
 ACCEPTANCE_SOURCES = {
     "source_criterion",
     "explicit_user_decision",
@@ -99,8 +101,8 @@ def load_manifest(path: Path) -> dict:
 
 
 def validate_manifest(manifest: dict) -> dict:
-    if manifest.get("schema_version") != 1:
-        raise ContractError("schema_version must equal 1")
+    if manifest.get("schema_version") != 2:
+        raise ContractError("schema_version must equal 2")
     require_string(manifest.get("run_id"), "run_id")
     revision = require_string(manifest.get("revision"), "revision")
     if len(revision) not in {40, 64} or any(
@@ -248,9 +250,71 @@ def validate_manifest(manifest: dict) -> dict:
         defect = require_string(
             row.get("distinguishes_defect"), f"{field}.distinguishes_defect"
         )
+        require_string(
+            row.get("minimum_sufficient_evidence"),
+            f"{field}.minimum_sufficient_evidence",
+        )
+        if row["gate_class"] == "causal_ship_gate":
+            require_string(
+                row.get("causal_failure_meaning"),
+                f"{field}.causal_failure_meaning",
+            )
+        elif row.get("causal_failure_meaning") is not None:
+            raise ContractError(
+                f"{field}.causal_failure_meaning is only valid for causal_ship_gate"
+            )
         failure_class = row.get("failure_class_on_failure")
         if failure_class not in FAILURE_CLASSES:
             raise ContractError(f"{field}.failure_class_on_failure is invalid")
+
+        timing = row.get("evidence_timing")
+        if not isinstance(timing, dict):
+            raise ContractError(f"{field}.evidence_timing must be an object")
+        source = timing.get("source")
+        if source not in EVIDENCE_SOURCES:
+            raise ContractError(f"{field}.evidence_timing.source is invalid")
+        maturity = require_int(
+            timing.get("maturity_delay_seconds"),
+            f"{field}.evidence_timing.maturity_delay_seconds",
+            minimum=0,
+        )
+        acquisition = require_int(
+            timing.get("acquisition_time_seconds"),
+            f"{field}.evidence_timing.acquisition_time_seconds",
+            minimum=0,
+        )
+        deadline = require_int(
+            timing.get("verification_deadline_seconds"),
+            f"{field}.evidence_timing.verification_deadline_seconds",
+            minimum=1,
+        )
+        if source == "natural_traffic":
+            rate = timing.get("conservative_eligible_units_per_day")
+            if (
+                isinstance(rate, bool)
+                or not isinstance(rate, (int, float))
+                or rate <= 0
+            ):
+                raise ContractError(
+                    f"{field}.evidence_timing.conservative_eligible_units_per_day "
+                    "must be a positive number"
+                )
+            rate_bound = math.ceil(sample_size * 86400 / rate)
+            if acquisition < rate_bound:
+                raise ContractError(
+                    f"{field}.evidence_timing.acquisition_time_seconds must be >= "
+                    f"{rate_bound} for the declared natural-traffic rate"
+                )
+        elif timing.get("conservative_eligible_units_per_day") is not None:
+            raise ContractError(
+                f"{field}.evidence_timing.conservative_eligible_units_per_day is "
+                "only valid for natural_traffic"
+            )
+        if row["gate_class"] == "causal_ship_gate" and maturity + acquisition > deadline:
+            raise ContractError(
+                f"{field}.evidence_timing is infeasible for a causal_ship_gate: "
+                "maturity + acquisition exceeds the verification deadline"
+            )
 
         canary_id = row.get("canary_row_id")
         if sample_size > 1:
@@ -356,7 +420,7 @@ def run_logged(
 
 def receipt_base(manifest: dict, state: dict) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": manifest["run_id"],
         "revision": manifest["revision"],
         "environment": manifest["environment"],
@@ -435,18 +499,22 @@ def finalize(manifest: dict, state: dict, post_identity: str) -> dict:
         row for row in state["rows"]
         if row["gate_class"] == "observation" and row["status"] != "pass"
     ]
-    unknown_failure = any(
+    unknown_causal_failure = any(
         row.get("failure_class") == "unknown"
-        for row in causal_failures + observation_failures
+        for row in causal_failures
     )
-    verdict = "FAIL_CLOSED" if unknown_failure else ("FAIL" if causal_failures else "PASS")
+    verdict = (
+        "FAIL_CLOSED"
+        if unknown_causal_failure
+        else ("FAIL" if causal_failures else "PASS")
+    )
     ship_gate_passed = not causal_failures
     return {
         **receipt_base(manifest, state),
         "status": "complete",
         "verdict": verdict,
         "ship_gate_passed": ship_gate_passed,
-        "promotion_allowed": ship_gate_passed and not unknown_failure,
+        "promotion_allowed": ship_gate_passed and not unknown_causal_failure,
         "causal_failures": len(causal_failures),
         "observation_failures": len(observation_failures),
         "pre_identity": state["pre_identity"],

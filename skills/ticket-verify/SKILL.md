@@ -382,6 +382,32 @@ fails closed.
 
 ### 5. Collect evidence
 
+#### Evidence feasibility preflight
+
+Before compiling or executing any row, recheck the FINALIZED contract's machine-readable timing
+against the current producer and measured baseline. For each row:
+
+- confirm the declared maturity delay, sample size, conservative eligible-unit rate, acquisition
+  time, deadline, minimum sufficient evidence, and defect distinguished;
+- for natural traffic, recompute
+  `ceil(sample_size / conservative_eligible_units_per_day * 86400)` and require the declared
+  acquisition time to be at least that large;
+- for causal rows, require
+  `maturity_delay_seconds + acquisition_time_seconds <= verification_deadline_seconds`;
+- confirm failure would demonstrate a defect controlled by the shipped change. A valid empty
+  provider result, rare calendar state, noisy orphan/recovery metric, or documented non-goal is not
+  causal without an explicit source guarantee;
+- check whether deterministic evidence, one exact-path live case, or a bounded replay already
+  distinguishes the same defect with less time, traffic, or cost.
+
+If a causal row is structurally infeasible or non-causal, do not execute it, consume a
+`NEEDS_MORE_TIME` attempt, or mark the product failed. Persist `BLOCKED: invalid_evidence`, route it
+to the evidence-contract owner, and keep the product failure field empty. The guide must be revised
+before verification resumes. Do not silently weaken or reclassify a row after seeing current
+output. A revision needs the original acceptance source or a new explicit user decision and must
+record the reason. Longitudinal observations may remain infeasible within the release deadline;
+record and route them without blocking causal PASS.
+
 #### One revision-bound controller
 
 Compile the finalized environment rows and required supplements into one bounded manifest for
@@ -395,7 +421,8 @@ row. It records:
 - `contract_status: FINALIZED` plus references to the preserved deploy, authorization,
   exact-transport, safety, and evidence predicate receipts;
 - each row's gate class, acceptance source/reference, argv, expected exit code, timeout, sample
-  size, explicit idempotent/resume-safe predicate, defect distinguished, and failure class;
+  size, minimum sufficient evidence, timing feasibility, causal failure meaning when applicable,
+  explicit idempotent/resume-safe predicate, defect distinguished, and failure class;
 - baseline, sample-size rationale, finite resource budget, and an earlier same-defect exact-path
   canary reference for every statistical/high-N row; and
 - from the third staging revision for the same activation/contract, the stabilization failure
@@ -567,7 +594,8 @@ items:
   explicit human go-ahead, or a regenerated FINALIZED deployment guide followed by a re-run
   that grades the real contract. Exception: a `tiny_safe` scope (§2a) with every derived row
   passed on fresh post-activation data auto-promotes as if `PASS`;
-- `FAIL` — any evidence item shows broken behavior or expected-but-missing activity;
+- `FAIL` — a `causal_ship_gate` demonstrates related broken behavior or expected-but-missing
+  activity. Observation failures remain recorded and routed but do not change causal PASS;
 - `NEEDS_MORE_TIME` — the feature **is deployed and running** (its producing deployment is
   registered in the target env and, for scheduled/continuous flows, executing), but one or more
   evidence items have no post-activation data yet (and none have failed). Use this **only** when
@@ -590,22 +618,24 @@ Controller grading is causal: every failed `causal_ship_gate` fails closed, whil
 `observation` is recorded and routed but cannot fail an unrelated causal ship gate. Missing,
 unsupported, or ambiguous causal evidence is `invalid_evidence`, never PASS. A failed observation
 does not erase a causal PASS, and it also cannot be relabeled as causal after current output is
-known. `unknown` blocks promotion fail-closed even when the separately reported causal gate passed;
-that hold does not pretend an observation caused the ship-gate failure. Thresholds remain the
-accepted contract rather than being tailored to the run.
+known. `unknown` blocks promotion fail-closed only for a causal gate. A missing or immature
+observation is `external_observation`, never `unknown`, and cannot block promotion. Thresholds
+remain the accepted contract rather than being tailored to the run.
 
 Never report `NEEDS_MORE_TIME` for a feature whose producing deployment is absent or has never
 run — that misrepresents "nobody deployed/triggered it" as "wait for data." If §5a could not
 confirm the producing object is live, the verdict is `BLOCKED`, not `NEEDS_MORE_TIME`.
 
-**NEEDS_MORE_TIME cap.** `NEEDS_MORE_TIME` is not an indefinitely repeatable verdict. Record in
-the scope's `verification_evidence` artifact metadata a `needs_more_time_count` and a
-`needs_more_time_first_seen` timestamp, incrementing the counter on every `NEEDS_MORE_TIME`
-run. After **3 NEEDS_MORE_TIME runs or 24 hours** since first seen (whichever comes first),
-escalate: the verdict becomes `FAIL` — or `BLOCKED` when the producing deployment/object is
-absent or has never run — and the report must name the exact evidence row(s) that never
-produced post-activation data. Waiting that long without data means the evidence is not
-coming on its own.
+**NEEDS_MORE_TIME cap.** `NEEDS_MORE_TIME` is not an indefinitely repeatable verdict. Track it per
+causal row. Compute `evidence_eligible_at = activation_boundary + maturity_delay_seconds`; attempts
+before that timestamp do not increment the row's count. At or after eligibility, record
+`needs_more_time_count` and `needs_more_time_first_seen`, incrementing only when the declared
+producer had a real opportunity to create the row. After **3 eligible NEEDS_MORE_TIME runs or 24
+hours after `evidence_eligible_at`** (whichever comes first), re-run the feasibility preflight. A
+live causal row that was feasible and still shows expected-but-missing activity becomes `FAIL`. An
+absent producer becomes `BLOCKED: deployment_prerequisite`. A row whose maturity/rate/deadline math
+was structurally wrong becomes `BLOCKED: invalid_evidence`, never product FAIL. Missing
+longitudinal observations do not consume this causal wait budget.
 
 **Moving-target guard (scheduled-event waits).** When `NEEDS_MORE_TIME` waits on a scheduled event
 (e.g. "the next due poll"), the re-run MUST verify the awaited condition actually *arrives*, not
