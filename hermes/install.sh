@@ -29,11 +29,14 @@ check_credential() {
 
 check_credential /etc/hermes-mcp/autodev-memory.token
 check_credential /etc/hermes-conductor/conductor-api.token
+check_credential /etc/hermes-schedules/slack.token
 
 id hermes-mcp >/dev/null 2>&1 ||
   useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin hermes-mcp
 id hermes-conductor >/dev/null 2>&1 ||
   useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin hermes-conductor
+id hermes-schedules >/dev/null 2>&1 ||
+  useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin hermes-schedules
 
 install -d -o root -g root -m 0755 /opt/hermes-mcp /opt/hermes-conductor
 install -o root -g root -m 0644 \
@@ -55,12 +58,41 @@ fi
 chown -R root:root /opt/hermes-conductor
 chmod -R go-w /opt/hermes-conductor
 
+install -d -o root -g root -m 0755 /opt/hermes-schedules
+install -o root -g root -m 0755 \
+  "$ROOT/hermes/schedules/runner.py" /opt/hermes-schedules/runner.py
+install -o root -g root -m 0644 \
+  "$ROOT/hermes/schedules/schedules.yaml" /opt/hermes-schedules/schedules.yaml
+for prompt in "$ROOT"/hermes/schedules/*.md; do
+  [ "$(basename "$prompt")" = "README.md" ] && continue
+  install -o root -g root -m 0644 "$prompt" \
+    "/opt/hermes-schedules/$(basename "$prompt")"
+done
+
+if [ ! -x /opt/hermes-schedules/venv/bin/python ]; then
+  python3 -m venv /opt/hermes-schedules/venv
+fi
+/opt/hermes-schedules/venv/bin/pip install \
+  --disable-pip-version-check \
+  --no-cache-dir \
+  --requirement "$ROOT/hermes/schedules/requirements.txt"
+chown -R root:root /opt/hermes-schedules
+chmod -R go-w /opt/hermes-schedules
+
 install -o root -g root -m 0644 \
   "$ROOT/hermes/systemd/hermes-autodev-mcp.service" \
   /etc/systemd/system/hermes-autodev-mcp.service
 install -o root -g root -m 0644 \
   "$ROOT/hermes/systemd/hermes-conductor.service" \
   /etc/systemd/system/hermes-conductor.service
+SCHEDULE_TIMERS=()
+for unit in "$ROOT"/hermes/systemd/hermes-schedule*; do
+  name="$(basename "$unit")"
+  install -o root -g root -m 0644 "$unit" "/etc/systemd/system/$name"
+  case "$name" in
+    *.timer) SCHEDULE_TIMERS+=("$name") ;;
+  esac
+done
 
 "$HERMES_PYTHON" "$ROOT/hermes/configure.py" "$HERMES_CONFIG"
 chown hermes:hermes "$HERMES_CONFIG"
@@ -70,8 +102,14 @@ systemctl daemon-reload
 systemctl enable --now hermes-autodev-mcp.service hermes-conductor.service
 systemctl restart hermes-autodev-mcp.service hermes-conductor.service
 systemctl restart hermes-gateway.service
+# Timers are always enabled; runner.py skips entries with enabled:false, so
+# activation is purely a reviewed schedules.yaml flip plus re-install.
+systemctl enable --now "${SCHEDULE_TIMERS[@]}"
 
 systemctl is-active --quiet hermes-autodev-mcp.service
 systemctl is-active --quiet hermes-conductor.service
 systemctl is-active --quiet hermes-gateway.service
+for timer in "${SCHEDULE_TIMERS[@]}"; do
+  systemctl is-active --quiet "$timer"
+done
 echo "hermes install: services active"

@@ -233,7 +233,12 @@ class HermesAssetTests(unittest.TestCase):
             )
 
     def test_executables_have_execute_bits(self) -> None:
-        for relative in ("install.sh", "bin/run-autodev-memory", "conductor/server.py"):
+        for relative in (
+            "install.sh",
+            "bin/run-autodev-memory",
+            "conductor/server.py",
+            "schedules/runner.py",
+        ):
             mode = (HERMES / relative).stat().st_mode
             self.assertTrue(mode & stat.S_IXUSR, relative)
 
@@ -241,6 +246,160 @@ class HermesAssetTests(unittest.TestCase):
         runbook = (HERMES / "README.md").read_text()
         self.assertIn("TS/TS_AUTODEV_MEMORY_API_TOKEN", runbook)
         self.assertNotIn("AUTODEV-sensitive/HERMES_AUTODEV_MEMORY_TOKEN", runbook)
+        self.assertIn("TS/TS_SLACK_MCP_USER_TOKEN", runbook)
+        self.assertIn("/etc/hermes-schedules/slack.token", runbook)
+
+
+def load_schedule_runner() -> types.ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "hermes_schedules_runner",
+        HERMES / "schedules" / "runner.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def cron_to_oncalendar(cron: str) -> str:
+    minute, hour = cron.split()[:2]
+    if hour.startswith("*/"):
+        return f"*-*-* 00/{int(hour[2:])}:{int(minute):02d}:00"
+    return f"*-*-* {int(hour):02d}:{int(minute):02d}:00"
+
+
+class HermesScheduleTests(unittest.TestCase):
+    def manifest(self) -> dict:
+        return yaml.safe_load((HERMES / "schedules" / "schedules.yaml").read_text())
+
+    def test_manifest_entries_are_complete_and_launchable(self) -> None:
+        manifest = self.manifest()
+        channels = manifest["slack_channels"]
+        self.assertIn("#autodev-incidents", channels)
+        runner = manifest["runner"]
+        for key in ("poll_seconds", "retention_days_pass", "retention_days_fail"):
+            self.assertIsInstance(runner[key], int)
+        for entry in manifest["schedules"]:
+            with self.subTest(entry=entry.get("name")):
+                self.assertIn(entry["slack_channel"], channels)
+                self.assertIsInstance(entry["enabled"], bool)
+                self.assertGreater(entry["max_runtime_minutes"], 0)
+                self.assertTrue(entry["workspace"]["repo"])
+                self.assertTrue(entry["workspace"]["branch"])
+                prompt = HERMES / "schedules" / entry["prompt"]
+                self.assertTrue(prompt.is_file(), entry["prompt"])
+                self.assertNotEqual(entry["prompt"], "README.md")
+
+    def test_every_schedule_has_a_matching_vancouver_timer(self) -> None:
+        for entry in self.manifest()["schedules"]:
+            with self.subTest(entry=entry["name"]):
+                timer = HERMES / "systemd" / f"hermes-schedule@{entry['name']}.timer"
+                content = timer.read_text()
+                expected = cron_to_oncalendar(entry["cron"])
+                self.assertIn(
+                    f"OnCalendar={expected} America/Vancouver",
+                    content,
+                )
+                self.assertIn(f'cron "{entry["cron"]}"', content)
+                self.assertIn("Persistent=true", content)
+
+    def test_schedule_units_keep_the_secret_boundary(self) -> None:
+        units = (
+            "hermes-schedule@.service",
+            "hermes-schedule-alert@.service",
+            "hermes-schedule-watchdog.service",
+        )
+        for unit in units:
+            with self.subTest(unit=unit):
+                content = (HERMES / "systemd" / unit).read_text()
+                self.assertIn(
+                    "LoadCredential=slack.token:/etc/hermes-schedules/slack.token",
+                    content,
+                )
+                self.assertIn("User=hermes-schedules", content)
+                self.assertIn("NoNewPrivileges=true", content)
+                self.assertIn("ProtectSystem=strict", content)
+                self.assertIn("ProtectHome=true", content)
+                self.assertNotIn("Environment=SLACK", content)
+        template = (HERMES / "systemd" / "hermes-schedule@.service").read_text()
+        self.assertIn("OnFailure=hermes-schedule-alert@%i.service", template)
+        watchdog = (HERMES / "systemd" / "hermes-schedule-watchdog.service").read_text()
+        self.assertIn("OnFailure=hermes-schedule-alert@watchdog.service", watchdog)
+        watchdog_timer = (
+            HERMES / "systemd" / "hermes-schedule-watchdog.timer"
+        ).read_text()
+        self.assertIn("America/Vancouver", watchdog_timer)
+
+    def test_installer_deploys_the_schedule_stack(self) -> None:
+        installer = (HERMES / "install.sh").read_text()
+        self.assertIn("check_credential /etc/hermes-schedules/slack.token", installer)
+        self.assertIn("/opt/hermes-schedules", installer)
+        self.assertIn("hermes/schedules/requirements.txt", installer)
+        self.assertIn('systemctl enable --now "${SCHEDULE_TIMERS[@]}"', installer)
+        self.assertIn("useradd --system", installer)
+        self.assertIn("hermes-schedules", installer)
+
+    def test_result_block_parsing_round_trips(self) -> None:
+        runner = load_schedule_runner()
+        message = (
+            "All checks ran.\n\n"
+            "```\nSCHEDULED_RUN_RESULT\n"
+            "status: PASS\n"
+            "schedule: health-6h\n"
+            "summary: all green\n"
+            "checks_total: 12\n"
+            "checks_failed: 0\n"
+            "tickets_touched: [F0100, F0101]\n"
+            "rc_fingerprints: []\n"
+            "```\n"
+        )
+        parsed = runner.parse_result_block(message)
+        self.assertEqual(parsed["status"], "PASS")
+        self.assertEqual(parsed["summary"], "all green")
+        self.assertEqual(parsed["tickets_touched"], ["F0100", "F0101"])
+        self.assertEqual(parsed["rc_fingerprints"], [])
+        self.assertIsNone(runner.parse_result_block("no marker here"))
+        self.assertIsNone(
+            runner.parse_result_block("SCHEDULED_RUN_RESULT\nstatus: MAYBE\n")
+        )
+
+    def test_watchdog_interval_inference_matches_manifest_crons(self) -> None:
+        runner = load_schedule_runner()
+        self.assertEqual(runner.cron_interval_hours("0 2 * * *"), 24)
+        self.assertEqual(runner.cron_interval_hours("30 3 * * *"), 24)
+        self.assertEqual(runner.cron_interval_hours("0 */6 * * *"), 6)
+        with self.assertRaises(runner.RunnerError):
+            runner.cron_interval_hours("not a cron")
+
+    def test_disabled_schedule_is_skipped_without_credentials(self) -> None:
+        runner = load_schedule_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "schedules.yaml"
+            manifest.write_text(
+                yaml.safe_dump(
+                    {
+                        "slack_channels": {"#autodev-incidents": "C000"},
+                        "schedules": [
+                            {
+                                "name": "staged-run",
+                                "cron": "0 2 * * *",
+                                "prompt": "staged-run.md",
+                                "workspace": {"repo": "ts-prefect", "branch": "staging"},
+                                "slack_channel": "#autodev-incidents",
+                                "max_runtime_minutes": 30,
+                                "enabled": False,
+                            }
+                        ],
+                    }
+                )
+            )
+            with mock.patch.object(runner, "MANIFEST_PATH", manifest):
+                with mock.patch.object(runner, "conductor_call") as conductor:
+                    with mock.patch.object(runner, "read_slack_token") as slack:
+                        exit_code = runner.run_schedule("staged-run")
+        self.assertEqual(exit_code, 0)
+        conductor.assert_not_called()
+        slack.assert_not_called()
 
 
 if __name__ == "__main__":

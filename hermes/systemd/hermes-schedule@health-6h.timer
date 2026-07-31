@@ -1,0 +1,10 @@
+# cron "0 */6 * * *" from hermes/schedules/schedules.yaml (America/Vancouver).
+[Unit]
+Description=Hermes schedule timer: health-6h
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00 America/Vancouver
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,12 @@
 # Times are America/Vancouver.
 # Every schedule inherits the unattended contract in skills/references/scheduled-run.md.
 
+# Runner behavior (hermes/schedules/runner.py, deployed to /opt/hermes-schedules).
+runner:
+  poll_seconds: 60
+  retention_days_pass: 3    # archive PASS workspaces after N days
+  retention_days_fail: 14   # FAIL/BLOCKED workspaces retained longer for triage
+
 # Slack channel IDs (resolved at authoring time; runtime uses IDs, not names).
 slack_channels:
   "#autodev-nightly": C0BMZQWBDPA
@@ -16,6 +22,7 @@ schedules:
       repo: ts-prefect
       branch: staging
     slack_channel: "#autodev-nightly"
+    max_runtime_minutes: 180
     enabled: false
     # VERIFY-ONLY (E0029 locked decision): merging to main is a de-facto prod
     # deploy for ts-prefect (git_clone at runtime), so scheduled runs never merge.
@@ -29,6 +36,7 @@ schedules:
       repo: ts-prefect
       branch: staging
     slack_channel: "#autodev-nightly"
+    max_runtime_minutes: 150
     enabled: false
     blocked_on:
       - "night-dream skill (cloud evidence only; epic ticket)"
@@ -41,6 +49,7 @@ schedules:
       repo: ts-prefect
       branch: staging
     slack_channel: "#autodev-health"
+    max_runtime_minutes: 90
     enabled: false
     blocked_on:
       - "health-scrapers folded into health-system (epic ticket)"
