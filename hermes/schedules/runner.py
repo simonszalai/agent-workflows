@@ -254,9 +254,32 @@ def session_transcript_tail(session_id: str, limit: int = 50) -> list[str]:
             continue
         for message in cast(list[JsonObject], value):
             text = message.get("message") or message.get("text") or message.get("content")
+            if isinstance(text, dict):
+                # The official API nests the body under content.{message,text}.
+                text = text.get("message") or text.get("text")
             if isinstance(text, str) and text:
                 texts.append(text)
         break
+    # Assistant output is not reliably present in the messages endpoint; the
+    # rendered transcript view is the authoritative source for the result block.
+    try:
+        payload = conductor_call(
+            "query_conductor_sql",
+            {
+                "query": (
+                    "SELECT transcript FROM session_transcripts_view "
+                    f"WHERE session_id = '{session_id}'"
+                )
+            },
+        )
+        rows = payload.get("rows")
+        if isinstance(rows, list):
+            for row in cast(list[JsonObject], rows):
+                transcript = row.get("transcript")
+                if isinstance(transcript, str) and transcript:
+                    texts.append(transcript)
+    except (RunnerError, urllib.error.URLError):
+        pass  # messages-endpoint texts remain the fallback
     return texts
 
 
