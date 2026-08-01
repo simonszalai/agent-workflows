@@ -376,15 +376,22 @@ def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None
         if not isinstance(repo_url, str) or not repo_url:
             raise
         source = {"repository_url": repo_url}
-    workspace = conductor_call(
-        "create_workspace",
-        {
-            **source,
-            "branch": workspace_spec.get("branch"),
-            "name": f"sched-{name}-{stamp}",
-            "session_name": f"{name} {stamp}",
-        },
-    )
+    request: JsonObject = {
+        **source,
+        "branch": workspace_spec.get("branch"),
+        "name": f"sched-{name}-{stamp}",
+        "session_name": f"{name} {stamp}",
+    }
+    # Cloud sandboxes have no Keychain; the per-project 1Password service-account
+    # token must arrive via the workspace environment (consumed by cloud-mcp.sh).
+    credentials = os.environ.get("CREDENTIALS_DIRECTORY")
+    if credentials:
+        op_token_path = Path(credentials) / "op.token"
+        if op_token_path.exists():
+            token = op_token_path.read_text().strip()
+            if token:
+                request["env"] = {"TS_OP_SERVICE_ACCOUNT_TOKEN": token}
+    workspace = conductor_call("create_workspace", request)
     workspace_id = first_string(workspace, "workspaceId", "id")
     if not workspace_id:
         raise RunnerError("create_workspace returned no workspace id")

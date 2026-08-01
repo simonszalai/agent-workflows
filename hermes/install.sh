@@ -30,6 +30,7 @@ check_credential() {
 check_credential /etc/hermes-mcp/autodev-memory.token
 check_credential /etc/hermes-conductor/conductor-api.token
 check_credential /etc/hermes-schedules/slack.token
+check_credential /etc/hermes-schedules/op.token
 
 id hermes-mcp >/dev/null 2>&1 ||
   useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin hermes-mcp
