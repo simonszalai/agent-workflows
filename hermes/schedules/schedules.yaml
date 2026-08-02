@@ -20,37 +20,32 @@ schedules:
     prompt: nightly-verify-promote.md
     workspace:
       repo: ts-prefect
+      repo_url: https://github.com/TS-Value-Software/ts-prefect
       branch: staging
     slack_channel: "#autodev-nightly"
     max_runtime_minutes: 180
-    enabled: false
+    enabled: true
     # VERIFY-ONLY (E0029 locked decision): merging to main is a de-facto prod
     # deploy for ts-prefect (git_clone at runtime), so scheduled runs never merge.
-    blocked_on:
-      - "E0029 F0002: ticket-verify --scheduled (verify-only, §9b suppressed)"
 
   - name: nightly-dream
     cron: "30 3 * * *"
     prompt: nightly-dream.md
     workspace:
       repo: ts-prefect
+      repo_url: https://github.com/TS-Value-Software/ts-prefect
       branch: staging
     slack_channel: "#autodev-nightly"
     max_runtime_minutes: 150
-    enabled: false
-    blocked_on:
-      - "night-dream skill (cloud evidence only; epic ticket)"
-      - "ts-graph-dream propose-to-Slack path (epic ticket)"
+    enabled: true
 
   - name: health-6h
     cron: "0 */6 * * *"
     prompt: health-6h.md
     workspace:
       repo: ts-prefect
+      repo_url: https://github.com/TS-Value-Software/ts-prefect
       branch: staging
     slack_channel: "#autodev-health"
     max_runtime_minutes: 90
-    enabled: false
-    blocked_on:
-      - "health-scrapers folded into health-system (epic ticket)"
-      - "investigate-flow-fails ticket-dedup/extend + workspace spawn (epic ticket)"
+    enabled: true

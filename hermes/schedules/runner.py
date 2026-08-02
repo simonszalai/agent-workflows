@@ -254,9 +254,32 @@ def session_transcript_tail(session_id: str, limit: int = 50) -> list[str]:
             continue
         for message in cast(list[JsonObject], value):
             text = message.get("message") or message.get("text") or message.get("content")
+            if isinstance(text, dict):
+                # The official API nests the body under content.{message,text}.
+                text = text.get("message") or text.get("text")
             if isinstance(text, str) and text:
                 texts.append(text)
         break
+    # Assistant output is not reliably present in the messages endpoint; the
+    # rendered transcript view is the authoritative source for the result block.
+    try:
+        payload = conductor_call(
+            "query_conductor_sql",
+            {
+                "query": (
+                    "SELECT transcript FROM session_transcripts_view "
+                    f"WHERE session_id = '{session_id}'"
+                )
+            },
+        )
+        rows = payload.get("rows")
+        if isinstance(rows, list):
+            for row in cast(list[JsonObject], rows):
+                transcript = row.get("transcript")
+                if isinstance(transcript, str) and transcript:
+                    texts.append(transcript)
+    except (RunnerError, urllib.error.URLError):
+        pass  # messages-endpoint texts remain the fallback
     return texts
 
 
@@ -342,17 +365,33 @@ def record_run(name: str, status: str, workspace_id: str | None) -> None:
 def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None]:
     workspace_spec = cast(JsonObject, entry.get("workspace") or {})
     repo = cast(str, workspace_spec.get("repo"))
-    project_id = resolve_project_id(repo)
     stamp = utc_now().strftime("%Y%m%d-%H%M")
-    workspace = conductor_call(
-        "create_workspace",
-        {
-            "project_id": project_id,
-            "branch": workspace_spec.get("branch"),
-            "name": f"sched-{name}-{stamp}",
-            "session_name": f"{name} {stamp}",
-        },
-    )
+    # Orgs without Conductor projects create workspaces from a repository URL;
+    # supply exactly one of project_id / repository_url (server enforces this).
+    source: JsonObject
+    try:
+        source = {"project_id": resolve_project_id(repo)}
+    except RunnerError:
+        repo_url = workspace_spec.get("repo_url")
+        if not isinstance(repo_url, str) or not repo_url:
+            raise
+        source = {"repository_url": repo_url}
+    request: JsonObject = {
+        **source,
+        "branch": workspace_spec.get("branch"),
+        "name": f"sched-{name}-{stamp}",
+        "session_name": f"{name} {stamp}",
+    }
+    # Cloud sandboxes have no Keychain; the per-project 1Password service-account
+    # token must arrive via the workspace environment (consumed by cloud-mcp.sh).
+    credentials = os.environ.get("CREDENTIALS_DIRECTORY")
+    if credentials:
+        op_token_path = Path(credentials) / "op.token"
+        if op_token_path.exists():
+            token = op_token_path.read_text().strip()
+            if token:
+                request["env"] = {"TS_OP_SERVICE_ACCOUNT_TOKEN": token}
+    workspace = conductor_call("create_workspace", request)
     workspace_id = first_string(workspace, "workspaceId", "id")
     if not workspace_id:
         raise RunnerError("create_workspace returned no workspace id")
