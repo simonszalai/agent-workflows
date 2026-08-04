@@ -48,9 +48,10 @@ resolves the configured name to its ID.
 - **Green runs still post.** A healthy run posts its one ✅ line ("ran, nothing to report").
   Silence is indistinguishable from a broken scheduler.
 - **FAIL routing.** When a run ends FAIL (or BLOCKED on something needing a human decision),
-  additionally post a one-line summary to `#autodev-incidents` @-mentioning Simon
-  (`<@U09T4LELYES>`), linking the original thread. Detail lives in the origin thread; the
-  incidents channel carries only the routing line.
+  additionally post a compact, human-readable alert to `#autodev-incidents` @-mentioning Simon
+  (`<@U09T4LELYES>`). Use bullets for what happened, proof, a representative example, and the
+  next step, then link the original thread. Keep every field to one plain sentence; full logs and
+  exhaustive evidence stay in the origin thread.
 - Channel map: `#autodev-nightly` (verify/promote + dream results), `#autodev-health`
   (6-hourly checks), `#autodev-incidents` (FAIL routing / root-cause clusters needing a human
   decision).
@@ -68,9 +69,23 @@ checks_total: <int>
 checks_failed: <int>
 tickets_touched: [<ticket ids, may be empty>]
 rc_fingerprints: [<fingerprints emitted this run, may be empty>]
-issues: [{"title":"<short issue name>","problem":"<what is wrong>","ticket_id":"<ID or null>"}]
+issues: <single-line JSON array using the issue object below>
 blocked_on: <exact command or manual action a human must take; omit unless BLOCKED>
 ```
+
+Issue object:
+
+```json
+{
+  "title": "<short name>",
+  "proof": "<aggregate evidence>",
+  "example": "<one occurrence>",
+  "next_step": "<specific action>",
+  "ticket_id": "<ID or null>"
+}
+```
+
+Serialize the array on one line in the result block.
 
 - `PASS`: everything in scope ran and is healthy.
 - `FAIL`: at least one check found a real problem (routes to `#autodev-incidents` per §2).
@@ -79,7 +94,9 @@ blocked_on: <exact command or manual action a human must take; omit unless BLOCK
 - `issues` is required for `health-6h`: one single-line JSON array entry per actionable issue,
   or `[]` on PASS. `ticket_id` is the open ticket that owns the root cause, not a fallback ticket
   used only to store occurrence evidence. Use `null` only when no owning ticket could be assigned.
-  Keep `title` short enough for the parent bullet; put the explanation and evidence in `problem`.
+  Keep `title` short enough for the parent bullet. Keep `proof`, `example`, and `next_step` to one
+  concrete sentence each. `proof` states the aggregate evidence; `example` names one representative
+  occurrence rather than repeating the proof.
 - The block is the last thing in the message. Free-form detail goes above it, never below.
 
 ## 4. Dedup convention (`rc_fingerprint`)

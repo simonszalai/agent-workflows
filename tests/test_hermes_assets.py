@@ -351,8 +351,9 @@ class HermesScheduleTests(unittest.TestCase):
             "checks_failed: 0\n"
             "tickets_touched: [F0100, F0101]\n"
             "rc_fingerprints: []\n"
-            'issues: [{"title":"Worker offline","problem":"No heartbeat",'
-            '"ticket_id":"B0100"}]\n'
+            'issues: [{"title":"Worker offline","proof":"No heartbeat in 15m",'
+            '"example":"Worker alpha missed three polls",'
+            '"next_step":"Restart worker alpha","ticket_id":"B0100"}]\n'
             "```\n"
         )
         parsed = runner.parse_result_block(message)
@@ -365,7 +366,9 @@ class HermesScheduleTests(unittest.TestCase):
             [
                 {
                     "title": "Worker offline",
-                    "problem": "No heartbeat",
+                    "proof": "No heartbeat in 15m",
+                    "example": "Worker alpha missed three polls",
+                    "next_step": "Restart worker alpha",
                     "ticket_id": "B0100",
                 }
             ],
@@ -386,12 +389,16 @@ class HermesScheduleTests(unittest.TestCase):
             "issues": [
                 {
                     "title": "Discord monitor cannot fetch channels",
-                    "problem": "Verified Discord API 403 responses on two monitored channels.",
+                    "proof": "Twelve verified Discord API 403 responses in six hours.",
+                    "example": "The SNDK channel failed at 07:15 UTC.",
+                    "next_step": "Restore the monitor's channel access.",
                     "ticket_id": "B0349",
                 },
                 {
                     "title": "Tradable scheduler is stale",
-                    "problem": "No successful run completed inside the freshness window.",
+                    "proof": "No successful run completed inside the freshness window.",
+                    "example": "The latest tradable run is eight hours old.",
+                    "next_step": "Restart the stalled tradable schedule.",
                     "ticket_id": "B0365",
                 },
             ]
@@ -408,11 +415,15 @@ class HermesScheduleTests(unittest.TestCase):
             [runner.health_issue_reply(issue) for issue in issues],
             [
                 "*Discord monitor cannot fetch channels*\n"
-                "Problem: Verified Discord API 403 responses on two monitored channels.\n"
-                "Ticket: `B0349`",
+                "• *Proof:* Twelve verified Discord API 403 responses in six hours.\n"
+                "• *Example:* The SNDK channel failed at 07:15 UTC.\n"
+                "• *Next:* Restore the monitor's channel access.\n"
+                "• *Ticket:* `B0349`",
                 "*Tradable scheduler is stale*\n"
-                "Problem: No successful run completed inside the freshness window.\n"
-                "Ticket: `B0365`",
+                "• *Proof:* No successful run completed inside the freshness window.\n"
+                "• *Example:* The latest tradable run is eight hours old.\n"
+                "• *Next:* Restart the stalled tradable schedule.\n"
+                "• *Ticket:* `B0365`",
             ],
         )
 
@@ -425,7 +436,9 @@ class HermesScheduleTests(unittest.TestCase):
             [
                 {
                     "title": "Scheduled health run failed",
-                    "problem": "agent session errored",
+                    "proof": "agent session errored",
+                    "example": "The run did not return structured issue evidence.",
+                    "next_step": "Open the run thread and inspect the scheduler failure.",
                     "ticket_id": None,
                 }
             ],
@@ -433,8 +446,10 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertEqual(
             runner.health_issue_reply(issues[0]),
             "*Scheduled health run failed*\n"
-            "Problem: agent session errored\n"
-            "Ticket: `No ticket assigned`",
+            "• *Proof:* agent session errored\n"
+            "• *Example:* The run did not return structured issue evidence.\n"
+            "• *Next:* Open the run thread and inspect the scheduler failure.\n"
+            "• *Ticket:* `No ticket assigned`",
         )
 
     def test_health_schedule_posts_exactly_one_reply_per_issue(self) -> None:
@@ -461,12 +476,16 @@ class HermesScheduleTests(unittest.TestCase):
             "issues": [
                 {
                     "title": "Discord monitor cannot fetch channels",
-                    "problem": "Discord returned 403.",
+                    "proof": "Discord returned twelve HTTP 403 responses.",
+                    "example": "The SNDK channel failed at 07:15 UTC.",
+                    "next_step": "Restore the monitor's channel access.",
                     "ticket_id": "B0349",
                 },
                 {
                     "title": "Tradable scheduler is stale",
-                    "problem": "No recent successful run.",
+                    "proof": "No successful run completed in eight hours.",
+                    "example": "The 06:00 UTC run never started.",
+                    "next_step": "Restart the stalled tradable schedule.",
                     "ticket_id": "B0365",
                 },
             ],
@@ -516,25 +535,105 @@ class HermesScheduleTests(unittest.TestCase):
                     "token",
                     "C-health",
                     "*Discord monitor cannot fetch channels*\n"
-                    "Problem: Discord returned 403.\n"
-                    "Ticket: `B0349`",
+                    "• *Proof:* Discord returned twelve HTTP 403 responses.\n"
+                    "• *Example:* The SNDK channel failed at 07:15 UTC.\n"
+                    "• *Next:* Restore the monitor's channel access.\n"
+                    "• *Ticket:* `B0349`",
                     thread_ts="parent",
                 ),
                 mock.call(
                     "token",
                     "C-health",
                     "*Tradable scheduler is stale*\n"
-                    "Problem: No recent successful run.\n"
-                    "Ticket: `B0365`",
+                    "• *Proof:* No successful run completed in eight hours.\n"
+                    "• *Example:* The 06:00 UTC run never started.\n"
+                    "• *Next:* Restart the stalled tradable schedule.\n"
+                    "• *Ticket:* `B0365`",
                     thread_ts="parent",
                 ),
                 mock.call(
                     "token",
                     "C-incidents",
-                    "❌ [health-6h] two checks failed <@U09T4LELYES> — "
-                    "<https://slack.example/thread|thread>",
+                    "❌ *health-6h needs attention* <@U09T4LELYES>\n"
+                    "• *Discord monitor cannot fetch channels* · `B0349`\n"
+                    "  *Proof:* Discord returned twelve HTTP 403 responses.\n"
+                    "  *Example:* The SNDK channel failed at 07:15 UTC.\n"
+                    "  *Next:* Restore the monitor's channel access.\n"
+                    "• *Tradable scheduler is stale* · `B0365`\n"
+                    "  *Proof:* No successful run completed in eight hours.\n"
+                    "  *Example:* The 06:00 UTC run never started.\n"
+                    "  *Next:* Restart the stalled tradable schedule.\n"
+                    "• *Details:* <https://slack.example/thread|Open the run thread>",
                 ),
             ],
+        )
+
+    def test_generic_incident_message_is_concise_and_evidence_first(self) -> None:
+        runner = load_schedule_runner()
+        result = {
+            "checks_total": "12",
+            "checks_failed": "3",
+            "tickets_touched": ["B0347", "F0298"],
+            "blocked_on": "Grant the scheduler permission to update admin-origin tickets.",
+        }
+
+        self.assertEqual(
+            runner.incident_message(
+                "nightly-verify-promote",
+                "BLOCKED",
+                "verification evidence could not be saved",
+                result,
+                [],
+                "https://slack.example/thread",
+            ),
+            "⛔ *nightly-verify-promote needs attention* <@U09T4LELYES>\n"
+            "• *What happened:* verification evidence could not be saved\n"
+            "• *Proof:* The run reported 3 failed checks out of 12.\n"
+            "• *Tickets:* `B0347`, `F0298`\n"
+            "• *Next:* Grant the scheduler permission to update admin-origin tickets.\n"
+            "• *Details:* <https://slack.example/thread|Open the run thread>",
+        )
+
+    def test_incident_message_limits_issue_detail_to_three_items(self) -> None:
+        runner = load_schedule_runner()
+        issues = [
+            {
+                "title": f"Issue {number}",
+                "proof": f"Proof {number}.",
+                "example": f"Example {number}.",
+                "next_step": f"Fix {number}.",
+                "ticket_id": f"B{number:04d}",
+            }
+            for number in range(1, 5)
+        ]
+
+        message = runner.incident_message(
+            "health-6h", "FAIL", "four issues", {"issues": issues}, issues, None
+        )
+
+        self.assertIn("• *Issue 3* · `B0003`", message)
+        self.assertNotIn("• *Issue 4*", message)
+        self.assertIn("• *1 more issues:* See the linked run thread.", message)
+
+    def test_system_alerts_use_human_readable_evidence_bullets(self) -> None:
+        runner = load_schedule_runner()
+
+        self.assertEqual(
+            runner.unit_failure_message("health-6h", "hermes-schedule@health-6h.service"),
+            "❌ *health-6h scheduler service failed* <@U09T4LELYES>\n"
+            "• *Proof:* systemd marked `hermes-schedule@health-6h.service` as failed.\n"
+            "• *Example:* `journalctl -u hermes-schedule@health-6h.service` shows the "
+            "traceback.\n"
+            "• *Next:* Inspect the traceback, fix the service, then restart the unit.",
+        )
+        self.assertEqual(
+            runner.watchdog_message("health-6h", "last report 22.3h ago", 6),
+            "⚠️ *health-6h has stopped reporting* <@U09T4LELYES>\n"
+            "• *Proof:* last report 22.3h ago; expected a report every 6h.\n"
+            "• *Example:* Check `systemctl status hermes-schedule@health-6h.service` on "
+            "Hermes.\n"
+            "• *Next:* Restore the timer or runner, then confirm the next Slack report "
+            "arrives.",
         )
 
     def test_watchdog_interval_inference_matches_manifest_crons(self) -> None:
