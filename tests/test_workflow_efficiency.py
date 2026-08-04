@@ -1069,7 +1069,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(ci.returncode, 124, ci.stderr)
             ci_summary = json.loads(ci.stdout)
             self.assertEqual(ci_summary["status"], "timeout")
-            self.assertEqual(ci_summary["resume_command"], "wait-ci 12 --timeout 1")
+            self.assertEqual(ci_summary["resume_command"], "wait-ci 12 --timeout 120")
             self.assertNotIn("bin/wait-", ci_summary["resume_command"])
 
             prefect = subprocess.run(

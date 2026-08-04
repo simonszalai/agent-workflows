@@ -16,6 +16,7 @@ import time
 TERMINAL_FAILURE = {"fail", "cancel"}
 TERMINAL_CHECK_BUCKETS = {"pass", "fail", "cancel", "skipping"}
 RUN_SUCCESS = {"success", "neutral", "skipped"}
+MINIMUM_RESUME_TIMEOUT_SECONDS = 120
 
 
 def main() -> None:
@@ -68,7 +69,11 @@ def main() -> None:
 
     def resume_command() -> str:
         elapsed = time.monotonic() - started
-        remaining = max(1, round(args.timeout - elapsed))
+        # A fresh invocation must have enough time for two GitHub observations. PR mode
+        # deliberately requires two identical terminal check sets so a partial early set does not
+        # look complete. Reusing the exhausted original deadline produced `--timeout 1`, which
+        # could never make those observations and therefore could not actually resume.
+        remaining = max(MINIMUM_RESUME_TIMEOUT_SECONDS, round(args.timeout - elapsed))
         command = "wait-ci"
         if args.run_id:
             command += f" --run {shlex.quote(args.run_id)}"
