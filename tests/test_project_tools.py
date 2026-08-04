@@ -38,6 +38,7 @@ EXPECTED_PROJECT_REMOTES = {
         "github.com/tssoftwareprojects/ts-mobile",
     },
     "workflow-pro": {
+        "github.com/workflow-tech/workflow-pro",
         "github.com/szaboszerszam/workflow-mcp",
         "github.com/szaboszerszam/workflow-pdf",
         "github.com/szaboszerszam/workflow_pro",

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -19,8 +20,24 @@ NOISY = re.compile(
 )
 SAFE_BOUND = re.compile(
     r"(\|\s*(?:head|tail)\s+-n?\s*\d+|--max-count(?:=|\s+)\d+|"
-    r"\s-[nN]\s*\d+|>\s*[^\s]+|--stat(?:\s|$))"
+    r"\|\s*wc\s+-l|\s-[nN]\s*\d+|>\s*[^\s]+|--stat(?:\s|$))"
 )
+SEARCH_EXCLUSIONS = {
+    "context": re.compile(
+        r"(?:(?:!|exclude)[^\n|;&]{0,120}\.context|\.context[^\n|;&]{0,400}prune)",
+        re.IGNORECASE,
+    ),
+    "dependencies": re.compile(
+        r"(?:(?:!|exclude)[^\n|;&]{0,120}(?:node_modules|vendor|\.venv|venv)|"
+        r"(?:node_modules|vendor|\.venv|venv)[^\n|;&]{0,400}prune)",
+        re.IGNORECASE,
+    ),
+    "generated": re.compile(
+        r"(?:(?:!|exclude)[^\n|;&]{0,120}(?:dist|build|coverage|generated|\.next|target)|"
+        r"(?:dist|build|coverage|generated|\.next|target)[^\n|;&]{0,400}prune)",
+        re.IGNORECASE,
+    ),
+}
 PRODUCTION_MUTATION = re.compile(
     r"(?:(?:prefect\s+deploy|terraform\s+apply|kubectl\s+apply|render\s+deploy|"
     r"fly\s+deploy|aws\b.{0,30}\bdeploy|gcloud\b.{0,30}\bdeploy)"
@@ -31,6 +48,76 @@ PRODUCTION_MUTATION = re.compile(
     re.IGNORECASE,
 )
 MAX_INVESTIGATOR_INLINE_BYTES = 8192
+
+
+def _search_positionals(words: list[str], options_with_values: set[str]) -> list[str]:
+    positionals: list[str] = []
+    skip_value = False
+    for word in words:
+        if skip_value:
+            skip_value = False
+            continue
+        option = word.split("=", 1)[0]
+        if option in options_with_values and "=" not in word:
+            skip_value = True
+            continue
+        if word == "--":
+            continue
+        if word.startswith("-"):
+            continue
+        positionals.append(word)
+    return positionals
+
+
+def is_broad_search(command: str) -> bool:
+    """Return true only for repository/root-wide recursive search shapes."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    operators = {"&&", "||", ";", "|"}
+    for index, word in enumerate(words):
+        tool = Path(word).name
+        arguments: list[str] = []
+        for argument in words[index + 1 :]:
+            if argument in operators:
+                break
+            arguments.append(argument)
+        if tool == "rg":
+            positionals = _search_positionals(
+                arguments,
+                {"-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not",
+                 "-m", "--max-count", "-e", "--regexp", "-f", "--file"},
+            )
+            pattern_is_option = any(
+                argument in {"-e", "--regexp", "-f", "--file"}
+                or argument.startswith(("--regexp=", "--file="))
+                for argument in arguments
+            )
+            paths = positionals if pattern_is_option else positionals[1:]
+            if not paths or any(path in {".", "/"} or path.startswith("$") for path in paths):
+                return True
+        elif tool == "grep" and any(
+            argument == "--recursive"
+            or bool(re.fullmatch(r"-[A-Za-z]*[Rr][A-Za-z]*", argument))
+            for argument in arguments
+        ):
+            positionals = _search_positionals(
+                arguments, {"-e", "--regexp", "-f", "--file", "-m", "--max-count"}
+            )
+            pattern_is_option = any(
+                argument in {"-e", "--regexp", "-f", "--file"}
+                or argument.startswith(("--regexp=", "--file="))
+                for argument in arguments
+            )
+            paths = positionals if pattern_is_option else positionals[1:]
+            if not paths or any(path in {".", "/"} or path.startswith("$") for path in paths):
+                return True
+        elif tool == "find" and arguments:
+            path = arguments[0]
+            if path in {".", "/"} or path.startswith("$"):
+                return True
+    return False
 
 
 def violations(root: Path) -> list[dict[str, object]]:
@@ -73,6 +160,25 @@ def violations(root: Path) -> list[dict[str, object]]:
                         }
                     )
                     continue
+                if is_broad_search(command):
+                    if "bin/compact-exec" in command:
+                        continue
+                    exclusions_complete = all(
+                        pattern.search(command) for pattern in SEARCH_EXCLUSIONS.values()
+                    )
+                    if not exclusions_complete or not SAFE_BOUND.search(command):
+                        found.append(
+                            {
+                                "path": str(path.relative_to(root)),
+                                "line": command_line,
+                                "command": command[:240],
+                                "reason": (
+                                    "broad_search_requires_scope_exclusions_and_bound_"
+                                    "or_compact_exec"
+                                ),
+                            }
+                        )
+                        continue
                 if not NOISY.search(command):
                     continue
                 if "bin/redacted-exec" in command:

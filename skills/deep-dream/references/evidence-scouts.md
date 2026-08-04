@@ -221,8 +221,8 @@ doesn't do).
 **Read**
 ```bash
 find ~/dev/agent-workflows/skills -name SKILL.md
-find . -path "*/.agents/skills/*" -name SKILL.md   # project-level skills, if any
-find . -path "*/.claude/skills/*" -name SKILL.md
+find .agents/skills -name SKILL.md 2>/dev/null   # project-level skills, if any
+find .claude/skills -name SKILL.md 2>/dev/null
 ```
 
 **Structural checks (W candidates)**

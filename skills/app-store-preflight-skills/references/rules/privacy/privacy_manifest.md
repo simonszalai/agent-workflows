@@ -26,22 +26,22 @@ Starting Spring 2024, apps must include a **Privacy Manifest** (`PrivacyInfo.xcp
 ### Check for Privacy Manifest existence
 ```bash
 # Look for PrivacyInfo.xcprivacy in the project
-find . -name "PrivacyInfo.xcprivacy" -not -path "./.build/*"
+find . \( -path "./.context" -o -path "./node_modules" -o -path "./Pods" -o -path "./.build" -o -path "./build" -o -path "./DerivedData" \) -prune -o -name "PrivacyInfo.xcprivacy" -print | head -n 200
 ```
 
 ### Check for Required Reason API usage
 ```bash
 # UserDefaults (most common)
-grep -rn "UserDefaults\|NSUserDefaults\|standardUserDefaults" --include="*.swift" --include="*.m" .
+grep -rn "UserDefaults\|NSUserDefaults\|standardUserDefaults" --include="*.swift" --include="*.m" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # File Timestamps
-grep -rn "NSFileCreationDate\|NSFileModificationDate\|creationDate\|modificationDate" --include="*.swift" --include="*.m" .
+grep -rn "NSFileCreationDate\|NSFileModificationDate\|creationDate\|modificationDate" --include="*.swift" --include="*.m" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # System Boot Time
-grep -rn "systemUptime\|mach_absolute_time\|ProcessInfo.*systemUptime" --include="*.swift" --include="*.m" .
+grep -rn "systemUptime\|mach_absolute_time\|ProcessInfo.*systemUptime" --include="*.swift" --include="*.m" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # Disk Space
-grep -rn "volumeAvailableCapacity\|statfs\|statvfs" --include="*.swift" --include="*.m" .
+grep -rn "volumeAvailableCapacity\|statfs\|statvfs" --include="*.swift" --include="*.m" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 ```
 
 ### Check third-party SDK manifests
