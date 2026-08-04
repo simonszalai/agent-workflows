@@ -34,6 +34,9 @@ Rules:
 - **Prompts stay thin.** One skill invocation plus the scheduled marker. All logic, the
   unattended contract, and Slack report formatting live in the invoked skill, which is
   versioned in `skills/`. Never put procedural instructions in a prompt file.
+- **Health findings prove current ownership.** A stale row is not an issue until the verifier
+  proves that a current producer still writes that exact state on the expected cadence. The
+  canonical gate is `skills/references/scheduled-run.md` §2a.
 - **Changes are PR-reviewed.** These files gate what runs autonomously against production
   data; edit them only through a reviewed agent-workflows PR, like every Hermes asset.
 - **Unattended contract (every schedule inherits this):** no `op://*-sensitive` access, no

@@ -56,6 +56,36 @@ resolves the configured name to its ID.
   (6-hourly checks), `#autodev-incidents` (FAIL routing / root-cause clusters needing a human
   decision).
 
+## 2a. Health finding ownership gate
+
+Before a health finding affects status, enters `issues`, or creates/extends a ticket, prove that
+the failing identifier is owned by a **current producer**:
+
+1. Resolve the identifier against the checked-out code, deployment/config registry, and actual
+   writer call sites. Classify it as a current writer, current but intentionally untracked
+   provenance identifier, or retired/renamed/unowned state.
+2. A stale database row, timestamp, version pointer, or registry entry is not failure evidence by
+   itself. It is actionable only when the current producer still writes that exact state on a
+   defined cadence and has missed that cadence.
+3. Retired, renamed, or unowned rows are excluded from unhealthy counts and service-outage
+   issues. Find the replacement producer and test its current flow/run plus output evidence. If
+   the verifier itself still describes the retired writer as active, classify that as
+   `verifier_defect`, not `code_defect` or a product outage.
+4. Current but intentionally untracked identifiers use the producer's authoritative evidence
+   source. Do not infer a missing execution from a table the producer does not write.
+5. Queue and orphan verifiers separate queued, actively owned, and expired work using the
+   workload's ownership or lease clock. Enqueue/discovery age plus a broad processing state is not
+   proof that work is stuck. Require a confirming sample after one successful worker or cleanup
+   cycle before emitting a red issue.
+
+*Example (ts-prefect `health-6h` scraper depth):* `scraper_executions` contains execution writers,
+not every active feed or record-provenance ID. Derive its expected rows from current
+`update_execution` writer call sites/configs. Evaluate RSS and Reuters discovery through current
+Prefect flows and `record.source_meta.scraper_id`; do not use a Reuters record-ID prefix because
+the sitemap deliberately preserves the historical fusion prefix for deduplication. A Completed
+all-config RSS run proves every selected RSS config passed acquisition/parsing/claim processing,
+but does not prove every downstream article body scrape succeeded.
+
 ## 3. Structured ending (PASS/FAIL schema)
 
 Every scheduled run's final session message ends with a fenced block the Hermes runner parses:

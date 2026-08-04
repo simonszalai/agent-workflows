@@ -1,7 +1,9 @@
 /health-system production --scheduled
 
 This is the unattended 6-hourly health run. Run the full system check (scraper depth
-included), then feed findings into /investigate-flow-fails: cluster by root cause,
+included). Apply the current-producer ownership gate in scheduled-run.md §2a before a stale
+row affects health status, becomes an issue, or reaches ticketing. Then feed verified findings
+into /investigate-flow-fails: cluster by root cause,
 dedup against open autodev tickets (extend existing tickets with new logs and note what
 changed), create tickets and spawn one investigation workspace per genuinely new cluster.
 Intermittent external noise (DataDome, rate limits) is acknowledged, not ticketed.

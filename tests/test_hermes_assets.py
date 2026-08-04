@@ -290,6 +290,27 @@ class HermesScheduleTests(unittest.TestCase):
                 self.assertTrue(prompt.is_file(), entry["prompt"])
                 self.assertNotEqual(entry["prompt"], "README.md")
 
+    def test_health_contract_requires_ownership_aware_persistent_orphan_evidence(self) -> None:
+        contract = (ROOT / "skills" / "references" / "scheduled-run.md").read_text()
+
+        self.assertIn("ownership or lease clock", contract)
+        self.assertIn("proof that work is stuck", contract)
+        self.assertIn("confirming sample after one successful worker", contract)
+        self.assertIn("cycle before emitting a red issue", contract)
+
+    def test_health_schedule_requires_current_producer_ownership(self) -> None:
+        prompt = (HERMES / "schedules" / "health-6h.md").read_text()
+        contract = (ROOT / "skills" / "references" / "scheduled-run.md").read_text()
+
+        self.assertIn("current-producer ownership gate", prompt)
+        self.assertIn("scheduled-run.md §2a", prompt)
+        self.assertIn("## 2a. Health finding ownership gate", contract)
+        self.assertIn("A stale database row", contract)
+        self.assertIn("Retired, renamed, or unowned rows", contract)
+        self.assertIn("`verifier_defect`, not `code_defect`", contract)
+        self.assertIn("`scraper_executions` contains execution writers", contract)
+        self.assertIn("`record.source_meta.scraper_id`", contract)
+
     def test_every_schedule_has_a_matching_vancouver_timer(self) -> None:
         for entry in self.manifest()["schedules"]:
             with self.subTest(entry=entry["name"]):
