@@ -27,7 +27,7 @@ Apps should only declare entitlements that are **actively used** by the app. App
 ### Find entitlements files
 ```bash
 # Find all entitlements files
-find . -name "*.entitlements" -not -path "./.build/*"
+find . \( -path "./.context" -o -path "./node_modules" -o -path "./Pods" -o -path "./.build" -o -path "./build" -o -path "./DerivedData" \) -prune -o -name "*.entitlements" -print | head -n 200
 ```
 
 ### Parse entitlements
@@ -43,13 +43,13 @@ For each entitlement, verify the app actually uses the capability:
 
 ```bash
 # Network server — is the app running a local server?
-grep -rn "NWListener\|GCDWebServer\|Swifter\|Vapor\|HttpServer\|startServer" --include="*.swift" .
+grep -rn "NWListener\|GCDWebServer\|Swifter\|Vapor\|HttpServer\|startServer" --include="*.swift" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # Downloads folder access — does the app read/write Downloads?
-grep -rn "Downloads\|downloadsDirectory\|FileManager.*downloads" --include="*.swift" .
+grep -rn "Downloads\|downloadsDirectory\|FileManager.*downloads" --include="*.swift" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # HealthKit — is HealthKit actually used?
-grep -rn "HKHealthStore\|HealthKit\|health_kit" --include="*.swift" --include="*.dart" .
+grep -rn "HKHealthStore\|HealthKit\|health_kit" --include="*.swift" --include="*.dart" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 ```
 
 ### Automated audit

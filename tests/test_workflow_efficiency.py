@@ -914,6 +914,87 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             )
             self.assertEqual(safe_production.returncode, 0, safe_production.stdout)
 
+    def test_noisy_command_linter_guards_broad_generated_searches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = root / "skills/demo/SKILL.md"
+            skill.parent.mkdir(parents=True)
+
+            unsafe = (
+                "grep -R needle .\n",
+                'grep -rn "needle\\|other" .\n',
+                "rg needle .\n",
+                "find . -name '*.json'\n",
+            )
+            for command in unsafe:
+                skill.write_text(f"# Demo\n\n```bash\n{command}```\n")
+                result = run_script("workflow-noisy-command-check", "--root", str(root))
+                self.assertEqual(result.returncode, 2, (command, result.stdout))
+                self.assertIn("broad_search_requires_scope_exclusions", result.stdout)
+
+            skill.write_text(
+                "# Demo\n\n```bash\n"
+                "rg needle skills/auto-deploy/SKILL.md\n"
+                "rg needle .context/staging-port/result.log\n"
+                "rg needle . -g '!.context/**' -g '!node_modules/**' "
+                "-g '!build/**' --max-count 20\n"
+                "find . \\( -path './.context' -o -path './node_modules' "
+                "-o -path './build' \\) -prune -o -name '*.md' -print | head -n 20\n"
+                "bin/compact-exec -- find . -name '*.json'\n"
+                "```\n"
+            )
+            accepted = run_script("workflow-noisy-command-check", "--root", str(root))
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+
+    def test_auto_deploy_manifest_routes_complete_references(self) -> None:
+        deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
+        expected = {
+            "P1": "references/lifecycle.md",
+            "P2": "references/lifecycle.md",
+            "P3": "references/provider-project.md",
+            "P4": "references/lifecycle.md",
+            "P5": "references/lifecycle.md",
+            "P6": "references/change-and-execution.md",
+            "P6b": "references/change-and-execution.md",
+            "P7": "references/lifecycle.md",
+            "P8": "references/change-and-execution.md",
+            "P8b": "references/back-sync.md",
+            "P9": "references/verification-and-status.md",
+            "P10": "references/verification-and-status.md",
+        }
+        self.assertLess(len(deploy.encode()), 16_384)
+        for phase, reference in expected.items():
+            self.assertRegex(deploy, rf"(?m)^\| {phase} \|.*`{re.escape(reference)}`")
+            self.assertTrue((ROOT / "skills/auto-deploy" / reference).is_file(), reference)
+        self.assertIn("references/migration-and-runtime-evidence.md", deploy)
+        self.assertIn("timeout_ms: 600000", deploy)
+        self.assertIn("bin/progress-lease policy", deploy)
+
+        references = ROOT / "skills/auto-deploy/references"
+        lifecycle = (references / "lifecycle.md").read_text()
+        execution = (references / "change-and-execution.md").read_text()
+        migration = (references / "migration-and-runtime-evidence.md").read_text()
+        provider = (references / "provider-project.md").read_text()
+        back_sync = (references / "back-sync.md").read_text()
+        verification = (references / "verification-and-status.md").read_text()
+        for anchor in ("get_ticket", "wait-ci", "align-merged-pr-workspace"):
+            self.assertIn(anchor, lifecycle)
+        for anchor in ("Preflight every deploy command", "bin/redacted-exec", "negative inventory"):
+            self.assertIn(anchor, execution)
+        self.assertIn("runtime evidence producer", migration.lower())
+        self.assertIn("A schema change without its required", migration)
+        self.assertIn("Thomas-only", provider)
+        self.assertIn("project-specific deploy command", provider)
+        self.assertIn("content-preserving sync", back_sync)
+        self.assertIn("update_ticket", verification)
+        self.assertIn("update_epic", verification)
+        self.assertIn("terminal-outcomes.md", verification)
+
+        economy = (ROOT / "skills/references/execution-economy.md").read_text()
+        self.assertIn("Literal Conductor CI recipe", economy)
+        self.assertIn("timeout_ms: 600000", economy)
+        self.assertIn("exact `resume_command` unchanged", economy)
+
     def test_compact_exec_timeout_kills_descendant_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "survived"

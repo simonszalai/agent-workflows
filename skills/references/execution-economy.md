@@ -36,8 +36,14 @@ correctness, fail-loud behavior, lifecycle ownership, or required safety gates.
   `tail`, exact `rerun_command`, and the current `head_sha`, committed `head_tree_sha`, exact
   input working `tree_sha`, `post_tree_sha`, `tree_changed_during_command`, and `index_tree_sha`
   when run in a Git checkout.
-- Bound code search by paths/globs and byte or result caps. Narrow broad searches after the first
-  capped sample; never dump an entire repository or generated artifact into model context.
+- Bound code search by paths/globs and byte or result caps. Raw recursive `grep`, repository-wide
+  `rg`, and broad `find` must both exclude `.context`, dependency trees, and build/generated
+  artifacts and cap returned results. The alternative is `bin/compact-exec`, which preserves the
+  full search log without injecting it into model context. A targeted search of an explicit file or
+  narrow source directory remains valid, including an explicit targeted inspection inside a
+  generated directory. Narrow broad searches after the first capped sample; never dump an entire
+  repository or generated artifact into model context. These shapes are enforced by
+  `bin/workflow-noisy-command-check`.
 - Bound every SQL/data query by time window, selected columns, row limit, and payload size. Start
   with counts/aggregates, then retrieve the smallest sample that can decide the question.
 - Cache immutable or run-stable inputs once per run: ticket/epic artifacts, git diff and file list,
@@ -100,6 +106,14 @@ terminal result or one timeout.
   resumable session. Dispatch the deterministic waiter immediately to the fresh no-history leaf
   and block once. If an accidental parent wait yields, terminate it and restart the exact command
   in the leaf; the parent must not poll the parent session itself.
+- **Literal Conductor CI recipe:** (1) dispatch exactly one fresh `fork_turns: "none"` leaf whose
+  complete task is `wait-ci <pr> --timeout 540`; (2) the leaf starts that command once and consumes
+  it through one long blocking tool observation whose deadline covers the remaining 540 seconds;
+  (3) the parent performs exactly one `wait_agent` with `timeout_ms: 600000`, which exceeds the CI
+  deadline, and makes no follow-up status call; (4) write the deterministic waiter's internal
+  GitHub reads and the parent's single wait observation to the execution-economy receipt, then run
+  `bin/progress-lease policy <receipt.json>`. A timeout is never green: stop and return the waiter's
+  exact `resume_command` unchanged.
 - Never trade away a required test, review, deployment check, or verification row to save tokens.
   Missing evidence remains missing; failures remain loud.
 

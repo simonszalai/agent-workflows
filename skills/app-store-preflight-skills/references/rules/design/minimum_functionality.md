@@ -31,16 +31,16 @@ Apple requires apps to provide "valuable utility or entertainment" and be more t
 
 ```bash
 # Check if app is primarily a WebView wrapper
-grep -rn "WKWebView\|UIWebView\|WebView\|SFSafariViewController" --include="*.swift" --include="*.m" .
+grep -rn "WKWebView\|UIWebView\|WebView\|SFSafariViewController" --include="*.swift" --include="*.m" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # Count total view controllers / screens
-grep -rn "class.*:.*UIViewController\|class.*:.*View {" --include="*.swift" . | wc -l
+grep -rn "class.*:.*UIViewController\|class.*:.*View {" --include="*.swift" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | wc -l
 
 # Check for meaningful model/data layer
-find . -name "*.swift" -path "*/Model*" -o -name "*.swift" -path "*/Models*" | wc -l
+find . \( -path "./.context" -o -path "./node_modules" -o -path "./Pods" -o -path "./.build" -o -path "./build" -o -path "./DerivedData" \) -prune -o \( -name "*.swift" -path "*/Model*" -o -name "*.swift" -path "*/Models*" \) -print | wc -l
 
 # Check if app has any local data persistence
-grep -rn "CoreData\|SwiftData\|UserDefaults\|Realm\|SQLite\|KeychainSwift" --include="*.swift" .
+grep -rn "CoreData\|SwiftData\|UserDefaults\|Realm\|SQLite\|KeychainSwift" --include="*.swift" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 ```
 
 ### Red Flags

@@ -17,16 +17,16 @@ If the app offers **Sign in with Apple** (SIWA), the implementation must follow 
 ### Check for post-SIWA data requests
 ```bash
 # Find SIWA implementation
-grep -rn "ASAuthorizationAppleIDProvider\|SignInWithApple\|appleIDCredential\|apple.*sign.*in" --include="*.swift" --include="*.dart" .
+grep -rn "ASAuthorizationAppleIDProvider\|SignInWithApple\|appleIDCredential\|apple.*sign.*in" --include="*.swift" --include="*.dart" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # Check if name/email is requested AFTER sign-in
-grep -rn "askForName\|askForEmail\|nameTextField\|emailTextField\|profileSetup\|completeProfile" --include="*.swift" --include="*.dart" .
+grep -rn "askForName\|askForEmail\|nameTextField\|emailTextField\|profileSetup\|completeProfile" --include="*.swift" --include="*.dart" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 ```
 
 ### Check for relay email handling
 ```bash
 # Ensure the app doesn't reject relay emails
-grep -rn "privaterelay.appleid.com\|@privaterelay\|email.*validation\|isValid.*email" --include="*.swift" --include="*.dart" .
+grep -rn "privaterelay.appleid.com\|@privaterelay\|email.*validation\|isValid.*email" --include="*.swift" --include="*.dart" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 ```
 
 ### Visual Inspection

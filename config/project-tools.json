@@ -68,6 +68,7 @@
     },
     "workflow-pro": {
       "repo_remotes": [
+        "github.com/workflow-tech/workflow-pro",
         "github.com/szaboszerszam/workflow-mcp",
         "github.com/szaboszerszam/workflow-pdf",
         "github.com/szaboszerszam/workflow_pro"

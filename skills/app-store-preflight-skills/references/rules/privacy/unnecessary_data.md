@@ -24,10 +24,10 @@ Apps must only require personal information that is **directly relevant** to the
 ### Code Inspection
 ```bash
 # Find registration/onboarding/profile forms
-grep -rn "phone\|gender\|marital\|birthdate\|date.of.birth\|address\|registration\|onboarding\|signup\|sign.up\|profile" --include="*.swift" --include="*.dart" .
+grep -rn "phone\|gender\|marital\|birthdate\|date.of.birth\|address\|registration\|onboarding\|signup\|sign.up\|profile" --include="*.swift" --include="*.dart" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 
 # Check if fields are marked as required vs optional
-grep -rn "required\|validator\|isRequired\|optional" --include="*.swift" --include="*.dart" .
+grep -rn "required\|validator\|isRequired\|optional" --include="*.swift" --include="*.dart" --exclude-dir=".context" --exclude-dir="node_modules" --exclude-dir="Pods" --exclude-dir=".build" --exclude-dir="build" --exclude-dir="DerivedData" . | head -n 200
 ```
 
 ### UI Inspection
