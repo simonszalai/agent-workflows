@@ -50,7 +50,9 @@ JsonObject = dict[str, object]
 
 class HealthIssue(TypedDict):
     title: str
-    problem: str
+    proof: str
+    example: str
+    next_step: str
     ticket_id: str | None
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -335,11 +337,17 @@ def parse_health_issues(value: object) -> list[HealthIssue] | None:
         if not isinstance(raw_issue, dict):
             return None
         title = raw_issue.get("title")
-        problem = raw_issue.get("problem")
+        proof = raw_issue.get("proof")
+        example = raw_issue.get("example")
+        next_step = raw_issue.get("next_step")
         ticket_id = raw_issue.get("ticket_id")
         if not isinstance(title, str) or not title.strip():
             return None
-        if not isinstance(problem, str) or not problem.strip():
+        if not isinstance(proof, str) or not proof.strip():
+            return None
+        if not isinstance(example, str) or not example.strip():
+            return None
+        if not isinstance(next_step, str) or not next_step.strip():
             return None
         if ticket_id is not None and not isinstance(ticket_id, str):
             return None
@@ -347,7 +355,9 @@ def parse_health_issues(value: object) -> list[HealthIssue] | None:
         issues.append(
             {
                 "title": title.strip(),
-                "problem": problem.strip(),
+                "proof": proof.strip(),
+                "example": example.strip(),
+                "next_step": next_step.strip(),
                 "ticket_id": normalized_ticket or None,
             }
         )
@@ -362,7 +372,9 @@ def health_issues(result: JsonObject | None, summary: str, status: str) -> list[
         issues.append(
             {
                 "title": "Scheduled health run failed",
-                "problem": summary,
+                "proof": summary,
+                "example": "The run did not return structured issue evidence.",
+                "next_step": "Open the run thread and inspect the scheduler failure.",
                 "ticket_id": None,
             }
         )
@@ -382,7 +394,80 @@ def health_parent_message(icon: str, issues: list[HealthIssue], summary: str) ->
 
 def health_issue_reply(issue: HealthIssue) -> str:
     ticket = issue["ticket_id"] or "No ticket assigned"
-    return f"*{issue['title']}*\nProblem: {issue['problem']}\nTicket: `{ticket}`"
+    return (
+        f"*{issue['title']}*\n"
+        f"• *Proof:* {issue['proof']}\n"
+        f"• *Example:* {issue['example']}\n"
+        f"• *Next:* {issue['next_step']}\n"
+        f"• *Ticket:* `{ticket}`"
+    )
+
+
+def incident_message(
+    name: str,
+    status: str,
+    summary: str,
+    result: JsonObject | None,
+    issues: list[HealthIssue],
+    permalink: str | None,
+) -> str:
+    """Render a concise, evidence-first incident alert for a human reader."""
+    icon = {"FAIL": "❌", "BLOCKED": "⛔"}.get(status, "⚠️")
+    lines = [f"{icon} *{name} needs attention* {SLACK_MENTION_SIMON}"]
+    if issues:
+        for issue in issues[:3]:
+            ticket = issue["ticket_id"] or "no ticket"
+            lines.extend(
+                [
+                    f"• *{issue['title']}* · `{ticket}`",
+                    f"  *Proof:* {issue['proof']}",
+                    f"  *Example:* {issue['example']}",
+                    f"  *Next:* {issue['next_step']}",
+                ]
+            )
+        if len(issues) > 3:
+            lines.append(f"• *{len(issues) - 3} more issues:* See the linked run thread.")
+    else:
+        lines.append(f"• *What happened:* {summary}")
+        checks_total = result.get("checks_total") if result else None
+        checks_failed = result.get("checks_failed") if result else None
+        if checks_total is not None and checks_failed is not None:
+            lines.append(
+                f"• *Proof:* The run reported {checks_failed} failed checks out of "
+                f"{checks_total}."
+            )
+        else:
+            lines.append(f"• *Proof:* The scheduler classified the run as {status}.")
+        tickets = result.get("tickets_touched") if result else None
+        if isinstance(tickets, list) and tickets:
+            lines.append(f"• *Tickets:* {', '.join(f'`{ticket}`' for ticket in tickets[:3])}")
+        blocked_on = result.get("blocked_on") if result else None
+        if isinstance(blocked_on, str) and blocked_on:
+            lines.append(f"• *Next:* {blocked_on}")
+        else:
+            lines.append("• *Next:* Open the run thread and review the failed checks.")
+    if permalink:
+        lines.append(f"• *Details:* <{permalink}|Open the run thread>")
+    return "\n".join(lines)
+
+
+def unit_failure_message(suffix: str, unit: str) -> str:
+    return (
+        f"❌ *{suffix} scheduler service failed* {SLACK_MENTION_SIMON}\n"
+        f"• *Proof:* systemd marked `{unit}` as failed.\n"
+        f"• *Example:* `journalctl -u {unit}` shows the traceback.\n"
+        "• *Next:* Inspect the traceback, fix the service, then restart the unit."
+    )
+
+
+def watchdog_message(name: str, detail: str, interval_hours: int) -> str:
+    unit = f"hermes-schedule@{name}.service"
+    return (
+        f"⚠️ *{name} has stopped reporting* {SLACK_MENTION_SIMON}\n"
+        f"• *Proof:* {detail}; expected a report every {interval_hours}h.\n"
+        f"• *Example:* Check `systemctl status {unit}` on Hermes.\n"
+        f"• *Next:* Restore the timer or runner, then confirm the next Slack report arrives."
+    )
 
 
 def find_result(transcript_tail: list[str]) -> JsonObject | None:
@@ -566,6 +651,7 @@ def run_schedule(name: str) -> int:
         )
         detail_lines.append("```")
 
+    issues: list[HealthIssue] = []
     if name == "health-6h":
         issues = health_issues(result, summary, status)
         if status == "PASS" and issues:
@@ -588,11 +674,12 @@ def run_schedule(name: str) -> int:
         post_message(slack_token, channel, "\n".join(detail_lines), thread_ts=parent_ts)
     if status != "PASS":
         permalink = message_permalink(slack_token, channel, parent_ts)
-        routing = f"{icon} [{name}] {summary} {SLACK_MENTION_SIMON}"
-        if permalink:
-            routing += f" — <{permalink}|thread>"
         if channel != incidents:
-            post_message(slack_token, incidents, routing)
+            post_message(
+                slack_token,
+                incidents,
+                incident_message(name, status, summary, result, issues, permalink),
+            )
 
     record_run(name, status, workspace_id)
     log.info("schedule %s finished: %s — %s", name, status, summary)
@@ -634,8 +721,7 @@ def alert_unit_failure(suffix: str) -> int:
     post_message(
         token,
         incidents,
-        f"❌ [{suffix}] {unit} failed on the Hermes host {SLACK_MENTION_SIMON} — "
-        f"`journalctl -u {unit}` for the traceback",
+        unit_failure_message(suffix, unit),
     )
     return 0
 
@@ -672,9 +758,7 @@ def check_staleness(manifest: JsonObject, token: str, incidents: str) -> None:
             post_message(
                 token,
                 incidents,
-                f"⚠️ [watchdog] {name} is enabled but has not reported "
-                f"({detail}; expected every {interval_hours}h) "
-                f"{SLACK_MENTION_SIMON}",
+                watchdog_message(name, detail, interval_hours),
             )
 
 
