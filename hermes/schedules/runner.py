@@ -312,9 +312,13 @@ def parse_result_block(text: str) -> JsonObject | None:
                 decoded = json.loads(value)
             except json.JSONDecodeError:
                 return None
-            if key == "issues" and parse_health_issues(decoded) is None:
-                return None
-            parsed[key] = decoded
+            if key == "issues":
+                normalized_issues = parse_health_issues(decoded)
+                if normalized_issues is None:
+                    return None
+                parsed[key] = normalized_issues
+            else:
+                parsed[key] = decoded
         elif key in RESULT_LIST_KEYS:
             parsed[key] = [
                 item.strip()
@@ -337,31 +341,66 @@ def parse_health_issues(value: object) -> list[HealthIssue] | None:
         if not isinstance(raw_issue, dict):
             return None
         title = raw_issue.get("title")
-        proof = raw_issue.get("proof")
-        example = raw_issue.get("example")
         next_step = raw_issue.get("next_step")
-        ticket_id = raw_issue.get("ticket_id")
         if not isinstance(title, str) or not title.strip():
-            return None
-        if not isinstance(proof, str) or not proof.strip():
-            return None
-        if not isinstance(example, str) or not example.strip():
             return None
         if not isinstance(next_step, str) or not next_step.strip():
             return None
-        if ticket_id is not None and not isinstance(ticket_id, str):
+
+        proof_ok, proof = normalize_issue_alias(
+            raw_issue, "concrete_proof", "proof", required=True
+        )
+        example_ok, example = normalize_issue_alias(
+            raw_issue, "representative_example", "example", required=True
+        )
+        ticket_ok, ticket_id = normalize_issue_alias(
+            raw_issue, "owning_ticket_id", "ticket_id", required=False
+        )
+        if not proof_ok or not example_ok or not ticket_ok:
             return None
-        normalized_ticket = ticket_id.strip() if isinstance(ticket_id, str) else None
+        if proof is None or example is None:
+            return None
         issues.append(
             {
                 "title": title.strip(),
-                "proof": proof.strip(),
-                "example": example.strip(),
+                "proof": proof,
+                "example": example,
                 "next_step": next_step.strip(),
-                "ticket_id": normalized_ticket or None,
+                "ticket_id": ticket_id,
             }
         )
     return issues
+
+
+def normalize_issue_alias(
+    issue: dict[object, object],
+    canonical_key: str,
+    legacy_key: str,
+    *,
+    required: bool,
+) -> tuple[bool, str | None]:
+    normalized_values: list[str | None] = []
+    for key in (canonical_key, legacy_key):
+        if key not in issue:
+            continue
+        value = issue[key]
+        if value is None:
+            if required:
+                return False, None
+            normalized_values.append(None)
+            continue
+        if not isinstance(value, str):
+            return False, None
+        normalized = value.strip()
+        if required and not normalized:
+            return False, None
+        normalized_values.append(normalized or None)
+
+    if not normalized_values:
+        return (not required), None
+    if len(normalized_values) == 2 and normalized_values[0] != normalized_values[1]:
+        return False, None
+    return True, normalized_values[0]
 
 
 def health_issues(result: JsonObject | None, summary: str, status: str) -> list[HealthIssue]:

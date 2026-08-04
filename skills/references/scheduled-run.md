@@ -108,25 +108,30 @@ Issue object:
 ```json
 {
   "title": "<short name>",
-  "proof": "<aggregate evidence>",
-  "example": "<one occurrence>",
+  "concrete_proof": "<aggregate evidence>",
+  "representative_example": "<one occurrence>",
   "next_step": "<specific action>",
-  "ticket_id": "<ID or null>"
+  "owning_ticket_id": "<ID or null>"
 }
 ```
 
 Serialize the array on one line in the result block.
+Scheduled-run producers emit only those canonical keys. For older or already-running sessions,
+the Hermes runner also accepts `proof`, `example`, and `ticket_id` as input-only legacy aliases.
+When both forms of a field are present they must have the same value; conflicting aliases are
+rejected.
 
 - `PASS`: everything in scope ran and is healthy.
 - `FAIL`: at least one check found a real problem (routes to `#autodev-incidents` per §2).
 - `BLOCKED`: the run could not complete an item without crossing the §1 boundary;
   `blocked_on` carries the exact resume command/action.
 - `issues` is required for `health-6h`: one single-line JSON array entry per actionable issue,
-  or `[]` on PASS. `ticket_id` is the open ticket that owns the root cause, not a fallback ticket
-  used only to store occurrence evidence. Use `null` only when no owning ticket could be assigned.
-  Keep `title` short enough for the parent bullet. Keep `proof`, `example`, and `next_step` to one
-  concrete sentence each. `proof` states the aggregate evidence; `example` names one representative
-  occurrence rather than repeating the proof.
+  or `[]` on PASS. `owning_ticket_id` is the open ticket that owns the root cause, not a fallback
+  ticket used only to store occurrence evidence. Use `null` only when no owning ticket could be
+  assigned. Keep `title` short enough for the parent bullet. Keep `concrete_proof`,
+  `representative_example`, and `next_step` to one concrete sentence each. `concrete_proof` states
+  the aggregate evidence; `representative_example` names one representative occurrence rather than
+  repeating the proof.
 - The block is the last thing in the message. Free-form detail goes above it, never below.
 
 ## 4. Dedup convention (`rc_fingerprint`)
