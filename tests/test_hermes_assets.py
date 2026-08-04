@@ -351,6 +351,8 @@ class HermesScheduleTests(unittest.TestCase):
             "checks_failed: 0\n"
             "tickets_touched: [F0100, F0101]\n"
             "rc_fingerprints: []\n"
+            'issues: [{"title":"Worker offline","problem":"No heartbeat",'
+            '"ticket_id":"B0100"}]\n'
             "```\n"
         )
         parsed = runner.parse_result_block(message)
@@ -358,9 +360,181 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertEqual(parsed["summary"], "all green")
         self.assertEqual(parsed["tickets_touched"], ["F0100", "F0101"])
         self.assertEqual(parsed["rc_fingerprints"], [])
+        self.assertEqual(
+            parsed["issues"],
+            [
+                {
+                    "title": "Worker offline",
+                    "problem": "No heartbeat",
+                    "ticket_id": "B0100",
+                }
+            ],
+        )
         self.assertIsNone(runner.parse_result_block("no marker here"))
         self.assertIsNone(
             runner.parse_result_block("SCHEDULED_RUN_RESULT\nstatus: MAYBE\n")
+        )
+        self.assertIsNone(
+            runner.parse_result_block(
+                "SCHEDULED_RUN_RESULT\nstatus: FAIL\nissues: not-json\n"
+            )
+        )
+
+    def test_health_report_is_one_parent_list_and_one_reply_per_issue(self) -> None:
+        runner = load_schedule_runner()
+        result = {
+            "issues": [
+                {
+                    "title": "Discord monitor cannot fetch channels",
+                    "problem": "Verified Discord API 403 responses on two monitored channels.",
+                    "ticket_id": "B0349",
+                },
+                {
+                    "title": "Tradable scheduler is stale",
+                    "problem": "No successful run completed inside the freshness window.",
+                    "ticket_id": "B0365",
+                },
+            ]
+        }
+        issues = runner.health_issues(result, "two checks failed", "FAIL")
+
+        self.assertEqual(
+            runner.health_parent_message("❌", issues, "two checks failed"),
+            "❌ [health-6h] 2 issues\n"
+            "• Discord monitor cannot fetch channels — ticket `B0349`\n"
+            "• Tradable scheduler is stale — ticket `B0365`",
+        )
+        self.assertEqual(
+            [runner.health_issue_reply(issue) for issue in issues],
+            [
+                "*Discord monitor cannot fetch channels*\n"
+                "Problem: Verified Discord API 403 responses on two monitored channels.\n"
+                "Ticket: `B0349`",
+                "*Tradable scheduler is stale*\n"
+                "Problem: No successful run completed inside the freshness window.\n"
+                "Ticket: `B0365`",
+            ],
+        )
+
+    def test_health_report_falls_back_when_run_has_no_structured_issue(self) -> None:
+        runner = load_schedule_runner()
+        issues = runner.health_issues(None, "agent session errored", "FAIL")
+
+        self.assertEqual(
+            issues,
+            [
+                {
+                    "title": "Scheduled health run failed",
+                    "problem": "agent session errored",
+                    "ticket_id": None,
+                }
+            ],
+        )
+        self.assertEqual(
+            runner.health_issue_reply(issues[0]),
+            "*Scheduled health run failed*\n"
+            "Problem: agent session errored\n"
+            "Ticket: `No ticket assigned`",
+        )
+
+    def test_health_schedule_posts_exactly_one_reply_per_issue(self) -> None:
+        runner = load_schedule_runner()
+        manifest = {
+            "runner": {"poll_seconds": 1},
+            "slack_channels": {
+                "#autodev-health": "C-health",
+                "#autodev-incidents": "C-incidents",
+            },
+            "schedules": [
+                {
+                    "name": "health-6h",
+                    "enabled": True,
+                    "prompt": "health-6h.md",
+                    "slack_channel": "#autodev-health",
+                    "max_runtime_minutes": 90,
+                }
+            ],
+        }
+        result = {
+            "status": "FAIL",
+            "summary": "two checks failed",
+            "issues": [
+                {
+                    "title": "Discord monitor cannot fetch channels",
+                    "problem": "Discord returned 403.",
+                    "ticket_id": "B0349",
+                },
+                {
+                    "title": "Tradable scheduler is stale",
+                    "problem": "No recent successful run.",
+                    "ticket_id": "B0365",
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(runner, "load_manifest", return_value=manifest),
+                mock.patch.object(runner, "state_dir", return_value=Path(directory)),
+                mock.patch.object(runner, "read_slack_token", return_value="token"),
+                mock.patch.object(
+                    runner,
+                    "launch_workspace",
+                    return_value=("workspace", "session", "conductor://run"),
+                ),
+                mock.patch.object(runner, "conductor_call"),
+                mock.patch.object(
+                    runner,
+                    "poll_session",
+                    return_value=("finished", result),
+                ),
+                mock.patch.object(
+                    runner,
+                    "post_message",
+                    side_effect=["parent", "reply-1", "reply-2", "incident"],
+                ) as post,
+                mock.patch.object(
+                    runner,
+                    "message_permalink",
+                    return_value="https://slack.example/thread",
+                ),
+                mock.patch.object(runner, "record_run"),
+            ):
+                exit_code = runner.run_schedule("health-6h")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            post.mock_calls,
+            [
+                mock.call(
+                    "token",
+                    "C-health",
+                    "❌ [health-6h] 2 issues\n"
+                    "• Discord monitor cannot fetch channels — ticket `B0349`\n"
+                    "• Tradable scheduler is stale — ticket `B0365`",
+                ),
+                mock.call(
+                    "token",
+                    "C-health",
+                    "*Discord monitor cannot fetch channels*\n"
+                    "Problem: Discord returned 403.\n"
+                    "Ticket: `B0349`",
+                    thread_ts="parent",
+                ),
+                mock.call(
+                    "token",
+                    "C-health",
+                    "*Tradable scheduler is stale*\n"
+                    "Problem: No recent successful run.\n"
+                    "Ticket: `B0365`",
+                    thread_ts="parent",
+                ),
+                mock.call(
+                    "token",
+                    "C-incidents",
+                    "❌ [health-6h] two checks failed <@U09T4LELYES> — "
+                    "<https://slack.example/thread|thread>",
+                ),
+            ],
         )
 
     def test_watchdog_interval_inference_matches_manifest_crons(self) -> None:

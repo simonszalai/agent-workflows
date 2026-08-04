@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 import yaml
 
@@ -39,12 +39,19 @@ SLACK_MENTION_SIMON = "<@U09T4LELYES>"
 INCIDENTS_CHANNEL_NAME = "#autodev-incidents"
 RESULT_MARKER = "SCHEDULED_RUN_RESULT"
 RESULT_LIST_KEYS = ("tickets_touched", "rc_fingerprints")
+RESULT_JSON_KEYS = ("issues",)
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
 WATCHDOG_GRACE_MINUTES = 60
 
 JsonObject = dict[str, object]
+
+
+class HealthIssue(TypedDict):
+    title: str
+    problem: str
+    ticket_id: str | None
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("hermes-schedules")
@@ -298,7 +305,15 @@ def parse_result_block(text: str) -> JsonObject | None:
         if not match:
             continue
         key, value = match.group(1), match.group(2).strip()
-        if key in RESULT_LIST_KEYS:
+        if key in RESULT_JSON_KEYS:
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            if key == "issues" and parse_health_issues(decoded) is None:
+                return None
+            parsed[key] = decoded
+        elif key in RESULT_LIST_KEYS:
             parsed[key] = [
                 item.strip()
                 for item in value.strip("[]").split(",")
@@ -310,6 +325,64 @@ def parse_result_block(text: str) -> JsonObject | None:
         return None
     parsed["status"] = str(parsed["status"]).upper()
     return parsed
+
+
+def parse_health_issues(value: object) -> list[HealthIssue] | None:
+    if not isinstance(value, list):
+        return None
+    issues: list[HealthIssue] = []
+    for raw_issue in value:
+        if not isinstance(raw_issue, dict):
+            return None
+        title = raw_issue.get("title")
+        problem = raw_issue.get("problem")
+        ticket_id = raw_issue.get("ticket_id")
+        if not isinstance(title, str) or not title.strip():
+            return None
+        if not isinstance(problem, str) or not problem.strip():
+            return None
+        if ticket_id is not None and not isinstance(ticket_id, str):
+            return None
+        normalized_ticket = ticket_id.strip() if isinstance(ticket_id, str) else None
+        issues.append(
+            {
+                "title": title.strip(),
+                "problem": problem.strip(),
+                "ticket_id": normalized_ticket or None,
+            }
+        )
+    return issues
+
+
+def health_issues(result: JsonObject | None, summary: str, status: str) -> list[HealthIssue]:
+    """Return validated health issues, including a runner-failure fallback."""
+    raw_issues = result.get("issues") if result is not None else None
+    issues = parse_health_issues(raw_issues) or []
+    if not issues and status != "PASS":
+        issues.append(
+            {
+                "title": "Scheduled health run failed",
+                "problem": summary,
+                "ticket_id": None,
+            }
+        )
+    return issues
+
+
+def health_parent_message(icon: str, issues: list[HealthIssue], summary: str) -> str:
+    if not issues:
+        return f"{icon} [health-6h] {summary}"
+    noun = "issue" if len(issues) == 1 else "issues"
+    lines = [f"{icon} [health-6h] {len(issues)} {noun}"]
+    for issue in issues:
+        ticket = issue["ticket_id"] or "no ticket"
+        lines.append(f"• {issue['title']} — ticket `{ticket}`")
+    return "\n".join(lines)
+
+
+def health_issue_reply(issue: HealthIssue) -> str:
+    ticket = issue["ticket_id"] or "No ticket assigned"
+    return f"*{issue['title']}*\nProblem: {issue['problem']}\nTicket: `{ticket}`"
 
 
 def find_result(transcript_tail: list[str]) -> JsonObject | None:
@@ -444,6 +517,7 @@ def run_schedule(name: str) -> int:
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        lock_file.close()
         log.warning("schedule %s: previous run still active; skipping", name)
         return 0
 
@@ -492,10 +566,26 @@ def run_schedule(name: str) -> int:
         )
         detail_lines.append("```")
 
-    icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
-    line = f"{icon} [{name}] {summary}"
-    parent_ts = post_message(slack_token, channel, line)
-    post_message(slack_token, channel, "\n".join(detail_lines), thread_ts=parent_ts)
+    if name == "health-6h":
+        issues = health_issues(result, summary, status)
+        if status == "PASS" and issues:
+            status = "FAIL"
+            summary = "run reported issues with PASS status"
+        icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
+        line = health_parent_message(icon, issues, summary)
+        parent_ts = post_message(slack_token, channel, line)
+        for issue in issues:
+            post_message(
+                slack_token,
+                channel,
+                health_issue_reply(issue),
+                thread_ts=parent_ts,
+            )
+    else:
+        icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
+        line = f"{icon} [{name}] {summary}"
+        parent_ts = post_message(slack_token, channel, line)
+        post_message(slack_token, channel, "\n".join(detail_lines), thread_ts=parent_ts)
     if status != "PASS":
         permalink = message_permalink(slack_token, channel, parent_ts)
         routing = f"{icon} [{name}] {summary} {SLACK_MENTION_SIMON}"
@@ -506,6 +596,7 @@ def run_schedule(name: str) -> int:
 
     record_run(name, status, workspace_id)
     log.info("schedule %s finished: %s — %s", name, status, summary)
+    lock_file.close()
     return 0
 
 

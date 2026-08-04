@@ -5,5 +5,7 @@ included), then feed findings into /investigate-flow-fails: cluster by root caus
 dedup against open autodev tickets (extend existing tickets with new logs and note what
 changed), create tickets and spawn one investigation workspace per genuinely new cluster.
 Intermittent external noise (DataDome, rate limits) is acknowledged, not ticketed.
-If green, post a single ✅ line to #autodev-health; otherwise one line per cluster there,
-and clusters needing a decision go to #autodev-incidents with evidence in the thread.
+Do not post to Slack directly. End with the structured result: `issues` is `[]` when green;
+otherwise include one object per actionable issue with its short title, problem explanation,
+and owning ticket ID. Hermes renders one parent bullet per issue and exactly one thread reply
+per issue. Clusters needing a decision are routed to #autodev-incidents by the runner.

@@ -5,8 +5,9 @@ Canonical definitions of every scheduled agent run Hermes launches through the C
 America/Vancouver) start `runner.py run <name>`, which reads `schedules.yaml`, creates a
 Conductor workspace per the entry, sends the referenced prompt file's contents as the first
 session message, polls the session with the entry's `max_runtime_minutes` cap, parses the
-`SCHEDULED_RUN_RESULT` ending, and posts the result to Slack (one line in the channel, detail
-in the thread; FAIL/BLOCKED additionally routes one line to `#autodev-incidents`).
+`SCHEDULED_RUN_RESULT` ending, and posts the result to Slack (normally one line in the channel
+with detail in the thread; `health-6h` uses a parent bullet list plus one reply per issue;
+FAIL/BLOCKED additionally routes one line to `#autodev-incidents`).
 
 ## Runner mechanics (`runner.py`, deployed to `/opt/hermes-schedules`)
 
@@ -49,7 +50,8 @@ Slack destinations:
 | Channel | Content |
 |---|---|
 | `#autodev-nightly` | verify/promote and dream results |
-| `#autodev-health` | 6-hourly checks; a single ✅ line when green |
+| `#autodev-health` | 6-hourly checks; issue bullets + one reply each, or a single ✅ line when green |
 | `#autodev-incidents` | root-cause clusters needing a human decision |
 
-Format everywhere: one-line summary in the channel, all detail in the thread.
+Default format: one-line summary in the channel, detail in the thread. Health failures use the
+issue-oriented exception defined in `skills/references/scheduled-run.md` §2.
