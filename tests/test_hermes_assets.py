@@ -311,6 +311,25 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertIn("`scraper_executions` contains execution writers", contract)
         self.assertIn("`record.source_meta.scraper_id`", contract)
 
+    def test_health_schedule_investigates_clusters_in_current_workspace(self) -> None:
+        prompt = (HERMES / "schedules" / "health-6h.md").read_text().replace("\n", " ")
+
+        self.assertIn(
+            "bounded cluster investigation within the current scheduled workspace",
+            prompt,
+        )
+        self.assertIn("one durable owning ticket with investigation evidence", prompt)
+        self.assertIn("recurrences extend that ticket by `rc_fingerprint`", prompt)
+        self.assertIn("Never create a follow-up Conductor workspace", prompt)
+        self.assertIn("never emit or request spawn placeholders", prompt)
+        for obsolete_promise in (
+            "spawn one investigation workspace",
+            "would spawn",
+            "spawn_requests",
+        ):
+            with self.subTest(obsolete_promise=obsolete_promise):
+                self.assertNotIn(obsolete_promise, prompt.lower())
+
     def test_every_schedule_has_a_matching_vancouver_timer(self) -> None:
         for entry in self.manifest()["schedules"]:
             with self.subTest(entry=entry["name"]):

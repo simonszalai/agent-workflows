@@ -3,9 +3,11 @@
 This is the unattended 6-hourly health run. Run the full system check (scraper depth
 included). Apply the current-producer ownership gate in scheduled-run.md §2a before a stale
 row affects health status, becomes an issue, or reaches ticketing. Then feed verified findings
-into /investigate-flow-fails: cluster by root cause,
-dedup against open autodev tickets (extend existing tickets with new logs and note what
-changed), create tickets and spawn one investigation workspace per genuinely new cluster.
+into /investigate-flow-fails and perform bounded cluster investigation within the current scheduled
+workspace. Cluster by root cause and dedup against open autodev tickets. Each genuinely new root
+cause creates one durable owning ticket with investigation evidence; recurrences extend that ticket
+by `rc_fingerprint` with new logs and a note about what changed. Never create a follow-up Conductor
+workspace, and never emit or request spawn placeholders.
 Intermittent external noise (DataDome, rate limits) is acknowledged, not ticketed.
 Do not post to Slack directly. End with the structured result: `issues` is `[]` when green;
 otherwise include one object per actionable issue with its short title, concrete proof, one
