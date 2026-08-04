@@ -330,6 +330,25 @@ class HermesScheduleTests(unittest.TestCase):
             with self.subTest(obsolete_promise=obsolete_promise):
                 self.assertNotIn(obsolete_promise, prompt.lower())
 
+    def test_health_issue_contract_uses_exact_canonical_keys(self) -> None:
+        prompt = (HERMES / "schedules" / "health-6h.md").read_text().replace("\n", " ")
+        contract = (ROOT / "skills" / "references" / "scheduled-run.md").read_text()
+        canonical_keys = (
+            "`title`, `concrete_proof`, `representative_example`, `next_step`, "
+            "and `owning_ticket_id`"
+        )
+        canonical_schema = """{
+  "title": "<short name>",
+  "concrete_proof": "<aggregate evidence>",
+  "representative_example": "<one occurrence>",
+  "next_step": "<specific action>",
+  "owning_ticket_id": "<ID or null>"
+}"""
+
+        self.assertIn(canonical_keys, prompt)
+        self.assertIn(canonical_schema, contract)
+        self.assertIn("input-only legacy aliases", contract)
+
     def test_every_schedule_has_a_matching_vancouver_timer(self) -> None:
         for entry in self.manifest()["schedules"]:
             with self.subTest(entry=entry["name"]):
@@ -391,9 +410,10 @@ class HermesScheduleTests(unittest.TestCase):
             "checks_failed: 0\n"
             "tickets_touched: [F0100, F0101]\n"
             "rc_fingerprints: []\n"
-            'issues: [{"title":"Worker offline","proof":"No heartbeat in 15m",'
-            '"example":"Worker alpha missed three polls",'
-            '"next_step":"Restart worker alpha","ticket_id":"B0100"}]\n'
+            'issues: [{"title":"Worker offline",'
+            '"concrete_proof":"No heartbeat in 15m",'
+            '"representative_example":"Worker alpha missed three polls",'
+            '"next_step":"Restart worker alpha","owning_ticket_id":"B0100"}]\n'
             "```\n"
         )
         parsed = runner.parse_result_block(message)
@@ -413,6 +433,19 @@ class HermesScheduleTests(unittest.TestCase):
                 }
             ],
         )
+        issues = runner.health_issues(parsed, "one check failed", "FAIL")
+        self.assertEqual(
+            runner.health_parent_message("❌", issues, "one check failed"),
+            "❌ [health-6h] 1 issue\n• Worker offline — ticket `B0100`",
+        )
+        self.assertEqual(
+            runner.health_issue_reply(issues[0]),
+            "*Worker offline*\n"
+            "• *Proof:* No heartbeat in 15m\n"
+            "• *Example:* Worker alpha missed three polls\n"
+            "• *Next:* Restart worker alpha\n"
+            "• *Ticket:* `B0100`",
+        )
         self.assertIsNone(runner.parse_result_block("no marker here"))
         self.assertIsNone(
             runner.parse_result_block("SCHEDULED_RUN_RESULT\nstatus: MAYBE\n")
@@ -422,6 +455,96 @@ class HermesScheduleTests(unittest.TestCase):
                 "SCHEDULED_RUN_RESULT\nstatus: FAIL\nissues: not-json\n"
             )
         )
+
+    def test_health_issue_legacy_aliases_are_normalized(self) -> None:
+        runner = load_schedule_runner()
+
+        self.assertEqual(
+            runner.parse_health_issues(
+                [
+                    {
+                        "title": " Worker offline ",
+                        "proof": " No heartbeat in 15m ",
+                        "example": " Worker alpha missed three polls ",
+                        "next_step": " Restart worker alpha ",
+                        "ticket_id": " B0100 ",
+                    }
+                ]
+            ),
+            [
+                {
+                    "title": "Worker offline",
+                    "proof": "No heartbeat in 15m",
+                    "example": "Worker alpha missed three polls",
+                    "next_step": "Restart worker alpha",
+                    "ticket_id": "B0100",
+                }
+            ],
+        )
+
+    def test_matching_health_issue_aliases_are_accepted(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "concrete_proof": "No heartbeat in 15m",
+            "proof": " No heartbeat in 15m ",
+            "representative_example": "Worker alpha missed three polls",
+            "example": " Worker alpha missed three polls ",
+            "next_step": "Restart worker alpha",
+            "owning_ticket_id": "B0100",
+            "ticket_id": " B0100 ",
+        }
+
+        self.assertIsNotNone(runner.parse_health_issues([issue]))
+
+    def test_conflicting_health_issue_aliases_are_rejected(self) -> None:
+        runner = load_schedule_runner()
+        canonical_issue = {
+            "title": "Worker offline",
+            "concrete_proof": "No heartbeat in 15m",
+            "representative_example": "Worker alpha missed three polls",
+            "next_step": "Restart worker alpha",
+            "owning_ticket_id": "B0100",
+        }
+        conflicts = {
+            "proof": "A different aggregate finding",
+            "example": "A different occurrence",
+            "ticket_id": "B0200",
+        }
+
+        for legacy_key, conflicting_value in conflicts.items():
+            with self.subTest(legacy_key=legacy_key):
+                issue = canonical_issue | {legacy_key: conflicting_value}
+                self.assertIsNone(runner.parse_health_issues([issue]))
+
+    def test_malformed_health_issue_evidence_is_rejected(self) -> None:
+        runner = load_schedule_runner()
+        valid_issue = {
+            "title": "Worker offline",
+            "concrete_proof": "No heartbeat in 15m",
+            "representative_example": "Worker alpha missed three polls",
+            "next_step": "Restart worker alpha",
+            "owning_ticket_id": "B0100",
+        }
+        malformed_issues = {
+            "missing proof": {
+                key: value
+                for key, value in valid_issue.items()
+                if key != "concrete_proof"
+            },
+            "blank proof": valid_issue | {"concrete_proof": "  "},
+            "missing example": {
+                key: value
+                for key, value in valid_issue.items()
+                if key != "representative_example"
+            },
+            "non-string example": valid_issue | {"representative_example": 7},
+            "non-string ticket": valid_issue | {"owning_ticket_id": 100},
+        }
+
+        for case, issue in malformed_issues.items():
+            with self.subTest(case=case):
+                self.assertIsNone(runner.parse_health_issues([issue]))
 
     def test_health_report_is_one_parent_list_and_one_reply_per_issue(self) -> None:
         runner = load_schedule_runner()

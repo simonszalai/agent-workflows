@@ -10,7 +10,8 @@ by `rc_fingerprint` with new logs and a note about what changed. Never create a 
 workspace, and never emit or request spawn placeholders.
 Intermittent external noise (DataDome, rate limits) is acknowledged, not ticketed.
 Do not post to Slack directly. End with the structured result: `issues` is `[]` when green;
-otherwise include one object per actionable issue with its short title, concrete proof, one
-representative example, next step, and owning ticket ID. Keep each field to one plain sentence.
+otherwise include one object per actionable issue using exactly `title`, `concrete_proof`,
+`representative_example`, `next_step`, and `owning_ticket_id`. Keep each field to one plain
+sentence.
 Hermes renders one parent bullet per issue and exactly one thread reply per issue. Clusters needing
 a decision are routed to #autodev-incidents by the runner.
