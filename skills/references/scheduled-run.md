@@ -35,12 +35,16 @@ What a scheduled run may and may never touch:
 
 ## 2. Slack report format
 
-All Slack output goes through the `slack-api` wrapper (see skills/tool-slack). Channel IDs are
-recorded in `hermes/schedules/schedules.yaml`; use IDs, not names, at runtime.
+The Hermes runner owns Slack delivery from the structured result. Scheduled agents do not post
+to Slack themselves. Channel IDs are recorded in `hermes/schedules/schedules.yaml`; the runner
+resolves the configured name to its ID.
 
-- **One line in the channel, detail in the thread.** Post exactly one summary line to the
-  schedule's channel, then attach all detail (per-check results, evidence, commands, ticket
-  links) as replies in that message's thread.
+- **Default format.** Post exactly one summary line to the schedule's channel, then attach detail
+  in that message's thread.
+- **`health-6h` issue format.** When issues exist, the parent message is a short header followed by
+  one bullet per issue. Each bullet names the issue and its owning ticket. Post exactly one thread
+  reply per issue containing its human-readable problem description and ticket ID. Do not add a
+  generic result-dump reply. A green run remains one standalone ✅ line with no thread reply.
 - **Green runs still post.** A healthy run posts its one ✅ line ("ran, nothing to report").
   Silence is indistinguishable from a broken scheduler.
 - **FAIL routing.** When a run ends FAIL (or BLOCKED on something needing a human decision),
@@ -64,6 +68,7 @@ checks_total: <int>
 checks_failed: <int>
 tickets_touched: [<ticket ids, may be empty>]
 rc_fingerprints: [<fingerprints emitted this run, may be empty>]
+issues: [{"title":"<short issue name>","problem":"<what is wrong>","ticket_id":"<ID or null>"}]
 blocked_on: <exact command or manual action a human must take; omit unless BLOCKED>
 ```
 
@@ -71,6 +76,10 @@ blocked_on: <exact command or manual action a human must take; omit unless BLOCK
 - `FAIL`: at least one check found a real problem (routes to `#autodev-incidents` per §2).
 - `BLOCKED`: the run could not complete an item without crossing the §1 boundary;
   `blocked_on` carries the exact resume command/action.
+- `issues` is required for `health-6h`: one single-line JSON array entry per actionable issue,
+  or `[]` on PASS. `ticket_id` is the open ticket that owns the root cause, not a fallback ticket
+  used only to store occurrence evidence. Use `null` only when no owning ticket could be assigned.
+  Keep `title` short enough for the parent bullet; put the explanation and evidence in `problem`.
 - The block is the last thing in the message. Free-form detail goes above it, never below.
 
 ## 4. Dedup convention (`rc_fingerprint`)
