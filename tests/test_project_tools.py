@@ -52,8 +52,13 @@ EXPECTED_SERVICE_ACCOUNT_TOKEN_ENVS = {
     "workflow-pro": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
 }
 
+EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS = {
+    "amaru": "op-dev-token",
+    "ts": "op-dev-token",
+}
+
 EXPECTED_RENDER_REFS = {
-    "amaru": "op://AMARU-sensitive/AMARU_RENDER_API_KEY/value",
+    "amaru": "op://AMARU/AMARU_RENDER_API_KEY/value",
     "autodev": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
     "ts": "op://TS/TS_RENDER_API_KEY/value",
     "workflow-pro": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
@@ -219,6 +224,10 @@ printf 'fake-render-key'
             self.assertEqual(
                 projects[project]["service_account"]["token_env"],
                 EXPECTED_SERVICE_ACCOUNT_TOKEN_ENVS[project],
+            )
+            self.assertEqual(
+                projects[project]["service_account"].get("keychain_item"),
+                EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS.get(project),
             )
         self.assertEqual(len(claimed), len(set(claimed)))
         token_envs = [

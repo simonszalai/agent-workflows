@@ -11,10 +11,11 @@
         "github.com/simonszalai/amaru-mobile"
       ],
       "service_account": {
-        "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN"
+        "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
+        "keychain_item": "op-dev-token"
       },
       "render": {
-        "api_key_ref": "op://AMARU-sensitive/AMARU_RENDER_API_KEY/value",
+        "api_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
         "workspace": {
           "discover_service_names": [
             "amaru-web",
