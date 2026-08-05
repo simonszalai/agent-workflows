@@ -633,6 +633,7 @@ class ValidationReceiptTest(unittest.TestCase):
             )
             self.assertEqual(repaired.returncode, 0, repaired.stdout)
             self.assertEqual(json.loads(repaired.stdout)["classification"], "repair_run")
+            self.assertEqual(json.loads(repaired.stdout)["repair_run_number"], 1)
 
             second_gate = repo / "second-gate.txt"
             second_gate.write_text("fail")
@@ -670,6 +671,33 @@ class ValidationReceiptTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(failed_repair.stdout)["classification"], "repair_run"
             )
+            self.assertEqual(json.loads(failed_repair.stdout)["repair_run_number"], 1)
+            second_gate.write_text("still-failing-again")
+            second_failed_repair = run_script(
+                "validation-receipt",
+                "--owner",
+                "orchestrator",
+                "--registry",
+                str(registry),
+                "--",
+                *second_failure_command,
+                cwd=repo,
+            )
+            self.assertEqual(second_failed_repair.returncode, 1, second_failed_repair.stdout)
+            self.assertEqual(json.loads(second_failed_repair.stdout)["repair_run_number"], 2)
+            second_gate.write_text("still-failing-third-time")
+            third_failed_repair = run_script(
+                "validation-receipt",
+                "--owner",
+                "orchestrator",
+                "--registry",
+                str(registry),
+                "--",
+                *second_failure_command,
+                cwd=repo,
+            )
+            self.assertEqual(third_failed_repair.returncode, 1, third_failed_repair.stdout)
+            self.assertEqual(json.loads(third_failed_repair.stdout)["repair_run_number"], 3)
             second_gate.write_text("pass")
             exhausted = run_script(
                 "validation-receipt",
@@ -682,7 +710,9 @@ class ValidationReceiptTest(unittest.TestCase):
                 cwd=repo,
             )
             self.assertEqual(exhausted.returncode, 2, exhausted.stdout)
-            self.assertIn("budget is exhausted", exhausted.stdout)
+            exhausted_receipt = json.loads(exhausted.stdout)
+            self.assertIn("budget is exhausted", exhausted_receipt["error"])
+            self.assertEqual(exhausted_receipt["repair_runs"], 3)
 
             forbidden = run_script(
                 "validation-receipt",

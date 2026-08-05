@@ -65,18 +65,30 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    subagent writes tests but does not execute them.
 6. **Pre-review health gate (main orchestrator only).** After all initial implementation and
    test-writing changes are present, run the canonical project health command exactly once. Record
-   the PASS by `(tree SHA, exact command)`. On failure, first run the **deterministic autofix
-   batch**: the orchestrator itself runs the project's maintained autofix commands (formatter
-   `--write`/`--fix`, lint autofix, import ordering) directly over the failing surfaces — one
-   batch, no subagent, does not consume a repair round — then reruns the gate once on the changed
-   tree. Diagnostics that a maintained CLI can fix never get an LLM repair owner.
-   A gate still failing after the batch may run up to three narrowly scoped repair rounds.
-   In each round, dispatch one repair chain; the repair builder still does not
-   validate, and this orchestrator reruns the failed gate once on the changed tree. Record every
+   the PASS by `(tree SHA, exact command)`. On failure, do not repair from the bounded tail or from
+   only the first failed layer. Inspect the complete `output_file` with bounded searches and build
+   one **complete failure inventory** covering every failed subcommand, diagnostic category, and
+   affected file. If the canonical command short-circuited, or completeness is uncertain, run all
+   of its independent leaf checks once as one non-short-circuit diagnostic sweep (start every leaf,
+   preserve every exit status, aggregate once). This sweep diagnoses the failed gate; it is not a
+   second health gate. Before repair, record one structured inventory with the source tree SHA,
+   gate log, every leaf check and exit status, diagnostic categories/files, and
+   `completeness: complete`; repair dispatch is forbidden while completeness is unknown.
+
+   Resolve the inventory as one batch. The orchestrator first runs the project's maintained
+   deterministic autofixes (formatter `--write`/`--fix`, lint autofix, import ordering) across the
+   whole changed surface without a subagent. If non-mechanical findings
+   remain, dispatch one repair chain with the entire remaining inventory; never dispatch or
+   validate one category, command, or file at a time. The repair builder still does not validate.
+   Only after the whole batch is repaired does this orchestrator rerun the canonical gate once on
+   the changed tree. Diagnostics that a maintained CLI can fix never get an LLM repair owner.
+   The workflow permits at most three changed-tree whole-batch repair-and-rerun rounds total. A
+   deterministic-only batch needs no repair owner but its gate rerun still consumes one of those
+   three executions. Each later round begins with the same complete-inventory rule so only genuinely
+   new or cascading failures can appear later. Record every
    failure-driven rerun and stop only if the third round still fails — three fresh-owner rounds
    after a deterministic batch means the failure is not mechanical, and more rounds have
-   historically bought hours, not fixes. Every dispatched repair owner
-   consumes one round. A repair that does not change the tree records a no-op and skips the invalid
+   historically bought hours, not fixes. A repair that does not change the tree records a no-op and skips the invalid
    duplicate gate execution before the next fresh repair owner. Stop before the cap only when the
    repair requires genuinely missing human information/authorization or an external condition no
    agent can change.
@@ -103,8 +115,8 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    canonical full health command exactly once on the new final tree. This makes at most two normal
    full gates: post-build/pre-review and post-resolution/final. Focused diagnostics are permitted
    only to identify a failing orchestrator gate and are keyed by `(tree SHA, exact command)`.
-   A failure uses the same deterministic-autofix-batch-first, fresh-repair-owner, changed-tree
-   rerun contract and three-round cap from
+   A failure uses the same complete-inventory, deterministic-autofix-batch-first,
+   fresh-repair-owner, whole-batch rerun contract and three-round cap from
    step 6; never return a resumable formatting, lint, type, test, or other deterministic failure to
    the user merely to obtain a fresh attempt budget.
    Do not query staging/prod as verification and do not trigger flows/processes.

@@ -211,7 +211,9 @@ Run `/ticket-build <ID>` with the same intensity packet. It honors open dashboar
 before building, materializes build todos per intensity (`direct` minimal; `standard`/`heavy`
 via `/create-build-todos`), implements via `/build`, reviews via `/review`, resolves via
 `/resolve-review`, enforces the artifact persistence gate, runs the local health gate per
-intensity, and pushes the feature branch. With `--skip-local-verify`, pass that through (the
+intensity, and pushes the feature branch. A failed gate is handled from one complete inventory of
+all failed checks and repaired as one batch; it must never advance formatting, lint, types, tests,
+or other validation layers one invocation at a time. With `--skip-local-verify`, pass that through (the
 health gate is skipped only on explicit user instruction). Stop for unresolved design decisions.
 
 After build, persist the final-tree SHA, health evidence, build/review artifacts, and delivery

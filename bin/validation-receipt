@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 FORBIDDEN_OWNERS = {"builder", "reviewer", "review_resolution_builder", "test_writer"}
+MAX_REPAIR_RUNS = 3
 
 
 class ReceiptError(ValueError):
@@ -195,19 +196,33 @@ def main() -> int:
         (row for row in reversed(command_history) if row.get("executed", True)),
         None,
     )
+    consecutive_failed_repairs = 0
+    for row in reversed(command_history):
+        if not row.get("executed", True):
+            continue
+        if row.get("status") != "failure":
+            break
+        if row.get("classification") != "repair_run":
+            break
+        consecutive_failed_repairs += 1
     if tree_sha is None:
         classification = "uncertain_attribution"
     elif exact:
         classification = "exact_tree_duplicate"
     elif latest_execution and latest_execution.get("status") == "failure":
-        if latest_execution.get("classification") == "repair_run":
+        if consecutive_failed_repairs >= MAX_REPAIR_RUNS:
             print(json.dumps({
                 "status": "invalid",
                 "executed": False,
                 "classification": "repair_run",
+                "repair_runs": consecutive_failed_repairs,
+                "max_repair_runs": MAX_REPAIR_RUNS,
                 "tree_sha": tree_sha,
                 "normalized_exact_command": exact_command,
-                "error": "changed-tree repair rerun budget is exhausted",
+                "error": (
+                    "changed-tree repair rerun budget is exhausted "
+                    f"({MAX_REPAIR_RUNS} repair runs)"
+                ),
             }, separators=(",", ":")))
             return 2
         classification = "repair_run"
@@ -256,6 +271,9 @@ def main() -> int:
         "attribution_certain": certain,
         "recorded_at_epoch": time.time(),
     }
+    if classification == "repair_run":
+        receipt["repair_run_number"] = consecutive_failed_repairs + 1
+        receipt["max_repair_runs"] = MAX_REPAIR_RUNS
     if receipt["tree_sha"] is not None:
         receipt_path = registry / f"{key_for(receipt['tree_sha'], exact_command)}.json"
         receipt["receipt_file"] = str(receipt_path)
