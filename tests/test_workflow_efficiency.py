@@ -966,6 +966,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         expected = {
             "P1": "references/lifecycle.md",
             "P2": "references/lifecycle.md",
+            "P2b": "references/lifecycle.md",
             "P3": "references/provider-project.md",
             "P4": "references/lifecycle.md",
             "P5": "references/lifecycle.md",
@@ -992,8 +993,19 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         provider = (references / "provider-project.md").read_text()
         back_sync = (references / "back-sync.md").read_text()
         verification = (references / "verification-and-status.md").read_text()
-        for anchor in ("get_ticket", "wait-ci", "align-merged-pr-workspace"):
+        for anchor in (
+            "get_ticket",
+            "wait-ci",
+            "align-merged-pr-workspace",
+            "Phase 2b: Local CI parity before GitHub CI",
+            "bin/ci-local --require-receipt",
+        ):
             self.assertIn(anchor, lifecycle)
+        self.assertLess(
+            lifecycle.index("### Phase 2b: Local CI parity before GitHub CI"),
+            lifecycle.index("### Phase 4: Check CI"),
+        )
+        self.assertIn("before every push that\ncreates a new CI generation", lifecycle)
         for anchor in ("Preflight every deploy command", "bin/redacted-exec", "negative inventory"):
             self.assertIn(anchor, execution)
         self.assertIn("runtime evidence producer", migration.lower())
@@ -1216,6 +1228,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("/ticket-promote <ID>", wrapper)
         self.assertIn("Staging repair/redeploy/reverify loop", wrapper)
         self.assertIn("at most **three repair rounds**", wrapper)
+        self.assertIn("before PR creation or the first CI wait", wrapper)
         self.assertIn('fork_turns: "none"', wrapper)
         self.assertIn("returned to active /ticket-deploy staging repair loop", verify)
         self.assertNotIn(

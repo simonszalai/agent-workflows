@@ -121,8 +121,10 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    the user merely to obtain a fresh attempt budget.
    Do not query staging/prod as verification and do not trigger flows/processes.
 10. **Push.** Before the push, run the pre-push local CI parity gate from
-   `../references/ci-self-heal.md` (`bin/ci-local --run` at the final tree, with judgment on its
-   SKIPs) so the first CI run is normally green. Then ensure the feature branch is pushed to the
+   `../references/ci-self-heal.md` (`bin/ci-local --run --receipt <absolute-receipt-path>` at the
+   final tree, with judgment on its SKIPs), batch-repair every locally reproducible failure, and
+   validate the exact-tree receipt with `bin/ci-local --require-receipt <absolute-receipt-path>` so
+   the first CI run is normally green. Then ensure the feature branch is pushed to the
    remote (no PR — `/auto-deploy` creates the PR at deploy time). Record which jobs passed
    locally and which were not locally reproducible.
 

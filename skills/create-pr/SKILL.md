@@ -235,7 +235,9 @@ base. Never rely on the repo's default base branch.
 
 If the branch has not already passed a local CI parity gate at this exact tree (e.g. via
 `/ticket-build` step 10), run the pre-push gate from `../references/ci-self-heal.md`
-(`bin/ci-local --run`, with judgment on its SKIPs) before pushing.
+(`bin/ci-local --run --receipt <absolute-receipt-path>`, with judgment on its SKIPs), repair its
+complete failure inventory as one batch, and require the exact-tree receipt before pushing. A prose
+claim that the gate ran is not reusable evidence.
 
 ```bash
 git push -u origin {branch-name}

@@ -14,6 +14,10 @@ inside the repair loop:
    and atomically records head/tree SHA, jobs, results, explicit skips, timestamps, and overall
    terminal status. A repo-local `bin/ci-local` or `scripts/ci-local` override wins automatically
    and must honor the same receipt contract.
+   The shared runner is deliberately non-short-circuiting across runnable jobs and steps: one run
+   completes the local surface and records every failing step instead of stopping at formatting and
+   discovering lint, types, or tests later. Treat failures caused only by a failed prerequisite as
+   cascades in the inventory, not independent code defects.
 2. Treat the tool as scaffolding, not an oracle — apply judgment to its SKIPs:
    - Jobs skipped for `services:` (e.g. Postgres): if the service is already available locally,
      force the job with `--run --job <name>`; otherwise note the gap.
@@ -23,7 +27,10 @@ inside the repair loop:
    - If an extracted command fails for a purely local-environment reason (missing local tool,
      stale local cache), fix the local environment or adapt the command on the fly — do not
      "fix" repo code to satisfy a broken local setup, and never weaken the check itself.
-3. Push only after every locally reproducible job passes. Immediately before the first push and
+3. On failure, use the complete receipt plus bounded log searches to form one failure inventory,
+   apply deterministic autofixes and all remaining mechanical repairs as one batch, then rerun the
+   full local parity gate once. Never fix/push/wait for CI one validation category at a time.
+4. Push only after every locally reproducible job passes. Immediately before the first push and
    every re-push, run
    `bin/ci-local --require-receipt <absolute-receipt-path>`. A missing, failed, or stale-tree
    receipt is a hard stop. Record which jobs passed locally and which were explicitly skipped as
@@ -31,6 +38,12 @@ inside the repair loop:
 
 A local parity PASS never replaces the real check set; it only makes round-trips rare. Deploy-only
 jobs (branch-gated migrate/release jobs) are out of scope for the local gate.
+
+Staging delivery must satisfy this gate before PR creation or the first CI wait, even when an
+earlier build phase claims it ran. Reuse is allowed only through a passing receipt whose tree SHA
+matches the exact local/remote PR-head tree; a missing or stale receipt is rerun locally. A rebase,
+merge, generated-file update, repair, or any other tree change invalidates the receipt and requires
+the gate again before the CI-triggering push.
 
 ## Loop
 

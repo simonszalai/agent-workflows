@@ -60,10 +60,11 @@ gh pr list --search "{ticket-id} in:title,body" \
   --state all --json number,url,headRefName,state
 ```
 
-- **PR found, open:** continue to Phase 3
+- **PR found, open:** continue to Phase 2b before the first CI wait
 - **PR found, already merged:** skip the merge phase (Phase 7), continue to deploy steps
 - **No PR found:** fall back to the current branch — if the current branch is a pushed
-  feature branch for this ticket (not `main`/`staging`), use it as the PR head; then run
+  feature branch for this ticket (not `main`/`staging`), use it as the PR head; complete Phase 2b,
+  then run
   `/create-pr {ticket-id} --context-file <run-local-cached-ticket>` internally to:
   1. Reuse the ticket artifacts already loaded in Phase 1
   2. Generate the PR summary from those artifacts + test results
@@ -73,6 +74,29 @@ gh pr list --search "{ticket-id} in:title,body" \
 
 If no PR matches the ticket ID and the current branch is not a usable feature branch for this
 ticket: STOP and report - "No PR or feature branch found for this ticket."
+
+
+### Phase 2b: Local CI parity before GitHub CI
+
+Before creating a PR, before the first wait on an existing open PR, and before every push that
+creates a new CI generation:
+
+1. Prove the local tree is the exact tree intended as the remote PR head. A mismatched local/remote
+   head must be reconciled through the repository's safe branch policy before using local evidence.
+2. Run `bin/ci-local --run --receipt <absolute-receipt-path>`. It extracts the repository's own
+   GitHub Actions `run:` steps and executes every locally reproducible job/step without
+   short-circuiting. Inventory explicit SKIPs and every failed step; do not trust only the last
+   failure or wait for Actions to reveal the next category.
+3. If anything fails, apply deterministic autofixes and all remaining mechanical fixes as one
+   batch, run the owning review/final-tree health requirements when code changed, commit, then rerun
+   the full local parity gate once. Do not push formatting, lint, type, test, generated-artifact, or
+   other locally reproducible failures one layer at a time.
+4. Run `bin/ci-local --require-receipt <absolute-receipt-path>` immediately before the push or first
+   CI wait. Missing, failing, stale-tree, or tree-changing receipts are a hard stop. Explicit SKIPs
+   require the judgment/reproduction rules in `ci-self-heal.md` and remain recorded as CI-owned gaps.
+
+An exact-tree passing receipt from `/ticket-build` may be reused; a prose claim cannot. PR creation,
+CI waiting, and staging landing are forbidden until this phase passes.
 
 
 ### Phase 4: Check CI
@@ -123,10 +147,12 @@ If behind_by > 0:
 # Rebase the PR branch onto target
 git checkout {branch}
 git rebase origin/{target_branch}
-git push --force-with-lease
 ```
 
-Wait for CI to re-run after rebase (checks must pass again) with one new
+The rebase invalidates all prior tree-keyed evidence. Complete Phase 2b on the rebased tree, repair
+all locally reproducible failures as one batch, require the new receipt, and only then push using
+the repository-approved safe update command (for a rebase, normally `git push --force-with-lease`).
+Wait for CI to run after that push (checks must pass again) with one new
 `wait-ci {pr_number} --timeout 540` invocation, using one new no-history waiter leaf under
 Conductor. Repair mechanical failures through the same CI
 self-heal loop. If it times out, return its resume command; never turn GitHub polling into repeated
@@ -157,4 +183,3 @@ It must report `aligned` or `already_aligned` before Phase 8. Do not use a norma
 multi-commit squash merges can replay or conflict. Do not delete or align `main`, `staging`, or any
 other repository-defined long-lived head. If the PR was already merged before this invocation, skip
 both the merge and current-workspace cleanup.
-
