@@ -184,6 +184,7 @@ def _validate_artifact(root: Path) -> None:
         root / "bin/project-context",
         root / "bin/psql-cli",
         root / "bin/render-cli",
+        root / "bin/resend-cli",
         root / "config/project-tools.json",
     )
     if not all(path.is_file() for path in required):
@@ -194,7 +195,7 @@ def _validate_artifact(root: Path) -> None:
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for path in (root / "hooks/autodev-memory-session-start.sh",
                  root / "hooks/autodev-memory-pre-agent.sh", root / "bin/psql-cli",
-                 root / "bin/render-cli"):
+                 root / "bin/render-cli", root / "bin/resend-cli"):
         check = subprocess.run(["bash", "-n", str(path)], capture_output=True)
         if check.returncode:
             raise SystemExit(f"install-agent-workflows: shell validation failed for {path.name}")

@@ -12,8 +12,9 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   `review-synthesize`, etc.) for
   heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
   equivalent logic inline on Codex/Grok
-- **bin/** - Shared executables including the CLI service wrappers (`render-cli`, `psql-cli`,
-  `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter), `compact-exec`
+- **bin/** - Shared executables including the CLI service wrappers (`render-cli`, `resend-cli`,
+  `psql-cli`, `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter),
+  `compact-exec`
   (bounded command output), `wait-ci` (single-call CI waiting), and
   `workflow-efficiency-report` (whole-agent-tree usage accounting)
 - **config/** - Trusted non-secret registries used by shared wrappers, including exact
@@ -94,6 +95,7 @@ resolution (see the matching `skills/tool-*` references):
 | Service   | Access |
 | --------- | ------ |
 | render    | `bin/render-cli` (project-aware official CLI + guarded `/v1` REST passthrough) |
+| resend    | `bin/resend-cli` (project-aware official CLI with guarded mutations) |
 | tailscale | `tailscale` CLI (local, credential-free) + `bin/tailscale-admin` (registry-scoped control-plane API) |
 | slack     | `bin/slack-api` (registry-scoped Web API methods) |
 | github    | `gh` CLI |
@@ -113,7 +115,13 @@ only one read-only SQL statement, injects the configured DSN only as `PGDATABASE
 and caps output. There is no default/fuzzy tier, sensitive-reference route, or mutation mode.
 Projects without a PostgreSQL profile, and tiers absent from a profile, fail closed.
 
-All credential-bearing wrappers authenticate their 1Password reads with the **calling project's own**
+`resend-cli` applies the same exact-origin selection and per-invocation credential injection to
+the official Resend CLI. Saved CLI profiles and credential flags are blocked. Known reads are
+allowed automatically; mutations require explicit project, write, and reason flags. See
+`skills/tool-resend/SKILL.md`.
+
+Project-aware credential-bearing wrappers authenticate their 1Password reads with the **calling
+project's own**
 service-account token. Each project in `config/project-tools.json` declares one
 `service_account.token_env` (a project-prefixed `<PROJECT>_OP_SERVICE_ACCOUNT_TOKEN`, set in
 cloud workspaces) and an optional `service_account.keychain_item` (its Mac Keychain service
@@ -122,10 +130,11 @@ consulted, the registry rejects unprefixed and duplicated `token_env` names, and
 wrapper from another project's repo demands that project's token rather than silently reusing
 the previous one.
 
-Credential *references* are registry-owned too: `render` and optional `postgres`, `slack`, and
-`tailscale` profiles carry their own `op://` refs per project, so no wrapper hardcodes another
-project's vault path. PostgreSQL and Slack refs must be non-sensitive. A project without the
-requested optional tool profile fails closed instead of reaching for another project's service.
+Credential *references* are registry-owned too: `render`, `resend`, and optional `postgres`,
+`slack`, and `tailscale` profiles carry their own `op://` refs per project, so no wrapper hardcodes
+another project's vault path. PostgreSQL and Slack refs must be non-sensitive. A project without
+the requested optional tool profile fails closed instead of reaching for another project's
+service.
 
 The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
 launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`

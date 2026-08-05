@@ -32,6 +32,10 @@
             "dsn_ref": "op://AMARU/STAGING_POSTGRES_URL/value"
           }
         }
+      },
+      "resend": {
+        "api_key_ref": "op://AMARU/RESEND_API_KEY/value",
+        "canary_domain": "amaruplatform.com"
       }
     },
     "autodev": {
