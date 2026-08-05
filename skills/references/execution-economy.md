@@ -252,11 +252,22 @@ when the receipt/report fails. This is enforcement, never an instruction for the
   before review. Reuse that recorded PASS when the final tree SHA is unchanged; if review
   resolution changes the tree, run the full gate exactly once on that new final tree. This is at
   most two normal full gates.
-- A failing ticket-orchestrator gate first gets the orchestrator's deterministic autofix batch
-  (maintained formatter/lint autofix CLIs run directly, no subagent, no round consumed), then may
-  run up to three narrowly scoped repair rounds. Each round
-  dispatches one repair chain; the repair builder still does not validate, and the orchestrator
-  reruns the failed gate once on the changed tree. Record every failure-driven rerun and stop only
+- A failing ticket-orchestrator gate must produce one complete failure inventory before any repair:
+  inspect the complete compact-exec `output_file` with bounded searches rather than trusting its
+  tail, and account for every failed subcommand, diagnostic category, and affected file. If the
+  canonical command short-circuited or completeness is uncertain, execute all independent leaf
+  checks once as one non-short-circuit diagnostic sweep that preserves each status and aggregates
+  once. Record the source tree SHA, gate log, every leaf/status, categories/files, and
+  `completeness: complete`; repair dispatch is forbidden while completeness is unknown. Never
+  repair or validate one layer at a time.
+- Resolve that inventory as one batch. Run maintained formatter/lint/import autofixes across the
+  whole changed surface directly without a subagent, then give all remaining findings
+  to one repair chain. The repair builder still does not validate. Only after the entire batch is
+  repaired may the orchestrator rerun the canonical gate once on the changed tree. There are at
+  most three changed-tree whole-batch repair-and-rerun rounds total. A deterministic-only batch
+  needs no repair owner, but its gate rerun consumes one of those three executions. Every later
+  round starts with the same complete-inventory rule so it is reserved for genuinely new or
+  cascading failures. Record every failure-driven rerun and stop only
   if the third round still fails, genuinely missing human information/authorization is required,
   or an external condition no agent can change blocks progress. Focused diagnostics used to isolate
   a gate failure are also orchestrator-owned and keyed by `(tree SHA, exact command)`.
@@ -265,10 +276,11 @@ when the receipt/report fails. This is enforcement, never an instruction for the
   key derived from the exact working-tree SHA and canonical working-directory + argv command. An
   exact-tree, exact-command PASS is returned without execution; any tree or command change
   invalidates reuse.
-  An unchanged-tree failure cannot rerun. Every repair-owner dispatch consumes one round; record a
+  An unchanged-tree failure cannot rerun. Record a
   no-op repair without executing the duplicate gate, then dispatch the next fresh owner instead of
-  returning the work to the user. After each changed-tree repair, the orchestrator may execute the
-  failed gate once, up to the ticket workflow's three-round cap. Persist the round counter across
+  returning the work to the user. After each changed-tree whole-batch repair, the orchestrator may
+  execute the failed gate once, up to the ticket workflow's three-round cap. The wrapper permits
+  the initial execution plus those three changed-tree repair runs. Persist the round counter across
   phase rotations and resumed invocations so context rotation can never reset the cap. The wrapper
   mechanically rejects builder/reviewer ownership.
 - `bin/workflow-efficiency-report` parses compact-exec receipts and reports validation executions

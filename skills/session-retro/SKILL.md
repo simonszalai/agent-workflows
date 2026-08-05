@@ -75,6 +75,10 @@ Repeated work:
   gate after resolutions when the tree changed. Count full-suite executions; more than one for the
   same `(tree SHA, exact command)` is a finding unless it is the recorded rerun after a failing
   gate and changed-tree repair.
+- Layer-by-layer repair is a finding: after a failed aggregate gate, the orchestrator must inventory
+  the complete log (and use one non-short-circuit leaf-check sweep when needed), then repair every
+  known category as one batch. Sequential rounds that reveal pre-existing formatting, lint, type,
+  test, or policy failures from the original tree mean the failure inventory was incomplete.
 - Identical MCP reads (same tool, same args) mean the run ignored its cache contract:
   ticket context is fetched once, bounded (`detail`, `artifact_types`,
   `include_events=false`), and passed to children as a packet.
