@@ -4,8 +4,8 @@ description: >-
   Deploy-and-verify phase for one standalone ticket. Takes a target argument — staging, prod,
   or full — and orchestrates the existing owners: auto-deploy (deploy mechanics), ticket-verify
   (evidence), ticket-promote (production landing + deploy). Self-heals routine CI failures and
-  stops on behavior-verification failures, blockers, unsafe evidence triggers, genuine timing
-  waits, or human-judgment decisions.
+  autonomously repairs staging verification failures through fresh bounded owners, while stopping
+  on exhausted repair budgets, unsafe evidence triggers, genuine timing waits, or human decisions.
 max_turns: 30
 ---
 
@@ -146,13 +146,16 @@ Enter from lifecycle truth rather than repeating completed legs:
 | `to_verify_prod` | n/a | §5 verification only | §5 verification only |
 | `prod_verified_needs_cleanup` | n/a | `/ticket-verify production <ID>` | same |
 | `completed` | report already complete; stop successfully | same | same |
-| `verify_staging_failed` / `verify_prod_failed` | stop; do not retry past a failure without a new explicit user instruction | same | same |
+| `verify_staging_failed` | resume §3 from the persisted failure class and repair-round counter | stop: staging repair pending | resume §3 |
+| `verify_prod_failed` | n/a | stop at the production safety boundary with the persisted remediation route | same |
 
-Do not resume past `BLOCKED`, `NEEDS_MORE_TIME`, `PASS (contract-missing)` (unless its recorded
-`risk_tier` is `tiny_safe` per ticket-verify §2a), missing evidence, or a stale evidence artifact
-merely because the lifecycle status appears later than expected. An evidence artifact is *stale*
-only when scope code landed on the environment's branch after the artifact's activation boundary,
-or its `staging_head_sha` no longer contains the promoted commits; age alone is not staleness.
+Do not resume past `NEEDS_MORE_TIME`, `PASS (contract-missing)` (unless its recorded `risk_tier` is
+`tiny_safe` per ticket-verify §2a), missing evidence, or a stale evidence artifact merely because
+the lifecycle status appears later than expected. A `BLOCKED` verdict resumes only when its repair
+packet classifies the precondition as agent-resolvable; otherwise it remains a stop. An evidence
+artifact is *stale* only when scope code landed on the environment's branch after the artifact's
+activation boundary, or its `staging_head_sha` no longer contains the promoted commits; age alone
+is not staleness.
 
 ### 2. Deploy to staging (`staging` and `full`)
 
@@ -169,13 +172,15 @@ Run:
 /ticket-verify staging <ID> --no-promote --produce-evidence
 ```
 
-Stop on every outcome except exact `PASS`:
+Handle the verdict as follows:
 
-- `FAIL`: require a persisted failure class before any new revision. Only `code_defect` may enter
-  the normal product build/review/redeploy loop. Route `verifier_defect`, `environment_capacity`,
-  `external_observation`, and `invalid_evidence` to their bounded verifier/environment/
-  observation/evidence owners without mutating product code. `unknown` fails closed and stops.
-- `BLOCKED`: stop with the exact missing deployment, unsafe trigger, or contract repair.
+- `FAIL`: require a persisted failure class, investigation artifact, and machine-readable repair
+  packet before another attempt. Enter the staging repair loop below rather than returning the
+  failure to the user.
+- `BLOCKED`: repair and retry when the missing deployment, verifier, evidence contract, or other
+  precondition is agent-resolvable. Stop only for genuinely missing human information/
+  authorization, an unsafe trigger that needs a human decision, or an external condition no agent
+  can change.
 - `NEEDS_MORE_TIME`: stop with the recorded awaited condition and exact resume command. It is
   valid only when a live producer or already-triggered downstream process will produce evidence
   by waiting.
@@ -192,6 +197,36 @@ contract delta before any third code mutation. Same-risk follow-ups use one delt
 delta reviewer; a newly crossed security, auth, runtime-protocol, migration, destructive-data, or
 browser-patch boundary resets to the full/heavy review path with its specialist coverage. Rotation
 continues these gates from the immutable checkpoint; it never skips them.
+
+#### Staging repair/redeploy/reverify loop
+
+The deployment owner owns this loop. `/ticket-verify` diagnoses and persists truth; it never
+recursively invokes another deployment owner.
+
+1. Persist `repair_round`, activation key, evidence-contract version, failed evidence artifact,
+   investigation artifact, failure class, exact failing rows, and prior attempted fix. The initial
+   verification is round 0. Permit at most **ten repair rounds**, each followed by one new
+   verification attempt. Persist the counter across rotations and resumed invocations; neither a
+   new agent nor a new `/ticket-flow` turn resets it.
+2. For every agent-resolvable `FAIL` or `BLOCKED`, dispatch exactly one fresh
+   `fork_turns: "none"` repair subagent with the bounded failure packet. Route by class:
+   `code_defect` through the normal delta builder, review, canonical local health gate, commit/push,
+   deploy; `verifier_defect` to the verifier owner; `environment_capacity` to the environment owner;
+   `external_observation` to the observation/provider owner; `invalid_evidence` to the evidence-
+   contract owner; `unknown` to one fresh bounded investigator or the exact missing-evidence owner.
+   The repair owner changes only its assigned surface and never grades its own fix.
+3. Re-run every lifecycle stage invalidated by the repair. Product/config changes require review,
+   a final-tree health PASS, commit/push, and staging redeploy before verification. Verifier or
+   evidence-only repairs reuse the activated product revision only when identity proves it is still
+   current. Then invoke `/ticket-verify staging <ID> --no-promote --produce-evidence` once.
+4. On another failure, persist the delta and start the next fresh repair owner. Do not stop because
+   the failure changed shape, because several deterministic diagnostics remain, or because a phase
+   agent exhausted its own context; rotate from the durable checkpoint and continue.
+5. Stop successfully on exact `PASS`. Stop unsuccessfully only when round 10 still fails, required
+   human information/authorization is genuinely absent, or an external condition is proven
+   unchangeable by agents. `unknown` alone is not a stop: name and pursue the missing-evidence route
+   in the next round unless that evidence requires one of those genuine external inputs. Report all
+   ten attempted deltas when the cap is exhausted.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 

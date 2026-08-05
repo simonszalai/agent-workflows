@@ -122,10 +122,10 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("(tree SHA, exact command)", ticket_build)
         self.assertIn("If unchanged, reuse that PASS", ticket_build)
         normalized_ticket_build = " ".join(ticket_build.split())
-        self.assertIn("up to three narrowly scoped repair rounds", normalized_ticket_build)
-        self.assertIn("stop only if the third rerun still fails", normalized_ticket_build)
+        self.assertIn("up to ten narrowly scoped repair rounds", normalized_ticket_build)
+        self.assertIn("stop only if the tenth round still fails", normalized_ticket_build)
         self.assertNotIn("one narrowly scoped repair chain", normalized_ticket_build)
-        self.assertIn("up to three narrowly scoped repair rounds", economy)
+        self.assertIn("up to ten narrowly scoped repair rounds", economy)
         self.assertIn("at most two normal full gates", " ".join(ticket_build.split()))
         self.assertIn("Reuse that recorded PASS", economy)
         self.assertIn("Plan MCP artifact is mandatory", intensity)
@@ -1196,14 +1196,21 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             self.assertEqual(summary["status"], "failure")
             self.assertEqual(summary["state_type"], "FAILED")
 
-    def test_ticket_deploy_owns_the_complete_fail_stop_chain(self) -> None:
+    def test_ticket_deploy_owns_the_complete_staging_repair_chain(self) -> None:
         wrapper = (ROOT / "skills/ticket-deploy/SKILL.md").read_text()
         verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
         ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
 
         self.assertIn("--no-promote --produce-evidence", wrapper)
         self.assertIn("/ticket-promote <ID>", wrapper)
-        self.assertIn("Stop on every outcome except exact `PASS`", wrapper)
+        self.assertIn("Staging repair/redeploy/reverify loop", wrapper)
+        self.assertIn("at most **ten repair rounds**", wrapper)
+        self.assertIn('fork_turns: "none"', wrapper)
+        self.assertIn("returned to active /ticket-deploy staging repair loop", verify)
+        self.assertNotIn(
+            "do not retry past a failure without a new explicit user instruction", wrapper
+        )
+        self.assertNotIn("do not retry past a `FAIL`/`BLOCKED` verdict", ticket_flow)
         self.assertIn("final `completed` status", wrapper)
         self.assertIn("ticket-attributed incident cleanup", wrapper)
         self.assertIn("scripts.prefect_ops.delete_ticket_flow_runs", wrapper)

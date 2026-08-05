@@ -63,8 +63,8 @@ Stop only when repair requires a genuine decision or unavailable authority, incl
 - destructive/schema/data action not already authorized by the ticket contract;
 - unavailable credentials, permissions, external manual deployment, or a persistent third-party
   outage;
-- three consecutive repair cycles with the same normalized failure signature and no new evidence
-  or progress.
+- ten consecutive repair cycles with the same normalized failure signature and no new evidence or
+  progress. Persist the cycle count across rotations and resumed invocations.
 
 Never bypass, disable, mark-optional, or silently ignore a required check to make CI green. Never
 rewrite unrelated code just because a broad check exposed a pre-existing failure; fix it only when

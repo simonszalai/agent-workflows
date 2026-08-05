@@ -252,19 +252,23 @@ when the receipt/report fails. This is enforcement, never an instruction for the
   before review. Reuse that recorded PASS when the final tree SHA is unchanged; if review
   resolution changes the tree, run the full gate exactly once on that new final tree. This is at
   most two normal full gates.
-- A failing ticket-orchestrator gate may run up to three narrowly scoped repair rounds. Each round
+- A failing ticket-orchestrator gate may run up to ten narrowly scoped repair rounds. Each round
   dispatches one repair chain; the repair builder still does not validate, and the orchestrator
   reruns the failed gate once on the changed tree. Record every failure-driven rerun and stop only
-  if the third rerun still fails. Focused diagnostics used to isolate a gate failure are also
-  orchestrator-owned and keyed by `(tree SHA, exact command)`.
+  if the tenth round still fails, genuinely missing human information/authorization is required,
+  or an external condition no agent can change blocks progress. Focused diagnostics used to isolate
+  a gate failure are also orchestrator-owned and keyed by `(tree SHA, exact command)`.
 - Execute reusable gates through
   `bin/validation-receipt --owner orchestrator -- <exact command>`. It persists the receipt under a
   key derived from the exact working-tree SHA and canonical working-directory + argv command. An
   exact-tree, exact-command PASS is returned without execution; any tree or command change
   invalidates reuse.
-  An unchanged-tree failure cannot rerun or consume another repair round. After each changed-tree
-  repair, the orchestrator may execute the failed gate once, up to the ticket workflow's three-round
-  cap. The wrapper mechanically rejects builder/reviewer ownership.
+  An unchanged-tree failure cannot rerun. Every repair-owner dispatch consumes one round; record a
+  no-op repair without executing the duplicate gate, then dispatch the next fresh owner instead of
+  returning the work to the user. After each changed-tree repair, the orchestrator may execute the
+  failed gate once, up to the ticket workflow's ten-round cap. Persist the round counter across
+  phase rotations and resumed invocations so context rotation can never reset the cap. The wrapper
+  mechanically rejects builder/reviewer ownership.
 - `bin/workflow-efficiency-report` parses compact-exec receipts and reports validation executions
   keyed by `(tree_sha, normalized_exact_command)`. It classifies `initial_run`,
   `exact_tree_duplicate`, `changed_tree_run`, and `repair_run`. Attribution is diagnostic only:

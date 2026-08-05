@@ -247,8 +247,10 @@ re-run/fix the evidence write rather than marking the milestone complete.
   prohibited.
 - `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
-  Stop only for a genuine external/manual blocker or the same unresolved failure repeating after
-  the documented retry/fix loop.
+  Use one fresh no-history repair owner per round and persist the failure class, contract delta,
+  attempted fix, and round across rotations. Continue for up to ten repair/redeploy/reverify rounds.
+  Stop earlier only for genuinely missing human information/authorization or an external condition
+  no agent can change; otherwise stop only if round 10 still fails.
 
 Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
 milestone it was asked to execute.

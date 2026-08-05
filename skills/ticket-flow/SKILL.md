@@ -148,9 +148,11 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   Intensity never skips the plan artifact.
 - **Resume from lifecycle truth**: skip phases whose artifacts and status already exist (a
   `planned` ticket with a plan artifact enters at build; a built, locally verified ticket enters
-  at deploy). Do not resume past a `verify_*_failed` status without a new explicit user
-  instruction. When resuming at build, re-derive intensity from the packet or the same gate and
-  pass it into `/ticket-build`.
+  at deploy). A `verify_staging_failed` status is a resumable checkpoint inside the autonomous
+  staging repair loop, not a user-interaction gate. Resume from its persisted failure class and
+  round counter. Production failures retain their environment-specific safety boundary. When
+  resuming at build, re-derive intensity from the packet or the same gate and pass it into
+  `/ticket-build`.
 - For a Hermes-origin ticket, consume only server-returned pickup/approval truth. The restricted
   principal cannot self-approve or set execution statuses; an admin approval pair authorizes the
   current live plan, and any later Hermes edit clears it. Do not add a client-side origin filter or
@@ -230,7 +232,11 @@ If `--no-land` or target `none`, stop after `/ticket-build` and report remaining
 `/ticket-deploy` owns the entire leg: `/auto-deploy` staging deploy, staging evidence
 verification, and — `full` only, gated on exact staging `PASS` — promotion, production deploy,
 production verification, incident cleanup, and `completed`. Relay its terminal report and stop
-conditions verbatim; do not retry past a `FAIL`/`BLOCKED` verdict.
+conditions verbatim. A staging `FAIL` is not terminal: `/ticket-deploy` must run its bounded
+fresh-subagent repair/redeploy/reverify loop for up to ten rounds. Relay a stop only after PASS, the
+persisted ten-round cap is exhausted, or the child identifies genuinely missing human
+information/authorization or an external condition no agent can change. Do not convert a routine
+deterministic failure into a request for the user to invoke `/ticket-flow` again.
 
 **Standalone, direct-production target:** `/ticket-deploy <ID> prod` (its §4a gate re-checks
 risk and asks for confirmation when the diff is not tiny/safe).
