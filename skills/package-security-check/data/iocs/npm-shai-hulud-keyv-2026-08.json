@@ -1,0 +1,42 @@
+{
+  "name": "npm-shai-hulud-keyv-2026-08",
+  "source": "https://www.aikido.dev/blog/keyv-and-friends-compromised-in-npm-supply-chain-attack",
+  "incident_date": "2026-08-04",
+  "description": "Mini Shai-Hulud worm via keyv maintainer compromise; preinstall setup.mjs + Math_Symbol.js/math_init.js credential stealer",
+  "package_versions": {
+    "keyv": ["6.0.0"],
+    "flat-cache": ["6.1.24"],
+    "file-entry-cache": ["11.1.6"],
+    "cacheable-request": ["13.0.20"],
+    "cacheable": ["2.5.1"],
+    "@cacheable/memory": ["2.2.1"],
+    "cache-manager": ["7.2.10"],
+    "@cacheable/node-cache": ["3.1.2"],
+    "@cacheable/utils": ["2.5.1"],
+    "@cacheable/net": ["2.1.1"],
+    "ecto": ["5.0.1"],
+    "@deliveroo/reevent": ["1.0.1"],
+    "@or-sdk/invitations": ["1.4.9"],
+    "@picsart/ai-sdk": ["3.32.2"],
+    "@qlik/embed-runtime": ["1.6.4"],
+    "picasso.js": ["2.11.6"]
+  },
+  "payload_file_names": [
+    "Math_Symbol.js",
+    "math_init.js",
+    "setup.mjs"
+  ],
+  "fingerprints": [
+    "Shai-Hulud: Here We Go Again",
+    "npm-cache.com",
+    "0xE1f2395ee43e45A1556EC6438a88c31B83493103",
+    "bun-v1.3.13",
+    "54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668",
+    "fd3ca4007b225fdf8de7af4345a19179d5efa8c4bb9205f88cda806e5684b1eb",
+    "9fc2570b7cef51c1b8df116d144d11ff4096357be7d2c4c6367cfc2509cf1bcc"
+  ],
+  "workflow_patterns": [
+    "npm-cache.com",
+    "Shai-Hulud: Here We Go Again"
+  ]
+}
