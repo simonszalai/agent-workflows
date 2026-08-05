@@ -64,9 +64,11 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    The test-writing subagent writes tests but does not execute them.
 6. **Pre-review health gate (main orchestrator only).** After all initial implementation and
    test-writing changes are present, run the canonical project health command exactly once. Record
-   the PASS by `(tree SHA, exact command)`. A failing gate may dispatch one narrowly scoped repair
-   chain; the repair builder still does not validate, and this orchestrator reruns the failed gate
-   once on the changed tree. Record that failure-driven rerun and stop if it still fails.
+   the PASS by `(tree SHA, exact command)`. A failing gate may run up to three narrowly scoped
+   repair rounds. In each round, dispatch one repair chain; the repair builder still does not
+   validate, and this orchestrator reruns the failed gate once on the changed tree. Record every
+   failure-driven rerun and stop only if the third rerun still fails. A repair that does not change
+   the tree cannot consume another rerun.
    On **`direct`**, when risk surfaces are absent, this may be the only full gate if review does
    not change the tree. Never skip health entirely.
 7. **Review and resolve.** Invoke the `/review` skill with the intensity packet (do not hand-roll
