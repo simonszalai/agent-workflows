@@ -78,8 +78,10 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    `manual` findings for a human.
 9. **Final local verification** — if review resolution changed the tree since the pre-review PASS,
    the main orchestrator runs the canonical full health command exactly once on the new final tree.
-   If the tree is unchanged, reuse the prior PASS. A failing gate may trigger one narrow repair
-   chain and one rerun on its changed tree; focused diagnostics remain orchestrator-owned.
+   If the tree is unchanged, reuse the prior PASS. A failing gate enters the shared ten-round repair
+   loop: dispatch one fresh narrow repair owner, rerun once on its changed tree, and continue until
+   PASS. Stop early only for genuinely missing human information/authorization or an external
+   condition no agent can change; focused diagnostics remain orchestrator-owned.
 10. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
     the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny
     safe work). Epic-step landing remains parent-owned by the milestone/epic orchestrator.

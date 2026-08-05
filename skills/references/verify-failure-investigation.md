@@ -49,37 +49,53 @@ Write one `investigation` artifact on the ticket (or the epic gate for epic/mile
 The investigation artifact is created **in addition to** the FAIL evidence artifact, never as a
 replacement, and never rewrites the FAIL verdict.
 
-## 3. Remediation decision: direct fix or proposed routes
+## 3. Remediation decision and repair packet
 
-Choose exactly one path per scope and record it in the investigation artifact and final output.
+Choose exactly one route per scope and record it in the investigation artifact and a
+machine-readable repair packet for the deployment owner.
 
-### 3a. Direct-fix gate
+### 3a. Autonomous staging repair
 
-Apply a fix in the same run **only when all of these hold**:
+For standalone staging under `/ticket-deploy`, every agent-resolvable failure enters that owner's
+ten-round repair/redeploy/reverify loop. This is not limited to tiny code fixes. Preserve the
+normal safety machinery for the changed surface: delta/full review, specialists, health gates,
+commit/push, deploy, and evidence collection.
+
+The verifier itself does not edit code or environments. It returns the persisted failure class and
+repair packet to `/ticket-deploy`, which dispatches exactly one fresh no-history repair subagent for
+the round. The packet includes the activation/contract key, failed rows, supporting evidence,
+classification, exact proposed change/owner, prior attempted fixes, and current persisted round.
+
+An automatic product-code repair still requires all of these:
 
 1. standalone ticket mode (never in `--epic`/`--milestone` mode — remediation there belongs to
    `/epic-flow`'s fix loop) and the environment is **staging**;
-2. root cause is `confirmed` with reproducible evidence and classified `code_defect`;
-3. the fix is small and low-risk by the §9b risk vocabulary: no schema changes, no
-   deploy-config/infra changes, no auth/security surface, no data backfill or migration;
-4. the fix lands on the ticket's existing branch through the normal owners — a `builder` agent
-   makes the code change, the branch is pushed, and redeploy + re-verification go through
-   `/ticket-deploy staging` — `/ticket-verify` itself never edits environments or deploys.
+2. root cause is `confirmed`, or `likely` with reproducible evidence and a bounded reversible test
+   of the hypothesis, and classified `code_defect`;
+3. the remediation preserves the approved intent; a scope/design change or destructive choice
+   requires the missing human decision;
+4. the fix lands on the ticket's existing branch through the normal owners: a fresh `builder`
+   agent makes the code change, then review, final health, push, redeploy, and re-verification run
+   before the next verdict. `/ticket-verify` itself never edits environments or deploys.
 
 Production FAILs are never direct-fixed from this skill. Code/config/auth remediation must use the
 tracked lifecycle route in §3b; ticketless `/go-fable` and untracked auxiliary branches are prohibited
 as the final route.
 
-After a direct fix is dispatched, the current run's FAIL verdict and artifacts stand unchanged;
-the re-run of `/ticket-verify staging <scope>` after redeploy produces the next verdict.
+The current run's FAIL verdict and artifacts stand unchanged; the next `/ticket-verify staging
+<scope>` after repair/redeploy creates the next verdict. Persist and increment the repair round when
+the repair owner is dispatched. A no-op result still consumes that round but does not authorize a
+duplicate verification of an unchanged source-of-truth surface.
 
 ### 3b. Proposed routes (default)
 
-When the direct-fix gate does not pass — or confidence is below `confirmed` — propose 2–4
-ranked routes in the investigation artifact and final output. Each route names: the action, its
-owner (`/ticket-flow` on a new bug ticket, `/ticket-deploy`, `/milestone-flow`, a human
-decision, or a specific missing-evidence check to run next), what it would prove or fix, and its
-risk. The top route must be concrete enough to execute without re-deriving the investigation.
+Outside an active standalone staging deployment loop, propose 2–4 ranked routes in the
+investigation artifact and final output. Inside an active loop, `unclear`/`unknown` returns the top
+specific missing-evidence check and owner for the next round; uncertainty alone never asks the user
+to restart the workflow. Each route names: the action, its owner (`/ticket-flow` on a new bug
+ticket, `/ticket-deploy`, `/milestone-flow`, a human decision, or a specific missing-evidence check
+to run next), what it would prove or fix, and its risk. The top route must be concrete enough to
+execute without re-deriving the investigation.
 
 For every production or epic/milestone remediation that changes code, config, or authentication,
 the top route must create a new fix ticket/epic step attached to the failed milestone. It names
@@ -101,10 +117,12 @@ are true; missing stages are explicit blockers with their owner and resume comma
 After two staging revisions for the same activation/contract, enter stabilization mode before any
 further mutation: persist the latest failure class and the exact contract delta. A third mutation
 without those fields is invalid. Stabilization does not turn `unknown` into a code defect and does
-not waive deploy, review, or verification gates.
+not waive deploy, review, or verification gates. The deployment owner caps the loop at ten repair
+rounds and persists the counter across agent rotations and user-invoked resumes.
 
 ## 4. Output additions
 
 The final report's FAIL rows must include the investigation artifact ID, the root-cause one-liner
-with confidence, and either `direct fix dispatched -> /ticket-deploy staging` or the top proposed
-route. Production/epic rows also include the five lifecycle stage fields above.
+with confidence, repair packet reference, persisted repair round, and either `returned to active
+/ticket-deploy staging repair loop` or the top proposed route. Production/epic rows also include
+the five lifecycle stage fields above.

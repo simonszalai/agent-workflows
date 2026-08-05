@@ -71,8 +71,8 @@ such as `/ticket-deploy` (targets `staging`/`full`) or by the user. It does not 
 - On failure, set `verify_staging_failed` or `verify_prod_failed` on the standalone ticket, or
   record the failed epic/milestone gate and failed evidence rows for `/epic-flow`'s fix loop.
   Every FAIL is then root-caused (§9d): a bounded read-only investigation persists an
-  `investigation` artifact, and the run either dispatches a gated low-risk direct fix through
-  the normal build/deploy owners or proposes ranked remediation routes.
+  `investigation` artifact and machine-readable repair packet, then returns it to an active
+  standalone staging deployment owner's bounded repair loop or proposes ranked remediation routes.
 - Blocker metadata is **not** a skip signal. If a selected ticket/gate has an active blocker,
   first re-check the recorded blocking condition against source-of-truth systems. If the blocker
   has cleared, continue verification in the same run.
@@ -692,9 +692,10 @@ Load `../references/verify-failure-capture.md` only after a staging or productio
 A FAIL is not fully reported until it is root-caused. After §9c, load
 `../references/verify-failure-investigation.md` and follow it: spawn bounded read-only investigator
 agents per failure cluster, persist an `investigation` artifact with the root-cause hypothesis,
-confidence, and classification, then either dispatch a direct fix (standalone staging only, when
-the strict low-risk gate passes — the fix goes through `builder` + `/ticket-deploy staging`,
-never through this skill mutating environments) or propose 2–4 ranked remediation routes. The
+confidence, and classification, then either return a repair packet to the active standalone staging
+`/ticket-deploy` loop (which dispatches a fresh repair subagent and owns repair/redeploy/reverify)
+or propose 2–4 ranked remediation routes. This skill never recursively invokes `/ticket-deploy` or
+mutates product code/environments. The
 FAIL verdict and evidence artifacts are never rewritten by this step.
 
 Production or epic remediation that changes code/config/auth must create a new fix ticket/epic
@@ -733,11 +734,11 @@ E0007/final      prod     PASS             final gate artifact <id>; per-step ev
 ```
 
 For every FAIL row, append the §9d result: investigation artifact ID, root-cause one-liner with
-confidence, and either `direct fix dispatched -> /ticket-deploy staging` or the top proposed
-route, e.g.:
+confidence, repair packet, persisted round, and either `returned to active /ticket-deploy staging
+repair loop` or the top proposed route, e.g.:
 
 ```text
-F0125            staging  FAIL             evidence <id>; investigation <id>; root cause: enqueue filter drops NULL owners (confirmed, code_defect); direct fix dispatched -> /ticket-deploy staging
+F0125            staging  FAIL             evidence <id>; investigation <id>; repair packet <id>, round 2; root cause: enqueue filter drops NULL owners (confirmed, code_defect); returned to active /ticket-deploy staging repair loop
 ```
 
 Also include any cleanup exception:

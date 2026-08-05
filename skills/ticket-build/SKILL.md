@@ -64,11 +64,14 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    The test-writing subagent writes tests but does not execute them.
 6. **Pre-review health gate (main orchestrator only).** After all initial implementation and
    test-writing changes are present, run the canonical project health command exactly once. Record
-   the PASS by `(tree SHA, exact command)`. A failing gate may run up to three narrowly scoped
+   the PASS by `(tree SHA, exact command)`. A failing gate may run up to ten narrowly scoped
    repair rounds. In each round, dispatch one repair chain; the repair builder still does not
    validate, and this orchestrator reruns the failed gate once on the changed tree. Record every
-   failure-driven rerun and stop only if the third rerun still fails. A repair that does not change
-   the tree cannot consume another rerun.
+   failure-driven rerun and stop only if the tenth round still fails. Every dispatched repair owner
+   consumes one round. A repair that does not change the tree records a no-op and skips the invalid
+   duplicate gate execution before the next fresh repair owner. Stop before the cap only when the
+   repair requires genuinely missing human information/authorization or an external condition no
+   agent can change.
    On **`direct`**, when risk surfaces are absent, this may be the only full gate if review does
    not change the tree. Never skip health entirely.
 7. **Review and resolve.** Invoke the `/review` skill with the intensity packet (do not hand-roll
@@ -92,6 +95,9 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    canonical full health command exactly once on the new final tree. This makes at most two normal
    full gates: post-build/pre-review and post-resolution/final. Focused diagnostics are permitted
    only to identify a failing orchestrator gate and are keyed by `(tree SHA, exact command)`.
+   A failure uses the same fresh-repair-owner, changed-tree rerun contract and ten-round cap from
+   step 6; never return a resumable formatting, lint, type, test, or other deterministic failure to
+   the user merely to obtain a fresh attempt budget.
    Do not query staging/prod as verification and do not trigger flows/processes.
 10. **Push.** Before the push, run the pre-push local CI parity gate from
    `../references/ci-self-heal.md` (`bin/ci-local --run` at the final tree, with judgment on its
