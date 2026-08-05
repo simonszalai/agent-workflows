@@ -233,8 +233,8 @@ If `--no-land` or target `none`, stop after `/ticket-build` and report remaining
 verification, and — `full` only, gated on exact staging `PASS` — promotion, production deploy,
 production verification, incident cleanup, and `completed`. Relay its terminal report and stop
 conditions verbatim. A staging `FAIL` is not terminal: `/ticket-deploy` must run its bounded
-fresh-subagent repair/redeploy/reverify loop for up to ten rounds. Relay a stop only after PASS, the
-persisted ten-round cap is exhausted, or the child identifies genuinely missing human
+fresh-subagent repair/redeploy/reverify loop for up to three rounds. Relay a stop only after PASS,
+the persisted three-round cap is exhausted, or the child identifies genuinely missing human
 information/authorization or an external condition no agent can change. Do not convert a routine
 deterministic failure into a request for the user to invoke `/ticket-flow` again.
 
@@ -302,14 +302,20 @@ profile mechanically rejects all-history forks, excess fanout without triggers, 
 same-version context receipts, missing delta/full-review transitions, and these hard
 per-generation ceilings (`max_packet_bytes: 16384`):
 
-| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
-|---|---:|---:|---:|---:|
-| `planning` | 30 | 4 | 45 min | 60,000 |
-| `build_review` | 40 | 12 | 60 min | 90,000 |
-| `deploy_verify` | 20 | 8 | 45 min | 60,000 |
+| Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed | Max rotations |
+|---|---:|---:|---:|---:|---:|
+| `planning` | 25 | 4 | 30 min | 50,000 | 1 |
+| `build_review` | 40 | 12 | 60 min | 90,000 | 2 |
+| `deploy_verify` | 20 | 8 | 45 min | 60,000 | 3 |
 
 This table is the required fixed context/token budget. An observable first compaction is an
-immediate `rotate_required` boundary.
+immediate `rotate_required` boundary. **Budgets are cumulative, not renewable:** rotation
+continues a phase from its checkpoint, it does not grant a fresh full budget indefinitely. The
+`Max rotations` column is the hard per-phase generation cap, mechanically enforced by
+`bin/phase-contract ticket-dispatch` (a dispatch whose `rotation_generation` exceeds it is
+rejected). When the last permitted generation ends without `complete`, persist the checkpoint and
+stop with the exact resume command and the unresolved unit — the phase shape was wrong for the
+work, and more generations spend hours confirming that.
 
 On valid `rotate_required`, persist the owning phase's MCP artifacts, tree/landing/deploy state, and
 next immutable checkpoint before a fresh `fork_turns: "none"` replacement. Resume at the first

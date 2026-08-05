@@ -21,10 +21,10 @@ ROTATION_REASONS = {
 TERMINAL_STATUSES = {"complete", "blocked", "failed", "rotate_required"}
 TICKET_PHASE_BUDGETS = {
     "planning": {
-        "max_turns": 30,
+        "max_turns": 25,
         "max_checkpoints": 4,
-        "max_elapsed_seconds": 2700,
-        "max_tokens": 60000,
+        "max_elapsed_seconds": 1800,
+        "max_tokens": 50000,
     },
     "build_review": {
         "max_turns": 40,
@@ -38,6 +38,14 @@ TICKET_PHASE_BUDGETS = {
         "max_elapsed_seconds": 2700,
         "max_tokens": 60000,
     },
+}
+# Budgets are cumulative: rotation resumes a phase, it does not renew its budget forever.
+# A dispatch beyond the phase's generation cap is rejected; the flow persists its checkpoint
+# and stops with an exact resume command instead of spending another full budget.
+TICKET_MAX_ROTATION_GENERATIONS = {
+    "planning": 1,
+    "build_review": 2,
+    "deploy_verify": 3,
 }
 OWNER_PHASE_BUDGETS = {
     "investigation": {
@@ -484,6 +492,13 @@ def validate_dispatch(
                 "ticket-flow phase_name must be planning, build_review, or deploy_verify"
             )
         ceiling = TICKET_PHASE_BUDGETS[phase_name]
+        max_generation = TICKET_MAX_ROTATION_GENERATIONS[phase_name]
+        if generation > max_generation:
+            raise ContractError(
+                f"ticket-flow {phase_name} rotation_generation {generation} exceeds the "
+                f"cumulative cap {max_generation}; persist the checkpoint and stop with an "
+                "exact resume command instead of dispatching another generation"
+            )
         for field, observed in (
             ("max_turns", max_turns),
             ("max_checkpoints", max_checkpoints),

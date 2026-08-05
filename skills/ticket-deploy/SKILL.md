@@ -52,7 +52,15 @@ Read and follow:
 
 ### Fresh deployment-owner boundary
 
-The initial caller is a dispatcher only. Unless its packet explicitly says
+**Already-fresh callers skip the dispatch.** When the invoking agent is itself a fresh
+`fork_turns: "none"` agent dispatched for this ticket's deploy phase with a bounded checkpoint
+packet (the normal `/ticket-flow` §3→§4 hand-off), it **is** the deployment owner: it declares
+`mode: deployment_owner`, records that in its envelope, and continues with the process below.
+Spawning a second owner from an agent that is already fresh and bounded doubles the rollouts and
+the wait for zero isolation gain. The dispatcher path below exists for long-lived callers —
+interactive sessions and orchestrators still carrying prior-phase history.
+
+The initial long-lived caller is a dispatcher only. Unless its packet explicitly says
 `mode: deployment_owner`, it must not execute any deploy, promotion, verification, CI repair, or
 remote mutation itself:
 
@@ -205,9 +213,11 @@ recursively invokes another deployment owner.
 
 1. Persist `repair_round`, activation key, evidence-contract version, failed evidence artifact,
    investigation artifact, failure class, exact failing rows, and prior attempted fix. The initial
-   verification is round 0. Permit at most **ten repair rounds**, each followed by one new
+   verification is round 0. Permit at most **three repair rounds**, each followed by one new
    verification attempt. Persist the counter across rotations and resumed invocations; neither a
-   new agent nor a new `/ticket-flow` turn resets it.
+   new agent nor a new `/ticket-flow` turn resets it. Three distinct fresh-owner fixes that all
+   fail verification mean the failure class is misdiagnosed or the evidence contract is wrong —
+   more rounds compound the wrong theory instead of testing a new one.
 2. For every agent-resolvable `FAIL` or `BLOCKED`, dispatch exactly one fresh
    `fork_turns: "none"` repair subagent with the bounded failure packet. Route by class:
    `code_defect` through the normal delta builder, review, canonical local health gate, commit/push,
@@ -222,11 +232,11 @@ recursively invokes another deployment owner.
 4. On another failure, persist the delta and start the next fresh repair owner. Do not stop because
    the failure changed shape, because several deterministic diagnostics remain, or because a phase
    agent exhausted its own context; rotate from the durable checkpoint and continue.
-5. Stop successfully on exact `PASS`. Stop unsuccessfully only when round 10 still fails, required
+5. Stop successfully on exact `PASS`. Stop unsuccessfully only when round 3 still fails, required
    human information/authorization is genuinely absent, or an external condition is proven
    unchangeable by agents. `unknown` alone is not a stop: name and pursue the missing-evidence route
    in the next round unless that evidence requires one of those genuine external inputs. Report all
-   ten attempted deltas when the cap is exhausted.
+   three attempted deltas when the cap is exhausted.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 

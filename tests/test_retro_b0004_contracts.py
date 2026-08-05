@@ -474,6 +474,27 @@ class TicketRuntimeContractTest(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("stabilization", rejected.stdout)
 
+    def test_ticket_dispatch_rejects_rotation_generation_beyond_cumulative_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context_path, _ = self.context_receipt(root)
+            checkpoint = root / "checkpoint.json"
+            checkpoint.write_text('{"completed":["deploy"]}')
+            dispatch = self.dispatch(root, context_path)
+            dispatch["checkpoint"] = reference(checkpoint)
+
+            dispatch["rotation_generation"] = 3
+            dispatch_path = root / "dispatch.json"
+            dispatch_path.write_text(json.dumps(dispatch))
+            accepted = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+
+            dispatch["rotation_generation"] = 4
+            dispatch_path.write_text(json.dumps(dispatch))
+            rejected = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("cumulative cap", rejected.stdout)
+
     def test_new_risk_boundary_requires_heavy_specialist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

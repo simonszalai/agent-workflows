@@ -415,6 +415,12 @@ function criticPrompt(lens, plan, question, codebaseResearchFile, repoRoot, prio
     ``,
     `Honesty over thoroughness. An empty findings list is a good outcome when the plan is`,
     `sound from your lens — return findings: [] and say so in overall_assessment.`,
+    ``,
+    `Work budget: stay bounded. Read only files the plan or research names plus their immediate`,
+    `neighbors — no repository-wide sweeps, no exploratory greps beyond verifying a specific`,
+    `claim, and aim to finish well under 15 minutes. A critic that reads half the repo delays`,
+    `the whole planning wave for marginal findings; verify the plan's claims, don't re-research`,
+    `the codebase.`,
   ].filter(Boolean).join('\n')
 }
 

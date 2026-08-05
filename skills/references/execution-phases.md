@@ -69,7 +69,7 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    or `mode:solo` was explicitly requested.
 
    The canonical loop definition lives in the `review` skill. Rounds follow intensity
-   (`direct` ≤1, `standard` ≤2, `heavy` ≤3; light review path still one native reviewer unless
+   (`direct` ≤1, `standard` ≤1, `heavy` ≤2; light review path still one native reviewer unless
    upgraded). Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
    findings remain, **or when a round's actionable findings were resolved and the adversarial
    verify produced no contested findings** (a second round is spent only to resolve genuine
@@ -78,7 +78,8 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    `manual` findings for a human.
 9. **Final local verification** — if review resolution changed the tree since the pre-review PASS,
    the main orchestrator runs the canonical full health command exactly once on the new final tree.
-   If the tree is unchanged, reuse the prior PASS. A failing gate enters the shared ten-round repair
+   If the tree is unchanged, reuse the prior PASS. A failing gate runs the deterministic autofix
+   batch first, then enters the shared three-round repair
    loop: dispatch one fresh narrow repair owner, rerun once on its changed tree, and continue until
    PASS. Stop early only for genuinely missing human information/authorization or an external
    condition no agent can change; focused diagnostics remain orchestrator-owned.

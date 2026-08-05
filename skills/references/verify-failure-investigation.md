@@ -57,7 +57,7 @@ machine-readable repair packet for the deployment owner.
 ### 3a. Autonomous staging repair
 
 For standalone staging under `/ticket-deploy`, every agent-resolvable failure enters that owner's
-ten-round repair/redeploy/reverify loop. This is not limited to tiny code fixes. Preserve the
+three-round repair/redeploy/reverify loop. This is not limited to tiny code fixes. Preserve the
 normal safety machinery for the changed surface: delta/full review, specialists, health gates,
 commit/push, deploy, and evidence collection.
 
@@ -117,7 +117,7 @@ are true; missing stages are explicit blockers with their owner and resume comma
 After two staging revisions for the same activation/contract, enter stabilization mode before any
 further mutation: persist the latest failure class and the exact contract delta. A third mutation
 without those fields is invalid. Stabilization does not turn `unknown` into a code defect and does
-not waive deploy, review, or verification gates. The deployment owner caps the loop at ten repair
+not waive deploy, review, or verification gates. The deployment owner caps the loop at three repair
 rounds and persists the counter across agent rotations and user-invoked resumes.
 
 ## 4. Output additions

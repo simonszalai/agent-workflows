@@ -204,8 +204,12 @@ mcp__autodev-memory__update_ticket(
 ### Phase 3: Research / Investigate
 
 **For features (F-prefix):**
-- Spawn `researcher` agent to analyze codebase patterns, integration points
-- Search for similar past tickets via `get_similar_tickets`
+- `heavy` intensity: spawn `researcher` to analyze codebase patterns and integration points
+  (the fanout's generic subagents cannot research for themselves).
+- `direct`/`standard` (light path): do **not** spawn a separate researcher — the single inline
+  `planner` researches the codebase itself as part of planning. A separate researcher on the
+  light path duplicates that work and roughly doubles planning wall-clock for no added coverage.
+- Search for similar past tickets via `get_similar_tickets` (Phase 4 owns the exact calls)
 
 **For bugs (B-prefix):**
 - Read the investigation artifact if one exists; otherwise run `/investigate` internally to find
@@ -219,7 +223,9 @@ do NOT load the `autodev-search` skill, unlike the inline `planner` agent used o
 path, which searches the memory system and past tickets itself. So gather prior knowledge here
 in the skill and pass it into whichever path runs. For both paths, pass the same prior-knowledge
 blob to the native planner and any conditionally escalated peers so they reason from the same
-known gotchas and past decisions:
+known gotchas and past decisions.
+
+**Light path (`direct`/`standard`) — exactly two calls:**
 
 ```
 # Related memories (gotchas, patterns, architecture)
@@ -235,6 +241,11 @@ similar = mcp__autodev-memory__get_similar_tickets(
   project=PROJECT, ticket_id=ID, repo=REPO, status="completed",
   detail="compact"
 )
+```
+
+**Heavy path — the two calls above plus the deeper sweep:**
+
+```
 ticket_hits = mcp__autodev-memory__search_tickets(
   project=PROJECT, query="<keywords>",
   detail="compact"
@@ -284,8 +295,9 @@ reference (user flags, floors, safety surfaces). Map:
 | `standard` | Light — one native inline planner; no critic panel |
 | `heavy` | Heavy — multi-framing + completeness/correctness/YAGNI critics |
 
-Peer providers are an independent escalation used only for explicit high risk, material
-uncertainty, or disagreement. Prompt length alone is never an intensity signal.
+Peer providers are an independent escalation used only for an explicit user request or an
+unsettled material disagreement/uncertainty on a safety-critical surface. Prompt length alone is
+never an intensity signal.
 
 **Hard rule:** every intensity, including `direct`, must produce a persisted MCP `plan` artifact
 in Phase 7. Intensity never authorizes plan-skipping.
@@ -294,11 +306,15 @@ Announce: `Intensity: {direct|standard|heavy} ({reason}; floor=...); Plan path: 
 
 Escalate peer providers only when at least one trigger is recorded:
 
-1. the user explicitly requested cross-provider planning or independent opinions;
-2. the work affects security, auth, billing, destructive/schema migration, or a cross-repo
-   compatibility contract with material blast radius;
-3. native research/critics leave a material factual or architectural uncertainty; or
-4. two native framings/critics materially disagree and repository evidence does not settle it.
+1. the user explicitly requested cross-provider planning or independent opinions; or
+2. the work affects a safety-critical surface (security, auth, billing, destructive/schema
+   migration, or a cross-repo compatibility contract with material blast radius) **and** native
+   research/critics leave a material disagreement or factual/architectural uncertainty that
+   repository evidence does not settle.
+
+A safety surface alone is not a peer trigger — the heavy native critic panel already covers it.
+Peers exist to break genuine deadlocks, not to re-confirm native agreement; each peer roughly
+doubles planning wall-clock, so a peer call without a recorded deadlock is waste.
 
 `--solo` disables peers, but not the heavy native critic panel or any project-required safety
 review. Announce peers separately: `peers: no trigger` or `peers: escalated for schema safety`.
@@ -348,7 +364,8 @@ Every adapter call passes the explicit root rollout identifier through
 `--orchestrator-thread-id <orchestrator_thread_id>`.
 
 Merge usable peer envelopes with the native plan and audit material disagreements. Run at most one
-convergence round for an escalated light plan and three for heavy. Resolve each disagreement by
+convergence round; spend a second (heavy only) solely on a still-blocking disagreement about a
+named safety surface — never to polish agreed wording. Resolve each disagreement by
 code/artifact evidence, make it an explicit blocking `open_questions` item, or reject it as a
 preference/YAGNI issue with rationale. Do not simulate failed peers. For safety-critical triggers,
 peer unavailability is explicit residual risk and the plan may not claim independent agreement.
@@ -535,7 +552,8 @@ confirms the resting status).
 
 ## Agent Selection
 
-**For features:** Always spawn `researcher` to analyze codebase before planning.
+**For features:** Spawn `researcher` only on the heavy path; the light-path planner researches
+inline.
 
 **For bugs:** Use investigation artifact findings; spawn additional agents only if needed.
 
@@ -544,7 +562,7 @@ searches past tickets automatically as part of its research phase.
 
 | Need                     | Agent                | When Used                                        |
 | ------------------------ | -------------------- | ------------------------------------------------ |
-| Codebase patterns        | `researcher`         | Always for features                              |
+| Codebase patterns        | `researcher`         | Heavy-path features only                         |
 | Past work learnings      | (built into planner) | Automatic via research (references/past-work.md) |
 | Production state (bugs)  | Investigator agents  | If investigation incomplete                      |
 | Additional code context  | `researcher`         | If planner requests                              |
