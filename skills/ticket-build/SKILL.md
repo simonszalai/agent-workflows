@@ -59,15 +59,23 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
 4. **Implement.** Invoke `/build`: partition the dependency DAG into coherent sequential builder
    chains, checkpoint every covered todo individually, and keep unrelated lint/type fixes in a
    separate commit. Builder-chain subagents implement only; they do not run validation.
-5. **Write tests.** Invoke `/write-tests` in orchestrator mode for the whole initial change set
-   when behavior changed (required on `standard`/`heavy` when the plan/tests surface needs it).
-   The test-writing subagent writes tests but does not execute them.
+5. **Write tests.** On `direct`, the builder chain writes focused tests in-chain when behavior
+   changed — no separate test-writer agent. On `standard`/`heavy`, invoke `/write-tests` in
+   orchestrator mode for the whole initial change set when behavior changed. The test-writing
+   subagent writes tests but does not execute them.
 6. **Pre-review health gate (main orchestrator only).** After all initial implementation and
    test-writing changes are present, run the canonical project health command exactly once. Record
-   the PASS by `(tree SHA, exact command)`. A failing gate may run up to ten narrowly scoped
-   repair rounds. In each round, dispatch one repair chain; the repair builder still does not
+   the PASS by `(tree SHA, exact command)`. On failure, first run the **deterministic autofix
+   batch**: the orchestrator itself runs the project's maintained autofix commands (formatter
+   `--write`/`--fix`, lint autofix, import ordering) directly over the failing surfaces — one
+   batch, no subagent, does not consume a repair round — then reruns the gate once on the changed
+   tree. Diagnostics that a maintained CLI can fix never get an LLM repair owner.
+   A gate still failing after the batch may run up to three narrowly scoped repair rounds.
+   In each round, dispatch one repair chain; the repair builder still does not
    validate, and this orchestrator reruns the failed gate once on the changed tree. Record every
-   failure-driven rerun and stop only if the tenth round still fails. Every dispatched repair owner
+   failure-driven rerun and stop only if the third round still fails — three fresh-owner rounds
+   after a deterministic batch means the failure is not mechanical, and more rounds have
+   historically bought hours, not fixes. Every dispatched repair owner
    consumes one round. A repair that does not change the tree records a no-op and skips the invalid
    duplicate gate execution before the next fresh repair owner. Stop before the cap only when the
    repair requires genuinely missing human information/authorization or an external condition no
@@ -77,8 +85,8 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
 7. **Review and resolve.** Invoke the `/review` skill with the intensity packet (do not hand-roll
    it): light path for `direct`/`standard` unless safety triggers upgrade; heavy when intensity
    or the review path gate requires it. Conditionally escalate peers, synthesize once, and hand
-   actionable findings to `/resolve-review`. Resolve rounds: `direct` ≤1, `standard` ≤2,
-   `heavy` ≤3 (stop earlier when no actionable findings remain). Apply the conditional coverage
+   actionable findings to `/resolve-review`. Resolve rounds: `direct` ≤1, `standard` ≤1,
+   `heavy` ≤2 (stop earlier when no actionable findings remain). Apply the conditional coverage
    gate in `execution-phases.md` only when peer escalation fired. Reviewers inspect the diff and
    recorded evidence only, and resolution builders implement only; neither runs validation. Stop
    for unresolved design decisions. If the diff first crosses a safety floor, escalate intensity
@@ -95,7 +103,8 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    canonical full health command exactly once on the new final tree. This makes at most two normal
    full gates: post-build/pre-review and post-resolution/final. Focused diagnostics are permitted
    only to identify a failing orchestrator gate and are keyed by `(tree SHA, exact command)`.
-   A failure uses the same fresh-repair-owner, changed-tree rerun contract and ten-round cap from
+   A failure uses the same deterministic-autofix-batch-first, fresh-repair-owner, changed-tree
+   rerun contract and three-round cap from
    step 6; never return a resumable formatting, lint, type, test, or other deterministic failure to
    the user merely to obtain a fresh attempt budget.
    Do not query staging/prod as verification and do not trigger flows/processes.
@@ -117,12 +126,12 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
 
   | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
   |---|---:|---:|---:|---:|
-  | build-todo creation | 40 | 4 | 60 min | 80,000 |
-  | implementation | 80 | 12 | 180 min | 160,000 |
-  | test-writing | 50 | 4 | 90 min | 90,000 |
-  | each health gate | 30 | 2 | 90 min | 60,000 |
-  | review | 60 | 6 | 90 min | 100,000 |
-  | review resolution | 60 | 8 | 120 min | 120,000 |
+  | build-todo creation | 30 | 4 | 30 min | 60,000 |
+  | implementation | 80 | 12 | 120 min | 160,000 |
+  | test-writing | 40 | 4 | 45 min | 80,000 |
+  | each health gate | 30 | 2 | 45 min | 60,000 |
+  | review | 50 | 6 | 60 min | 90,000 |
+  | review resolution | 50 | 8 | 60 min | 100,000 |
 
 - This table is the required fixed context/token budget. An observable first compaction is an
   immediate `rotate_required` boundary.

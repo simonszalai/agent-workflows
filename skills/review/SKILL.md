@@ -127,14 +127,17 @@ rg -N '(prompts/|contracts/|\.(md|json|yaml|toml)$)' \
 
 | Agent    | Model    | Review References                                                                    | Focus                                |
 | -------- | -------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
-| reviewer | `sonnet` | references/python-standards.md or typescript-standards.md, references/simplicity.md, references/patterns.md | Code quality, YAGNI, design patterns |
 <!-- stay on opus — fable is not available on the subscription plan after 2026-07-07 -->
-| reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md        | Architecture, security, performance  |
+| reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md, references/simplicity.md, references/patterns.md, plus references/python-standards.md or typescript-standards.md per language | Code quality, YAGNI, architecture, security, performance |
 | reviewer | `sonnet` | (context injected — see Plan-Conformance Reviewer below)                              | Plan/scope conformance, deviations   |
 
+The heavy core is exactly **two** reviewers: one combined code reviewer and the plan-conformance
+reviewer. Code quality and architecture/security review the same diff with overlapping judgment;
+splitting them bought a third rollout and synthesis load, not extra findings.
+
 **Small heavy-diff model downgrade:** when a safety/domain trigger selects the heavy path but the
-total diff is < 50 LOC (added + removed via `git diff --shortstat`), run both code-focused core
-reviewers on `sonnet` (the plan-conformance reviewer is already `sonnet`). Routine small diffs use
+total diff is < 50 LOC (added + removed via `git diff --shortstat`), run the combined code
+reviewer on `sonnet` (the plan-conformance reviewer is already `sonnet`). Routine small diffs use
 the single-reviewer light path in Process step 5 instead.
 
 **Plan-conformance reviewer (heavy path).** The code-focused reviewers deliberately see only
@@ -166,7 +169,11 @@ code). Classify them `gated_auto` when the approved plan determines the implemen
 deviations are p1/p2 per impact. Findings flow
 through the same schema, dedup, gate, and partitions as every other reviewer.
 
-**Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching):
+**Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching).
+Spawn only reviewers whose condition is actually present in the diff, and when several conditions
+fire, **merge overlapping conditions into one reviewer** carrying the union of their references
+(e.g., model changes + a polling writer = one `opus` data reviewer with all four references), so
+a normal heavy review runs at most one or two conditional reviewers:
 
 | Condition                        | Agent    | Model  | Review References                                                  | Select when diff touches...                |
 | -------------------------------- | -------- | ------ | ------------------------------------------------------------------ | ------------------------------------------ |
@@ -236,7 +243,8 @@ additional reviewer. These are project-specific personas with domain heuristics
 **Activation rules for persona reviewers:**
 - Read each persona's activation conditions (in its frontmatter or body)
 - Only spawn if the diff touches files relevant to that persona
-- When uncertain whether a persona is relevant, **spawn it** — prefer thoroughness
+- When uncertain whether a persona is relevant: spawn it only if the diff touches that persona's
+  safety surface; otherwise skip it and record the skipped persona under coverage residual risks
 
 ### Step 3: Announce the Review Team
 
@@ -245,11 +253,9 @@ For light review, announce the single general reviewer. For example, a heavy rev
 
 ```
 Review team:
-- code-quality (heavy core) [sonnet]
-- architecture-security-performance (heavy core) [opus]
+- code (heavy core: quality, architecture, security, performance) [opus]
 - plan-conformance (heavy core) [sonnet]
 - data-integrity — model/schema/Atlas/migration files changed [opus]
-- react — components changed in app/components/ [sonnet]
 - pipeline-reviewer — DAG node declarations modified [project persona]
 ```
 
@@ -271,11 +277,14 @@ existing conversation as an exception.
 
 External peers are not a default reviewer set. Escalate to the other two providers only when:
 
-- the caller passed `mode:cross` or explicitly requested independent/cross-provider review;
-- the diff is safety-critical: security, auth, billing, destructive data/schema migration,
-  secrets, deploy configuration, or another project-declared high-blast-radius surface;
-- native reviewers expose a material uncertainty that repository/test evidence cannot settle; or
-- native reviewers materially disagree on an actionable finding.
+- the caller passed `mode:cross` or explicitly requested independent/cross-provider review; or
+- the diff touches a safety-critical surface (security, auth, billing, destructive data/schema
+  migration, secrets, deploy configuration, or another project-declared high-blast-radius
+  surface) **and** native reviewers expose a material uncertainty or materially disagree on an
+  actionable finding that repository/test evidence cannot settle.
+
+A safety surface alone does not trigger peers — the heavy native personas already cover it.
+Peers break deadlocks; they do not re-confirm native agreement.
 
 `mode:solo` disables peers but never removes native safety-critical personas, adversarial checks,
 or project-required review. Announce the trigger. If none fires, do not create provider packets or
@@ -343,8 +352,14 @@ polling.
    | User passed `--deep` | Heavy |
    | User passed `--light` and no safety-critical surface is present | Light |
    | Safety-critical surface or project persona requirement | Heavy |
-   | ≥5 files, ≥200 changed LOC, or conditional domain reviewer fires | Heavy |
+   | Data/migration, polling-storage, or external-cache conditional reviewer fires | Heavy |
+   | ≥10 files or ≥500 changed LOC | Heavy |
    | Otherwise | Light |
+
+   Size alone rarely selects heavy: a mechanically wide but pattern-uniform diff (rename,
+   import sweep, generated code) stays light — note the width in the light reviewer's packet
+   instead. A frontend/react-only diff with no safety surface stays light regardless of the
+   conditional-reviewer table; give the light reviewer the react references.
 
    A safety-critical signal overrides `--light` for native coverage. Apply the peer gate from
    **Conditional cross-provider reviewers** separately and announce both decisions.
