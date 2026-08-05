@@ -112,7 +112,23 @@ instructions — **discover it, do not assume**:
 
 ### 4. Define the Verification Evidence contract (CRITICAL)
 
-This is the part `/ticket-verify` grades against. For **each** of staging and production, list the
+This is the part `/ticket-verify` grades against.
+
+**Before writing or finalizing any contract row, search memory for this app's contract-authoring
+lessons** — every past `verifier_defect`/`invalid_evidence` FAIL compounds one (tag
+`verifier-contract`, written by ticket-verify's failure investigation):
+
+```text
+mcp__autodev-memory__search(project=PROJECT, repo=REPO, detail="compact", queries=[
+  {"keywords": ["verifier-contract"], "text": "verifier evidence contract authoring rules <feature area>"}
+])
+```
+
+Apply every returned rule that touches a surface this contract uses (e.g. squash-safe ancestry
+checks, controller shell-decoding constraints, timing feasibility) and note the applied entry IDs
+in the artifact. If the memory tool is unavailable, proceed and say so in the artifact.
+
+For **each** of staging and production, list the
 evidence that proves the change works. Every evidence item MUST be:
 
 - a **reproducible** query or command (copy-pasteable, read-only),

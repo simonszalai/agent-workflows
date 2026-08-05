@@ -49,6 +49,32 @@ Write one `investigation` artifact on the ticket (or the epic gate for epic/mile
 The investigation artifact is created **in addition to** the FAIL evidence artifact, never as a
 replacement, and never rewrites the FAIL verdict.
 
+## 2a. Compound verifier-contract knowledge (`verifier_defect` / `invalid_evidence` only)
+
+When any failed row is classified `verifier_defect` or `invalid_evidence`, the run has learned
+something about how to write a verifier/evidence contract for this specific app — capture it so
+the next contract author does not repeat it. After persisting the investigation artifact:
+
+1. Search for an existing lesson first:
+
+   ```text
+   mcp__autodev-memory__search(project=PROJECT, repo=REPO, detail="compact",
+     queries=[{"keywords": ["verifier-contract"], "text": "<contract defect summary>"}])
+   ```
+
+2. If an entry already covers the lesson, update it; otherwise create a gotcha stating the
+   **generalized contract-authoring rule**, not just the incident: what structural property made
+   the contract row defective (e.g. ancestry checks that break under squash promotion, shell
+   quoting that fails controller decoding, timing math that cannot mature before the deadline)
+   and the concrete rule a future contract for this app must follow. Include the ticket,
+   environment, failed row, and investigation artifact ID as evidence.
+3. Tag it `verifier-contract` plus `verification` and the feature area, use source `captured`,
+   and set caller context to skill `ticket-verify` with trigger `verify FAIL <env>
+   (<classification>)`. The `verifier-contract` tag is what `/create-deployment-guide` searches
+   before authoring a contract; an untagged lesson is invisible to the next author.
+
+If the memory tool is unavailable, skip silently; the investigation artifact remains authoritative.
+
 ## 3. Remediation decision and repair packet
 
 Choose exactly one route per scope and record it in the investigation artifact and a
@@ -78,9 +104,21 @@ An automatic product-code repair still requires all of these:
    agent makes the code change, then review, final health, push, redeploy, and re-verification run
    before the next verdict. `/ticket-verify` itself never edits environments or deploys.
 
-Production FAILs are never direct-fixed from this skill. Code/config/auth remediation must use the
-tracked lifecycle route in §3b; ticketless `/go-fable` and untracked auxiliary branches are prohibited
-as the final route.
+Production FAILs are never direct-fixed from this skill. Product code/config/auth remediation must
+use the tracked lifecycle route in §3b; ticketless `/go-fable` and untracked auxiliary branches are
+prohibited as the final route.
+
+**Exception — production verifier/contract repair (§3a-prod).** A production FAIL whose every
+failed row is classified `verifier_defect` or `invalid_evidence` (`confirmed`, or `likely` with
+reproducible evidence) **and** whose product-failure field is empty is not a product defect: the
+shipped revision is already live and untouched, and the broken surface is the verifier or the
+evidence contract itself. That repair may return to an active production `/ticket-deploy` loop the
+same way as staging: the deployment owner dispatches one fresh repair subagent that changes only
+the verifier/evidence-contract surface (re-finalizing the `deployment_guide` contract with the
+recorded revision reason), then re-runs `/ticket-verify production <scope>` **without any product
+redeploy or environment mutation**. The same three-round cap and persisted counter apply. Any row
+classified `code_defect`, `environment_capacity`, `unknown`, or any non-empty product-failure
+field disqualifies this path and falls through to §3b.
 
 The current run's FAIL verdict and artifacts stand unchanged; the next `/ticket-verify staging
 <scope>` after repair/redeploy creates the next verdict. Persist and increment the repair round when
