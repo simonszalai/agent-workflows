@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONTEXT = ROOT / "bin/project-context"
 RENDER_CLI = ROOT / "bin/render-cli"
+RESEND_CLI = ROOT / "bin/resend-cli"
 REGISTRY = ROOT / "config/project-tools.json"
 
 
@@ -64,6 +65,14 @@ EXPECTED_RENDER_REFS = {
     "workflow-pro": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
 }
 
+EXPECTED_RESEND_REFS = {
+    "amaru": "op://AMARU/RESEND_API_KEY/value",
+}
+
+EXPECTED_RESEND_CANARY_DOMAINS = {
+    "amaru": "amaruplatform.com",
+}
+
 
 class ProjectToolsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -87,6 +96,10 @@ class ProjectToolsTest(unittest.TestCase):
                                     "discover_service_names": ["alpha-canary"]
                                 },
                             },
+                            "resend": {
+                                "api_key_ref": "op://ALPHA/RESEND/value",
+                                "canary_domain": "alpha.example.com",
+                            },
                         },
                         "beta": {
                             "repo_remotes": ["github.com/acme/beta"],
@@ -96,6 +109,10 @@ class ProjectToolsTest(unittest.TestCase):
                             "render": {
                                 "api_key_ref": "op://BETA-sensitive/RENDER/value",
                                 "workspace": {"id": "tea-beta"},
+                            },
+                            "resend": {
+                                "api_key_ref": "op://BETA-sensitive/RESEND/value",
+                                "canary_domain": "beta.example.com",
                             },
                         },
                     },
@@ -110,6 +127,8 @@ class ProjectToolsTest(unittest.TestCase):
         self.tool_bin.mkdir()
         self.wrapper = self.tool_bin / "render-cli"
         shutil.copy2(RENDER_CLI, self.wrapper)
+        self.resend_wrapper = self.tool_bin / "resend-cli"
+        shutil.copy2(RESEND_CLI, self.resend_wrapper)
         shutil.copy2(PROJECT_CONTEXT, self.tool_bin / "project-context")
         self.fake_render = self.root / "render"
         self.fake_render.write_text(
@@ -138,6 +157,26 @@ esac
 """
         )
         self.fake_render.chmod(0o755)
+        self.resend_log = self.root / "resend.log"
+        self.fake_resend = self.root / "resend"
+        self.fake_resend.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" || -n "${OP_CONNECT_TOKEN:-}" ]]; then
+  echo "1Password credential leaked to Resend child" >&2
+  exit 91
+fi
+printf '%s|%s\\n' "${RESEND_API_KEY:+set}" "$*" >> "$RESEND_FAKE_LOG"
+if [[ "${1:-} ${2:-}" == "domains list" ]]; then
+  printf '{"data":[{"name":"%s"}]}\\n' "${RESEND_FAKE_DOMAIN:-alpha.example.com}"
+elif [[ "${1:-}" == "doctor" ]]; then
+  printf '{"ok":true,"key":"re_masked"}\\n'
+else
+  printf '{"ok":true}\\n'
+fi
+"""
+        )
+        self.fake_resend.chmod(0o755)
         self.fake_op = self.tool_bin / "op"
         self.fake_op.write_text(
             """#!/usr/bin/env bash
@@ -169,6 +208,7 @@ printf 'fake-render-key'
             "CONDUCTOR_WORKSPACE_NAME",
             "CONDUCTOR_SESSION_ID",
             "RENDER_API_KEY",
+            "RESEND_API_KEY",
             "OP_SERVICE_ACCOUNT_TOKEN",
             "TS_OP_SERVICE_ACCOUNT_TOKEN",
         ):
@@ -180,6 +220,8 @@ printf 'fake-render-key'
                 "RENDER_FAKE_LOG": str(self.render_log),
                 "RENDER_FAKE_OP_LOG": str(self.op_log),
                 "RENDER_FAKE_OP_TOKEN_LOG": str(self.op_token_log),
+                "RESEND_CLI_BIN": str(self.fake_resend),
+                "RESEND_FAKE_LOG": str(self.resend_log),
                 "ALPHA_OP_SERVICE_ACCOUNT_TOKEN": "alpha-service-account-token",
                 "BETA_OP_SERVICE_ACCOUNT_TOKEN": "beta-service-account-token",
             }
@@ -208,6 +250,17 @@ printf 'fake-render-key'
             env=self.environment(**environment),
         )
 
+    def run_resend(
+        self, cwd: Path, *arguments: str, **environment: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(self.resend_wrapper), *arguments],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=self.environment(**environment),
+        )
+
     def test_committed_registry_covers_every_known_repository_once(self) -> None:
         registry = json.loads(REGISTRY.read_text())
         projects = registry["projects"]
@@ -228,6 +281,14 @@ printf 'fake-render-key'
             self.assertEqual(
                 projects[project]["service_account"].get("keychain_item"),
                 EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS.get(project),
+            )
+            self.assertEqual(
+                projects[project].get("resend", {}).get("api_key_ref"),
+                EXPECTED_RESEND_REFS.get(project),
+            )
+            self.assertEqual(
+                projects[project].get("resend", {}).get("canary_domain"),
+                EXPECTED_RESEND_CANARY_DOMAINS.get(project),
             )
         self.assertEqual(len(claimed), len(set(claimed)))
         token_envs = [
@@ -466,6 +527,145 @@ printf 'fake-render-key'
             self.render_log.read_text().splitlines()[-1],
             "tea-alpha|set|restart srv",
         )
+
+    def test_resend_context_is_credential_free(self) -> None:
+        result = self.run_resend(
+            self.repo, "context", RESEND_CLI_BIN="/does/not/exist"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("project=alpha", result.stdout)
+        self.assertIn("remote=github.com/acme/alpha", result.stdout)
+        self.assertIn("canary_domain=alpha.example.com", result.stdout)
+        self.assertIn("op://ALPHA/RESEND/value", result.stdout)
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.resend_log.exists())
+
+    def test_resend_read_injects_only_selected_key_and_forces_json(self) -> None:
+        result = self.run_resend(self.repo, "domains", "list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("project=alpha", result.stderr)
+        self.assertEqual(
+            self.op_log.read_text().strip(),
+            "read --no-newline op://ALPHA/RESEND/value",
+        )
+        self.assertEqual(
+            self.resend_log.read_text().splitlines(),
+            ["set|domains list --json", "set|domains list --json"],
+        )
+        self.assertNotIn("fake-render-key", result.stdout + result.stderr)
+
+    def test_resend_mutations_require_project_write_and_reason(self) -> None:
+        implicit = self.run_resend(
+            self.repo, "--write", "--reason", "test", "emails", "send"
+        )
+        self.assertNotEqual(implicit.returncode, 0)
+        self.assertIn("explicit --project", implicit.stderr)
+        self.assertFalse(self.op_log.exists())
+
+        no_reason = self.run_resend(
+            self.repo, "--project", "alpha", "--write", "emails", "send"
+        )
+        self.assertNotEqual(no_reason.returncode, 0)
+        self.assertIn("--reason", no_reason.stderr)
+
+        accepted = self.run_resend(
+            self.repo,
+            "--project",
+            "alpha",
+            "--write",
+            "--reason",
+            "approved test",
+            "emails",
+            "send",
+            RESEND_API_KEY="approved-test-key",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(
+            self.resend_log.read_text().splitlines()[-1], "set|emails send --json"
+        )
+
+    def test_resend_rejects_profile_overrides_and_persistent_auth(self) -> None:
+        override = self.run_resend(self.repo, "domains", "list", "--api-key", "bad")
+        self.assertNotEqual(override.returncode, 0)
+        self.assertIn("overrides are forbidden", override.stderr)
+        self.assertFalse(self.op_log.exists())
+
+        login = self.run_resend(self.repo, "login")
+        self.assertNotEqual(login.returncode, 0)
+        self.assertIn("saved Resend authentication is forbidden", login.stderr)
+        self.assertFalse(self.op_log.exists())
+
+        dashboard = self.run_resend(self.repo, "domains", "open")
+        self.assertNotEqual(dashboard.returncode, 0)
+        self.assertIn("cannot enforce the selected project", dashboard.stderr)
+
+    def test_resend_api_key_creation_is_always_blocked(self) -> None:
+        result = self.run_resend(
+            self.repo,
+            "--project",
+            "alpha",
+            "--write",
+            "--reason",
+            "test",
+            "api-keys",
+            "create",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("emits a new secret", result.stderr)
+        self.assertFalse(self.op_log.exists())
+
+    def test_resend_agent_shell_rejects_sensitive_profile_without_approved_env(self) -> None:
+        sensitive_repo = self.make_repo("git@github.com:acme/beta.git")
+        result = self.run_resend(
+            sensitive_repo, "domains", "list", CODEX_THREAD_ID="thread"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("human-only", result.stderr)
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.resend_log.exists())
+
+        approved = self.run_resend(
+            sensitive_repo,
+            "domains",
+            "list",
+            CODEX_THREAD_ID="thread",
+            RESEND_API_KEY="approved-test-key",
+            OP_SERVICE_ACCOUNT_TOKEN="must-not-reach-child",
+            OP_CONNECT_TOKEN="must-not-reach-child",
+            RESEND_FAKE_DOMAIN="beta.example.com",
+        )
+        self.assertEqual(approved.returncode, 0, approved.stderr)
+
+    def test_resend_doctor_does_not_echo_provider_output(self) -> None:
+        result = self.run_resend(self.repo, "doctor")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("resend-cli doctor: OK project=alpha", result.stdout)
+        self.assertNotIn("re_masked", result.stdout + result.stderr)
+
+    def test_resend_rejects_a_credential_for_the_wrong_account(self) -> None:
+        result = self.run_resend(
+            self.repo,
+            "domains",
+            "list",
+            RESEND_API_KEY="wrong-account-key",
+            RESEND_FAKE_DOMAIN="other.example.com",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("registered canary domain", result.stderr)
+
+    def test_registry_rejects_invalid_resend_profile(self) -> None:
+        broken = self.root / "broken-resend.json"
+        registry = json.loads(self.config.read_text())
+        registry["projects"]["alpha"]["resend"]["api_key_ref"] = "RESEND_API_KEY"
+        broken.write_text(json.dumps(registry))
+        rejected = subprocess.run(
+            [str(PROJECT_CONTEXT), "--cwd", str(self.repo)],
+            capture_output=True,
+            text=True,
+            env=self.environment(PROJECT_TOOLS_CONFIG=str(broken)),
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("resend.api_key_ref", rejected.stderr)
 
 
 if __name__ == "__main__":
