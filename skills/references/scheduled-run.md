@@ -49,8 +49,9 @@ resolves the configured name to its ID.
   Silence is indistinguishable from a broken scheduler.
 - **FAIL routing.** When a run ends FAIL (or BLOCKED on something needing a human decision),
   additionally post a compact, human-readable alert to `#autodev-incidents` @-mentioning Simon
-  (`<@U09T4LELYES>`). Use bullets for what happened, proof, a representative example, and the
-  next step, then link the original thread. Keep every field to one plain sentence; full logs and
+  (`<@U09T4LELYES>`). Give each issue its own bold title, followed by one indented block containing
+  proof, a representative example, the next step, and its owning ticket. Separate issues with a
+  blank line, then link the original thread. Keep every field to one plain sentence; full logs and
   exhaustive evidence stay in the origin thread.
 - Channel map: `#autodev-nightly` (verify/promote + dream results), `#autodev-health`
   (6-hourly checks), `#autodev-incidents` (FAIL routing / root-cause clusters needing a human
