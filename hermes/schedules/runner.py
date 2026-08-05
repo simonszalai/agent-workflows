@@ -44,6 +44,7 @@ DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
 WATCHDOG_GRACE_MINUTES = 60
+TICKET_ID_PATTERN = re.compile(r"^[A-Z]\d{4}$")
 
 JsonObject = dict[str, object]
 
@@ -442,6 +443,14 @@ def health_issue_reply(issue: HealthIssue) -> str:
     )
 
 
+def incident_ticket_text(ticket_id: str | None) -> str:
+    if not ticket_id:
+        return "No ticket assigned"
+    if TICKET_ID_PATTERN.fullmatch(ticket_id):
+        return f"`{ticket_id}`"
+    return ticket_id
+
+
 def incident_message(
     name: str,
     status: str,
@@ -454,18 +463,22 @@ def incident_message(
     icon = {"FAIL": "❌", "BLOCKED": "⛔"}.get(status, "⚠️")
     lines = [f"{icon} *{name} needs attention* {SLACK_MENTION_SIMON}"]
     if issues:
-        for issue in issues[:3]:
-            ticket = issue["ticket_id"] or "no ticket"
+        for index, issue in enumerate(issues[:3]):
+            if index:
+                lines.append("")
             lines.extend(
                 [
-                    f"• *{issue['title']}* · `{ticket}`",
-                    f"  *Proof:* {issue['proof']}",
-                    f"  *Example:* {issue['example']}",
-                    f"  *Next:* {issue['next_step']}",
+                    f"*{issue['title']}*",
+                    f"> *Proof:* {issue['proof']}",
+                    f"> *Example:* {issue['example']}",
+                    f"> *Next:* {issue['next_step']}",
+                    f"> *Ticket:* {incident_ticket_text(issue['ticket_id'])}",
                 ]
             )
         if len(issues) > 3:
-            lines.append(f"• *{len(issues) - 3} more issues:* See the linked run thread.")
+            lines.extend(
+                ["", f"*{len(issues) - 3} more issues:* See the linked run thread."]
+            )
     else:
         lines.append(f"• *What happened:* {summary}")
         checks_total = result.get("checks_total") if result else None
@@ -486,6 +499,8 @@ def incident_message(
         else:
             lines.append("• *Next:* Open the run thread and review the failed checks.")
     if permalink:
+        if issues:
+            lines.append("")
         lines.append(f"• *Details:* <{permalink}|Open the run thread>")
     return "\n".join(lines)
 
