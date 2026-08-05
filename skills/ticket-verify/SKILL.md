@@ -692,14 +692,17 @@ Load `../references/verify-failure-capture.md` only after a staging or productio
 A FAIL is not fully reported until it is root-caused. After §9c, load
 `../references/verify-failure-investigation.md` and follow it: spawn bounded read-only investigator
 agents per failure cluster, persist an `investigation` artifact with the root-cause hypothesis,
-confidence, and classification, then either return a repair packet to the active standalone staging
-`/ticket-deploy` loop (which dispatches a fresh repair subagent and owns repair/redeploy/reverify)
-or propose 2–4 ranked remediation routes. This skill never recursively invokes `/ticket-deploy` or
-mutates product code/environments. The
+confidence, and classification, then either return a repair packet to the active standalone
+`/ticket-deploy` loop (staging always; production only for the reference's §3a-prod
+verifier/contract-defect path — the owner dispatches a fresh repair subagent and owns
+repair/redeploy/reverify) or propose 2–4 ranked remediation routes. When any failed row is
+classified `verifier_defect` or `invalid_evidence`, also apply the reference's §2a and compound
+the contract-authoring lesson as a `verifier-contract`-tagged memory. This skill never
+recursively invokes `/ticket-deploy` or mutates product code/environments. The
 FAIL verdict and evidence artifacts are never rewritten by this step.
 
-Production or epic remediation that changes code/config/auth must create a new fix ticket/epic
-step attached to the failed milestone. Ticketless `/go-fable` and untracked auxiliary branches are
+Production or epic remediation that changes product code/config/auth must create a new fix
+ticket/epic step attached to the failed milestone. Ticketless `/go-fable` and untracked auxiliary branches are
 prohibited as the final route. Record separate owners and truth for `implemented`, `landed`,
 `configured`, `deployed`, and `producer available`; no earlier stage may be called “unblocked.”
 

@@ -155,7 +155,7 @@ Enter from lifecycle truth rather than repeating completed legs:
 | `prod_verified_needs_cleanup` | n/a | `/ticket-verify production <ID>` | same |
 | `completed` | report already complete; stop successfully | same | same |
 | `verify_staging_failed` | resume §3 from the persisted failure class and repair-round counter | stop: staging repair pending | resume §3 |
-| `verify_prod_failed` | n/a | stop at the production safety boundary with the persisted remediation route | same |
+| `verify_prod_failed` | n/a | resume §5's contract-repair loop when the persisted class qualifies (verifier_defect/invalid_evidence, empty product-failure field); otherwise stop at the production safety boundary with the persisted remediation route | same |
 
 Do not resume past `NEEDS_MORE_TIME`, `PASS (contract-missing)` (unless its recorded `risk_tier` is
 `tiny_safe` per ticket-verify §2a), missing evidence, or a stale evidence artifact merely because
@@ -312,8 +312,25 @@ complete while the ticket's resolved Prefect failures remain on the failure boar
 an exact `PASS`, that verifier dry-runs, scope-checks, and deletes the terminal pre-fix Prefect
 incident runs attributed to the ticket. Cleanup never runs before production PASS.
 
-Stop immediately only if a production deploy step or production behavior verification
-fails/blocks, or CI repair reaches the explicit human-judgment gate. Success requires a
+A production verification FAIL is triaged before it stops the run. `/ticket-verify`'s §9d
+investigation classifies every failed row; route on that classification:
+
+- **Verifier/contract defect** (every failed row `verifier_defect` or `invalid_evidence`,
+  `confirmed` or `likely` with reproducible evidence, product-failure field empty): enter the
+  production contract-repair loop per verify-failure-investigation §3a-prod. Dispatch one fresh
+  `fork_turns: "none"` repair subagent that changes **only** the verifier/evidence-contract
+  surface — re-finalize the `deployment_guide` contract with the recorded revision reason — then
+  re-run `/ticket-verify production <ID>` against the already-live revision. No product code,
+  redeploy, or environment mutation is permitted in this loop; a repair that would need any of
+  those disqualifies the path. The staging loop's three-round cap and persisted counter apply
+  (production verification failures share the same `repair_round` ledger).
+- **Anything else** — any `code_defect`, `environment_capacity`, `external_observation`,
+  `unknown`, mixed classification, or non-empty product-failure field: stop at the production
+  safety boundary with the persisted remediation route.
+
+Stop immediately only if a production deploy step fails/blocks, a production behavior
+verification failure does not qualify for the contract-repair loop above (or exhausts its
+rounds), or CI repair reaches the explicit human-judgment gate. Success requires a
 production verification artifact with exact `PASS`, independently verified incident cleanup when
 the ticket attributed Prefect runs, and final `completed` status. If production passes but
 deferred cleanup remains, report `prod_verified_needs_cleanup` rather than claiming completion;
