@@ -482,6 +482,80 @@ class HermesScheduleTests(unittest.TestCase):
             ],
         )
 
+    def test_dream_result_block_and_noop_report_are_structured(self) -> None:
+        runner = load_schedule_runner()
+        message = (
+            "SCHEDULED_RUN_RESULT\n"
+            "status: PASS\n"
+            "schedule: nightly-dream\n"
+            "summary: bounded consolidation completed\n"
+            "checks_total: 4\n"
+            "checks_failed: 0\n"
+            "tickets_touched: []\n"
+            "rc_fingerprints: []\n"
+            'dream_report: {"what":"Reviewed tickets, memories, and graph candidates; '
+            'prepared two proposals and applied no changes.","why":"No memory action '
+            'survived the safety gate and graph work is proposal-only.","how":"Used bounded '
+            'evidence, root-cause deduplication, and the adversarial gate.",'
+            '"memory_actions":[],"ticket_consolidations":[],"proposals":['
+            '"Repair one stale memory — needs human review",'
+            '"Collapse one graph cluster — graph writes require approval"],'
+            '"graph_plan":"One graph cleanup candidate is ready for review.",'
+            '"scope":["Tickets: last 14 days","Memory: 50 entries",'
+            '"Graph: bounded production sample"]}\n'
+        )
+
+        parsed = runner.parse_result_block(message)
+
+        self.assertIsNotNone(parsed)
+        report = parsed["dream_report"]
+        self.assertEqual(report["memory_actions"], [])
+        self.assertEqual(len(report["proposals"]), 2)
+        self.assertEqual(
+            runner.nightly_dream_parent_message("✅", report),
+            "✅ [nightly-dream] No changes applied · 0 memory actions · "
+            "0 tickets consolidated · 0 graph writes · 2 proposals",
+        )
+
+    def test_nightly_dream_parent_counts_applied_actions(self) -> None:
+        runner = load_schedule_runner()
+        report = {
+            "what": "Applied three safe consolidations.",
+            "why": "Each action survived the adversarial gate.",
+            "how": "Compared bounded ticket and memory evidence.",
+            "memory_actions": [
+                "mem-1 — repaired — stale fact corrected",
+                "mem-2 — superseded — canonical replacement exists",
+            ],
+            "ticket_consolidations": [
+                "B0100 — extended — recurring root cause matched",
+            ],
+            "proposals": [],
+            "graph_plan": "No graph cleanup candidate survived review.",
+            "scope": ["Tickets: last 14 days"],
+        }
+
+        self.assertEqual(
+            runner.nightly_dream_parent_message("✅", report),
+            "✅ [nightly-dream] 3 changes applied · 2 memory actions · "
+            "1 ticket consolidated · 0 graph writes · 0 proposals",
+        )
+
+    def test_nightly_dream_report_rejects_missing_scope(self) -> None:
+        runner = load_schedule_runner()
+        report = {
+            "what": "Reviewed the bounded evidence.",
+            "why": "No change was necessary.",
+            "how": "Applied the adversarial gate.",
+            "memory_actions": [],
+            "ticket_consolidations": [],
+            "proposals": [],
+            "graph_plan": "No graph plan was produced.",
+            "scope": [],
+        }
+
+        self.assertIsNone(runner.parse_dream_report(report))
+
     def test_matching_health_issue_aliases_are_accepted(self) -> None:
         runner = load_schedule_runner()
         issue = {
@@ -734,6 +808,109 @@ class HermesScheduleTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_nightly_dream_posts_structured_reply_without_machine_dump(self) -> None:
+        runner = load_schedule_runner()
+        manifest = {
+            "runner": {"poll_seconds": 1},
+            "slack_channels": {
+                "#autodev-nightly": "C-nightly",
+                "#autodev-incidents": "C-incidents",
+            },
+            "schedules": [
+                {
+                    "name": "nightly-dream",
+                    "enabled": True,
+                    "prompt": "nightly-dream.md",
+                    "slack_channel": "#autodev-nightly",
+                    "max_runtime_minutes": 150,
+                }
+            ],
+        }
+        report = {
+            "what": "Reviewed bounded tickets, memories, and graph candidates.",
+            "why": "No mutation survived the safety gate.",
+            "how": "Used bounded evidence, deduplication, and adversarial review.",
+            "memory_actions": [],
+            "ticket_consolidations": [],
+            "proposals": [
+                "Repair one stale memory — needs human review",
+                "Collapse one graph cluster — graph writes require approval",
+            ],
+            "graph_plan": "One graph cleanup candidate is ready for review.",
+            "scope": [
+                "Tickets: last 14 days",
+                "Memory: 50 entries",
+                "Graph: bounded production sample",
+            ],
+        }
+        result = {
+            "status": "PASS",
+            "summary": "bounded consolidation completed",
+            "checks_total": "4",
+            "checks_failed": "0",
+            "tickets_touched": [],
+            "rc_fingerprints": [],
+            "dream_report": report,
+        }
+        started = runner.datetime.fromisoformat("2026-08-05T03:30:00+00:00")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(runner, "load_manifest", return_value=manifest),
+                mock.patch.object(runner, "state_dir", return_value=Path(directory)),
+                mock.patch.object(runner, "read_slack_token", return_value="token"),
+                mock.patch.object(runner, "utc_now", return_value=started),
+                mock.patch.object(
+                    runner,
+                    "launch_workspace",
+                    return_value=("workspace-1", "session-1", "conductor://workspace-1"),
+                ),
+                mock.patch.object(runner, "conductor_call"),
+                mock.patch.object(
+                    runner,
+                    "poll_session",
+                    return_value=("finished", result),
+                ),
+                mock.patch.object(
+                    runner,
+                    "post_message",
+                    side_effect=["parent", "reply"],
+                ) as post,
+                mock.patch.object(runner, "record_run"),
+            ):
+                exit_code = runner.run_schedule("nightly-dream")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            post.mock_calls[0],
+            mock.call(
+                "token",
+                "C-nightly",
+                "✅ [nightly-dream] No changes applied · 0 memory actions · "
+                "0 tickets consolidated · 0 graph writes · 2 proposals",
+            ),
+        )
+        reply = post.mock_calls[1].args[2]
+        for section in (
+            "*What was done*",
+            "*Why*",
+            "*How*",
+            "*Memory actions (0)*",
+            "*Tickets consolidated (0)*",
+            "*Graph writes (0)*",
+            "*Proposals (2)*",
+            "*Graph plan*",
+            "*Scope reviewed*",
+            "*Run details*",
+        ):
+            with self.subTest(section=section):
+                self.assertIn(section, reply)
+        self.assertIn("• Checks: 4 total · 0 failed", reply)
+        self.assertIn("<conductor://workspace-1|Open in Conductor>", reply)
+        self.assertNotIn("SCHEDULED_RUN_RESULT", reply)
+        self.assertNotIn("```", reply)
+        self.assertEqual(post.mock_calls[1].kwargs, {"thread_ts": "parent"})
 
     def test_generic_incident_message_is_concise_and_evidence_first(self) -> None:
         runner = load_schedule_runner()
