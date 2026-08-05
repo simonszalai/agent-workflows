@@ -57,4 +57,5 @@ Slack destinations:
 | `#autodev-incidents` | root-cause clusters needing a human decision |
 
 Default format: one-line summary in the channel, detail in the thread. Health failures use the
-issue-oriented exception defined in `skills/references/scheduled-run.md` §2.
+issue-oriented exception defined in `skills/references/scheduled-run.md` §2. Nightly dream uses a
+count-rich parent plus one structured what/why/how reply; its raw result block is never posted.

@@ -47,6 +47,10 @@ resolves the configured name to its ID.
   generic result-dump reply. A green run remains one standalone ✅ line with no thread reply.
 - **Green runs still post.** A healthy run posts its one ✅ line ("ran, nothing to report").
   Silence is indistinguishable from a broken scheduler.
+- **`nightly-dream` format.** The parent line states whether any changes were applied and gives
+  counts for memory actions, tickets consolidated, graph writes, and proposals. Its one thread
+  reply uses named sections for what was done, why, how, applied actions, proposals, graph plan,
+  bounded scope, and run details. Never expose the raw `SCHEDULED_RUN_RESULT` block in Slack.
 - **FAIL routing.** When a run ends FAIL (or BLOCKED on something needing a human decision),
   additionally post a compact, human-readable alert to `#autodev-incidents` @-mentioning Simon
   (`<@U09T4LELYES>`). Give each issue its own bold title, followed by one indented block containing
@@ -95,7 +99,7 @@ Every scheduled run's final session message ends with a fenced block the Hermes 
 SCHEDULED_RUN_RESULT
 status: PASS | FAIL | BLOCKED
 schedule: <schedules.yaml name>
-summary: <one line, becomes the Slack channel line>
+summary: <one-line outcome; becomes the Slack line except for specialized schedule renderers>
 checks_total: <int>
 checks_failed: <int>
 tickets_touched: [<ticket ids, may be empty>]
@@ -103,6 +107,28 @@ rc_fingerprints: [<fingerprints emitted this run, may be empty>]
 issues: <single-line JSON array using the issue object below>
 blocked_on: <exact command or manual action a human must take; omit unless BLOCKED>
 ```
+
+`nightly-dream` additionally requires a `dream_report: <JSON object>` line. The value must be
+serialized on one line in the result block; expanded, its schema is:
+
+```json
+{
+  "what": "<one sentence describing the completed work and outcome>",
+  "why": "<one sentence explaining why actions were or were not applied>",
+  "how": "<one sentence describing the evidence and safety method>",
+  "memory_actions": ["<entry ID — action — reason>"],
+  "ticket_consolidations": ["<ticket ID — consolidation — reason>"],
+  "proposals": ["<proposal — reason it needs human review>"],
+  "graph_plan": "<one-sentence graph audit/plan outcome>",
+  "scope": ["<bounded ticket, memory, or graph scope>"]
+}
+```
+
+All fields are required. Action and proposal arrays may be empty; `scope` may not. The runner
+derives the main-message counts from the arrays, so each applied memory action, consolidated
+ticket, and proposal must occupy exactly one item. The graph write count is always zero because
+the scheduled graph lane is propose-only. The runner converts this object into human-readable
+Slack sections and keeps the machine block in the Conductor transcript only.
 
 Issue object:
 
@@ -133,6 +159,8 @@ rejected.
   `representative_example`, and `next_step` to one concrete sentence each. `concrete_proof` states
   the aggregate evidence; `representative_example` names one representative occurrence rather than
   repeating the proof.
+- `dream_report` is required for `nightly-dream`. Missing or malformed data makes the run FAIL
+  rather than silently restoring the raw machine dump.
 - The block is the last thing in the message. Free-form detail goes above it, never below.
 
 ## 4. Dedup convention (`rc_fingerprint`)

@@ -39,7 +39,7 @@ SLACK_MENTION_SIMON = "<@U09T4LELYES>"
 INCIDENTS_CHANNEL_NAME = "#autodev-incidents"
 RESULT_MARKER = "SCHEDULED_RUN_RESULT"
 RESULT_LIST_KEYS = ("tickets_touched", "rc_fingerprints")
-RESULT_JSON_KEYS = ("issues",)
+RESULT_JSON_KEYS = ("issues", "dream_report")
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
@@ -55,6 +55,17 @@ class HealthIssue(TypedDict):
     example: str
     next_step: str
     ticket_id: str | None
+
+
+class DreamReport(TypedDict):
+    what: str
+    why: str
+    how: str
+    memory_actions: list[str]
+    ticket_consolidations: list[str]
+    proposals: list[str]
+    graph_plan: str
+    scope: list[str]
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("hermes-schedules")
@@ -318,6 +329,11 @@ def parse_result_block(text: str) -> JsonObject | None:
                 if normalized_issues is None:
                     return None
                 parsed[key] = normalized_issues
+            elif key == "dream_report":
+                normalized_report = parse_dream_report(decoded)
+                if normalized_report is None:
+                    return None
+                parsed[key] = normalized_report
             else:
                 parsed[key] = decoded
         elif key in RESULT_LIST_KEYS:
@@ -332,6 +348,44 @@ def parse_result_block(text: str) -> JsonObject | None:
         return None
     parsed["status"] = str(parsed["status"]).upper()
     return parsed
+
+
+def parse_dream_report(value: object) -> DreamReport | None:
+    """Validate the structured human-readable report emitted by night-dream."""
+    if not isinstance(value, dict):
+        return None
+
+    text_fields: dict[str, str] = {}
+    for key in ("what", "why", "how", "graph_plan"):
+        raw_value = value.get(key)
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            return None
+        text_fields[key] = raw_value.strip()
+
+    list_fields: dict[str, list[str]] = {}
+    for key in ("memory_actions", "ticket_consolidations", "proposals", "scope"):
+        raw_value = value.get(key)
+        if not isinstance(raw_value, list):
+            return None
+        items: list[str] = []
+        for item in raw_value:
+            if not isinstance(item, str) or not item.strip():
+                return None
+            items.append(item.strip())
+        if key == "scope" and not items:
+            return None
+        list_fields[key] = items
+
+    return {
+        "what": text_fields["what"],
+        "why": text_fields["why"],
+        "how": text_fields["how"],
+        "memory_actions": list_fields["memory_actions"],
+        "ticket_consolidations": list_fields["ticket_consolidations"],
+        "proposals": list_fields["proposals"],
+        "graph_plan": text_fields["graph_plan"],
+        "scope": list_fields["scope"],
+    }
 
 
 def parse_health_issues(value: object) -> list[HealthIssue] | None:
@@ -441,6 +495,114 @@ def health_issue_reply(issue: HealthIssue) -> str:
         f"• *Next:* {issue['next_step']}\n"
         f"• *Ticket:* `{ticket}`"
     )
+
+
+def count_label(count: int, singular: str, plural: str | None = None) -> str:
+    noun = singular if count == 1 else plural or f"{singular}s"
+    return f"{count} {noun}"
+
+
+def nightly_dream_parent_message(icon: str, report: DreamReport) -> str:
+    memory_count = len(report["memory_actions"])
+    ticket_count = len(report["ticket_consolidations"])
+    proposal_count = len(report["proposals"])
+    applied_count = memory_count + ticket_count
+    outcome = (
+        "No changes applied"
+        if applied_count == 0
+        else f"{count_label(applied_count, 'change')} applied"
+    )
+    return (
+        f"{icon} [nightly-dream] {outcome} · "
+        f"{count_label(memory_count, 'memory action')} · "
+        f"{count_label(ticket_count, 'ticket')} consolidated · 0 graph writes · "
+        f"{count_label(proposal_count, 'proposal')}"
+    )
+
+
+def report_items(items: list[str], empty_message: str, limit: int = 20) -> list[str]:
+    if not items:
+        return [f"• {empty_message}"]
+    lines = [f"• {item}" for item in items[:limit]]
+    if len(items) > limit:
+        lines.append(f"• {len(items) - limit} more; open the workspace for the full result.")
+    return lines
+
+
+def nightly_dream_reply(
+    report: DreamReport,
+    result: JsonObject,
+    started: datetime,
+    workspace_id: str | None,
+    deep_link: str | None,
+) -> str:
+    memory_actions = report["memory_actions"]
+    ticket_consolidations = report["ticket_consolidations"]
+    proposals = report["proposals"]
+    checks_total = result.get("checks_total", "unknown")
+    checks_failed = result.get("checks_failed", "unknown")
+
+    lines = [
+        "*What was done*",
+        report["what"],
+        "",
+        "*Why*",
+        report["why"],
+        "",
+        "*How*",
+        report["how"],
+        "",
+        f"*Memory actions ({len(memory_actions)})*",
+        *report_items(memory_actions, "None."),
+        "",
+        f"*Tickets consolidated ({len(ticket_consolidations)})*",
+        *report_items(ticket_consolidations, "None."),
+        "",
+        "*Graph writes (0)*",
+        "• None — the graph lane is proposal-only by policy.",
+        "",
+        f"*Proposals ({len(proposals)})*",
+        *report_items(proposals, "None."),
+        "",
+        "*Graph plan*",
+        report["graph_plan"],
+        "",
+        "*Scope reviewed*",
+        *report_items(report["scope"], "No scope reported."),
+        "",
+        "*Run details*",
+        f"• Checks: {checks_total} total · {checks_failed} failed",
+        f"• Started: {started.isoformat()}",
+        f"• Workspace: {workspace_id or 'not created'}",
+    ]
+    if deep_link:
+        lines.append(f"• <{deep_link}|Open in Conductor>")
+    return "\n".join(lines)
+
+
+def nightly_dream_fallback_reply(
+    summary: str,
+    started: datetime,
+    workspace_id: str | None,
+    deep_link: str | None,
+) -> str:
+    lines = [
+        "*What happened*",
+        summary,
+        "",
+        "*Why*",
+        "The run did not return a valid structured nightly-dream report.",
+        "",
+        "*How to investigate*",
+        "Open the workspace and inspect the final agent message and failed checks.",
+        "",
+        "*Run details*",
+        f"• Started: {started.isoformat()}",
+        f"• Workspace: {workspace_id or 'not created'}",
+    ]
+    if deep_link:
+        lines.append(f"• <{deep_link}|Open in Conductor>")
+    return "\n".join(lines)
 
 
 def incident_ticket_text(ticket_id: str | None) -> str:
@@ -721,6 +883,22 @@ def run_schedule(name: str) -> int:
                 health_issue_reply(issue),
                 thread_ts=parent_ts,
             )
+    elif name == "nightly-dream":
+        raw_report = result.get("dream_report") if result is not None else None
+        icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
+        if isinstance(raw_report, dict) and result is not None:
+            report = cast(DreamReport, raw_report)
+            line = nightly_dream_parent_message(icon, report)
+            reply = nightly_dream_reply(
+                report, result, started, workspace_id, deep_link
+            )
+        else:
+            line = f"{icon} [nightly-dream] {summary}"
+            reply = nightly_dream_fallback_reply(
+                summary, started, workspace_id, deep_link
+            )
+        parent_ts = post_message(slack_token, channel, line)
+        post_message(slack_token, channel, reply, thread_ts=parent_ts)
     else:
         icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
         line = f"{icon} [{name}] {summary}"
@@ -753,6 +931,8 @@ def interpret_outcome(
         return "FAIL", "agent session errored"
     if result is None:
         return "FAIL", "run ended without a SCHEDULED_RUN_RESULT block"
+    if name == "nightly-dream" and not isinstance(result.get("dream_report"), dict):
+        return "FAIL", "run ended without a valid dream_report"
     status = cast(str, result["status"])
     summary = cast(str, result.get("summary") or f"{name} ended {status}")
     if status == "BLOCKED" and result.get("blocked_on"):

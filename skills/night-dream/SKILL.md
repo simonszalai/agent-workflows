@@ -52,7 +52,7 @@ Auto-apply is limited to adversarially-surviving **memory-store** actions of exa
 2. **supersession** — `supersede_entry` linking a superseded entry to its replacement/canonical;
 3. **quarantine** — deactivate a harmful/misleading entry pending human review (no hard delete).
 
-Everything else is a **Slack proposal in the thread**, never applied: new entry creation, entry
+Everything else is a **Slack proposal in the report**, never applied: new entry creation, entry
 deletion, merges beyond a supersession link, tag-taxonomy changes, skill/workflow suggestions,
 ticket mutations other than `rc_fingerprint` extend/create per scheduled-run.md §4. Record every
 applied mutation with `record_memory_event`/audit trail so the morning review can see exactly
@@ -62,9 +62,9 @@ what changed and revert it.
 
 Run `../ts-graph-dream/SKILL.md` in **propose-only mode**: audit passes and dry-run SQL counts
 are fine (prod reads via the read-only credential only), but the run performs **zero `graph_*`
-mutations** — no supersede/tag/collapse/merge writes, no `graph_maintenance_*` rows. Post the
+mutations** — no supersede/tag/collapse/merge writes, no `graph_maintenance_*` rows. Include the
 resulting evidence-bound production graph cleanup plan (action classes, row counts, sample IDs,
-risk notes) as a reply in the nightly Slack thread. Applying the plan is a separate,
+risk notes) in `dream_report`. Applying the plan is a separate,
 human-approved `/ts-graph-dream` follow-up session — never this run.
 
 ## Bounds
@@ -76,9 +76,25 @@ unexamined scope over to the next night.
 
 ## Report
 
-One summary line to `#autodev-nightly`, detail (per-channel findings, applied mutations with
-entry IDs, proposals, graph plan) as thread replies, FAIL/BLOCKED routing per scheduled-run.md
-§2, and the `SCHEDULED_RUN_RESULT` block ending the session's final message.
+The Hermes runner owns Slack delivery. End with the `SCHEDULED_RUN_RESULT` block from
+scheduled-run.md §3 and include its required single-line `dream_report` JSON object. Populate it
+as follows:
+
+- `what`: one sentence saying what was reviewed, what changed, and whether proposals were made;
+- `why`: one sentence explaining why actions were applied or why nothing survived the safety gate;
+- `how`: one sentence naming the bounded evidence and adversarial/dedup method used;
+- `memory_actions`: one `entry ID — action — reason` item per applied repair, supersession, or
+  quarantine;
+- `ticket_consolidations`: one `ticket ID — consolidation — reason` item per created or extended
+  recurring-root-cause ticket;
+- `proposals`: one `proposal — reason it needs human review` item per proposed action;
+- `graph_plan`: one sentence summarizing the propose-only graph outcome; and
+- `scope`: the explicit ticket window, memory slice, and graph audit bounds.
+
+Use empty arrays when no actions or proposals exist. Do not put the human report above the block
+or attempt to post Slack messages directly: the runner renders one count-rich parent message and
+one structured thread reply, while the raw machine block remains in Conductor only. A zero-action
+PASS must say why no action was safe or necessary; never use a generic `ended PASS` summary.
 
 ## Relation to the manual skills
 
