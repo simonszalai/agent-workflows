@@ -22,7 +22,7 @@ class InstallerTest(unittest.TestCase):
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
             "hooks/memory_context.py", "hooks/task_packet.py", "bin/autodev-memory-task-packet",
             "bin/install-agent-workflows", "bin/link-agent-workflows-live",
-            "bin/project-context", "bin/render-cli",
+            "bin/project-context", "bin/render-cli", "bin/resend-cli",
             "bin/.protected-route-security-floor",
             "config/project-tools.json",
         ):

@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# Project-aware wrapper for the official Resend CLI.
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_CONTEXT="$HERE/project-context"
+OP_WRAPPER="$HERE/op"
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  resend-cli [wrapper options] <resend arguments...>
+  resend-cli [wrapper options] context
+  resend-cli [wrapper options] doctor
+
+wrapper options (must precede the command):
+  --project <id>            Explicit project profile
+  --allow-cross-project     Permit an explicit profile outside its registered repos
+  --write                   Permit a mutating, interactive, or unknown command
+  --reason <text>           Sensitive-access reason (required for writes)
+
+Read commands auto-detect the project from the exact Git origin. Mutations require
+both --write and --project. There is no default project or saved CLI credential.
+EOF
+}
+
+fail() {
+  echo "resend-cli: $*" >&2
+  exit "${2:-2}"
+}
+
+project=""
+project_explicit=0
+allow_cross=0
+write_allowed=0
+reason=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      [[ $# -ge 2 ]] || fail "--project requires a value"
+      project="$2"; project_explicit=1; shift 2 ;;
+    --project=*)
+      project="${1#*=}"; project_explicit=1; shift ;;
+    --allow-cross-project)
+      allow_cross=1; shift ;;
+    --write)
+      write_allowed=1; shift ;;
+    --reason)
+      [[ $# -ge 2 ]] || fail "--reason requires a value"
+      reason="$2"; shift 2 ;;
+    --reason=*)
+      reason="${1#*=}"; shift ;;
+    --help-wrapper)
+      usage; exit 0 ;;
+    --)
+      shift; break ;;
+    *)
+      break ;;
+  esac
+done
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+
+resolve_resend_bin() {
+  resend_bin="${RESEND_CLI_BIN:-}"
+  if [[ -z "$resend_bin" ]]; then
+    if [[ -x "$HOME/.resend/bin/resend" ]]; then
+      resend_bin="$HOME/.resend/bin/resend"
+    elif [[ -x /opt/homebrew/bin/resend ]]; then
+      resend_bin=/opt/homebrew/bin/resend
+    else
+      resend_bin="$(command -v resend 2>/dev/null || true)"
+    fi
+  fi
+  [[ -n "$resend_bin" && -x "$resend_bin" ]] || {
+    echo "resend-cli: official Resend CLI not installed." >&2
+    echo "  Install with: curl -fsSL https://resend.com/install.sh | bash" >&2
+    exit 3
+  }
+}
+
+# A caller-provided key/profile can override the selected project. Credential persistence
+# also defeats per-invocation injection, so these flags and auth commands are never accepted.
+for argument in "$@"; do
+  case "$argument" in
+    --api-key|--api-key=*|-p|--profile|--profile=*|--insecure-storage)
+      fail "credential/profile overrides are forbidden; use the registered project profile" ;;
+  esac
+done
+case "$1" in
+  login|logout|auth)
+    fail "saved Resend authentication is forbidden; credentials are injected per invocation" ;;
+esac
+if [[ "$1" == "open" || "${2:-}" == "open" ]]; then
+  fail "dashboard-open commands cannot enforce the selected project account"
+fi
+
+# Help, version, completions, and the command tree do not need project or credential resolution.
+case "$1" in
+  -h|--help|-v|--version|help|commands|completion)
+    resolve_resend_bin
+    exec "$resend_bin" "$@"
+    ;;
+esac
+for argument in "$@"; do
+  case "$argument" in
+    -h|--help)
+      resolve_resend_bin
+      exec "$resend_bin" "$@"
+      ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || fail "jq is required" 3
+[[ -x "$PROJECT_CONTEXT" ]] || fail "missing project resolver: $PROJECT_CONTEXT" 3
+
+context_args=(--cwd "$PWD" --tool resend)
+if [[ "$project_explicit" == 1 ]]; then
+  context_args+=(--project "$project")
+fi
+if [[ "$allow_cross" == 1 ]]; then
+  context_args+=(--allow-cross-project)
+fi
+context="$("$PROJECT_CONTEXT" "${context_args[@]}")"
+project="$(jq -er '.project' <<<"$context")"
+remote="$(jq -r '.remote // "explicit-outside-git"' <<<"$context")"
+key_ref="$(jq -er '.tools.resend.api_key_ref' <<<"$context")"
+canary_domain="$(jq -er '.tools.resend.canary_domain' <<<"$context")"
+token_env="$(jq -er '.service_account.token_env' <<<"$context")"
+keychain_item="$(jq -r '.service_account.keychain_item // empty' <<<"$context")"
+
+if [[ "$1" == "context" ]]; then
+  [[ $# -eq 1 ]] || fail "context takes no arguments"
+  printf 'project=%s\nremote=%s\ncanary_domain=%s\ncredential_ref=%s\n' \
+    "$project" "$remote" "$canary_domain" "$key_ref"
+  exit 0
+fi
+
+resolve_resend_bin
+
+is_read_command() {
+  local first="${1:-}" second="${2:-}" third="${3:-}"
+  case "$first $second" in
+    "emails list"|"emails ls"|"emails get"|"emails attachments"|"emails attachment"|\
+    "broadcasts get"|"broadcasts list"|"broadcasts ls"|\
+    "automations get"|"automations list"|"automations ls"|\
+    "events get"|"events list"|"events ls"|\
+    "templates get"|"templates list"|"templates ls"|\
+    "contacts get"|"contacts list"|"contacts ls"|"contacts segments"|"contacts topics"|\
+    "contact-properties get"|"contact-properties list"|"contact-properties ls"|\
+    "segments contacts"|"segments get"|"segments list"|"segments ls"|\
+    "topics get"|"topics list"|"topics ls"|\
+    "domains get"|"domains list"|"domains ls"|\
+    "logs get"|"logs list"|"logs ls"|\
+    "suppressions get"|"suppressions list"|"suppressions ls"|\
+    "api-keys list"|"api-keys ls"|\
+    "webhooks get"|"webhooks list"|"webhooks ls"|\
+    "oauth-grants list"|"oauth-grants ls") return 0 ;;
+  esac
+  case "$first $second $third" in
+    "emails receiving list"|"emails receiving ls"|"emails receiving get"|\
+    "emails receiving attachments"|"emails receiving attachment"|\
+    "automations runs list"|"automations runs ls"|"automations runs get"|\
+    "contacts imports get"|"contacts imports list"|"contacts imports ls"|\
+    "domains claim get") return 0 ;;
+  esac
+  case "$first" in
+    whoami|doctor) return 0 ;;
+  esac
+  return 1
+}
+
+read_only=0
+if is_read_command "$@"; then read_only=1; fi
+if [[ "$read_only" != 1 ]]; then
+  [[ "$write_allowed" == 1 ]] || fail \
+    "command is mutating, interactive, or unknown; pass --write and an explicit --project"
+  [[ "$project_explicit" == 1 ]] || fail \
+    "mutating commands require explicit --project <id>"
+  [[ -n "$reason" ]] || fail "mutating commands require --reason <text>"
+fi
+
+if [[ "$1 ${2:-}" == "api-keys create" ]]; then
+  fail "api-keys create emits a new secret; create and store keys through a reviewed secret workflow"
+fi
+
+if [[ -n "${RESEND_API_KEY:-}" ]]; then
+  key="$RESEND_API_KEY"
+  credential_source="process-environment"
+else
+  if [[ "$key_ref" == op://*-sensitive/* ]]; then
+    if [[ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CODEX_THREAD_ID:-}${CODEX_CI:-}${CONDUCTOR_WORKSPACE:-}${CONDUCTOR_WORKSPACE_NAME:-}${CONDUCTOR_SESSION_ID:-}" ]]; then
+      fail "credential $key_ref is human-only; run from a normal terminal or provide an approved RESEND_API_KEY environment"
+    fi
+    if [[ -z "$reason" ]]; then
+      reason="Read Resend resources for project $project"
+    fi
+  fi
+  [[ -x "$OP_WRAPPER" ]] || fail "missing 1Password wrapper: $OP_WRAPPER" 3
+  eval "sa_token=\${$token_env:-}"
+  if [[ -z "$sa_token" && -n "$keychain_item" && "$(uname -s)" == "Darwin" ]]; then
+    sa_token="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+  fi
+  [[ -n "$sa_token" ]] || fail \
+    "no 1Password service-account token for project '$project': set $token_env${keychain_item:+ or store it in the Mac Keychain as $keychain_item}" 3
+  key="$(
+    SENSITIVE_ACCESS_REASON="$reason" OP_SERVICE_ACCOUNT_TOKEN="$sa_token" \
+      "$OP_WRAPPER" read --no-newline "$key_ref"
+  )"
+  [[ -n "$key" ]] || fail "1Password returned an empty credential for $project" 3
+  credential_source="$key_ref"
+fi
+
+unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
+for variable_name in "${!OP_SESSION_@}"; do
+  unset "$variable_name"
+done
+
+printf 'Resend context: project=%s remote=%s credential=%s\n' \
+  "$project" "$remote" "$credential_source" >&2
+
+domain_inventory="$(
+  RESEND_API_KEY="$key" CI=true "$resend_bin" domains list --json 2>/dev/null
+)" || fail "credential cannot list domains for project $project" 3
+if ! jq -e --arg expected "$canary_domain" '
+  (.data // .) | any(.[]; (.name // .domain // "") == $expected)
+' >/dev/null <<<"$domain_inventory"; then
+  fail "credential does not expose the registered canary domain for project $project" 3
+fi
+
+if [[ "$1" == "doctor" ]]; then
+  [[ $# -eq 1 ]] || fail "doctor takes no arguments"
+  if RESEND_API_KEY="$key" CI=true "$resend_bin" doctor --json >/dev/null 2>&1; then
+    printf 'resend-cli doctor: OK project=%s\n' "$project"
+    exit 0
+  fi
+  fail "Resend credential or account validation failed" 3
+fi
+
+export RESEND_API_KEY="$key" CI=true
+exec "$resend_bin" "$@" --json

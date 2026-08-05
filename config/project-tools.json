@@ -22,6 +22,10 @@
             "amaru-web-staging"
           ]
         }
+      },
+      "resend": {
+        "api_key_ref": "op://AMARU/RESEND_API_KEY/value",
+        "canary_domain": "amaruplatform.com"
       }
     },
     "autodev": {

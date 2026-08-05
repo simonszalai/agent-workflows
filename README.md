@@ -13,7 +13,8 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
   heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
   equivalent logic inline on Codex/Grok
 - **bin/** - Shared executables including the CLI service wrappers (`render-cli`,
-  `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter), `compact-exec`
+  `resend-cli`, `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter),
+  `compact-exec`
   (bounded command output), `wait-ci` (single-call CI waiting), and
   `workflow-efficiency-report` (whole-agent-tree usage accounting)
 - **config/** - Trusted non-secret registries used by shared wrappers, including exact
@@ -94,6 +95,7 @@ resolution (see the matching `skills/tool-*` references):
 | Service   | Access |
 | --------- | ------ |
 | render    | `bin/render-cli` (project-aware official CLI + guarded `/v1` REST passthrough) |
+| resend    | `bin/resend-cli` (project-aware official CLI with guarded mutations) |
 | tailscale | `tailscale` CLI (local, credential-free) + `bin/tailscale-admin` (registry-scoped control-plane API) |
 | slack     | `bin/slack-api` (any Web API method) |
 | github    | `gh` CLI |
@@ -106,7 +108,12 @@ Run `render-cli context` for a credential-free selection check. Mutations requir
 explicit project, `--write`, and `--reason`; unknown repos and project mismatches fail
 closed. See `skills/tool-render/SKILL.md`.
 
-All three wrappers authenticate their 1Password reads with the **calling project's own**
+`resend-cli` applies the same exact-origin selection and per-invocation credential injection to
+the official Resend CLI. Saved CLI profiles and credential flags are blocked. Known reads are
+allowed automatically; mutations require explicit project, write, and reason flags. See
+`skills/tool-resend/SKILL.md`.
+
+Project-aware wrappers authenticate their 1Password reads with the **calling project's own**
 service-account token. Each project in `config/project-tools.json` declares one
 `service_account.token_env` (a project-prefixed `<PROJECT>_OP_SERVICE_ACCOUNT_TOKEN`, set in
 cloud workspaces) and an optional `service_account.keychain_item` (its Mac Keychain service
@@ -115,8 +122,9 @@ consulted, the registry rejects unprefixed and duplicated `token_env` names, and
 wrapper from another project's repo demands that project's token rather than silently reusing
 the previous one.
 
-Credential *references* are registry-owned too: `render` and the optional `tailscale` profile
-carry their own `op://` refs per project, so no wrapper hardcodes another project's vault path.
+Credential *references* are registry-owned too: `render`, `resend`, and the optional `tailscale`
+profile carry their own `op://` refs per project, so no wrapper hardcodes another project's vault
+path.
 A project without a `tailscale` profile fails closed instead of reaching for someone else's
 tailnet.
 
