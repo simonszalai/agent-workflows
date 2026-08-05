@@ -1,0 +1,290 @@
+#!/usr/bin/env bash
+# Project-aware, read-only PostgreSQL query wrapper.
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_CONTEXT="$HERE/project-context"
+OP_WRAPPER="$HERE/op"
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  psql-cli [--project ID] [--allow-cross-project] context [tier]
+  psql-cli [--project ID] [--allow-cross-project] <tier> "<SQL>"
+  psql-cli [--project ID] [--allow-cross-project] <tier> search "<term>"
+
+Only configured, non-sensitive PostgreSQL tiers are available. Queries are
+single-statement and read-only; there is no mutation mode or default project.
+EOF
+}
+
+fail() {
+  echo "psql-cli: $*" >&2
+  exit "${2:-2}"
+}
+
+project=""
+project_explicit=0
+allow_cross=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      [[ $# -ge 2 ]] || fail "--project requires a value"
+      project="$2"; project_explicit=1; shift 2 ;;
+    --project=*)
+      project="${1#*=}"; project_explicit=1; shift ;;
+    --allow-cross-project)
+      allow_cross=1; shift ;;
+    -h|--help)
+      usage; exit 0 ;;
+    --)
+      shift; break ;;
+    -*)
+      fail "unknown option: $1" ;;
+    *)
+      break ;;
+  esac
+done
+
+[[ $# -gt 0 ]] || { usage; exit 2; }
+command -v jq >/dev/null 2>&1 || fail "jq is required" 3
+[[ -x "$PROJECT_CONTEXT" ]] || fail "missing project resolver: $PROJECT_CONTEXT" 3
+
+context_args=(--cwd "$PWD" --tool postgres)
+if [[ "$project_explicit" == 1 ]]; then
+  context_args+=(--project "$project")
+fi
+if [[ "$allow_cross" == 1 ]]; then
+  context_args+=(--allow-cross-project)
+fi
+context="$("$PROJECT_CONTEXT" "${context_args[@]}")"
+project="$(jq -er '.project' <<<"$context")"
+remote="$(jq -r '.remote // "explicit-outside-git"' <<<"$context")"
+
+if [[ "$1" == "context" ]]; then
+  [[ $# -le 2 ]] || fail "context accepts at most one tier"
+  printf 'project=%s\nremote=%s\n' "$project" "$remote"
+  if [[ $# -eq 2 ]]; then
+    tier="$2"
+    dsn_ref="$(
+      jq -er --arg tier "$tier" \
+        '.tools.postgres.tiers[$tier].dsn_ref // error("unconfigured tier")' \
+        <<<"$context" 2>/dev/null
+    )" || fail "tier '$tier' is not configured for project '$project'"
+    printf 'tier=%s\ncredential_ref=%s\n' "$tier" "$dsn_ref"
+  else
+    jq -r '.tools.postgres.tiers | keys[]' <<<"$context" |
+      while IFS= read -r tier; do printf 'tier=%s\n' "$tier"; done
+  fi
+  exit 0
+fi
+
+tier="$1"
+shift
+dsn_ref="$(
+  jq -er --arg tier "$tier" \
+    '.tools.postgres.tiers[$tier].dsn_ref // error("unconfigured tier")' \
+    <<<"$context" 2>/dev/null
+)" || fail "tier '$tier' is not configured for project '$project'"
+
+[[ $# -gt 0 ]] || fail "tier '$tier' requires a SQL query or search term"
+if [[ "$1" == "search" ]]; then
+  [[ $# -eq 2 ]] || fail "search requires exactly one term"
+  term="$2"
+  [[ -n "$term" ]] || fail "search term must not be empty"
+  search_hex="$(SEARCH_TERM="$term" python3 -c '
+import os, sys
+value = os.environ["SEARCH_TERM"]
+value = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+sys.stdout.write(value.encode("utf-8").hex())
+')"
+  query="WITH schema_objects AS (
+  SELECT 'schema'::text AS object_type, n.nspname::text AS schema_name,
+         n.nspname::text AS object_name, NULL::text AS detail
+    FROM pg_catalog.pg_namespace AS n
+  UNION ALL
+  SELECT CASE c.relkind
+           WHEN 'r' THEN 'table' WHEN 'p' THEN 'partitioned_table'
+           WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view'
+           WHEN 'f' THEN 'foreign_table' WHEN 'S' THEN 'sequence'
+           ELSE 'relation'
+         END,
+         n.nspname::text, c.relname::text, NULL::text
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+  UNION ALL
+  SELECT 'column'::text, n.nspname::text, c.relname::text, a.attname::text
+    FROM pg_catalog.pg_attribute AS a
+    JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+   WHERE a.attnum > 0 AND NOT a.attisdropped
+  UNION ALL
+  SELECT 'index'::text, n.nspname::text, i.relname::text, t.relname::text
+    FROM pg_catalog.pg_index AS x
+    JOIN pg_catalog.pg_class AS i ON i.oid = x.indexrelid
+    JOIN pg_catalog.pg_class AS t ON t.oid = x.indrelid
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = i.relnamespace
+  UNION ALL
+  SELECT 'function'::text, n.nspname::text, p.proname::text,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)::text
+    FROM pg_catalog.pg_proc AS p
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+)
+SELECT object_type, schema_name, object_name, detail
+  FROM schema_objects
+ WHERE schema_name ILIKE '%' || convert_from(decode('${search_hex}', 'hex'), 'UTF8') || '%' ESCAPE chr(92)
+    OR object_name ILIKE '%' || convert_from(decode('${search_hex}', 'hex'), 'UTF8') || '%' ESCAPE chr(92)
+    OR COALESCE(detail, '') ILIKE '%' || convert_from(decode('${search_hex}', 'hex'), 'UTF8') || '%' ESCAPE chr(92)
+ ORDER BY object_type, schema_name, object_name, detail NULLS FIRST
+ LIMIT 100"
+else
+  [[ $# -eq 1 ]] || fail "SQL must be passed as one quoted argument"
+  query="$1"
+fi
+
+query="$(QUERY_TO_VALIDATE="$query" python3 - <<'PY'
+import os
+import re
+import sys
+
+query = os.environ["QUERY_TO_VALIDATE"].rstrip()
+if query.endswith(";"):
+    query = query[:-1].rstrip()
+if ";" in query:
+    print("psql-cli: SQL must contain exactly one statement (internal semicolon rejected)", file=sys.stderr)
+    raise SystemExit(2)
+
+prefix = re.compile(r"\A(?:\s+|--[^\n]*(?:\n|$)|/\*.*?\*/)*", re.DOTALL)
+normalized = prefix.sub("", query, count=1)
+match = re.match(r"[A-Za-z]+", normalized)
+allowed = {"SELECT", "WITH", "SHOW", "EXPLAIN", "TABLE", "VALUES"}
+keyword = match.group(0).upper() if match else ""
+if keyword not in allowed:
+    print(
+        "psql-cli: SQL must start with SELECT, WITH, SHOW, EXPLAIN, TABLE, or VALUES",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+print(query)
+PY
+)"
+
+max_bytes="${PSQL_CLI_MAX_BYTES:-51200}"
+max_bytes="$(RAW_MAX_BYTES="$max_bytes" python3 -c '
+import os, re, sys
+raw = os.environ["RAW_MAX_BYTES"]
+if not re.fullmatch(r"[0-9]+", raw):
+    raise SystemExit(2)
+value = int(raw)
+if not 1 <= value <= 65536:
+    raise SystemExit(2)
+print(value)
+')" || fail "PSQL_CLI_MAX_BYTES must be an integer from 1 to 65536"
+
+psql_bin="${PSQL_CLI_BIN:-}"
+if [[ -z "$psql_bin" ]]; then
+  psql_bin="$(command -v psql 2>/dev/null || true)"
+fi
+if [[ -z "$psql_bin" || ! -x "$psql_bin" ]]; then
+  echo "psql-cli: psql is not installed or executable." >&2
+  case "$(uname -s)" in
+    Darwin) echo "  Install with: brew install libpq" >&2 ;;
+    *) echo "  Install the PostgreSQL client package for your operating system." >&2 ;;
+  esac
+  exit 3
+fi
+
+token_env="$(jq -er '.service_account.token_env' <<<"$context")"
+keychain_item="$(jq -r '.service_account.keychain_item // empty' <<<"$context")"
+eval "sa_token=\${$token_env:-}"
+if [[ -z "$sa_token" && -n "$keychain_item" && "$(uname -s)" == "Darwin" ]]; then
+  sa_token="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+fi
+[[ -n "$sa_token" ]] || fail \
+  "no 1Password service-account token for project '$project': set $token_env${keychain_item:+ or store it in the Mac Keychain as $keychain_item}" 3
+[[ -x "$OP_WRAPPER" ]] || fail "missing 1Password wrapper: $OP_WRAPPER" 3
+
+# The selected project token is the only credential allowed to reach the audited read.
+# Remove ambient 1Password sessions/connect tokens and all exported project tokens first.
+for variable_name in $(compgen -v); do
+  case "$variable_name" in
+    OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_HOST|OP_CONNECT_TOKEN|OP_SESSION_*|*_OP_SERVICE_ACCOUNT_TOKEN)
+      unset "$variable_name"
+      ;;
+  esac
+done
+dsn="$(OP_SERVICE_ACCOUNT_TOKEN="$sa_token" "$OP_WRAPPER" read --no-newline "$dsn_ref")"
+unset sa_token
+[[ -n "$dsn" ]] || fail "1Password returned an empty PostgreSQL credential for $project/$tier" 3
+
+output_file=""
+marker_file=""
+cleanup() {
+  [[ -z "$output_file" ]] || rm -f "$output_file"
+  [[ -z "$marker_file" ]] || rm -f "$marker_file"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+output_file="$(mktemp "${TMPDIR:-/tmp}/psql-cli-output.XXXXXX")"
+marker_file="$(mktemp "${TMPDIR:-/tmp}/psql-cli-marker.XXXXXX")"
+chmod 600 "$output_file" "$marker_file"
+
+# Defense in depth: psql receives the DSN only in PGDATABASE, no 1Password credentials,
+# a read-only session default, and an explicit read-only transaction in this same session.
+for variable_name in $(compgen -v); do
+  case "$variable_name" in
+    OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_HOST|OP_CONNECT_TOKEN|OP_SESSION_*|*_OP_SERVICE_ACCOUNT_TOKEN)
+      unset "$variable_name"
+      ;;
+  esac
+done
+session_sql="BEGIN READ ONLY;
+$query;
+COMMIT;"
+
+set +e
+PGDATABASE="$dsn" \
+PGOPTIONS='-c statement_timeout=30000 -c default_transaction_read_only=on' \
+PGCONNECT_TIMEOUT=15 \
+  "$psql_bin" -X -q -v ON_ERROR_STOP=1 --csv -P pager=off \
+  <<<"$session_sql" 2>&1 |
+  python3 -c '
+import pathlib, sys
+limit = int(sys.argv[1])
+output = pathlib.Path(sys.argv[2])
+marker = pathlib.Path(sys.argv[3])
+written = 0
+truncated = False
+with output.open("wb") as handle:
+    while True:
+        chunk = sys.stdin.buffer.read(65536)
+        if not chunk:
+            break
+        room = limit - written
+        if room > 0:
+            current = chunk[:room]
+            handle.write(current)
+            written += len(current)
+        if len(chunk) > max(room, 0):
+            truncated = True
+if truncated:
+    marker.write_text("1", encoding="ascii")
+' "$max_bytes" "$output_file" "$marker_file"
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+psql_status="${pipeline_status[0]}"
+filter_status="${pipeline_status[1]}"
+unset dsn PGDATABASE
+
+cat "$output_file"
+if [[ -s "$marker_file" ]]; then
+  printf '\n[psql-cli output TRUNCATED at %s bytes]\n' "$max_bytes"
+fi
+if [[ "$psql_status" -ne 0 ]]; then
+  exit "$psql_status"
+fi
+exit "$filter_status"

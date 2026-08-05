@@ -1,6 +1,6 @@
 ---
 name: tool-postgres
-description: Postgres access reference for database investigation — psql wrappers via the Bash tool (all Postgres MCP servers are retired).
+description: Project-aware Postgres investigation through the shared read-only psql-cli wrapper.
 ---
 
 # Postgres Access Reference
@@ -9,43 +9,38 @@ How to query project databases during investigation.
 
 Also follow `../references/execution-economy.md` for run-local caching and bounded output.
 
-**Important:** Production Postgres access is read-only. Use it for investigation and
-querying only. Data modifications must go through application code (flows, scripts) and
-the repo's approved schema/deploy system (ts-prefect uses Atlas after E0017; legacy repos
-may still use Alembic/Prisma migrations).
+**Important:** `psql-cli` has no mutation mode. Every connection is constrained by a
+read-only transaction, a read-only session default, and a 30-second statement timeout. Schema and
+data changes belong in each repository's approved application/migration workflow.
 
-## Primary interface: the repo's psql wrapper (`scripts/db/sql.sh`)
+## Primary interface: `psql-cli`
 
-Database access is a checked-in psql wrapper run via the Bash tool. All Postgres MCP
-servers (dbhub behind the gateway) are retired — the MCP approach lost the client
-tool-registry race on cloud VMs, leaving sessions with no DB tools; a CLI self-heals
-on first use. ts-prefect ships the reference implementation:
+Postgres MCP is retired. `psql-cli` is the canonical agent-investigation interface; use the
+shared, project-aware CLI through the Bash tool:
 
-```
-scripts/db/sql.sh <dev|staging|prod> "<SQL>"          # run a query (CSV output)
-scripts/db/sql.sh <dev|staging|prod> search "<term>"  # find tables/columns/indexes/functions
+```bash
+psql-cli context [tier]                     # credential-free profile/tier check
+psql-cli <tier> "<SQL>"                     # run one read-only query (CSV)
+psql-cli <tier> search "<term>"              # find schema objects
 ```
 
-- Credentials resolve lazily per call (op service-account token; silent on Mac and cloud).
-  Never print DSNs or tokens.
-- Prod is read-only (ts_readonly role + read-only transaction GUC); 30s statement timeout
-  everywhere; output capped at 50 KB with a TRUNCATED marker — add LIMIT, don't retry
-  without one.
-- `psql` missing? `brew install libpq && brew link --force libpq` (Mac) or
-  `apt-get install -y postgresql-client` (Linux) — the wrapper prints this too.
-- A repo without a wrapper yet: copy ts-prefect's `scripts/db/sql.sh` and swap the
-  op:// item names; do not hand-roll `psql "$DSN"` with a value in argv.
+`psql-cli` resolves the exact Git `origin` through `config/project-tools.json`. There is no
+default or fuzzy project/tier selection. Only tiers explicitly configured with canonical,
+non-sensitive `op://.../value` references are available; a project or tier without a profile
+fails closed. For deliberate work outside the registered repository, both `--project <id>` and
+`--allow-cross-project` are required.
 
-**CRITICAL:** When told to investigate a specific environment, pass that tier argument.
-Never default to `prod` when staging or dev was requested.
+Credentials resolve lazily through the selected project's service-account environment/Keychain
+profile and the audited `bin/op` shim. The DSN is injected only as `PGDATABASE` into `psql`; it is
+never put in argv, a file, or logs. Output defaults to a 50 KiB cap and carries an explicit
+`TRUNCATED` marker. Add a tighter `LIMIT`; do not rerun an unbounded query.
 
-## The autodev-memory global database (special case)
+If `psql` is missing, install the PostgreSQL client (`brew install libpq` on macOS or the
+platform's PostgreSQL client package on Linux).
 
-Its DSN lives in `op://AUTODEV-sensitive` — deliberately Touch-ID-gated (data-exposing
-prod DB), so there is NO silent CLI path. For routine knowledge/ticket operations use
-the autodev-memory MCP tools (one of the two MCP servers that remain). Direct SQL
-against that DB is rare and interactive-only: follow the sensitive-vault-access skill
-(reason required) and run psql under `op run` in Simon's terminal.
+**CRITICAL:** Pass the requested tier exactly. Never substitute `prod` for staging/dev or another
+available tier for one that is unavailable. Direct SQL is unavailable when the registry has no
+Postgres profile; use the project's supported application/API interface instead.
 
 ## Mandatory query and payload bounds
 
@@ -162,8 +157,7 @@ FROM pg_stat_user_indexes ORDER BY idx_scan ASC, pg_relation_size(indexrelid) DE
 
 ## Schema Exploration
 
-Prefer `scripts/db/sql.sh <tier> search "<term>"` for interactive exploration. SQL
-equivalents:
+Prefer `psql-cli <tier> search "<term>"` for interactive exploration. SQL equivalents:
 
 ```sql
 -- list schemas

@@ -23,6 +23,16 @@
           ]
         }
       },
+      "postgres": {
+        "tiers": {
+          "dev": {
+            "dsn_ref": "op://AMARU/DEV_POSTGRES_URL/value"
+          },
+          "staging": {
+            "dsn_ref": "op://AMARU/STAGING_POSTGRES_URL/value"
+          }
+        }
+      },
       "resend": {
         "api_key_ref": "op://AMARU/RESEND_API_KEY/value",
         "canary_domain": "amaruplatform.com"
@@ -69,6 +79,22 @@
       "tailscale": {
         "oauth_client_id_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value",
         "oauth_client_secret_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value"
+      },
+      "postgres": {
+        "tiers": {
+          "dev": {
+            "dsn_ref": "op://TS/DEV_POSTGRES_URL/value"
+          },
+          "staging": {
+            "dsn_ref": "op://TS/STAGING_POSTGRES_URL/value"
+          },
+          "prod": {
+            "dsn_ref": "op://TS/PROD_POSTGRES_URL_RO/value"
+          }
+        }
+      },
+      "slack": {
+        "token_ref": "op://TS/TS_SLACK_MCP_USER_TOKEN/value"
       }
     },
     "workflow-pro": {
@@ -89,6 +115,16 @@
             "pdf-renderer",
             "workflow-pro"
           ]
+        }
+      },
+      "postgres": {
+        "tiers": {
+          "dev": {
+            "dsn_ref": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value"
+          },
+          "staging": {
+            "dsn_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL/value"
+          }
         }
       }
     }

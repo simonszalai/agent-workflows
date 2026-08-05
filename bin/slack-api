@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# slack-api — Slack Web API with silent credential injection. Replaces the slack
-# MCP server (agents call Web API methods via Bash; see skills/tool-slack).
+# slack-api — project-aware Slack Web API with silent credential injection.
 #
 # USAGE  slack-api <method> [key=value ...]
 #        slack-api conversations.list types=public_channel limit=20
@@ -11,14 +10,10 @@
 # key=value pairs are form-encoded (Slack's preferred encoding for all methods).
 # Output is raw API JSON; pipe to jq to trim. Always check `"ok": true/false`.
 #
-# Credentials: user token (op://TS/TS_SLACK_MCP_USER_TOKEN) resolved per call via the
-# calling project's 1Password service-account token, named by that project's
-# `service_account` entry in config/project-tools.json — silent, no Touch ID.
-# Never print the token.
-#
-# The token lives in the TS vault, so only the ts service account can read it. Other
-# projects resolve their own token correctly and then fail on the vault, which is the
-# accurate outcome until they get their own Slack credential.
+# The exact Git origin selects both the Slack token reference and the project's
+# 1Password service account from config/project-tools.json. Projects without an
+# explicit Slack profile fail closed. Never print the token.
+case "$-" in *x*) set +x ;; esac
 set -euo pipefail
 
 [ $# -ge 1 ] || { echo "usage: slack-api <method> [key=value ...]" >&2; exit 2; }
@@ -26,11 +21,14 @@ METHOD="$1"; shift
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_CONTEXT="$HERE/project-context"
+OP_WRAPPER="$HERE/op"
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 3; }
 [ -x "$PROJECT_CONTEXT" ] || { echo "ERROR: missing project resolver: $PROJECT_CONTEXT" >&2; exit 3; }
+[ -x "$OP_WRAPPER" ] || { echo "ERROR: missing 1Password wrapper: $OP_WRAPPER" >&2; exit 3; }
 
-context="$("$PROJECT_CONTEXT" --cwd "$PWD")"
+context="$("$PROJECT_CONTEXT" --cwd "$PWD" --tool slack)"
 project="$(jq -er '.project' <<<"$context")"
+token_ref="$(jq -er '.tools.slack.token_ref' <<<"$context")"
 token_env="$(jq -er '.service_account.token_env' <<<"$context")"
 keychain_item="$(jq -r '.service_account.keychain_item // empty' <<<"$context")"
 
@@ -45,13 +43,34 @@ fi
   exit 3
 }
 
-slack_tok="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" op read "op://TS/TS_SLACK_MCP_USER_TOKEN/value")"
+# Only the selected project token may authenticate the audited credential read.
+for variable_name in $(compgen -v); do
+  case "$variable_name" in
+    OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_HOST|OP_CONNECT_TOKEN|OP_SESSION_*|*_OP_SERVICE_ACCOUNT_TOKEN)
+      unset "$variable_name"
+      ;;
+  esac
+done
+slack_tok="$(OP_SERVICE_ACCOUNT_TOKEN="$tok" "$OP_WRAPPER" read --no-newline "$token_ref")"
+unset tok
+[ -n "$slack_tok" ] || { echo "ERROR: 1Password returned an empty Slack token for project '$project'" >&2; exit 3; }
 
 args=()
 for kv in "$@"; do
   args+=(--data-urlencode "$kv")
 done
 
+# Keep the Slack token out of argv and strip every 1Password credential from curl.
+exec 3< <(printf 'Authorization: Bearer %s\n' "$slack_tok")
+unset slack_tok
+for variable_name in $(compgen -v); do
+  case "$variable_name" in
+    OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_HOST|OP_CONNECT_TOKEN|OP_SESSION_*|*_OP_SERVICE_ACCOUNT_TOKEN)
+      unset "$variable_name"
+      ;;
+  esac
+done
+
 # ${args[@]+...} keeps macOS bash 3.2's set -u happy when no key=value args were given.
 exec curl -sfS --max-time 30 "https://slack.com/api/${METHOD}" \
-  -H "Authorization: Bearer $slack_tok" ${args[@]+"${args[@]}"}
+  -H @/dev/fd/3 ${args[@]+"${args[@]}"}

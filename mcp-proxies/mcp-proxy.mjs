@@ -19,11 +19,6 @@
 //   well-known ports make the client config a static URL valid in every environment
 //   and every client (Codex and Grok cannot expand ${VAR} in `url`).
 //
-// LINEAGE
-//   Superset of ts-prefect scripts/setup/cloud-mcp-proxy.mjs (kept there as a
-//   fallback vendored copy — ts-prefect's cloud-mcp.sh prefers THIS file when the
-//   agent-workflows checkout exists). Adds the gateway's render workspace preflight.
-//
 // USAGE  op run --env-file=proxies.env -- node mcp-proxy.mjs <label>
 // ENV    MCP_PROXY_PORT              loopback port to listen on
 //        MCP_PROXY_UPSTREAM          full upstream URL (http: or https:)

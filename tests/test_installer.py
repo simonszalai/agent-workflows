@@ -22,7 +22,7 @@ class InstallerTest(unittest.TestCase):
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
             "hooks/memory_context.py", "hooks/task_packet.py", "bin/autodev-memory-task-packet",
             "bin/install-agent-workflows", "bin/link-agent-workflows-live",
-            "bin/project-context", "bin/render-cli", "bin/resend-cli",
+            "bin/project-context", "bin/psql-cli", "bin/render-cli", "bin/resend-cli",
             "bin/.protected-route-security-floor",
             "config/project-tools.json",
         ):
@@ -71,6 +71,10 @@ class InstallerTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((home / ".claude/skills").resolve(), (source / "skills").resolve())
             self.assertFalse((home / ".local/share/agent-workflows").exists())
+            self.assertEqual(
+                (home / ".local/bin/psql-cli").resolve(),
+                (source / "bin/psql-cli").resolve(),
+            )
 
             (source / "skills/added-later").mkdir()
             (source / "skills/added-later/SKILL.md").write_text("live")
@@ -218,6 +222,16 @@ class InstallerTest(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("project tool registry validation failed", result.stderr)
+
+    def test_staged_artifact_requires_psql_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            (source / "bin/psql-cli").unlink()
+            commit = self.commit(source, "missing psql cli")
+            result = self.run_install(source, root / "home", "--version", commit)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing required files", result.stderr)
 
     def test_existing_version_checksum_mismatch_and_unsafe_revision_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

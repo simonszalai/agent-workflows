@@ -1,6 +1,6 @@
 ---
 name: tool-render
-description: Project-aware Render CLI reference for infrastructure investigation across TS, Autodev, Amaru, and WorkFlow Pro.
+description: Project-aware Render CLI reference for infrastructure investigation.
 ---
 
 # Render CLI Reference
@@ -15,9 +15,7 @@ workspace are user-global and may belong to a different project.
 
 `render-cli` resolves the exact Git `origin` through the committed
 `config/project-tools.json` registry. There is no default profile and no fuzzy
-directory-name matching. The registered projects are `amaru`, `autodev`, `ts`, and
-`workflow-pro`; every known repository remote for those projects maps to exactly one
-profile.
+directory-name matching. Every registered repository remote maps to exactly one project profile.
 
 The skill contains no credential. The wrapper:
 
@@ -30,14 +28,12 @@ The skill contains no credential. The wrapper:
 It never writes a token to a repository, dotenv file, CLI config, command argument,
 or shell profile. A raw Render CLI login cannot override the selected credential.
 
-Render does not provide per-key read scopes. The TS profile is deliberately routed
-through the service-account-readable `op://TS/TS_RENDER_API_KEY/value` so agents can
-perform unattended infrastructure reads; the wrapper's command allowlist still
-requires an explicit matching project, `--write`, and `--reason` for mutations.
-Profiles whose keys remain in `*-sensitive` are human-only: agent shells fail closed
-unless an approved process-local `RENDER_API_KEY` is provided. A human can run those
-profiles from a normal terminal through the reason/notification/Touch ID contract.
-Do not bypass this with `/opt/homebrew/bin/op` or the raw Render CLI.
+Render does not provide per-key read scopes. The wrapper's read-command allowlist still
+requires an explicit matching project, `--write`, and `--reason` for mutations. Profiles whose
+keys remain in `*-sensitive` are human-only: agent shells fail closed unless an approved
+process-local `RENDER_API_KEY` is provided. A human can run those profiles from a normal terminal
+through the reason/notification/Touch ID contract. Do not bypass this with an absolute `op` path
+or the raw Render CLI.
 
 Safe, credential-free selection check:
 
@@ -59,8 +55,7 @@ render-cli deploys list <srv-id> -o json --confirm           # deploy history
 render-cli logs -r <srv-id> --limit 50 -o json --confirm     # recent logs
 ```
 
-- **Do not use `render-cli psql` for application databases** — use the project's
-  reviewed SQL wrapper.
+- **Do not use `render-cli psql` for application databases** — use `psql-cli`.
 - **Always pass `-o json --confirm`** on list/query commands: `-o json` gives parseable
   output, `--confirm` suppresses interactive prompts (headless safety).
 - Pipe through `jq` and bound output — logs and service lists are large. Never dump
@@ -74,8 +69,8 @@ The wrapper maintains a read-command allowlist. Unknown, interactive, or mutatin
 commands fail unless all three safeguards are present:
 
 ```bash
-render-cli --project workflow-pro --write \
-  --reason "Restart the reviewed workflow-pro service for F0123" \
+render-cli --project <id> --write \
+  --reason "<purpose>" \
   restart srv-xxx --confirm
 ```
 
@@ -91,11 +86,7 @@ requires `--allow-cross-project`; do not use it to work around a mapping error. 
 Env-var **values** remain unprintable. Service, deploy, log, metrics, and env-var-name
 reads may be performed only through an available approved credential route.
 
-Render inventory is account-scoped, not global. `ts-decrypt-proxy` production is
-intentionally owned in Thomas's separate security boundary and may be absent from this
-workspace. Never infer it does not exist, create a substitute, or attempt its
-deployment; land verified code on `main` and hand the commit SHA to Thomas (project
-memory `216431b0`).
+Render inventory is account-scoped, not global. Absence from the selected workspace is not proof that a service does not exist elsewhere.
 
 ## Common commands
 
@@ -131,12 +122,6 @@ never dump the raw series. `render-cli api` works for any `/v1` endpoint the CLI
 Non-GET/HEAD API calls are mutations and require the normal explicit project, write,
 and reason flags; their JSON request body is read from stdin.
 
-## Deployment model reminder (ts-prefect)
-
-Flows pull latest code from git at runtime. Code changes need NO Render deploy;
-`ts-prefect-worker` redeploys only for pyproject.toml / Dockerfile / env-var changes.
-Never use Render deploy timestamps to judge whether code is live.
-
 ## Render SSH access and host-key diagnostics
 
 Render service SSH uses the normal OpenSSH client:
@@ -159,8 +144,6 @@ Render's proof for an additional **server** host key. Retry with:
 ```
 
 Never "fix" it with `StrictHostKeyChecking=no` or `UserKnownHostsFile=/dev/null`.
-For ts-scraper Docker services invoke `/app/.venv/bin/python` explicitly.
-
 Before any cohort/fan-out/bulk SSH operation, run **one real canary through the exact
 final argv, interpreter, stdin/protocol, and cleanup path** and keep a bounded,
 credential-free failure excerpt before spending the fan-out budget.

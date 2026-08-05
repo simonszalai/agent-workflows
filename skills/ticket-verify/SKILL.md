@@ -110,9 +110,9 @@ applies unchanged.
 - **Bounded queue.** Cap the default queue explicitly per run (e.g. `--limit N` scopes or an
   explicit lookback window); never run an unbounded sweep. Report anything left unprocessed as
   carried-over in the thread.
-- **Prod DB reads only via `TS/PROD_POSTGRES_URL_RO`.** Never a read-write credential from a
-  scheduled context. Nothing that can raise a 1Password/Touch ID prompt (no `*-sensitive`
-  reads).
+- **Prod DB reads only via `psql-cli prod` when the selected project registry exposes a
+  non-sensitive read-only production profile.** A missing profile is BLOCKED; never substitute a
+  read-write credential. Nothing may raise a 1Password/Touch ID prompt (no `*-sensitive` reads).
 - **Environments.** With no environment argument, run the staging default queue first, then the
   production default queue, in one run.
 - **Slack report to `#autodev-nightly`** (channel ID from `hermes/schedules/schedules.yaml`):

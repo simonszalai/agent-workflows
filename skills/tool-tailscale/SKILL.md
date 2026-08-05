@@ -51,10 +51,6 @@ Full endpoint list: https://tailscale.com/api (it is a thin passthrough — any
   (ACL changes, key creation/revocation, device deletion/tags, DNS changes) require
   explicit instruction** — they can sever connectivity for running services.
 - Never print auth-key secrets or the OAuth credentials; ids and names only.
-- ts-prefect context: production decrypt-proxy Tailscale runs on **Thomas's tailnet**
-  (his security boundary — see the prod-tailscale-service-setup skill). The
-  credential here reaches Simon's tailnet only; absence of prod nodes is expected,
-  not a gap.
 
 ## Common Patterns
 

@@ -21,6 +21,7 @@ CANONICAL_REMOTE = re.compile(r"^([^@:/\s]+)/(.*?/.*)$")
 OP_REF = re.compile(r"^op://[^/\s]+/[^/\s]+/value$")
 TOKEN_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_OP_SERVICE_ACCOUNT_TOKEN$")
 KEYCHAIN_ITEM = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 class Project(NamedTuple):
@@ -74,6 +75,15 @@ def strings(value: object, label: str, *, nonempty: bool = True) -> tuple[str, .
     if nonempty and not result:
         fail(f"{label} must not be empty")
     return result
+
+
+def non_sensitive_op_ref(value: object, label: str) -> str:
+    if not isinstance(value, str) or not OP_REF.fullmatch(value):
+        fail(f"{label} must be a canonical op://.../value ref")
+    vault = value.removeprefix("op://").split("/", 1)[0]
+    if vault.lower().endswith("-sensitive"):
+        fail(f"{label} must not reference a *-sensitive vault")
+    return value
 
 
 def load_projects(path: Path) -> dict[str, Project]:
@@ -164,6 +174,45 @@ def load_projects(path: Path) -> dict[str, Project]:
                 ref = tailscale.get(key)
                 if not isinstance(ref, str) or not OP_REF.fullmatch(ref):
                     fail(f"projects.{name}.tailscale.{key} must be a canonical op:// ref")
+
+        # Optional: projects expose only explicitly configured, non-sensitive database tiers.
+        postgres = tools.get("postgres")
+        if "postgres" in tools:
+            if not isinstance(postgres, dict):
+                fail(f"projects.{name}.postgres must be an object")
+            unknown = set(postgres) - {"tiers"}
+            if unknown:
+                fail(f"projects.{name}.postgres has unknown keys: {', '.join(sorted(unknown))}")
+            tiers = postgres.get("tiers")
+            if not isinstance(tiers, dict) or not tiers:
+                fail(f"projects.{name}.postgres.tiers must be a non-empty object")
+            for tier, tier_profile in tiers.items():
+                if not isinstance(tier, str) or not PROFILE_ID.fullmatch(tier):
+                    fail(f"projects.{name}.postgres.tiers has invalid tier id: {tier!r}")
+                if not isinstance(tier_profile, dict):
+                    fail(f"projects.{name}.postgres.tiers.{tier} must be an object")
+                unknown = set(tier_profile) - {"dsn_ref"}
+                if unknown:
+                    fail(
+                        f"projects.{name}.postgres.tiers.{tier} has unknown keys: "
+                        f"{', '.join(sorted(unknown))}"
+                    )
+                non_sensitive_op_ref(
+                    tier_profile.get("dsn_ref"),
+                    f"projects.{name}.postgres.tiers.{tier}.dsn_ref",
+                )
+
+        # Optional: a Slack profile is explicit because Slack workspaces are project-specific.
+        slack = tools.get("slack")
+        if "slack" in tools:
+            if not isinstance(slack, dict):
+                fail(f"projects.{name}.slack must be an object")
+            unknown = set(slack) - {"token_ref"}
+            if unknown:
+                fail(f"projects.{name}.slack has unknown keys: {', '.join(sorted(unknown))}")
+            non_sensitive_op_ref(
+                slack.get("token_ref"), f"projects.{name}.slack.token_ref"
+            )
 
         # Optional: only projects with a registered Resend account credential declare this.
         resend = tools.get("resend")
