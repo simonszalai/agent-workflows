@@ -30,7 +30,12 @@ jobs:
   failing:
     runs-on: ubuntu-latest
     steps:
-      - run: exit 3
+      - name: first failure
+        run: echo first-failure && exit 3
+      - name: second failure
+        run: echo second-failure && exit 4
+      - name: after failures
+        run: echo after-failures
   svc:
     runs-on: ubuntu-latest
     services:
@@ -82,8 +87,8 @@ class CiLocalTest(unittest.TestCase):
         self.assertIn("[RUN] quick", result.stdout)
         self.assertIn("[SKIP] svc", result.stdout)
         self.assertIn("needs services: postgres", result.stdout)
-        self.assertIn("[SKIP] expr", result.stdout)
-        self.assertIn("[SKIP] opaque", result.stdout)
+        self.assertIn("[PARTIAL] expr", result.stdout)
+        self.assertIn("[PARTIAL] opaque", result.stdout)
         self.assertIn("some-org/custom-action@v1", result.stdout)
         self.assertNotIn("manual", result.stdout)
         self.assertNotIn("never-ci", result.stdout)
@@ -94,8 +99,14 @@ class CiLocalTest(unittest.TestCase):
         self.assertIn("PASS quick", result.stdout)
         self.assertIn("quick-ok", result.stdout)
         self.assertIn("FAIL failing", result.stdout)
+        self.assertIn("first-failure", result.stdout)
+        self.assertIn("second-failure", result.stdout)
+        self.assertIn("after-failures", result.stdout)
+        self.assertIn("2 step(s) failed", result.stdout)
         self.assertIn("SKIP  svc", result.stdout)
         self.assertNotIn("needs-db", result.stdout)
+        self.assertIn("after-action", result.stdout)
+        self.assertIn("PARTIAL  opaque", result.stdout)
 
     def test_job_filter_forces_skip_classified_jobs(self) -> None:
         result = self.run_ci_local("--run", "--job", "svc")

@@ -842,6 +842,18 @@ class CiLocalReceiptTest(unittest.TestCase):
                 str(receipt_path),
             )
             self.assertEqual(invalid.returncode, 2, invalid.stdout)
+            incomplete = json.loads(json.dumps(receipt))
+            incomplete["jobs"][0].pop("steps")
+            receipt_path.write_text(json.dumps(incomplete))
+            invalid_inventory = run_script(
+                "ci-local",
+                "--repo",
+                str(repo),
+                "--require-receipt",
+                str(receipt_path),
+            )
+            self.assertEqual(invalid_inventory.returncode, 2, invalid_inventory.stdout)
+            self.assertIn("exhaustive steps", invalid_inventory.stdout)
             receipt_path.write_text(json.dumps(receipt))
 
             current = run_script(
@@ -870,7 +882,9 @@ class CiLocalReceiptTest(unittest.TestCase):
                 "  failing:\n"
                 "    runs-on: ubuntu-latest\n"
                 "    steps:\n"
-                "      - run: exit 1\n"
+                "      - {name: first, run: 'exit 1'}\n"
+                "      - {name: second, run: 'exit 2'}\n"
+                "      - {name: after, run: 'echo continued'}\n"
             )
             failed_path = repo / "failed.json"
             failed = run_script(
@@ -882,7 +896,13 @@ class CiLocalReceiptTest(unittest.TestCase):
                 str(failed_path),
             )
             self.assertEqual(failed.returncode, 1)
-            self.assertEqual(json.loads(failed_path.read_text())["overall_status"], "failed")
+            failed_receipt = json.loads(failed_path.read_text())
+            self.assertEqual(failed_receipt["overall_status"], "failed")
+            self.assertEqual(failed_receipt["jobs"][0]["failed_steps"], ["first", "second"])
+            self.assertEqual(
+                [row["result"] for row in failed_receipt["jobs"][0]["steps"]],
+                ["failed", "failed", "passed"],
+            )
 
             workflow.write_text(
                 "name: CI\n"

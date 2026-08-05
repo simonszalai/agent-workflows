@@ -35,6 +35,7 @@ manifest predicate is true. A reference is normative, not optional background.
 | --- | --- | --- | --- | --- |
 | P1 | Validate unit and target | Always | `references/lifecycle.md` | Unit exists; target/status is valid |
 | P2 | Find or create PR | Always | `references/lifecycle.md` | Open/merged PR or usable pushed head exists |
+| P2b | Local CI parity | Before PR creation, first CI wait, and every CI-triggering re-push | `references/lifecycle.md` | Exact PR-head tree has a passing `ci-local` receipt; all local failures were batch-repaired |
 | P3 | Load project deploy contract | Project `.claude/commands/deploy.md` exists | `references/provider-project.md` | Project contract becomes authoritative for P6-P9 |
 | P4 | Check CI | Open PR | `references/lifecycle.md` | Current PR tree is green or self-heal stops at human judgment |
 | P5 | Update onto target | Open PR is behind target | `references/lifecycle.md` | Approved update strategy succeeds and rerun CI is green |
@@ -58,6 +59,9 @@ Additional conditional routes:
 ## Non-negotiable gates
 
 - PR creation happens here, not in the build phase. CI must pass on the exact tree that will merge.
+- Before staging creates a PR or waits on CI, `ci-local` must run every locally reproducible
+  workflow step without short-circuiting, batch-repair the complete inventory, and prove an
+  exact-tree passing receipt. CI is confirmation, not the first formatter/lint/type/test pass.
 - `Preflight every deploy command before merge`; a missing or failed preflight stops the landing.
 - Schema changes keep the repository's active migration contract. Runtime evidence must have a real
   deployed producer or deploy-owned canary before merge.

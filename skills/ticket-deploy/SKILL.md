@@ -167,7 +167,9 @@ is not staleness.
 
 ### 2. Deploy to staging (`staging` and `full`)
 
-Run `/auto-deploy <ID> staging`. Require successful staging deployment mechanics and final
+Run `/auto-deploy <ID> staging`. Its pre-CI local parity gate must extract and run every locally
+reproducible GitHub Actions step, batch-repair the complete failure inventory, and prove a passing
+exact-tree receipt before PR creation or the first CI wait. Require successful staging deployment mechanics and final
 `to_verify_staging` status. If it returns because CI is red, enter the shared CI self-heal loop
 and resume at the interrupted phase after CI passes. On any other failure it reverts status and
 reports; relay and stop.

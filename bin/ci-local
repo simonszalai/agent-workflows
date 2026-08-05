@@ -75,15 +75,24 @@ class Job:
     opaque_actions: list[str] = field(default_factory=list)
 
     @property
-    def skip_reasons(self) -> list[str]:
+    def execution_blockers(self) -> list[str]:
         reasons = []
         if self.services:
             reasons.append(f"needs services: {', '.join(self.services)}")
+        return reasons
+
+    @property
+    def partial_reasons(self) -> list[str]:
+        reasons = []
         if self.opaque_actions:
             reasons.append(f"non-setup actions: {', '.join(self.opaque_actions)}")
         if any(s.needs_expression for s in self.steps):
             reasons.append("uses ${{ ... }} expressions needing substitution")
         return reasons
+
+    @property
+    def skip_reasons(self) -> list[str]:
+        return [*self.execution_blockers, *self.partial_reasons]
 
 
 def is_setup_action(uses: str) -> bool:
@@ -155,7 +164,12 @@ def collect_jobs(workflow_dir: Path) -> list[Job]:
 def print_plan(jobs: list[Job]) -> None:
     for job in jobs:
         reasons = job.skip_reasons
-        status = "RUN" if not reasons else "SKIP"
+        if job.execution_blockers:
+            status = "SKIP"
+        elif reasons:
+            status = "PARTIAL"
+        else:
+            status = "RUN"
         print(f"[{status}] {job.name}" + (f"  (if: {job.condition})" if job.condition else ""))
         for reason in reasons:
             print(f"       - {reason}")
@@ -289,6 +303,38 @@ def validate_receipt(path: Path, repo_root: Path) -> tuple[dict, int]:
         return {"status": "invalid", "error": "receipt jobs are malformed"}, 2
     if any(row["result"] == "failed" for row in receipt["jobs"]):
         return {"status": "invalid", "error": "receipt contains a failed job"}, 2
+    for row in receipt["jobs"]:
+        if not isinstance(row.get("steps"), list) or not isinstance(
+            row.get("failed_steps"), list
+        ):
+            return {
+                "status": "invalid",
+                "error": "receipt jobs require exhaustive steps and failed_steps",
+            }, 2
+        if row["result"] != "skipped" and not row["steps"]:
+            return {
+                "status": "invalid",
+                "error": "executed receipt job has no step results",
+            }, 2
+        if any(
+            not isinstance(step, dict)
+            or step.get("result") not in {"passed", "skipped", "failed"}
+            for step in row["steps"]
+        ):
+            return {
+                "status": "invalid",
+                "error": "receipt step results are malformed",
+            }, 2
+        derived_failed_steps = [
+            str(step.get("name"))
+            for step in row["steps"]
+            if step.get("result") == "failed"
+        ]
+        if row["failed_steps"] != derived_failed_steps:
+            return {
+                "status": "invalid",
+                "error": "receipt failed_steps do not match exhaustive step results",
+            }, 2
     if receipt["overall_status"] == "passed" and receipt["explicit_skips"]:
         return {
             "status": "invalid",
@@ -313,25 +359,39 @@ def validate_receipt(path: Path, repo_root: Path) -> tuple[dict, int]:
     }, 0
 
 
-def run_job(job: Job, repo_root: Path) -> tuple[bool, list[str]]:
+def run_job(job: Job, repo_root: Path) -> tuple[bool, list[dict[str, object]]]:
     print(f"\n=== job: {job.name} ===", flush=True)
-    skipped_steps: list[str] = []
+    step_receipts: list[dict[str, object]] = []
     for step in job.steps:
         label = step.name or step.command.splitlines()[0]
         if step.needs_expression:
             print(f"--- SKIPPED (needs ${{{{ }}}} substitution): {label}", flush=True)
-            skipped_steps.append(label)
+            step_receipts.append({
+                "name": label,
+                "result": "skipped",
+                "exit_code": None,
+                "reason": "needs expression substitution",
+            })
             continue
         print(f"--- {label}", flush=True)
         result = subprocess.run(
             ["bash", "-eo", "pipefail", "-c", step.command],
             cwd=repo_root, env={**os.environ, **step.env},
         )
-        if result.returncode != 0:
+        step_result = "failed" if result.returncode else "passed"
+        step_receipts.append({
+            "name": label,
+            "result": step_result,
+            "exit_code": result.returncode,
+        })
+        if result.returncode:
             print(f"FAIL {job.name}: step '{label}' exited {result.returncode}", flush=True)
-            return False, skipped_steps
-    print(f"PASS {job.name}", flush=True)
-    return True, skipped_steps
+    failed_count = sum(row["result"] == "failed" for row in step_receipts)
+    if failed_count:
+        print(f"FAIL {job.name}: {failed_count} step(s) failed", flush=True)
+    else:
+        print(f"PASS {job.name}", flush=True)
+    return failed_count == 0, step_receipts
 
 
 def main() -> int:
@@ -399,35 +459,56 @@ def main() -> int:
     job_receipts: list[dict[str, object]] = []
     explicit_skips: list[dict[str, object]] = []
     for job in jobs:
-        if job.skip_reasons and not args.job:
-            results[job.name] = "SKIP (" + "; ".join(job.skip_reasons) + ")"
-            skipped = {"job": job.name, "reasons": job.skip_reasons}
+        if job.execution_blockers and not args.job:
+            results[job.name] = "SKIP (" + "; ".join(job.execution_blockers) + ")"
+            skipped = {"job": job.name, "reasons": job.execution_blockers}
             explicit_skips.append(skipped)
             job_receipts.append({
                 "name": job.name,
                 "result": "skipped",
-                "skip_reasons": job.skip_reasons,
+                "skip_reasons": job.execution_blockers,
                 "skipped_steps": [],
+                "failed_steps": [],
+                "steps": [],
             })
             continue
-        passed, skipped_steps = run_job(job, repo_root)
-        results[job.name] = "PASS" if passed else "FAIL"
+        passed, step_receipts = run_job(job, repo_root)
+        skipped_steps = [
+            str(row["name"]) for row in step_receipts if row["result"] == "skipped"
+        ]
+        failed_steps = [
+            str(row["name"]) for row in step_receipts if row["result"] == "failed"
+        ]
+        partial = bool(skipped_steps or job.opaque_actions)
+        results[job.name] = "FAIL" if not passed else ("PARTIAL" if partial else "PASS")
         if skipped_steps:
             explicit_skips.append({
                 "job": job.name,
                 "reasons": ["steps require expression substitution"],
                 "steps": skipped_steps,
             })
+        if job.opaque_actions:
+            explicit_skips.append({
+                "job": job.name,
+                "reasons": ["non-setup actions were not reproduced locally"],
+                "actions": job.opaque_actions,
+            })
         job_receipts.append({
             "name": job.name,
-            "result": "failed" if not passed else ("partial" if skipped_steps else "passed"),
+            "result": "failed" if not passed else ("partial" if partial else "passed"),
             "skip_reasons": [],
             "skipped_steps": skipped_steps,
+            "skipped_actions": job.opaque_actions,
+            "failed_steps": failed_steps,
+            "steps": step_receipts,
         })
 
     print("\n=== ci-local summary ===")
     for name, outcome in results.items():
-        print(f"{outcome:>4s}  {name}" if outcome in {"PASS", "FAIL"} else f"SKIP  {name}: {outcome[6:-1]}")
+        if outcome in {"PASS", "FAIL", "PARTIAL"}:
+            print(f"{outcome:>7s}  {name}")
+        else:
+            print(f"   SKIP  {name}: {outcome[6:-1]}")
     exit_code = 1 if any(outcome == "FAIL" for outcome in results.values()) else 0
     if args.receipt:
         identity_after = git_identity(
