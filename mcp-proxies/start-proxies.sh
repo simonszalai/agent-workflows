@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Start the loopback MCP auth proxies on the Mac. Counterpart of ts-prefect's
-# scripts/setup/cloud-mcp.sh (Conductor cloud) — SAME proxy, SAME ports, so client
-# configs are static URLs valid in both environments:
+# Start the loopback MCP auth proxies on the Mac. Stable ports keep client configs
+# identical across supported local and cloud environments:
 #
 #   autodev-memory  127.0.0.1:8792  -> https://autodev-memory.onrender.com/mcp (+ WAF encode)
 #   context7        127.0.0.1:8793  -> https://mcp.context7.com/mcp
 #
 # These two are the ONLY MCP servers left (2026-07-28 decision): render, tailscale,
 # slack, and postgres are CLIs now — bin/render-cli, tailscale + bin/tailscale-admin,
-# bin/slack-api, and the per-repo psql wrappers (see skills/tool-*).
+# bin/slack-api, and bin/psql-cli (see skills/tool-*).
 #
 # Credentials: resolved per proxy via `op run --env-file=proxies.env`, authenticated
 # by the Keychain service-account token (op-dev-token) — silent, no Touch ID. Keys

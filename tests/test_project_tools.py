@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONTEXT = ROOT / "bin/project-context"
 RENDER_CLI = ROOT / "bin/render-cli"
+PSQL_CLI = ROOT / "bin/psql-cli"
+SLACK_API = ROOT / "bin/slack-api"
 REGISTRY = ROOT / "config/project-tools.json"
 
 
@@ -64,6 +66,22 @@ EXPECTED_RENDER_REFS = {
     "workflow-pro": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
 }
 
+EXPECTED_POSTGRES_REFS = {
+    "amaru": {
+        "dev": "op://AMARU/DEV_POSTGRES_URL/value",
+        "staging": "op://AMARU/STAGING_POSTGRES_URL/value",
+    },
+    "ts": {
+        "dev": "op://TS/DEV_POSTGRES_URL/value",
+        "staging": "op://TS/STAGING_POSTGRES_URL/value",
+        "prod": "op://TS/PROD_POSTGRES_URL_RO/value",
+    },
+    "workflow-pro": {
+        "dev": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value",
+        "staging": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL/value",
+    },
+}
+
 
 class ProjectToolsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -87,6 +105,15 @@ class ProjectToolsTest(unittest.TestCase):
                                     "discover_service_names": ["alpha-canary"]
                                 },
                             },
+                            "postgres": {
+                                "tiers": {
+                                    "dev": {"dsn_ref": "op://ALPHA/DEV_DATABASE/value"},
+                                    "staging": {
+                                        "dsn_ref": "op://ALPHA/STAGING_DATABASE/value"
+                                    },
+                                }
+                            },
+                            "slack": {"token_ref": "op://ALPHA/SLACK_TOKEN/value"},
                         },
                         "beta": {
                             "repo_remotes": ["github.com/acme/beta"],
@@ -96,6 +123,11 @@ class ProjectToolsTest(unittest.TestCase):
                             "render": {
                                 "api_key_ref": "op://BETA-sensitive/RENDER/value",
                                 "workspace": {"id": "tea-beta"},
+                            },
+                            "postgres": {
+                                "tiers": {
+                                    "dev": {"dsn_ref": "op://BETA/DEV_DATABASE/value"}
+                                }
                             },
                         },
                     },
@@ -111,6 +143,10 @@ class ProjectToolsTest(unittest.TestCase):
         self.wrapper = self.tool_bin / "render-cli"
         shutil.copy2(RENDER_CLI, self.wrapper)
         shutil.copy2(PROJECT_CONTEXT, self.tool_bin / "project-context")
+        self.psql_wrapper = self.tool_bin / "psql-cli"
+        shutil.copy2(PSQL_CLI, self.psql_wrapper)
+        self.slack_wrapper = self.tool_bin / "slack-api"
+        shutil.copy2(SLACK_API, self.slack_wrapper)
         self.fake_render = self.root / "render"
         self.fake_render.write_text(
             """#!/usr/bin/env bash
@@ -144,10 +180,65 @@ esac
 set -euo pipefail
 printf '%s\\n' "$*" >> "$RENDER_FAKE_OP_LOG"
 printf '%s\\n' "${OP_SERVICE_ACCOUNT_TOKEN:-<unset>}" >> "$RENDER_FAKE_OP_TOKEN_LOG"
-printf 'fake-render-key'
+case "$*" in
+  *DATABASE*) printf 'postgresql://fake-user:fake-password@fake.invalid/database' ;;
+  *SLACK_TOKEN*) printf 'xoxp-fake-slack-token' ;;
+  *) printf 'fake-render-key' ;;
+esac
 """
         )
         self.fake_op.chmod(0o755)
+        self.psql_log = self.root / "psql.log"
+        self.psql_input_log = self.root / "psql-input.log"
+        self.fake_psql = self.root / "psql"
+        self.fake_psql.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${PGDATABASE:-}" != "postgresql://fake-user:fake-password@fake.invalid/database" ]]; then
+  echo "unexpected or missing PGDATABASE" >&2
+  exit 90
+fi
+if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}${OP_CONNECT_HOST:-}${OP_CONNECT_TOKEN:-}${OP_SESSION_TEST:-}${ALPHA_OP_SERVICE_ACCOUNT_TOKEN:-}${BETA_OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+  echo "1Password credential leaked to psql child" >&2
+  exit 91
+fi
+printf 'args=' >> "$PSQL_FAKE_LOG"
+printf '<%s>' "$@" >> "$PSQL_FAKE_LOG"
+printf '\\nPGDATABASE=set\\nPGOPTIONS=%s\\nPGCONNECT_TIMEOUT=%s\\n' \
+  "${PGOPTIONS:-}" "${PGCONNECT_TIMEOUT:-}" >> "$PSQL_FAKE_LOG"
+cat > "$PSQL_FAKE_INPUT_LOG"
+if [[ -n "${PSQL_FAKE_BYTES:-}" ]]; then
+  head -c "$PSQL_FAKE_BYTES" /dev/zero | tr '\\0' x
+else
+  printf 'answer\\n42\\n'
+fi
+exit "${PSQL_FAKE_STATUS:-0}"
+"""
+        )
+        self.fake_psql.chmod(0o755)
+        self.curl_log = self.root / "curl.log"
+        self.fake_curl = self.tool_bin / "curl"
+        self.fake_curl.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}${OP_CONNECT_HOST:-}${OP_CONNECT_TOKEN:-}${OP_SESSION_TEST:-}${ALPHA_OP_SERVICE_ACCOUNT_TOKEN:-}${BETA_OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
+  echo "1Password credential leaked to curl child" >&2
+  exit 91
+fi
+printf '%s\\n' "$*" > "$SLACK_FAKE_CURL_LOG"
+previous=""
+for argument in "$@"; do
+  if [[ "$previous" == "-H" && "$argument" == @* ]]; then
+    header="$(cat "${argument#@}")"
+    [[ "$header" == "Authorization: Bearer xoxp-fake-slack-token" ]] || exit 92
+    printf 'header=set\\n' >> "$SLACK_FAKE_CURL_LOG"
+  fi
+  previous="$argument"
+done
+printf '{"ok":true}\\n'
+"""
+        )
+        self.fake_curl.chmod(0o755)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -171,6 +262,8 @@ printf 'fake-render-key'
             "RENDER_API_KEY",
             "OP_SERVICE_ACCOUNT_TOKEN",
             "TS_OP_SERVICE_ACCOUNT_TOKEN",
+            "ALPHA_OP_SERVICE_ACCOUNT_TOKEN",
+            "BETA_OP_SERVICE_ACCOUNT_TOKEN",
         ):
             env.pop(name, None)
         env.update(
@@ -182,6 +275,11 @@ printf 'fake-render-key'
                 "RENDER_FAKE_OP_TOKEN_LOG": str(self.op_token_log),
                 "ALPHA_OP_SERVICE_ACCOUNT_TOKEN": "alpha-service-account-token",
                 "BETA_OP_SERVICE_ACCOUNT_TOKEN": "beta-service-account-token",
+                "PSQL_CLI_BIN": str(self.fake_psql),
+                "PSQL_FAKE_LOG": str(self.psql_log),
+                "PSQL_FAKE_INPUT_LOG": str(self.psql_input_log),
+                "SLACK_FAKE_CURL_LOG": str(self.curl_log),
+                "PATH": f"{self.tool_bin}:{env.get('PATH', '')}",
             }
         )
         env.update(updates)
@@ -202,6 +300,28 @@ printf 'fake-render-key'
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(self.wrapper), *arguments],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=self.environment(**environment),
+        )
+
+    def run_psql(
+        self, cwd: Path, *arguments: str, **environment: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(self.psql_wrapper), *arguments],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            env=self.environment(**environment),
+        )
+
+    def run_slack(
+        self, cwd: Path, *arguments: str, **environment: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(self.slack_wrapper), *arguments],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -234,6 +354,24 @@ printf 'fake-render-key'
             projects[project]["service_account"]["token_env"] for project in projects
         ]
         self.assertEqual(len(token_envs), len(set(token_envs)))
+        self.assertEqual(
+            {
+                project: {
+                    tier: profile["dsn_ref"]
+                    for tier, profile in projects[project]["postgres"]["tiers"].items()
+                }
+                for project in EXPECTED_POSTGRES_REFS
+            },
+            EXPECTED_POSTGRES_REFS,
+        )
+        self.assertNotIn("postgres", projects["autodev"])
+        self.assertEqual(
+            projects["ts"]["slack"],
+            {"token_ref": "op://TS/TS_SLACK_MCP_USER_TOKEN/value"},
+        )
+        for project in projects:
+            if project != "ts":
+                self.assertNotIn("slack", projects[project])
 
     def test_resolver_normalizes_ssh_origin_and_fails_closed(self) -> None:
         detected = self.run_context(self.repo, "--tool", "render")
@@ -418,6 +556,307 @@ printf 'fake-render-key'
         )
         self.assertNotEqual(duplicated.returncode, 0)
         self.assertIn("belongs to both", duplicated.stderr)
+
+    def test_postgres_and_slack_profiles_are_strictly_validated(self) -> None:
+        def rejected(mutator) -> subprocess.CompletedProcess[str]:
+            broken = self.root / "broken-tools.json"
+            fixture = json.loads(self.config.read_text())
+            mutator(fixture)
+            broken.write_text(json.dumps(fixture))
+            return subprocess.run(
+                [str(PROJECT_CONTEXT), "--list-projects"],
+                capture_output=True,
+                text=True,
+                env=self.environment(PROJECT_TOOLS_CONFIG=str(broken)),
+            )
+
+        cases = (
+            (
+                lambda value: value["projects"]["alpha"].__setitem__(
+                    "postgres", None
+                ),
+                "postgres must be an object",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["postgres"].update(
+                    tiers={}
+                ),
+                "non-empty object",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["postgres"]["tiers"].update(
+                    {"Prod DB": {"dsn_ref": "op://ALPHA/PROD/value"}}
+                ),
+                "invalid tier id",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["postgres"].update(
+                    fallback="dev"
+                ),
+                "unknown keys",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["postgres"]["tiers"][
+                    "dev"
+                ].update(database="alpha"),
+                "unknown keys",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["postgres"]["tiers"][
+                    "dev"
+                ].update(dsn_ref="ALPHA_DATABASE_URL"),
+                "canonical op://",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["postgres"]["tiers"][
+                    "dev"
+                ].update(dsn_ref="op://ALPHA-sensitive/DATABASE/value"),
+                "must not reference",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["slack"].update(
+                    token_ref="op://ALPHA-sensitive/SLACK/value"
+                ),
+                "must not reference",
+            ),
+            (
+                lambda value: value["projects"]["alpha"]["slack"].update(
+                    workspace="alpha"
+                ),
+                "unknown keys",
+            ),
+            (
+                lambda value: value["projects"]["alpha"].__setitem__("slack", None),
+                "slack must be an object",
+            ),
+        )
+        for mutator, message in cases:
+            with self.subTest(message=message):
+                result = rejected(mutator)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+
+    def test_psql_context_is_credential_free_and_tier_selection_is_exact(self) -> None:
+        context = self.run_psql(
+            self.repo, "context", "staging", PSQL_CLI_BIN="/does/not/exist"
+        )
+        self.assertEqual(context.returncode, 0, context.stderr)
+        self.assertIn("project=alpha", context.stdout)
+        self.assertIn("remote=github.com/acme/alpha", context.stdout)
+        self.assertIn("tier=staging", context.stdout)
+        self.assertIn(
+            "credential_ref=op://ALPHA/STAGING_DATABASE/value", context.stdout
+        )
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.psql_log.exists())
+
+        missing = self.run_psql(self.repo, "prod", "SELECT 1")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("tier 'prod' is not configured", missing.stderr)
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.psql_log.exists())
+
+    def test_psql_missing_profile_fails_closed(self) -> None:
+        fixture = json.loads(self.config.read_text())
+        del fixture["projects"]["alpha"]["postgres"]
+        missing = self.root / "missing-postgres.json"
+        missing.write_text(json.dumps(fixture))
+        result = self.run_psql(
+            self.repo,
+            "dev",
+            "SELECT 1",
+            PROJECT_TOOLS_CONFIG=str(missing),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has no 'postgres' tool profile", result.stderr)
+        self.assertFalse(self.op_log.exists())
+
+    def test_psql_uses_exact_project_ref_and_service_account(self) -> None:
+        alpha = self.run_psql(self.repo, "dev", "SELECT 1")
+        self.assertEqual(alpha.returncode, 0, alpha.stderr)
+        self.assertEqual(
+            self.op_log.read_text().strip(),
+            "read --no-newline op://ALPHA/DEV_DATABASE/value",
+        )
+        self.assertEqual(
+            self.op_token_log.read_text().strip(), "alpha-service-account-token"
+        )
+
+        self.op_log.unlink()
+        self.op_token_log.unlink()
+        beta = self.run_psql(
+            self.repo,
+            "--project",
+            "beta",
+            "--allow-cross-project",
+            "dev",
+            "SELECT 2",
+        )
+        self.assertEqual(beta.returncode, 0, beta.stderr)
+        self.assertEqual(
+            self.op_log.read_text().strip(),
+            "read --no-newline op://BETA/DEV_DATABASE/value",
+        )
+        self.assertEqual(
+            self.op_token_log.read_text().strip(), "beta-service-account-token"
+        )
+
+    def test_psql_never_uses_ambient_or_wrong_project_service_account(self) -> None:
+        env = self.environment()
+        del env["ALPHA_OP_SERVICE_ACCOUNT_TOKEN"]
+        env["OP_SERVICE_ACCOUNT_TOKEN"] = "ambient-must-not-be-used"
+        env["BETA_OP_SERVICE_ACCOUNT_TOKEN"] = "wrong-project-must-not-be-used"
+        result = subprocess.run(
+            [str(self.psql_wrapper), "dev", "SELECT 1"],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ALPHA_OP_SERVICE_ACCOUNT_TOKEN", result.stderr)
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.psql_log.exists())
+
+    def test_psql_hides_dsn_and_op_credentials_and_enforces_read_only_session(self) -> None:
+        result = self.run_psql(
+            self.repo,
+            "dev",
+            "SELECT 42;",
+            OP_CONNECT_HOST="ambient-connect-host",
+            OP_CONNECT_TOKEN="ambient-connect-token",
+            OP_SESSION_TEST="ambient-session-token",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        secret = "postgresql://fake-user:fake-password@fake.invalid/database"
+        self.assertNotIn(secret, result.stdout + result.stderr)
+        self.assertNotIn(secret, self.psql_log.read_text())
+        log = self.psql_log.read_text()
+        self.assertIn(
+            "args=<-X><-q><-v><ON_ERROR_STOP=1><--csv><-P><pager=off>", log
+        )
+        self.assertIn(
+            "PGOPTIONS=-c statement_timeout=30000 -c default_transaction_read_only=on",
+            log,
+        )
+        self.assertIn("PGCONNECT_TIMEOUT=15", log)
+        session = self.psql_input_log.read_text()
+        self.assertEqual(session, "BEGIN READ ONLY;\nSELECT 42;\nCOMMIT;\n")
+
+    def test_psql_disables_shell_trace_before_loading_secrets(self) -> None:
+        result = subprocess.run(
+            ["/bin/bash", "-x", str(self.psql_wrapper), "dev", "SELECT 1"],
+            cwd=self.repo,
+            capture_output=True,
+            text=True,
+            env=self.environment(),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertNotIn("fake-password", combined)
+        self.assertNotIn("alpha-service-account-token", combined)
+
+    def test_psql_rejects_mutation_and_multiple_statements_before_credentials(self) -> None:
+        rejected_queries = (
+            "UPDATE widgets SET name = 'bad'",
+            "DELETE FROM widgets",
+            "SELECT 1; SELECT 2",
+            "SELECT ';'",
+            "  /* comment */ INSERT INTO widgets VALUES (1)",
+        )
+        for query in rejected_queries:
+            with self.subTest(query=query):
+                result = self.run_psql(self.repo, "dev", query)
+                self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.op_log.exists())
+        self.assertFalse(self.psql_log.exists())
+
+    def test_psql_validates_output_cap_before_credentials(self) -> None:
+        for cap in ("0", "65537", "1.5", "bytes"):
+            with self.subTest(cap=cap):
+                result = self.run_psql(
+                    self.repo,
+                    "dev",
+                    "SELECT 1",
+                    PSQL_CLI_MAX_BYTES=cap,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("integer from 1 to 65536", result.stderr)
+        self.assertFalse(self.op_log.exists())
+
+    def test_psql_missing_binary_gives_install_advice_before_credentials(self) -> None:
+        result = self.run_psql(
+            self.repo, "dev", "SELECT 1", PSQL_CLI_BIN="/missing/psql"
+        )
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("psql is not installed", result.stderr)
+        self.assertIn("Install", result.stderr)
+        self.assertFalse(self.op_log.exists())
+
+    def test_psql_truncates_output_and_preserves_psql_exit_status(self) -> None:
+        result = self.run_psql(
+            self.repo,
+            "dev",
+            "SELECT 1",
+            PSQL_CLI_MAX_BYTES="64",
+            PSQL_FAKE_BYTES="200",
+            PSQL_FAKE_STATUS="7",
+        )
+        self.assertEqual(result.returncode, 7)
+        self.assertTrue(result.stdout.startswith("x" * 64))
+        self.assertIn("TRUNCATED at 64 bytes", result.stdout)
+        self.assertNotIn("x" * 65, result.stdout)
+
+    def test_psql_search_escapes_term_and_is_deterministic_and_bounded(self) -> None:
+        term = "user_%'; DROP TABLE widgets; --\\name"
+        result = self.run_psql(self.repo, "dev", "search", term)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        query = self.psql_input_log.read_text()
+        self.assertIn("pg_catalog.pg_namespace", query)
+        self.assertIn("pg_catalog.pg_class", query)
+        self.assertIn("pg_catalog.pg_index", query)
+        self.assertIn("pg_catalog.pg_proc", query)
+        self.assertIn("ORDER BY object_type, schema_name, object_name", query)
+        self.assertIn("LIMIT 100", query)
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace(
+            "_", "\\_"
+        )
+        self.assertIn(escaped.encode().hex(), query)
+        self.assertNotIn("DROP TABLE widgets", query)
+        self.assertIn("ESCAPE chr(92)", query)
+        self.assertEqual(query.count("BEGIN READ ONLY;"), 1)
+        self.assertEqual(query.count("COMMIT;"), 1)
+
+    def test_slack_uses_registry_profile_and_fails_closed_without_one(self) -> None:
+        accepted = self.run_slack(
+            self.repo,
+            "conversations.list",
+            "types=public_channel",
+            "limit=20",
+            OP_CONNECT_HOST="ambient-connect-host",
+            OP_CONNECT_TOKEN="ambient-connect-token",
+            OP_SESSION_TEST="ambient-session-token",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(json.loads(accepted.stdout), {"ok": True})
+        self.assertEqual(
+            self.op_log.read_text().strip(),
+            "read --no-newline op://ALPHA/SLACK_TOKEN/value",
+        )
+        self.assertEqual(
+            self.op_token_log.read_text().strip(), "alpha-service-account-token"
+        )
+        curl_call = self.curl_log.read_text()
+        self.assertIn("https://slack.com/api/conversations.list", curl_call)
+        self.assertIn("header=set", curl_call)
+        self.assertNotIn("xoxp-fake-slack-token", curl_call)
+
+        self.op_log.unlink()
+        beta_repo = self.make_repo("git@github.com:acme/beta.git")
+        rejected = self.run_slack(beta_repo, "conversations.list")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("has no 'slack' tool profile", rejected.stderr)
+        self.assertFalse(self.op_log.exists())
 
     def test_mutations_require_explicit_matching_project_write_and_reason(self) -> None:
         implicit = self.run_render(self.repo, "--write", "--reason", "test", "restart", "srv")

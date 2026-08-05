@@ -13,9 +13,10 @@ approval, or credentials it does not already hold is a stop-and-report, not a pr
 
 What a scheduled run may and may never touch:
 
-- **Prod app DB: read-only, enforced by credential.** All production database access goes
-  through the read-only credential `TS/PROD_POSTGRES_URL_RO`. Never connect to prod with a
-  read-write credential from a scheduled context, even for a "safe" statement.
+- **Prod app DB: read-only, enforced by the project profile and CLI.** Production database access
+  uses `psql-cli prod` only when the selected project registry exposes a non-sensitive read-only
+  production profile. A missing profile is BLOCKED; never substitute a read-write credential,
+  even for a "safe" statement.
 - **Autodev ticket/memory writes: allowed.** Creating/updating tickets, artifacts, and memory
   entries via the autodev-memory MCP is the intended dedup/state mechanism (see §4).
 - **`graph_*` mutations: never.** No inserts/updates/deletes on graph tables in any

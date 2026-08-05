@@ -38,30 +38,22 @@ Your Task prompt will specify the target environment. Use the matching tool pref
 
 ### Database Tools
 
-If the repo ships `scripts/db/sql.sh` (ts-prefect does), that is the database interface —
-run it via Bash with the environment as the tier argument:
+Use the shared project-aware wrapper and pass the requested environment as the exact tier:
 
-| Environment | Command                                    |
-| ----------- | ------------------------------------------ |
-| Production  | `scripts/db/sql.sh prod "<SQL>"`           |
-| Staging     | `scripts/db/sql.sh staging "<SQL>"`        |
-| Dev (local) | `scripts/db/sql.sh dev "<SQL>"`            |
+| Environment | Command |
+| ----------- | ------- |
+| Production | `psql-cli prod "<SQL>"` |
+| Staging | `psql-cli staging "<SQL>"` |
+| Dev | `psql-cli dev "<SQL>"` |
 
-Schema exploration: `scripts/db/sql.sh <tier> search "<term>"`.
+Schema exploration: `psql-cli <tier> search "<term>"`. Run `psql-cli context [tier]` for a
+credential-free selection check. A missing project/tier profile is unavailable; never fall back
+to another tier or hand-roll a DSN connection.
 
-Projects still on Postgres MCP expose one `postgres` server with tool-name suffixes:
-the repo's psql wrapper (`scripts/db/sql.sh <env> ...`) — the Postgres MCP servers
-are retired; same environment-discipline rule applies.
-
-**If the prompt says "Environment: staging", use the staging tier/tools exclusively.**
+**If the prompt says "Environment: staging", use the staging tier exclusively.**
 Never fall back to production when a different environment is specified.
 
 ### Infrastructure Tools (Render)
-
-| Environment | Service naming pattern      |
-| ----------- | --------------------------- |
-| Production  | `ts-prefect-worker`, etc.   |
-| Staging     | `*-staging` suffix          |
 
 **If the prompt says "Environment: staging", only investigate staging services.** Use
 `render-cli services -o json` and filter results by name to find the correct service IDs.
@@ -99,13 +91,13 @@ GROUP BY hour ORDER BY hour;
 
 ### Connection issues
 
-- Check `analyze_db_health(health_type="connection")` for pool utilization
-- High utilization during incident = connection exhaustion
+- Query `pg_stat_activity` and `pg_settings` through `psql-cli <tier>` for pool utilization.
+- High utilization during incident indicates connection exhaustion.
 
 ### General health
 
-- Check `analyze_db_health(health_type="all")` for comprehensive overview
-- Look for bloated indexes, replication lag, sequence exhaustion
+- Use the bounded health queries in `skills/tool-postgres/SKILL.md`.
+- Look for bloated indexes, replication lag, and sequence exhaustion.
 
 ## Infrastructure Investigation (Render)
 

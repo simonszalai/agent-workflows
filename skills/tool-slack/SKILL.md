@@ -1,6 +1,6 @@
 ---
 name: tool-slack
-description: Slack Web API reference via the slack-api CLI wrapper (the slack MCP server was retired). Reading channels/threads, searching, and sending messages.
+description: Project-profile-aware Slack Web API access via the slack-api CLI wrapper.
 ---
 
 # Slack CLI Reference
@@ -11,7 +11,7 @@ use `slack-api` (agent-workflows/bin, on PATH) through the Bash tool.
 ## The wrapper: `slack-api`
 
 `slack-api <method> [key=value ...]` calls any Slack Web API method with the user
-token injected silently per call (1Password service-account token; no Touch ID).
+token injected silently from the calling project's explicit registry profile (1Password service-account token; no Touch ID). Projects without a Slack profile fail closed.
 Output is the raw API JSON — **always check `.ok` and pipe through `jq`**; never dump
 a raw response into context.
 
@@ -60,5 +60,3 @@ outward-facing action: do it when asked or durably authorized, not speculatively
 - Rate limits: Slack returns `.ok=false, .error="ratelimited"` with a `Retry-After`
   header — back off, don't hammer.
 - Never print the token; the wrapper never exposes it.
-- Common channels (ts project): `#ops-alerts` (alerting), `#issue-updates`
-  (ticket/PR traffic), `#all-ts-invest` (general).
