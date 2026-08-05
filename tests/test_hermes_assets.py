@@ -718,14 +718,18 @@ class HermesScheduleTests(unittest.TestCase):
                     "token",
                     "C-incidents",
                     "❌ *health-6h needs attention* <@U09T4LELYES>\n"
-                    "• *Discord monitor cannot fetch channels* · `B0349`\n"
-                    "  *Proof:* Discord returned twelve HTTP 403 responses.\n"
-                    "  *Example:* The SNDK channel failed at 07:15 UTC.\n"
-                    "  *Next:* Restore the monitor's channel access.\n"
-                    "• *Tradable scheduler is stale* · `B0365`\n"
-                    "  *Proof:* No successful run completed in eight hours.\n"
-                    "  *Example:* The 06:00 UTC run never started.\n"
-                    "  *Next:* Restart the stalled tradable schedule.\n"
+                    "*Discord monitor cannot fetch channels*\n"
+                    "> *Proof:* Discord returned twelve HTTP 403 responses.\n"
+                    "> *Example:* The SNDK channel failed at 07:15 UTC.\n"
+                    "> *Next:* Restore the monitor's channel access.\n"
+                    "> *Ticket:* `B0349`\n"
+                    "\n"
+                    "*Tradable scheduler is stale*\n"
+                    "> *Proof:* No successful run completed in eight hours.\n"
+                    "> *Example:* The 06:00 UTC run never started.\n"
+                    "> *Next:* Restart the stalled tradable schedule.\n"
+                    "> *Ticket:* `B0365`\n"
+                    "\n"
                     "• *Details:* <https://slack.example/thread|Open the run thread>",
                 ),
             ],
@@ -774,9 +778,29 @@ class HermesScheduleTests(unittest.TestCase):
             "health-6h", "FAIL", "four issues", {"issues": issues}, issues, None
         )
 
-        self.assertIn("• *Issue 3* · `B0003`", message)
-        self.assertNotIn("• *Issue 4*", message)
-        self.assertIn("• *1 more issues:* See the linked run thread.", message)
+        self.assertIn("*Issue 3*\n> *Proof:* Proof 3.", message)
+        self.assertNotIn("*Issue 4*", message)
+        self.assertIn("*1 more issues:* See the linked run thread.", message)
+
+    def test_incident_message_does_not_style_ticket_failure_as_code(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Truth Social polling is blocked",
+            "proof": "The source circuit is open.",
+            "example": "The latest poller run skipped Truth Social.",
+            "next_step": "Review the open circuit evidence.",
+            "ticket_id": "No owning ticket could be assigned because MCP tools are unavailable.",
+        }
+
+        message = runner.incident_message(
+            "health-6h", "FAIL", "one issue", {"issues": [issue]}, [issue], None
+        )
+
+        self.assertIn(
+            "> *Ticket:* No owning ticket could be assigned because MCP tools are unavailable.",
+            message,
+        )
+        self.assertNotIn("`No owning ticket", message)
 
     def test_system_alerts_use_human_readable_evidence_bullets(self) -> None:
         runner = load_schedule_runner()
