@@ -70,7 +70,8 @@ EXPECTED_RENDER_REFS = {
 EXPECTED_POSTGRES_REFS = {
     "amaru": {
         "dev": "op://AMARU/DEV_POSTGRES_URL/value",
-        "staging": "op://AMARU/STAGING_POSTGRES_URL/value",
+        "staging": "op://AMARU/STAGING_POSTGRES_URL_RO/value",
+        "prod": "op://AMARU/PROD_POSTGRES_URL_RO/value",
     },
     "ts": {
         "dev": "op://TS/DEV_POSTGRES_URL/value",
