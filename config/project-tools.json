@@ -118,7 +118,9 @@
         "github.com/workflow-tech/workflow-pro",
         "github.com/szaboszerszam/workflow-mcp",
         "github.com/szaboszerszam/workflow-pdf",
-        "github.com/szaboszerszam/workflow_pro"
+        "github.com/szaboszerszam/workflow_pro",
+        "github.com/workflow-tech/workflow-mcp",
+        "github.com/workflow-tech/workflow-pdf"
       ],
       "service_account": {
         "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",

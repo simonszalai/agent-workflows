@@ -45,6 +45,8 @@ EXPECTED_PROJECT_REMOTES = {
         "github.com/szaboszerszam/workflow-mcp",
         "github.com/szaboszerszam/workflow-pdf",
         "github.com/szaboszerszam/workflow_pro",
+        "github.com/workflow-tech/workflow-mcp",
+        "github.com/workflow-tech/workflow-pdf",
     },
 }
 
