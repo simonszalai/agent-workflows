@@ -27,7 +27,7 @@ Both runtime files must be regular, non-empty, `root:root` mode `0400`. systemd 
 makes each secret readable only by its dedicated service. The `hermes` account and messaging
 platform users receive only unauthenticated loopback MCP URLs.
 
-Autodev-memory uses separate restricted tokens for `ts`, `amaru`, and `workflow_pro`. This Hermes
+Autodev-memory uses separate restricted tokens for `amaru`, `autodev`, `ts`, and `workflow_pro`. This Hermes
 endpoint is intentionally TS-scoped: the server pins it to `ts` even if a caller supplies another
 project name. Adding another project requires a separate credential boundary and MCP endpoint; do
 not replace this file with an admin or cross-project token.

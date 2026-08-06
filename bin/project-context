@@ -165,6 +165,23 @@ def load_projects(path: Path) -> dict[str, Project]:
                 f"projects.{name}.render.workspace.discover_service_names",
             )
 
+        autodev_memory = tools.get("autodev_memory")
+        if not isinstance(autodev_memory, dict):
+            fail(f"projects.{name}.autodev_memory must be an object")
+        unknown = set(autodev_memory) - {"route", "token_ref"}
+        if unknown:
+            fail(
+                f"projects.{name}.autodev_memory has unknown keys: "
+                f"{', '.join(sorted(unknown))}"
+            )
+        route = autodev_memory.get("route")
+        if not isinstance(route, str) or not PROFILE_ID.fullmatch(route):
+            fail(f"projects.{name}.autodev_memory.route must be a route id")
+        non_sensitive_op_ref(
+            autodev_memory.get("token_ref"),
+            f"projects.{name}.autodev_memory.token_ref",
+        )
+
         # Optional: only projects with their own tailnet credentials declare this.
         tailscale = tools.get("tailscale")
         if tailscale is not None:

@@ -69,6 +69,25 @@ EXPECTED_RENDER_REFS = {
     "workflow-pro": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
 }
 
+EXPECTED_AUTODEV_MEMORY_PROFILES = {
+    "amaru": {
+        "route": "amaru",
+        "token_ref": "op://AMARU/AMARU_AUTODEV_MEMORY_API_TOKEN/value",
+    },
+    "autodev": {
+        "route": "autodev",
+        "token_ref": "op://AUTODEV/AUTODEV_AUTODEV_MEMORY_API_TOKEN/value",
+    },
+    "ts": {
+        "route": "ts",
+        "token_ref": "op://TS/TS_AUTODEV_MEMORY_API_TOKEN/value",
+    },
+    "workflow-pro": {
+        "route": "workflow-pro",
+        "token_ref": "op://WORKFLOW_PRO/WORKFLOW_PRO_AUTODEV_MEMORY_API_TOKEN/value",
+    },
+}
+
 EXPECTED_POSTGRES_REFS = {
     "amaru": {
         "dev": "op://AMARU/DEV_POSTGRES_URL/value",
@@ -111,6 +130,10 @@ class ProjectToolsTest(unittest.TestCase):
                                 "token_env": "ALPHA_OP_SERVICE_ACCOUNT_TOKEN",
                                 "keychain_item": "op-dev-token-alpha",
                             },
+                            "autodev_memory": {
+                                "route": "alpha",
+                                "token_ref": "op://ALPHA/AUTODEV_MEMORY/value",
+                            },
                             "render": {
                                 "api_key_ref": "op://ALPHA/RENDER/value",
                                 "workspace": {
@@ -135,6 +158,10 @@ class ProjectToolsTest(unittest.TestCase):
                             "repo_remotes": ["github.com/acme/beta"],
                             "service_account": {
                                 "token_env": "BETA_OP_SERVICE_ACCOUNT_TOKEN"
+                            },
+                            "autodev_memory": {
+                                "route": "beta",
+                                "token_ref": "op://BETA/AUTODEV_MEMORY/value",
                             },
                             "render": {
                                 "api_key_ref": "op://BETA-sensitive/RENDER/value",
@@ -406,6 +433,10 @@ printf '{"ok":true}\\n'
             self.assertEqual(
                 projects[project]["service_account"].get("keychain_item"),
                 EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS.get(project),
+            )
+            self.assertEqual(
+                projects[project]["autodev_memory"],
+                EXPECTED_AUTODEV_MEMORY_PROFILES[project],
             )
             self.assertEqual(
                 projects[project].get("resend", {}).get("api_key_ref"),

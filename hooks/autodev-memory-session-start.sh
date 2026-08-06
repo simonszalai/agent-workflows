@@ -7,7 +7,8 @@
 # 1. Registers the repo (upsert)
 # 2. Injects one server-rendered, versioned, bounded packet
 #
-# Requires: AUTODEV_MEMORY_API_TOKEN
+# In Conductor, the project-routed loopback proxy supplies authentication. Outside
+# Conductor, requires AUTODEV_MEMORY_API_TOKEN as before.
 # =============================================================================
 
 set -euo pipefail

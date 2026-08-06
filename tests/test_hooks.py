@@ -37,7 +37,11 @@ class HookContractTest(unittest.TestCase):
         response = root / "session-response.json"
         response.write_text(json.dumps(fixture))
         curl = fake_bin / "curl"
-        curl.write_text('#!/bin/sh\ncat "$FAKE_SESSION_RESPONSE"\nprintf "\\n200\\n"\n')
+        curl.write_text(
+            '#!/bin/sh\n'
+            'if [ -n "${FAKE_CURL_ARGS:-}" ]; then printf "%s\\n" "$@" > "$FAKE_CURL_ARGS"; fi\n'
+            'cat "$FAKE_SESSION_RESPONSE"\nprintf "\\n200\\n"\n'
+        )
         curl.chmod(0o755)
         env = os.environ.copy()
         env.update({
@@ -51,6 +55,26 @@ class HookContractTest(unittest.TestCase):
             "source": "startup", "session_id": "parent-session", "cwd": str(ROOT),
         }
         return env, payload
+
+    def test_conductor_hook_uses_project_route_without_forwarding_ambient_bearer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env, payload = self._session_env(directory)
+            args = Path(directory) / "curl-args"
+            env.update({
+                "CONDUCTOR_IS_LOCAL": "1",
+                "FAKE_CURL_ARGS": str(args),
+                "AUTODEV_MEMORY_API_URL": "https://wrong-project.invalid",
+                "AUTODEV_MEMORY_API_TOKEN": "wrong-project-bearer",
+            })
+            result = subprocess.run(
+                [str(ROOT / "hooks/autodev-memory-session-start.sh")],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            curl_args = args.read_text()
+            self.assertIn("http://127.0.0.1:8792/autodev/session-init", curl_args)
+            self.assertNotIn("Authorization:", curl_args)
+            self.assertNotIn("wrong-project", curl_args)
 
     def test_external_explicit_packet_suppresses_ambient_session_start(self) -> None:
         env = os.environ.copy()
