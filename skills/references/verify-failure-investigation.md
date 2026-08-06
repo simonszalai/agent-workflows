@@ -6,15 +6,16 @@ row X failed" is incomplete: the run must also say **why** it failed and **what 
 
 ## 1. Bounded root-cause investigation (read-only)
 
-Investigate every failed evidence row using the `investigate` skill methodology. Spawn one
-read-only `investigator` agent per independent failure cluster (group rows that share one failing
-surface — same flow, service, table, or UI — into one cluster; do not spawn per row). Cap at
-3 investigator agents per scope; a broader failure than that is reported as systemic with the
-top clusters investigated.
+The verifier groups failed rows by shared surface (same flow, service, table, or UI) and performs
+one bounded read-only root-cause pass inside its existing session. Do not spawn per row or per
+cluster. Reuse a proven investigation artifact when its activation still matches. Only when the
+root cause remains unproven **and** the ticket is already `heavy` may the dispatcher reserve and
+spawn one separate read-only investigator with all clusters; `direct`/`standard` return `unknown`
+fail-closed rather than adding a role outside their compact budget.
 
-Each investigator receives a bounded packet — the failed evidence rows (command, expected,
-observed, bad-output interpretation), the activation boundary, the ticket's diff/PR reference,
-and relevant deployment-guide rows — and must return:
+That single bounded pass receives the failed evidence rows (command, expected, observed,
+bad-output interpretation), activation boundary, ticket diff/PR reference, and relevant
+deployment-guide rows, and returns:
 
 - a root-cause hypothesis with confidence (`confirmed`, `likely`, `unclear`), backed by
   reproducible read-only evidence (logs, queries, run states, code reading at the activated
@@ -83,9 +84,10 @@ machine-readable repair packet for the deployment owner.
 ### 3a. Autonomous staging repair
 
 For standalone staging under `/ticket-deploy`, every agent-resolvable failure enters that owner's
-three-round repair/redeploy/reverify loop. This is not limited to tiny code fixes. Preserve the
-normal safety machinery for the changed surface: delta/full review, specialists, health gates,
-commit/push, deploy, and evidence collection.
+intensity-bounded repair/redeploy/reverify loop: one cycle for `direct`/`standard`, three for
+explicit `heavy`. This is not limited to tiny code fixes. Preserve the normal safety machinery for
+the changed surface: repair-owner-only same-risk deltas, full review on a new risk boundary,
+specialists, health gates, commit/push, deploy, and evidence collection.
 
 The verifier itself does not edit code or environments. It returns the persisted failure class and
 repair packet to `/ticket-deploy`, which dispatches exactly one fresh no-history repair subagent for
@@ -100,9 +102,9 @@ An automatic product-code repair still requires all of these:
    of the hypothesis, and classified `code_defect`;
 3. the remediation preserves the approved intent; a scope/design change or destructive choice
    requires the missing human decision;
-4. the fix lands on the ticket's existing branch through the normal owners: a fresh `builder`
-   agent makes the code change, then review, final health, push, redeploy, and re-verification run
-   before the next verdict. `/ticket-verify` itself never edits environments or deploys.
+4. the fix lands on the ticket's existing branch through the single fresh `repair_owner`; it runs
+   the required health/push/redeploy mechanics and returns before a fresh verifier produces the next
+   verdict. `/ticket-verify` itself never edits environments or deploys.
 
 Production FAILs are never direct-fixed from this skill. Product code/config/auth remediation must
 use the tracked lifecycle route in §3b; ticketless `/go-fable` and untracked auxiliary branches are
@@ -113,10 +115,11 @@ failed row is classified `verifier_defect` or `invalid_evidence` (`confirmed`, o
 reproducible evidence) **and** whose product-failure field is empty is not a product defect: the
 shipped revision is already live and untouched, and the broken surface is the verifier or the
 evidence contract itself. That repair may return to an active production `/ticket-deploy` loop the
-same way as staging: the deployment owner dispatches one fresh repair subagent that changes only
+same way as staging: the outer dispatcher sends one fresh repair subagent that changes only
 the verifier/evidence-contract surface (re-finalizing the `deployment_guide` contract with the
 recorded revision reason), then re-runs `/ticket-verify production <scope>` **without any product
-redeploy or environment mutation**. The same three-round cap and persisted counter apply. Any row
+redeploy or environment mutation**. The same persisted intensity cap applies: one repair cycle for
+`direct`/`standard`, three for explicit `heavy`. Any row
 classified `code_defect`, `environment_capacity`, `unknown`, or any non-empty product-failure
 field disqualifies this path and falls through to §3b.
 
@@ -127,19 +130,19 @@ duplicate verification of an unchanged source-of-truth surface.
 
 ### 3b. Proposed routes (default)
 
-Outside an active standalone staging deployment loop, propose 2–4 ranked routes in the
-investigation artifact and final output. Inside an active loop, `unclear`/`unknown` returns the top
-specific missing-evidence check and owner for the next round; uncertainty alone never asks the user
-to restart the workflow. Each route names: the action, its owner (`/ticket-flow` on a new bug
-ticket, `/ticket-deploy`, `/milestone-flow`, a human decision, or a specific missing-evidence check
-to run next), what it would prove or fix, and its risk. The top route must be concrete enough to
-execute without re-deriving the investigation.
+Outside an active standalone staging deployment loop, record one recommended route and at most one
+materially different fallback. Inside an active loop, `unclear`/`unknown` returns the single top
+missing-evidence check and owner for the next round; uncertainty alone never asks the user to restart
+the workflow. A route names the action, owner (`/ticket-flow` on a new bug ticket,
+`/ticket-deploy`, `/milestone-flow`, a human decision, or a specific evidence check), what it would
+prove/fix, and its risk. It must be concrete enough to execute without re-deriving the investigation.
 
 For every production or epic/milestone remediation that changes code, config, or authentication,
-the top route must create a new fix ticket/epic step attached to the failed milestone. It names
-separate owners for build, review, landing, secret/config application, deploy, and re-verification.
-The failed milestone remains failed until all lifecycle stages complete. An auxiliary branch or
-implemented commit is not a substitute for the attached step.
+the top route must create a new fix ticket/epic step attached to the failed milestone. That ticket
+uses its intensity-selected compact or heavy delivery ownership; separately name only the required
+secret/config, deploy, and re-verification owners. The failed milestone remains failed until all
+lifecycle stages complete. An auxiliary branch or implemented commit is not a substitute for the
+attached step.
 
 The verification report records each stage independently:
 
@@ -155,8 +158,9 @@ are true; missing stages are explicit blockers with their owner and resume comma
 After two staging revisions for the same activation/contract, enter stabilization mode before any
 further mutation: persist the latest failure class and the exact contract delta. A third mutation
 without those fields is invalid. Stabilization does not turn `unknown` into a code defect and does
-not waive deploy, review, or verification gates. The deployment owner caps the loop at three repair
-rounds and persists the counter across agent rotations and user-invoked resumes.
+not waive deploy, review, or verification gates. The deployment owner applies the selected
+intensity's repair/session caps and persists the chained receipt across agent rotations and
+user-invoked resumes.
 
 ## 4. Output additions
 

@@ -40,6 +40,11 @@ conditionally escalates peers for risk or uncertainty, **always writes a plan MC
 (including on `direct` / light path), optionally drafts a deployment guide, and marks the ticket
 `planned`.
 
+`/ticket-flow` invokes this skill only for `heavy`. Its `direct`/`standard` compact delivery owner
+writes the same mandatory plan artifact before editing, without creating a separate planner
+session. Standalone `/ticket-plan` remains valid at every intensity for plan-only work and review
+feedback.
+
 For a Hermes-origin ticket, planning may create or update the plan and leave the ticket `planned`,
 but the restricted principal cannot self-approve or move it into an execution status. Admin
 approval is a separate server-side action on the current live plan. Any later Hermes edit clears

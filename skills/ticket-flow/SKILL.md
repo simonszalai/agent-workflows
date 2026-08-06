@@ -1,20 +1,20 @@
 ---
 name: ticket-flow
 description: >-
-  Autonomous single-ticket execution with MCP ticket tracking: runs ticket-plan, ticket-build,
-  and ticket-deploy in sequence. Default stops after staging verification; the optional `prod`
-  argument continues through production promotion, verification, and completion.
+  Autonomous single-ticket execution with MCP ticket tracking: compact delivery for direct and
+  standard work, full phase skills for heavy work, then ticket-deploy when applicable.
 max_turns: 60
 ---
 
 # Ticket Flow
 
 Autonomously execute **one ticket** from GitHub issue, existing F/B/R ticket, or conversation
-context, by sequencing the three phase skills:
+context. The normal path is deliberately compact:
 
 ```text
-/ticket-plan <ID>
-/ticket-build <ID>
+direct:   one delivery owner -> parent health
+standard: one delivery owner -> one reviewer -> optional repair -> parent health
+heavy:    /ticket-plan <ID> -> /ticket-build <ID>
 /ticket-deploy <ID> staging      # default
 /ticket-deploy <ID> full         # when invoked as /ticket-flow <ID> prod
 ```
@@ -22,21 +22,25 @@ context, by sequencing the three phase skills:
 Ticket Flow is ticket-level only. It is not an epic orchestrator, but if the ticket is an epic
 step it must load the parent epic context and honor the milestone contracts.
 
+The user entrypoint remains `/ticket-flow`; this skill invokes the deterministic contract binaries
+itself. Do not ask the user to construct or run envelopes manually.
+
 ## Hard boundaries
 
 - May create/resume exactly one ticket.
 - Owns the standalone ticket delivery decision: **staging-first** for complex/risky/uncertain
   work, **direct-production** only for tiny safe work (and then only via `/ticket-deploy`'s
   direct-production gate, which asks for confirmation when the diff is not tiny/safe).
-- Delegates all phase execution: planning to `/ticket-plan`, implementation to `/ticket-build`,
-  deployment and environment verification to `/ticket-deploy` (which owns `/auto-deploy`,
-  `/ticket-verify`, and `/ticket-promote`). Must not perform ad-hoc planning, build, deployment,
-  or verification work outside those skills.
+- `direct`/`standard` use the compact delivery contract below; they do not invoke separate
+  planning/build/test-writing skills. `heavy` delegates planning to `/ticket-plan` and
+  implementation to `/ticket-build`. Deployment and environment verification remain owned by
+  `/ticket-deploy` (`/auto-deploy`, `/ticket-verify`, `/ticket-promote`).
 - Without the `prod` argument, stops after the staging verify leg — production promotion
   requires an explicit `/ticket-flow <ID> prod` or `/ticket-deploy <ID> prod|full`.
 - Must not advance an epic/milestone gate; epic skills own that.
 - Must not use `.context/` for ticket artifacts; use MCP artifacts.
-- Must always produce a plan MCP artifact before build (every intensity, including `direct`).
+- Must always produce a plan MCP artifact before the first edit (every intensity, including
+  `direct`).
 - Ticketless ultra-light edits are `/go-fable`, not this skill. There is no `/lfg`.
 
 ## References
@@ -69,8 +73,8 @@ Read before acting:
 
 Invoking with `prod` is the explicit human authorization for production promotion/deploy after
 an exact staging `PASS` (it maps to `/ticket-deploy <ID> full`). It also grants standing approval
-for plan-conformant, deterministic, corroborated `gated_auto` review fixes and bounded
-resolve/re-review rounds. This does not authorize product-intent changes, destructive scope
+for plan-conformant, deterministic, corroborated `gated_auto` review fixes and bounded repair work.
+This does not authorize product-intent changes, destructive scope
 expansion, materially different tradeoffs, new secrets/schema/infrastructure/cost, or choosing
 between unresolved reviewer recommendations.
 
@@ -141,8 +145,8 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   sibling ticket-flows create divergent milestone packets.
 - Decide and record the delivery target using `landing-policy.md`.
 - **Decide and record intensity** using `execution-intensity.md` before planning/building:
-  parse `--intensity` / `--light` / `--deep`; apply epic-step floor (`standard` minimum when
-  `--epic-context` or epic membership is present); raise to `heavy` on safety surfaces. Write
+  parse `--intensity` / `--light` / `--deep`; epic membership alone has no floor; raise to `heavy`
+  only on named safety surfaces. Write
   `intensity`, `intensity_reason`, and `intensity_floor` into every phase envelope and child
   packet. Escalate only if later phases discover a new floor trigger; never silently downgrade.
   Intensity never skips the plan artifact.
@@ -150,9 +154,9 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   `planned` ticket with a plan artifact enters at build; a built, locally verified ticket enters
   at deploy). A `verify_staging_failed` status is a resumable checkpoint inside the autonomous
   staging repair loop, not a user-interaction gate. Resume from its persisted failure class and
-  round counter. Production failures retain their environment-specific safety boundary. When
-  resuming at build, re-derive intensity from the packet or the same gate and pass it into
-  `/ticket-build`.
+  round counter and cumulative run-budget receipt. Production failures retain their
+  environment-specific safety boundary. A fresh conversation reuses that receipt; it never resets
+  model-session or repair capacity.
 - For a Hermes-origin ticket, consume only server-returned pickup/approval truth. The restricted
   principal cannot self-approve or set execution statuses; an admin approval pair authorizes the
   current live plan, and any later Hermes edit clears it. Do not add a client-side origin filter or
@@ -160,7 +164,7 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
 
 ### 1. Gather context
 
-**Single retrieval owner.** When §2 will invoke `/ticket-plan` (the standalone path), ticket-flow
+**Single retrieval owner.** When §2 will invoke `/ticket-plan` (the heavy path), ticket-flow
 must **not** run its own codebase research or memory/similar-ticket searches here — `/ticket-plan`
 Phases 3-4 own knowledge retrieval (memory search across risk boundaries, codebase research,
 similar-ticket search) and are the single source of truth for it. Duplicating those searches in
@@ -170,17 +174,18 @@ builders and reviewers inherit the same knowledge without re-searching.
 
 §1 keeps only the context work that `/ticket-plan` does not do:
 
-- Bug: investigate root cause first; for production incidents use hypothesis evaluation. (This
-  triage feeds the plan; it is not the plan's knowledge retrieval.)
+- Bug: reuse a proven root cause from the investigation artifact. On the compact path, the single
+  delivery owner performs bounded diagnosis in-session. Dispatch a separate investigator only when
+  the absent/unproven cause itself forces `heavy`; production incidents use hypothesis evaluation.
+  This triage feeds the plan and is not duplicated as plan research.
 - Epic step: include the parent epic plan, milestone acceptance criteria, blockers, contracts,
   and the repo/path/branch mapping from `conductor-multi-repo.md` in the context passed to
   planning/build agents.
 
-If a ticket takes a path that does **not** invoke `/ticket-plan`, run the memory/knowledge
-retrieval here instead (search `mcp__autodev-memory__search` across the ticket's actual risk
-boundaries — schema/defaults/raw SQL, decrypt-proxy/tailnet/auth, Prefect deployment/runtime,
-encryption/plaintext fields, external API contracts — not just `search_tickets` /
-`get_similar_tickets`), because the single owner must always run exactly once.
+If a ticket takes the compact path, the single delivery owner performs that bounded lookup inside
+its session. The parent must not pre-run the same codebase/memory search. The owner searches the
+ticket's actual risk boundaries, not only similar-ticket titles, and includes its compact results
+in the durable delivery receipt.
 
 Maintain one runtime context receipt for the ticket. It records the light manifest read(s), direct
 artifact IDs/hashes, bounded excerpts/packet hashes passed to children, and canonical artifact
@@ -189,40 +194,55 @@ updates. Validate it with
 same-version reads fail. Plan and deployment-guide updates are bounded replacements; their older
 revisions remain in MCP artifact history, not appended to the current body.
 
-### 2. Plan
+### 2. Select compact or heavy delivery
 
-Run `/ticket-plan <ID>` with the recorded intensity packet (`intensity`, `intensity_reason`,
-`intensity_floor`). `/ticket-plan` maps intensity to its light/heavy path and **always**
-persists an MCP `plan` artifact (including `direct`). Force `heavy` when the intensity gate or
-floor says so (epic step floor, cross-repo contract, schema/data, other high risk). Heavy path
-only: adversarial plan critique until no critical unresolved findings remain; peer planning
-follows `/ticket-plan`'s explicit risk/uncertainty/disagreement escalation gate. Set
-`summary_bullets` on the ticket.
+**`direct` / `standard`:** do not invoke `/ticket-plan` or `/ticket-build`. Dispatch exactly one
+fresh `fork_turns: "none"` `delivery_owner` with the immutable source/epic packet, existing plan
+when resuming, intensity fields, artifact schemas, and allowed write scope. In that one session it:
 
-After planning, persist the plan artifact and prior-knowledge checkpoint. End the planning phase
-agent and start build in a fresh `fork_turns: "none"` agent with only the plan/build packet
-including intensity fields. A history fork is allowed only when a self-contained packet is
-genuinely impossible: record the reason and use the smallest explicit numeric count of recent
-turns, never all history.
+1. performs only the bounded code/memory lookup needed for the change;
+2. persists a short plan MCP artifact and `summary_bullets` **before its first edit** (or verifies
+   and follows the existing plan on resume);
+3. creates minimal MCP `build_todo` artifacts mechanically from that plan;
+4. implements the bounded change, writes focused behavior tests, and may run focused tests;
+5. checkpoints each todo and returns plan/todo bodies, changed paths, focused-test evidence, and
+   final tree SHA so the parent can repair a cross-provider MCP no-op.
 
-### 3. Build, review, locally verify
+There is no separate researcher, planner, build-planner, builder chain, or test-writer session.
+If the owner proves the work crosses a safety floor or needs an unresolved architectural choice,
+it stops before the risky edit and returns `needs_heavy`; persist the checkpoint and enter the
+heavy path instead of adding roles to the compact path.
 
-Run `/ticket-build <ID>` with the same intensity packet. It honors open dashboard review comments
-before building, materializes build todos per intensity (`direct` minimal; `standard`/`heavy`
-via `/create-build-todos`), implements via `/build`, reviews via `/review`, resolves via
-`/resolve-review`, enforces the artifact persistence gate, runs the local health gate per
-intensity, and pushes the feature branch. A failed gate is handled from one complete inventory of
-all failed checks and repaired as one batch; it must never advance formatting, lint, types, tests,
-or other validation layers one invocation at a time. With `--skip-local-verify`, pass that through (the
-health gate is skipped only on explicit user instruction). Stop for unresolved design decisions.
+**`heavy`:** run `/ticket-plan <ID>`, persist its plan/prior-knowledge checkpoint, then start
+`/ticket-build <ID>` in a fresh no-history session. Heavy planning owns its critic and any explicit
+peer escalation. A history fork is allowed only when a self-contained packet is genuinely
+impossible: record the reason and use the smallest explicit numeric count, never all history.
 
-After build, persist the final-tree SHA, health evidence, build/review artifacts, and delivery
+### 3. Review and locally verify
+
+For compact delivery, first verify the plan/build-todo artifacts exist and reissue any missing MCP
+writes from the owner's structured receipt. The parent runs the canonical full health command on
+that tree. A failure is inventoried completely; before any changed-tree fix, reserve the one shared
+repair-cycle id. Maintained deterministic autofixes run first in the current orchestrator session,
+which is recorded as the `repair_owner` even when no fresh repair subagent is needed. All remaining
+findings go to that same allowance. The parent reruns the gate once on the changed tree.
+
+`direct` then stops reviewing. `standard` dispatches exactly one fresh native general reviewer over
+the diff, plan, todo/deviation record, and health evidence. It does not run validation or edit.
+Combine all accepted findings into one batch for the same repair allowance if it remains. Do not
+re-review a same-risk repair; run one final parent health gate only when repair changed the tree. A
+newly crossed risk boundary escalates to the heavy review path. If the repair was already consumed,
+or its changed tree still fails, return `BUDGET_EXHAUSTED` with the checkpoint and exact resume
+command. `heavy` follows `/ticket-build`'s larger explicit cap. `--skip-local-verify` skips health
+only on explicit user instruction.
+
+After delivery, persist the final-tree SHA, health evidence, build/review artifacts, and delivery
 checkpoint. Start deploy/verify in another fresh no-history agent with only that checkpoint and the
 active epic packet reference when applicable.
 
 ### 4. Deploy and verify
 
-If `--no-land` or target `none`, stop after `/ticket-build` and report remaining commands.
+If `--no-land` or target `none`, stop after locally verified delivery and report remaining commands.
 
 **Standalone, staging target (default):**
 
@@ -234,11 +254,11 @@ If `--no-land` or target `none`, stop after `/ticket-build` and report remaining
 `/ticket-deploy` owns the entire leg: `/auto-deploy` staging deploy, staging evidence
 verification, and — `full` only, gated on exact staging `PASS` — promotion, production deploy,
 production verification, incident cleanup, and `completed`. Relay its terminal report and stop
-conditions verbatim. A staging `FAIL` is not terminal: `/ticket-deploy` must run its bounded
-fresh-subagent repair/redeploy/reverify loop for up to three rounds. Relay a stop only after PASS,
-the persisted three-round cap is exhausted, or the child identifies genuinely missing human
-information/authorization or an external condition no agent can change. Do not convert a routine
-deterministic failure into a request for the user to invoke `/ticket-flow` again.
+conditions verbatim. A staging `FAIL` is not immediately terminal: `/ticket-deploy` may run one
+repair/redeploy/reverify cycle on `direct`/`standard`, or up to three on explicit `heavy`. Relay a
+stop only after PASS, the cumulative cap is exhausted, or the child identifies genuinely missing
+human information/authorization or an external condition no agent can change. Do not convert a
+routine deterministic failure into a request for the user to invoke `/ticket-flow` again.
 
 **Standalone, direct-production target:** `/ticket-deploy <ID> prod` (its §4a gate re-checks
 risk and asks for confirmation when the diff is not tiny/safe).
@@ -279,30 +299,96 @@ A `merged` epic step alone is not proof the milestone is deployed or verified; o
 
 ### 4a. Fanout and phase rotation contract
 
-The default per-ticket shape is one investigator, one builder chain, one review wave, and one
-verifier. Every additional role must cite a recorded escalation trigger in the phase envelope's
-`fanout_budget`. A same-risk follow-up revision uses exactly one delta builder and one delta
-reviewer. Reset to full/heavy review, retain the matching specialist, and name the new boundary
-when the diff first crosses security, auth, runtime protocol, migration, destructive-data, or
-browser-patch risk. Economy never removes specialist coverage for a genuinely new boundary.
+Fanout is conditional, not a checklist. A separate investigator exists only on `heavy` for a bug
+without a proven root cause; compact diagnosis stays with the delivery owner. The compact path has
+one delivery owner; only `standard` adds one general review wave. A verifier exists only for an
+actual environment gate, so delegated epic steps have none. Every
+additional role cites a recorded trigger in `fanout_budget`. A same-risk repair uses one repair
+owner and no re-review. Reset to full/heavy review, retain the matching specialist, and name the
+new boundary when the diff first crosses security, auth, runtime protocol, migration,
+destructive-data, or browser-patch risk.
 The same budget records activation/contract keys and prior staging revision IDs; from revision
 three it is invalid without the prior failure class and exact contract delta. This preflight runs
 before builder dispatch, not after another code mutation.
 
 Planning, build/review/local verification, and deploy/environment verification are durable phase
 boundaries. Before every active phase dispatch, write an envelope with
-`contract_profile: "ticket-flow"`, the validated runtime `context_receipt`, and `fanout_budget`,
-then run:
+`contract_profile: "ticket-flow"`, the validated runtime `context_receipt`, `fanout_budget`, and
+`run_budget`, then run:
 
-```text
+```bash
 bin/phase-contract ticket-dispatch <envelope.json>
 ```
 
+The `ticket-run-budget-v1` envelope reserves exactly one delegated model session. Its
+`activation_key` must match `fanout_budget.activation_key`; that binds all resumes to the same
+source/plan/diff activation instead of letting a new conversation mint another allowance. Persist
+the new receipt before starting the session. Every replacement generation, failed launch, review,
+waiter leaf, verifier, and repair owner gets a unique session id; resuming keeps the same `run_id`.
+The validator enforces:
+
+| Intensity | Delivery sessions | Environment sessions when applicable | Repair cycles |
+|---|---:|---:|---:|
+| `direct` | 2 | 6 | 1 |
+| `standard` | 3 | 6 | 1 |
+| `heavy` | 12 | 12 | 3 |
+
+The required reservation shape is:
+
+```json
+{
+  "contract_version": "ticket-run-budget-v1",
+  "ticket_id": "F0123",
+  "run_id": "<SHA-256 of ticket-run-budget-v1:ticket_id:activation_key>",
+  "activation_key": "<same as fanout_budget.activation_key>",
+  "intensity": "standard",
+  "budget_scope": "delivery",
+  "session_id": "<unique model session>",
+  "session_role": "delivery_owner",
+  "max_sessions": 3,
+  "max_repair_cycles": 1,
+  "intensity_escalation_reason": null,
+  "starts_repair_cycle": false,
+  "repair_cycle_id": null,
+  "prior_receipt": null
+}
+```
+
+**Durable receipt transport.** Store the command's exact `run_budget_receipt` JSON as the body of
+one ticket `learning_report` artifact titled `run-budget <activation_key>`, with metadata
+`kind: "ticket_run_budget"`, `contract_version: "ticket-run-budget-v1"`, `run_id`,
+`activation_key`, and `state: "active"`. This is runtime state, not a retrospective. Create it after
+the first reservation; for every later reservation, fetch that exact artifact, pass its parsed JSON
+object inline as `prior_receipt`, and update it with `expected_updated_at` **before** spawning the
+reserved session. A compare-and-set conflict means another dispatcher advanced the chain: do not
+spawn; reload the exact artifact and either reserve a new unique session id once or stop on a second
+conflict. Never materialize this ticket-owned receipt under `.context/`, and never use a local path
+as the durable hand-off between cloud sessions. On terminal completion/exhaustion, update the same
+artifact to `state: "terminal"`; a terminal `BUDGET_EXHAUSTED` artifact for the same activation is
+returned as-is on resume. Only a changed activation key may start a new run.
+`run_id` is the deterministic SHA-256 defined above, never a random/resume-specific id. If more than
+one active artifact exists for that deterministic id, stop on an orchestration conflict rather than
+choosing one or spawning.
+
+Use `budget_scope: environment` and the matching canonical maximum only for deploy/wait/verifier
+sessions. On a one-way intensity escalation, preserve the chain and set
+`intensity_escalation_reason` to the named trigger; never create a new run id for the larger cap.
+`fanout_budget` must carry the same `intensity` plus explicit
+`investigation_required` and `environment_verification_required` booleans; its role counts follow
+those facts rather than zero-filling mandatory agents.
+
+Environment capacity covers one continuing deploy owner, the single deterministic waiter leaf when
+needed, each verifier attempt, and an environment-scoped repair owner when needed. It is not
+allocated for `--no-land` or individual epic-step delivery. A validator response with
+`status: BUDGET_EXHAUSTED` is terminal for the run: persist the incomplete unit and exact resume
+command; never rotate or start a new conversation to obtain a fresh counter.
+
 Accept the phase result only after
 `bin/phase-contract result <result.json> --dispatch <envelope.json>` passes. The ticket-dispatch
-profile mechanically rejects all-history forks, excess fanout without triggers, repeated
-same-version context receipts, missing delta/full-review transitions, and these hard
-per-generation ceilings (`max_packet_bytes: 16384`):
+profile mechanically rejects all-history forks, unconditional investigator/verifier roles, excess
+fanout without triggers, repeated same-version context receipts, missing delta/full-review
+transitions, run-budget exhaustion, and these hard per-generation ceilings
+(`max_packet_bytes: 16384`):
 
 | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed | Max rotations |
 |---|---:|---:|---:|---:|---:|
@@ -319,12 +405,14 @@ rejected). When the last permitted generation ends without `complete`, persist t
 stop with the exact resume command and the unresolved unit — the phase shape was wrong for the
 work, and more generations spend hours confirming that.
 
-On valid `rotate_required`, persist the owning phase's MCP artifacts, tree/landing/deploy state, and
-next immutable checkpoint before a fresh `fork_turns: "none"` replacement. Resume at the first
+On valid `rotate_required`, first reserve the replacement against the same cumulative run receipt.
+If capacity remains, persist the receipt artifact, owning phase's MCP artifacts,
+tree/landing/deploy state, and next immutable checkpoint before a fresh `fork_turns: "none"`
+replacement. Resume at the first
 incomplete unit; do not re-plan an accepted plan, rerun completed build todos, reopen resolved
 findings, duplicate a landing/deploy, or rewrite verification evidence. The old owner receives no
-follow-up work. Safety coverage is unchanged: rotate and continue rather than dropping a health,
-review, deploy, or verification gate.
+follow-up work. If capacity does not remain, return `BUDGET_EXHAUSTED` rather than dropping a gate
+or manufacturing another generation.
 
 Each delegated phase uses the durable progress lease in `execution-economy.md`. The parent blocks
 once, performs at most one expiry inspection, consumes a terminal result, renews at most once only
@@ -368,7 +456,7 @@ Standalone ticket, default (stops after staging verify):
 ```text
 Ticket flow complete: F0123
 Intensity: standard (bounded pattern fix; floor=none)
-Phases: /ticket-plan PASS -> /ticket-build PASS -> /ticket-deploy staging
+Phases: compact delivery PASS -> general review PASS -> /ticket-deploy staging
 Landed: PR #456 -> staging
 Staging verification: PASS (evidence artifact <id>)
 Status: staging_verified
@@ -381,7 +469,7 @@ Standalone ticket, `prod`:
 ```text
 Ticket flow COMPLETE: F0123
 Intensity: heavy (schema migration; floor=none)
-Phases: /ticket-plan -> /ticket-build -> /ticket-deploy full
+Phases: heavy /ticket-plan -> /ticket-build -> /ticket-deploy full
 Staging: PR #456, verify PASS (artifact <id>)
 Production: promoted via /ticket-promote (PR #457), verify PASS (artifact <id>)
 Status: completed

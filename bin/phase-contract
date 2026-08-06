@@ -47,6 +47,52 @@ TICKET_MAX_ROTATION_GENERATIONS = {
     "build_review": 2,
     "deploy_verify": 3,
 }
+TICKET_RUN_LIMITS = {
+    "direct": {
+        "delivery": 2,
+        "environment": 6,
+        "repair_cycles": 1,
+    },
+    "standard": {
+        "delivery": 3,
+        "environment": 6,
+        "repair_cycles": 1,
+    },
+    "heavy": {
+        "delivery": 12,
+        "environment": 12,
+        "repair_cycles": 3,
+    },
+}
+TICKET_SESSION_ROLES = {
+    "delivery": {
+        "delivery_owner",
+        "reviewer",
+        "repair_owner",
+        "researcher",
+        "planner",
+        "build_planner",
+        "builder_chain",
+        "test_writer",
+        "specialist_reviewer",
+    },
+    "environment": {
+        "deployment_owner",
+        "deterministic_waiter",
+        "verifier",
+        "repair_owner",
+    },
+}
+TICKET_INTENSITY_ORDER = {"direct": 0, "standard": 1, "heavy": 2}
+EPIC_SESSION_ROLES = {
+    "milestone_owner",
+    "milestone_waiter",
+    "milestone_verifier",
+    "milestone_repair_owner",
+    "production_owner",
+    "production_waiter",
+    "production_verifier",
+}
 OWNER_PHASE_BUDGETS = {
     "investigation": {
         "max_turns": 30,
@@ -63,11 +109,11 @@ OWNER_PHASE_BUDGETS = {
 }
 FANOUT_ROLES = {
     "investigator",
+    "delivery_owner",
     "builder_chain",
     "review_wave",
     "verifier",
-    "delta_builder",
-    "delta_reviewer",
+    "repair_owner",
     "specialist_reviewer",
 }
 RISK_BOUNDARIES = {
@@ -79,12 +125,12 @@ RISK_BOUNDARIES = {
     "browser_patch",
 }
 MAX_ROLE_COUNTS = {
-    "investigator": 2,
+    "investigator": 1,
+    "delivery_owner": 1,
     "builder_chain": 2,
     "review_wave": 2,
-    "verifier": 2,
-    "delta_builder": 1,
-    "delta_reviewer": 1,
+    "verifier": 1,
+    "repair_owner": 1,
     "specialist_reviewer": 6,
 }
 VERIFICATION_FAILURE_CLASSES = {
@@ -99,6 +145,10 @@ VERIFICATION_FAILURE_CLASSES = {
 
 class ContractError(ValueError):
     """A phase envelope or result violates the shared runtime contract."""
+
+
+class BudgetExhaustedError(ContractError):
+    """A cumulative ticket run budget has no capacity for another model session."""
 
 
 def load_json(path: Path) -> dict:
@@ -153,6 +203,790 @@ def validate_file_reference(value: object, field: str, *, max_bytes: int | None 
     return value
 
 
+def load_receipt_value(value: object, field: str, wrapper_key: str) -> dict:
+    if not isinstance(value, dict):
+        raise ContractError(f"{field} must be an object")
+    if "path" in value or "sha256" in value:
+        reference = validate_file_reference(value, field, max_bytes=65536)
+        root = load_json(Path(reference["path"]))
+        receipt = root.get(wrapper_key, root)
+    else:
+        receipt = value.get(wrapper_key, value)
+    if not isinstance(receipt, dict):
+        raise ContractError(f"{field} has no {wrapper_key} object")
+    return receipt
+
+
+def deterministic_run_id(contract_version: str, scope_id: str, activation_key: str) -> str:
+    material = f"{contract_version}:{scope_id}:{activation_key}".encode()
+    return hashlib.sha256(material).hexdigest()
+
+
+def validate_ticket_run_budget(value: object, *, ticket_id: str) -> dict:
+    if not isinstance(value, dict):
+        raise ContractError("run_budget must be an object")
+    if value.get("contract_version") != "ticket-run-budget-v1":
+        raise ContractError("run_budget.contract_version must equal ticket-run-budget-v1")
+    if require_string(value.get("ticket_id"), "run_budget.ticket_id") != ticket_id:
+        raise ContractError("run_budget.ticket_id must match context_receipt.scope")
+    activation_key = require_string(
+        value.get("activation_key"), "run_budget.activation_key"
+    )
+    run_id = require_string(value.get("run_id"), "run_budget.run_id")
+    expected_run_id = deterministic_run_id(
+        "ticket-run-budget-v1", ticket_id, activation_key
+    )
+    if run_id != expected_run_id:
+        raise ContractError(
+            "run_budget.run_id must be the deterministic ticket/activation hash"
+        )
+    intensity = value.get("intensity")
+    if intensity not in TICKET_RUN_LIMITS:
+        raise ContractError("run_budget.intensity must be direct, standard, or heavy")
+    budget_scope = value.get("budget_scope")
+    if budget_scope not in TICKET_SESSION_ROLES:
+        raise ContractError("run_budget.budget_scope must be delivery or environment")
+    session_id = require_string(value.get("session_id"), "run_budget.session_id")
+    session_role = value.get("session_role")
+    if session_role not in TICKET_SESSION_ROLES[budget_scope]:
+        raise ContractError(
+            f"run_budget.session_role is invalid for budget_scope={budget_scope}"
+        )
+    if intensity == "direct" and budget_scope == "delivery" and session_role not in {
+        "delivery_owner",
+        "repair_owner",
+    }:
+        raise ContractError(
+            "direct delivery permits only delivery_owner and one optional repair_owner"
+        )
+    if intensity == "standard" and budget_scope == "delivery" and session_role not in {
+        "delivery_owner",
+        "reviewer",
+        "repair_owner",
+    }:
+        raise ContractError(
+            "standard delivery permits only delivery_owner, reviewer, and repair_owner"
+        )
+
+    limits = TICKET_RUN_LIMITS[intensity]
+    max_sessions = require_int(
+        value.get("max_sessions"), "run_budget.max_sessions", minimum=1
+    )
+    max_repair_cycles = require_int(
+        value.get("max_repair_cycles"),
+        "run_budget.max_repair_cycles",
+        minimum=1,
+    )
+    if max_sessions != limits[budget_scope]:
+        raise ContractError(
+            f"run_budget.max_sessions must equal {limits[budget_scope]} for "
+            f"{intensity}/{budget_scope}"
+        )
+    if max_repair_cycles != limits["repair_cycles"]:
+        raise ContractError(
+            f"run_budget.max_repair_cycles must equal {limits['repair_cycles']} for "
+            f"{intensity}"
+        )
+
+    session_ids = {"delivery": [], "environment": []}
+    repair_cycle_ids: list[str] = []
+    intensity_history = [intensity]
+    intensity_escalation_reason = value.get("intensity_escalation_reason")
+    prior_value = value.get("prior_receipt")
+    if prior_value is not None:
+        prior = load_receipt_value(
+            prior_value, "run_budget.prior_receipt", "run_budget_receipt"
+        )
+        for field, expected in (
+            ("contract_version", "ticket-run-budget-v1"),
+            ("ticket_id", ticket_id),
+            ("run_id", run_id),
+            ("activation_key", activation_key),
+        ):
+            if prior.get(field) != expected:
+                raise ContractError(
+                    f"run_budget.prior_receipt.{field} must equal the current run"
+                )
+        prior_intensity = prior.get("intensity")
+        if prior_intensity not in TICKET_RUN_LIMITS:
+            raise ContractError("run_budget.prior_receipt intensity is invalid")
+        if prior.get("limits") != TICKET_RUN_LIMITS[prior_intensity]:
+            raise ContractError("run_budget.prior_receipt limits do not match intensity")
+        if TICKET_INTENSITY_ORDER[intensity] < TICKET_INTENSITY_ORDER[prior_intensity]:
+            raise ContractError("run_budget intensity cannot downgrade across a run")
+        prior_history = require_string_list(
+            prior.get("intensity_history"),
+            "run_budget.prior_receipt.intensity_history",
+        )
+        if not prior_history or prior_history[-1] != prior_intensity:
+            raise ContractError(
+                "run_budget.prior_receipt intensity_history must end at its intensity"
+            )
+        if any(item not in TICKET_RUN_LIMITS for item in prior_history):
+            raise ContractError("run_budget.prior_receipt intensity_history is invalid")
+        if any(
+            TICKET_INTENSITY_ORDER[later] <= TICKET_INTENSITY_ORDER[earlier]
+            for earlier, later in zip(prior_history, prior_history[1:])
+        ):
+            raise ContractError(
+                "run_budget.prior_receipt intensity_history must strictly escalate"
+            )
+        if intensity != prior_intensity:
+            intensity_escalation_reason = require_string(
+                intensity_escalation_reason,
+                "run_budget.intensity_escalation_reason",
+            )
+            intensity_history = [*prior_history, intensity]
+        else:
+            if intensity_escalation_reason is not None:
+                raise ContractError(
+                    "run_budget.intensity_escalation_reason must be null without escalation"
+                )
+            intensity_history = prior_history
+        prior_sessions = prior.get("session_ids")
+        if not isinstance(prior_sessions, dict) or set(prior_sessions) != {
+            "delivery",
+            "environment",
+        }:
+            raise ContractError(
+                "run_budget.prior_receipt.session_ids must contain delivery and environment"
+            )
+        session_ids = {
+            scope: require_string_list(
+                prior_sessions.get(scope),
+                f"run_budget.prior_receipt.session_ids.{scope}",
+            )
+            for scope in ("delivery", "environment")
+        }
+        all_prior_sessions = session_ids["delivery"] + session_ids["environment"]
+        if len(all_prior_sessions) != len(set(all_prior_sessions)):
+            raise ContractError("run_budget.prior_receipt session ids must be unique")
+        repair_cycle_ids = require_string_list(
+            prior.get("repair_cycle_ids"),
+            "run_budget.prior_receipt.repair_cycle_ids",
+        )
+        if len(repair_cycle_ids) != len(set(repair_cycle_ids)):
+            raise ContractError("run_budget.prior_receipt repair cycle ids must be unique")
+    elif intensity_escalation_reason is not None:
+        raise ContractError(
+            "run_budget.intensity_escalation_reason must be null on the first session"
+        )
+
+    if session_id in session_ids["delivery"] + session_ids["environment"]:
+        raise ContractError("run_budget.session_id was already reserved")
+    if len(session_ids[budget_scope]) >= max_sessions:
+        raise BudgetExhaustedError(
+            f"{intensity} {budget_scope} model-session budget exhausted "
+            f"({max_sessions}/{max_sessions})"
+        )
+
+    starts_repair_cycle = value.get("starts_repair_cycle")
+    if not isinstance(starts_repair_cycle, bool):
+        raise ContractError("run_budget.starts_repair_cycle must be boolean")
+    repair_cycle_id = value.get("repair_cycle_id")
+    if starts_repair_cycle:
+        repair_cycle_id = require_string(
+            repair_cycle_id, "run_budget.repair_cycle_id"
+        )
+        if repair_cycle_id in repair_cycle_ids:
+            raise ContractError("run_budget.repair_cycle_id was already reserved")
+        if len(repair_cycle_ids) >= max_repair_cycles:
+            raise BudgetExhaustedError(
+                f"{intensity} repair-cycle budget exhausted "
+                f"({max_repair_cycles}/{max_repair_cycles})"
+            )
+        repair_cycle_ids.append(repair_cycle_id)
+    elif repair_cycle_id is not None:
+        raise ContractError(
+            "run_budget.repair_cycle_id must be null unless starts_repair_cycle=true"
+        )
+    if session_role == "repair_owner" and not starts_repair_cycle:
+        raise ContractError("repair_owner must start a recorded repair cycle")
+    if starts_repair_cycle and session_role != "repair_owner":
+        raise ContractError("only repair_owner may start a repair cycle")
+
+    session_ids[budget_scope].append(session_id)
+    return {
+        "contract_version": "ticket-run-budget-v1",
+        "ticket_id": ticket_id,
+        "run_id": run_id,
+        "activation_key": activation_key,
+        "intensity": intensity,
+        "intensity_history": intensity_history,
+        "limits": limits,
+        "session_ids": session_ids,
+        "repair_cycle_ids": repair_cycle_ids,
+        "last_reservation": {
+            "budget_scope": budget_scope,
+            "session_id": session_id,
+            "session_role": session_role,
+            "repair_cycle_id": repair_cycle_id,
+            "intensity_escalation_reason": intensity_escalation_reason,
+        },
+    }
+
+
+def epic_run_limits(
+    step_intensities: dict[str, str],
+    milestone_ids: list[str],
+    production_authorized: bool,
+) -> dict[str, int]:
+    delivery = sum(
+        TICKET_RUN_LIMITS[intensity]["delivery"]
+        for intensity in step_intensities.values()
+    )
+    milestone_overhead = 6 * len(milestone_ids)
+    production = 3 if production_authorized else 0
+    return {
+        "delivery": delivery,
+        "milestone_overhead": milestone_overhead,
+        "production": production,
+        "total": delivery + milestone_overhead + production,
+    }
+
+
+def validate_epic_run_budget(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise ContractError("epic_budget must be an object")
+    if value.get("contract_version") != "epic-run-budget-v1":
+        raise ContractError("epic_budget.contract_version must equal epic-run-budget-v1")
+    epic_id = require_string(value.get("epic_id"), "epic_budget.epic_id")
+    activation_key = require_string(
+        value.get("activation_key"), "epic_budget.activation_key"
+    )
+    run_id = require_string(value.get("run_id"), "epic_budget.run_id")
+    expected_run_id = deterministic_run_id(
+        "epic-run-budget-v1", epic_id, activation_key
+    )
+    if run_id != expected_run_id:
+        raise ContractError(
+            "epic_budget.run_id must be the deterministic epic/activation hash"
+        )
+
+    raw_step_intensities = value.get("step_intensities")
+    if not isinstance(raw_step_intensities, dict) or not raw_step_intensities:
+        raise ContractError("epic_budget.step_intensities must be a non-empty object")
+    step_intensities: dict[str, str] = {}
+    for ticket_id, intensity in raw_step_intensities.items():
+        ticket_id = require_string(ticket_id, "epic_budget.step_intensities key")
+        if intensity not in TICKET_RUN_LIMITS:
+            raise ContractError(
+                f"epic_budget.step_intensities.{ticket_id} must be direct, standard, or heavy"
+            )
+        step_intensities[ticket_id] = intensity
+    raw_step_activation_keys = value.get("step_activation_keys")
+    if not isinstance(raw_step_activation_keys, dict) or set(
+        raw_step_activation_keys
+    ) != set(step_intensities):
+        raise ContractError(
+            "epic_budget.step_activation_keys must cover every allocated step"
+        )
+    step_activation_keys = {
+        ticket_id: require_string(
+            raw_step_activation_keys[ticket_id],
+            f"epic_budget.step_activation_keys.{ticket_id}",
+        )
+        for ticket_id in step_intensities
+    }
+
+    milestone_ids = require_string_list(
+        value.get("milestone_ids"), "epic_budget.milestone_ids"
+    )
+    if not milestone_ids or len(milestone_ids) != len(set(milestone_ids)):
+        raise ContractError("epic_budget.milestone_ids must be non-empty and unique")
+    production_authorized = value.get("production_authorized")
+    if not isinstance(production_authorized, bool):
+        raise ContractError("epic_budget.production_authorized must be boolean")
+    authorization_reason = value.get("production_authorization_reason")
+
+    limits = epic_run_limits(
+        step_intensities, milestone_ids, production_authorized
+    )
+    max_sessions = require_int(
+        value.get("max_sessions"), "epic_budget.max_sessions", minimum=1
+    )
+    if max_sessions != limits["total"]:
+        raise ContractError(
+            f"epic_budget.max_sessions must equal derived total {limits['total']}"
+        )
+
+    ticket_runs: dict[str, dict] = {}
+    milestone_session_ids = {milestone_id: [] for milestone_id in milestone_ids}
+    milestone_repair_cycle_ids = {
+        milestone_id: [] for milestone_id in milestone_ids
+    }
+    production_session_ids: list[str] = []
+    prior_value = value.get("prior_receipt")
+    prior_step_intensities: dict[str, str] = {}
+    prior_ticket_runs: dict[str, dict] = {}
+    accumulated_addition_reasons: dict[str, str] = {}
+    step_intensity_histories: dict[str, list[str]] = {}
+    stored_authorization_reason: str | None = None
+    if prior_value is not None:
+        prior = load_receipt_value(
+            prior_value, "epic_budget.prior_receipt", "epic_budget_receipt"
+        )
+        for field, expected in (
+            ("contract_version", "epic-run-budget-v1"),
+            ("epic_id", epic_id),
+            ("run_id", run_id),
+            ("activation_key", activation_key),
+        ):
+            if prior.get(field) != expected:
+                raise ContractError(
+                    f"epic_budget.prior_receipt.{field} must equal the current run"
+                )
+        raw_prior_steps = prior.get("step_intensities")
+        if not isinstance(raw_prior_steps, dict):
+            raise ContractError(
+                "epic_budget.prior_receipt.step_intensities must be an object"
+            )
+        for ticket_id, intensity in raw_prior_steps.items():
+            ticket_id = require_string(
+                ticket_id, "epic_budget.prior_receipt.step_intensities key"
+            )
+            if intensity not in TICKET_RUN_LIMITS:
+                raise ContractError(
+                    "epic_budget.prior_receipt.step_intensities contains an invalid intensity"
+                )
+            prior_step_intensities[ticket_id] = intensity
+        if any(ticket_id not in step_intensities for ticket_id in prior_step_intensities):
+            raise ContractError(
+                "epic_budget.step_intensities may not remove an allocated step"
+            )
+        if any(
+            TICKET_INTENSITY_ORDER[step_intensities[ticket_id]]
+            < TICKET_INTENSITY_ORDER[intensity]
+            for ticket_id, intensity in prior_step_intensities.items()
+        ):
+            raise ContractError("epic_budget step intensity cannot downgrade")
+        if prior.get("milestone_ids") != milestone_ids:
+            raise ContractError("epic_budget.milestone_ids cannot change across a run")
+        raw_prior_activation_keys = prior.get("step_activation_keys")
+        if (
+            not isinstance(raw_prior_activation_keys, dict)
+            or any(
+                step_activation_keys.get(ticket_id) != key
+                for ticket_id, key in raw_prior_activation_keys.items()
+            )
+            or set(raw_prior_activation_keys) != set(prior_step_intensities)
+        ):
+            raise ContractError(
+                "epic_budget existing step activation keys are immutable"
+            )
+        prior_production = prior.get("production_authorized")
+        if not isinstance(prior_production, bool):
+            raise ContractError(
+                "epic_budget.prior_receipt.production_authorized must be boolean"
+            )
+        if prior_production and not production_authorized:
+            raise ContractError("epic_budget production authorization cannot be removed")
+        if prior_production == production_authorized and authorization_reason is not None:
+            raise ContractError(
+                "epic_budget.production_authorization_reason requires new authorization"
+            )
+        if not prior_production and production_authorized:
+            stored_authorization_reason = require_string(
+                authorization_reason,
+                "epic_budget.production_authorization_reason",
+            )
+        elif prior_production:
+            stored_authorization_reason = require_string(
+                prior.get("production_authorization_reason"),
+                "epic_budget.prior_receipt.production_authorization_reason",
+            )
+        elif prior.get("production_authorization_reason") is not None:
+            raise ContractError(
+                "epic_budget.prior_receipt has an unauthorized production reason"
+            )
+        prior_limits = epic_run_limits(
+            prior_step_intensities, milestone_ids, prior_production
+        )
+        if prior.get("limits") != prior_limits:
+            raise ContractError("epic_budget.prior_receipt limits are not derived correctly")
+        raw_ticket_runs = prior.get("ticket_runs")
+        if not isinstance(raw_ticket_runs, dict):
+            raise ContractError("epic_budget.prior_receipt.ticket_runs must be an object")
+        for ticket_id, raw_run in raw_ticket_runs.items():
+            if ticket_id not in prior_step_intensities or not isinstance(raw_run, dict):
+                raise ContractError(
+                    "epic_budget.prior_receipt.ticket_runs contains an invalid step"
+                )
+            session_ids = require_string_list(
+                raw_run.get("session_ids"),
+                f"epic_budget.prior_receipt.ticket_runs.{ticket_id}.session_ids",
+            )
+            if len(session_ids) > TICKET_RUN_LIMITS[prior_step_intensities[ticket_id]][
+                "delivery"
+            ]:
+                raise ContractError(
+                    f"epic_budget.prior_receipt ticket {ticket_id} exceeds its allowance"
+                )
+            ticket_runs[ticket_id] = {
+                "run_id": require_string(
+                    raw_run.get("run_id"),
+                    f"epic_budget.prior_receipt.ticket_runs.{ticket_id}.run_id",
+                ),
+                "activation_key": require_string(
+                    raw_run.get("activation_key"),
+                    f"epic_budget.prior_receipt.ticket_runs.{ticket_id}.activation_key",
+                ),
+                "session_ids": session_ids,
+            }
+        prior_ticket_runs = {
+            ticket_id: {**run_row, "session_ids": list(run_row["session_ids"])}
+            for ticket_id, run_row in ticket_runs.items()
+        }
+        raw_prior_reasons = prior.get("step_addition_reasons")
+        if (
+            not isinstance(raw_prior_reasons, dict)
+            or set(raw_prior_reasons) != set(prior_step_intensities)
+        ):
+            raise ContractError(
+                "epic_budget.prior_receipt.step_addition_reasons must cover every step"
+            )
+        accumulated_addition_reasons = {
+            ticket_id: require_string(
+                reason,
+                f"epic_budget.prior_receipt.step_addition_reasons.{ticket_id}",
+            )
+            for ticket_id, reason in raw_prior_reasons.items()
+        }
+        raw_histories = prior.get("step_intensity_histories")
+        if not isinstance(raw_histories, dict) or set(raw_histories) != set(
+            prior_step_intensities
+        ):
+            raise ContractError(
+                "epic_budget.prior_receipt.step_intensity_histories must cover every step"
+            )
+        for ticket_id, raw_history in raw_histories.items():
+            history = require_string_list(
+                raw_history,
+                f"epic_budget.prior_receipt.step_intensity_histories.{ticket_id}",
+            )
+            if (
+                not history
+                or history[-1] != prior_step_intensities[ticket_id]
+                or any(item not in TICKET_RUN_LIMITS for item in history)
+                or any(
+                    TICKET_INTENSITY_ORDER[later]
+                    <= TICKET_INTENSITY_ORDER[earlier]
+                    for earlier, later in zip(history, history[1:])
+                )
+            ):
+                raise ContractError(
+                    f"epic_budget prior intensity history for {ticket_id} is invalid"
+                )
+            step_intensity_histories[ticket_id] = history
+        raw_milestone_sessions = prior.get("milestone_session_ids")
+        raw_repair_cycles = prior.get("milestone_repair_cycle_ids")
+        if (
+            not isinstance(raw_milestone_sessions, dict)
+            or set(raw_milestone_sessions) != set(milestone_ids)
+            or not isinstance(raw_repair_cycles, dict)
+            or set(raw_repair_cycles) != set(milestone_ids)
+        ):
+            raise ContractError(
+                "epic_budget.prior_receipt milestone ledgers must match milestone_ids"
+            )
+        milestone_session_ids = {
+            milestone_id: require_string_list(
+                raw_milestone_sessions[milestone_id],
+                f"epic_budget.prior_receipt.milestone_session_ids.{milestone_id}",
+            )
+            for milestone_id in milestone_ids
+        }
+        milestone_repair_cycle_ids = {
+            milestone_id: require_string_list(
+                raw_repair_cycles[milestone_id],
+                f"epic_budget.prior_receipt.milestone_repair_cycle_ids.{milestone_id}",
+            )
+            for milestone_id in milestone_ids
+        }
+        production_session_ids = require_string_list(
+            prior.get("production_session_ids"),
+            "epic_budget.prior_receipt.production_session_ids",
+        )
+        if any(len(session_ids) > 6 for session_ids in milestone_session_ids.values()):
+            raise ContractError(
+                "epic_budget.prior_receipt milestone session allowance is exceeded"
+            )
+        if any(
+            len(repair_ids) > 1
+            for repair_ids in milestone_repair_cycle_ids.values()
+        ):
+            raise ContractError(
+                "epic_budget.prior_receipt milestone repair allowance is exceeded"
+            )
+        if len(production_session_ids) > (3 if prior_production else 0):
+            raise ContractError(
+                "epic_budget.prior_receipt production session allowance is exceeded"
+            )
+    elif production_authorized:
+        stored_authorization_reason = require_string(
+            authorization_reason, "epic_budget.production_authorization_reason"
+        )
+    elif authorization_reason is not None:
+        raise ContractError(
+            "epic_budget.production_authorization_reason requires production_authorized=true"
+        )
+
+    added_steps = set(step_intensities) - set(prior_step_intensities)
+    addition_reasons = value.get("step_addition_reasons")
+    if not isinstance(addition_reasons, dict) or set(addition_reasons) != added_steps:
+        raise ContractError(
+            "epic_budget.step_addition_reasons must name exactly the newly added steps"
+        )
+    for ticket_id, reason in addition_reasons.items():
+        accumulated_addition_reasons[ticket_id] = require_string(
+            reason, f"epic_budget.step_addition_reasons.{ticket_id}"
+        )
+        step_intensity_histories[ticket_id] = [step_intensities[ticket_id]]
+    escalated_steps = {
+        ticket_id
+        for ticket_id, prior_intensity in prior_step_intensities.items()
+        if step_intensities[ticket_id] != prior_intensity
+    }
+    escalation_reasons = value.get("step_intensity_escalation_reasons")
+    if not isinstance(escalation_reasons, dict) or set(escalation_reasons) != escalated_steps:
+        raise ContractError(
+            "epic_budget.step_intensity_escalation_reasons must name exactly escalated steps"
+        )
+    for ticket_id, reason in escalation_reasons.items():
+        require_string(
+            reason,
+            f"epic_budget.step_intensity_escalation_reasons.{ticket_id}",
+        )
+        step_intensity_histories[ticket_id] = [
+            *step_intensity_histories[ticket_id],
+            step_intensities[ticket_id],
+        ]
+
+    imported_receipts = value.get("ticket_run_receipts")
+    if not isinstance(imported_receipts, list):
+        raise ContractError("epic_budget.ticket_run_receipts must be an array")
+    imported_ticket_ids: set[str] = set()
+    for index, raw_receipt in enumerate(imported_receipts):
+        receipt = load_receipt_value(
+            raw_receipt,
+            f"epic_budget.ticket_run_receipts[{index}]",
+            "run_budget_receipt",
+        )
+        if receipt.get("contract_version") != "ticket-run-budget-v1":
+            raise ContractError(
+                f"epic_budget.ticket_run_receipts[{index}] contract_version is invalid"
+            )
+        ticket_id = require_string(
+            receipt.get("ticket_id"),
+            f"epic_budget.ticket_run_receipts[{index}].ticket_id",
+        )
+        if ticket_id in imported_ticket_ids:
+            raise ContractError("epic_budget.ticket_run_receipts duplicates a ticket")
+        imported_ticket_ids.add(ticket_id)
+        if ticket_id not in step_intensities:
+            raise ContractError(
+                f"epic_budget ticket receipt {ticket_id} is not an allocated step"
+            )
+        intensity = receipt.get("intensity")
+        if intensity != step_intensities[ticket_id]:
+            raise ContractError(
+                f"epic_budget ticket receipt {ticket_id} intensity does not match allocation"
+            )
+        if receipt.get("activation_key") != step_activation_keys[ticket_id]:
+            raise ContractError(
+                f"epic_budget ticket receipt {ticket_id} activation does not match allocation"
+            )
+        if receipt.get("limits") != TICKET_RUN_LIMITS[intensity]:
+            raise ContractError(
+                f"epic_budget ticket receipt {ticket_id} limits are invalid"
+            )
+        raw_sessions = receipt.get("session_ids")
+        if not isinstance(raw_sessions, dict) or set(raw_sessions) != {
+            "delivery",
+            "environment",
+        }:
+            raise ContractError(
+                f"epic_budget ticket receipt {ticket_id} session_ids are invalid"
+            )
+        delivery_sessions = require_string_list(
+            raw_sessions["delivery"],
+            f"epic_budget ticket receipt {ticket_id} delivery sessions",
+        )
+        environment_sessions = require_string_list(
+            raw_sessions["environment"],
+            f"epic_budget ticket receipt {ticket_id} environment sessions",
+        )
+        if environment_sessions:
+            raise ContractError(
+                f"epic step {ticket_id} must not consume per-ticket environment sessions"
+            )
+        if len(delivery_sessions) > TICKET_RUN_LIMITS[intensity]["delivery"]:
+            raise ContractError(
+                f"epic_budget ticket receipt {ticket_id} exceeds its delivery allowance"
+            )
+        run_row = {
+            "run_id": require_string(
+                receipt.get("run_id"),
+                f"epic_budget ticket receipt {ticket_id}.run_id",
+            ),
+            "activation_key": require_string(
+                receipt.get("activation_key"),
+                f"epic_budget ticket receipt {ticket_id}.activation_key",
+            ),
+            "session_ids": delivery_sessions,
+        }
+        prior_run = ticket_runs.get(ticket_id)
+        if prior_run is not None:
+            if not isinstance(prior_run, dict):
+                raise ContractError(
+                    f"epic_budget.prior_receipt.ticket_runs.{ticket_id} must be an object"
+                )
+            if (
+                prior_run.get("run_id") != run_row["run_id"]
+                or prior_run.get("activation_key") != run_row["activation_key"]
+            ):
+                raise ContractError(
+                    f"epic_budget ticket receipt {ticket_id} changed run identity"
+                )
+            prior_session_ids = require_string_list(
+                prior_run.get("session_ids"),
+                f"epic_budget.prior_receipt.ticket_runs.{ticket_id}.session_ids",
+            )
+            if delivery_sessions[: len(prior_session_ids)] != prior_session_ids:
+                raise ContractError(
+                    f"epic_budget ticket receipt {ticket_id} is not append-only"
+                )
+        ticket_runs[ticket_id] = run_row
+
+    reservation = value.get("reservation")
+    if reservation is not None and not isinstance(reservation, dict):
+        raise ContractError("epic_budget.reservation must be an object or null")
+    advanced_ticket_receipt = any(
+        len(ticket_runs[ticket_id]["session_ids"])
+        > len(prior_ticket_runs.get(ticket_id, {}).get("session_ids", []))
+        for ticket_id in imported_ticket_ids
+    )
+    last_reservation = None
+    if reservation is None:
+        if not advanced_ticket_receipt:
+            raise ContractError(
+                "epic_budget.reservation may be null only when importing new ticket usage"
+            )
+    else:
+        session_id = require_string(
+            reservation.get("session_id"), "epic_budget.reservation.session_id"
+        )
+        session_role = reservation.get("session_role")
+        if session_role not in EPIC_SESSION_ROLES:
+            raise ContractError("epic_budget.reservation.session_role is invalid")
+        milestone_id = reservation.get("milestone_id")
+        starts_repair_cycle = reservation.get("starts_repair_cycle")
+        if not isinstance(starts_repair_cycle, bool):
+            raise ContractError(
+                "epic_budget.reservation.starts_repair_cycle must be boolean"
+            )
+        repair_cycle_id = reservation.get("repair_cycle_id")
+        if session_role.startswith("production_"):
+            if not production_authorized:
+                raise ContractError(
+                    "epic_budget production session requires explicit authorization"
+                )
+            if milestone_id is not None:
+                raise ContractError(
+                    "epic_budget production session milestone_id must be null"
+                )
+            if starts_repair_cycle or repair_cycle_id is not None:
+                raise ContractError(
+                    "epic_budget production session cannot start a milestone repair cycle"
+                )
+            if len(production_session_ids) >= 3:
+                raise BudgetExhaustedError("epic production session budget exhausted (3/3)")
+            production_session_ids.append(session_id)
+        else:
+            milestone_id = require_string(
+                milestone_id, "epic_budget.reservation.milestone_id"
+            )
+            if milestone_id not in milestone_session_ids:
+                raise ContractError(
+                    "epic_budget.reservation.milestone_id is not allocated"
+                )
+            if len(milestone_session_ids[milestone_id]) >= 6:
+                raise BudgetExhaustedError(
+                    f"epic milestone {milestone_id} session budget exhausted (6/6)"
+                )
+            if session_role == "milestone_repair_owner":
+                if not starts_repair_cycle:
+                    raise ContractError(
+                        "milestone_repair_owner must start a repair cycle"
+                    )
+                repair_cycle_id = require_string(
+                    repair_cycle_id,
+                    "epic_budget.reservation.repair_cycle_id",
+                )
+                if milestone_repair_cycle_ids[milestone_id]:
+                    raise BudgetExhaustedError(
+                        f"epic milestone {milestone_id} repair-cycle budget exhausted (1/1)"
+                    )
+                milestone_repair_cycle_ids[milestone_id].append(repair_cycle_id)
+            elif starts_repair_cycle or repair_cycle_id is not None:
+                raise ContractError(
+                    "only milestone_repair_owner may start a milestone repair cycle"
+                )
+            milestone_session_ids[milestone_id].append(session_id)
+        last_reservation = {
+            "session_id": session_id,
+            "session_role": session_role,
+            "milestone_id": milestone_id,
+            "repair_cycle_id": repair_cycle_id,
+        }
+
+    all_session_ids = [
+        session_id
+        for run_row in ticket_runs.values()
+        for session_id in run_row.get("session_ids", [])
+    ]
+    all_session_ids.extend(
+        session_id
+        for milestone_sessions in milestone_session_ids.values()
+        for session_id in milestone_sessions
+    )
+    all_session_ids.extend(production_session_ids)
+    all_repair_cycle_ids = [
+        repair_cycle_id
+        for repair_ids in milestone_repair_cycle_ids.values()
+        for repair_cycle_id in repair_ids
+    ]
+    if len(all_repair_cycle_ids) != len(set(all_repair_cycle_ids)):
+        raise ContractError("epic_budget repair cycle ids must be globally unique")
+    if len(all_session_ids) != len(set(all_session_ids)):
+        raise ContractError("epic_budget session ids must be globally unique")
+    if len(all_session_ids) > limits["total"]:
+        raise BudgetExhaustedError(
+            f"epic model-session budget exhausted ({limits['total']}/{limits['total']})"
+        )
+    return {
+        "contract_version": "epic-run-budget-v1",
+        "epic_id": epic_id,
+        "run_id": run_id,
+        "activation_key": activation_key,
+        "step_intensities": step_intensities,
+        "step_activation_keys": step_activation_keys,
+        "step_addition_reasons": accumulated_addition_reasons,
+        "step_intensity_histories": step_intensity_histories,
+        "milestone_ids": milestone_ids,
+        "production_authorized": production_authorized,
+        "production_authorization_reason": stored_authorization_reason,
+        "limits": limits,
+        "ticket_runs": ticket_runs,
+        "milestone_session_ids": milestone_session_ids,
+        "milestone_repair_cycle_ids": milestone_repair_cycle_ids,
+        "production_session_ids": production_session_ids,
+        "used_sessions": len(all_session_ids),
+        "remaining_sessions": limits["total"] - len(all_session_ids),
+        "last_reservation": last_reservation,
+    }
+
+
 def validate_ticket_fanout(value: object) -> dict:
     if not isinstance(value, dict):
         raise ContractError("fanout_budget must be an object")
@@ -197,6 +1031,23 @@ def validate_ticket_fanout(value: object) -> dict:
         "new_risk_boundary",
     }:
         raise ContractError("fanout_budget.revision_path is invalid")
+    if revision_path == "first_revision" and staging_revision != 1:
+        raise ContractError("first_revision requires staging_revision=1")
+    if revision_path != "first_revision" and staging_revision < 2:
+        raise ContractError(
+            "same-risk and new-risk revisions require staging_revision>=2"
+        )
+    intensity = value.get("intensity")
+    if intensity not in TICKET_RUN_LIMITS:
+        raise ContractError("fanout_budget.intensity must be direct, standard, or heavy")
+    investigation_required = value.get("investigation_required")
+    if not isinstance(investigation_required, bool):
+        raise ContractError("fanout_budget.investigation_required must be boolean")
+    environment_verification_required = value.get("environment_verification_required")
+    if not isinstance(environment_verification_required, bool):
+        raise ContractError(
+            "fanout_budget.environment_verification_required must be boolean"
+        )
     counts = value.get("role_counts")
     if not isinstance(counts, dict):
         raise ContractError("fanout_budget.role_counts must be an object")
@@ -215,33 +1066,54 @@ def validate_ticket_fanout(value: object) -> dict:
             )
     baselines = {
         "first_revision": {
-            "investigator": 1,
-            "builder_chain": 1,
-            "review_wave": 1,
-            "verifier": 1,
-            "delta_builder": 0,
-            "delta_reviewer": 0,
+            "investigator": int(investigation_required and intensity == "heavy"),
+            "delivery_owner": int(intensity != "heavy"),
+            "builder_chain": int(intensity == "heavy"),
+            "review_wave": int(intensity != "direct"),
+            "verifier": int(environment_verification_required),
+            "repair_owner": 0,
             "specialist_reviewer": 0,
         },
         "same_risk_delta": {
             "investigator": 0,
+            "delivery_owner": 0,
             "builder_chain": 0,
             "review_wave": 0,
-            "verifier": 1,
-            "delta_builder": 1,
-            "delta_reviewer": 1,
+            "verifier": int(environment_verification_required),
+            "repair_owner": 1,
             "specialist_reviewer": 0,
         },
         "new_risk_boundary": {
-            "investigator": 1,
+            "investigator": int(investigation_required),
+            "delivery_owner": 0,
             "builder_chain": 1,
             "review_wave": 1,
-            "verifier": 1,
-            "delta_builder": 0,
-            "delta_reviewer": 0,
+            "verifier": int(environment_verification_required),
+            "repair_owner": 0,
             "specialist_reviewer": 0,
         },
     }
+    if investigation_required and intensity != "heavy":
+        raise ContractError(
+            "a separate investigator requires heavy intensity; compact delivery owners "
+            "perform bounded diagnosis in-session or escalate before dispatch"
+        )
+    if validated_counts["investigator"] != int(investigation_required):
+        raise ContractError(
+            "fanout_budget investigator count must equal investigation_required"
+        )
+    if validated_counts["verifier"] != int(environment_verification_required):
+        raise ContractError(
+            "fanout_budget verifier count must equal environment_verification_required"
+        )
+    if intensity == "heavy" and validated_counts["delivery_owner"]:
+        raise ContractError("heavy fanout must not add a compact delivery owner")
+    if intensity != "heavy" and validated_counts["builder_chain"]:
+        raise ContractError("compact fanout must not add a builder chain")
+    if intensity == "direct" and validated_counts["review_wave"]:
+        raise ContractError("direct fanout must escalate before adding a review wave")
+    if revision_path != "same_risk_delta" and validated_counts["repair_owner"]:
+        raise ContractError("repair_owner is permitted only for same_risk_delta")
     baseline = baselines[revision_path]
     for role, minimum in baseline.items():
         if validated_counts[role] < minimum:
@@ -250,13 +1122,13 @@ def validate_ticket_fanout(value: object) -> dict:
                 f"for {revision_path}"
             )
     if revision_path == "same_risk_delta" and (
-        validated_counts["builder_chain"]
+        validated_counts["delivery_owner"]
+        or validated_counts["builder_chain"]
         or validated_counts["review_wave"]
-        or validated_counts["delta_builder"] != 1
-        or validated_counts["delta_reviewer"] != 1
+        or validated_counts["repair_owner"] != 1
     ):
         raise ContractError(
-            "same_risk_delta must use the delta builder and delta reviewer path"
+            "same_risk_delta must use exactly one repair owner without a re-review wave"
         )
 
     escalations = value.get("escalations")
@@ -293,7 +1165,8 @@ def validate_ticket_fanout(value: object) -> dict:
         raise ContractError("fanout_budget.heavy_review must be boolean")
     if revision_path == "new_risk_boundary":
         if (
-            not boundaries
+            intensity != "heavy"
+            or not boundaries
             or not heavy_review
             or validated_counts["specialist_reviewer"] < len(boundaries)
         ):
@@ -515,8 +1388,25 @@ def validate_dispatch(
             )
         if max_packet_bytes > 16384:
             raise ContractError("ticket-flow budget.max_packet_bytes exceeds 16384")
-        validate_ticket_fanout(dispatch.get("fanout_budget"))
-        validate_context_receipt(dispatch.get("context_receipt"))
+        fanout_budget = validate_ticket_fanout(dispatch.get("fanout_budget"))
+        context_receipt = validate_context_receipt(dispatch.get("context_receipt"))
+        run_budget_receipt = validate_ticket_run_budget(
+            dispatch.get("run_budget"), ticket_id=context_receipt["scope"]
+        )
+        if fanout_budget["intensity"] != run_budget_receipt["intensity"]:
+            raise ContractError(
+                "fanout_budget.intensity must match run_budget.intensity"
+            )
+        if fanout_budget["activation_key"] != run_budget_receipt["activation_key"]:
+            raise ContractError(
+                "fanout_budget.activation_key must match run_budget.activation_key"
+            )
+        expected_scope = "environment" if phase_name == "deploy_verify" else "delivery"
+        if run_budget_receipt["last_reservation"]["budget_scope"] != expected_scope:
+            raise ContractError(
+                f"run_budget.budget_scope must equal {expected_scope} for {phase_name}"
+            )
+        dispatch["_run_budget_receipt"] = run_budget_receipt
     elif profile == "bounded-owner":
         if phase_name not in OWNER_PHASE_BUDGETS:
             raise ContractError(
@@ -550,9 +1440,28 @@ def validate_dispatch(
             raise ContractError(
                 "bounded-owner packet must match a hashed context_receipt child packet"
             )
-        validate_owner_context(
+        owner_context = validate_owner_context(
             dispatch.get("owner_context"), phase_name, context_receipt
         )
+        run_budget_value = dispatch.get("run_budget")
+        if phase_name == "deployment" or run_budget_value is not None:
+            run_budget_receipt = validate_ticket_run_budget(
+                run_budget_value, ticket_id=context_receipt["scope"]
+            )
+            expected_scope = "environment" if phase_name == "deployment" else "delivery"
+            expected_role = owner_context["owner_role"]
+            last_reservation = run_budget_receipt["last_reservation"]
+            if last_reservation["budget_scope"] != expected_scope:
+                raise ContractError(
+                    f"run_budget.budget_scope must equal {expected_scope} for "
+                    f"bounded-owner {phase_name}"
+                )
+            if last_reservation["session_role"] != expected_role:
+                raise ContractError(
+                    f"run_budget.session_role must equal {expected_role} for "
+                    f"bounded-owner {phase_name}"
+                )
+            dispatch["_run_budget_receipt"] = run_budget_receipt
     return dispatch
 
 
@@ -660,6 +1569,8 @@ def main() -> int:
     ticket_dispatch_parser.add_argument("dispatch", type=Path)
     owner_dispatch_parser = subparsers.add_parser("owner-dispatch")
     owner_dispatch_parser.add_argument("dispatch", type=Path)
+    epic_budget_parser = subparsers.add_parser("epic-budget")
+    epic_budget_parser.add_argument("budget", type=Path)
     result_parser = subparsers.add_parser("result")
     result_parser.add_argument("result", type=Path)
     result_parser.add_argument("--dispatch", required=True, type=Path)
@@ -667,22 +1578,36 @@ def main() -> int:
 
     try:
         if args.command == "dispatch":
-            validate_dispatch(load_json(args.dispatch))
+            dispatch = validate_dispatch(load_json(args.dispatch))
         elif args.command == "ticket-dispatch":
-            validate_dispatch(
+            dispatch = validate_dispatch(
                 load_json(args.dispatch), required_profile="ticket-flow"
             )
         elif args.command == "owner-dispatch":
-            validate_dispatch(
+            dispatch = validate_dispatch(
                 load_json(args.dispatch), required_profile="bounded-owner"
             )
+        elif args.command == "epic-budget":
+            dispatch = {
+                "_epic_budget_receipt": validate_epic_run_budget(
+                    load_json(args.budget)
+                )
+            }
         else:
             dispatch = validate_dispatch(load_json(args.dispatch), allow_expired=True)
             validate_result(load_json(args.result), dispatch)
+    except BudgetExhaustedError as exc:
+        print(json.dumps({"status": "BUDGET_EXHAUSTED", "error": str(exc)}))
+        return 3
     except ContractError as exc:
         print(json.dumps({"status": "invalid", "error": str(exc)}))
         return 2
-    print(json.dumps({"status": "valid", "kind": args.command}))
+    response = {"status": "valid", "kind": args.command}
+    if "_run_budget_receipt" in dispatch:
+        response["run_budget_receipt"] = dispatch["_run_budget_receipt"]
+    if "_epic_budget_receipt" in dispatch:
+        response["epic_budget_receipt"] = dispatch["_epic_budget_receipt"]
+    print(json.dumps(response))
     return 0
 
 
