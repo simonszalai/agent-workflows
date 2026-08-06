@@ -9,9 +9,11 @@
 # SILENT-BY-DEFAULT (2026-07-08): non-sensitive reads retain an inherited
 # OP_SERVICE_ACCOUNT_TOKEN or the Keychain-backed token (service
 # "op-ts-token"), injected only into the exec'd op process. A detected
-# sensitive cache miss instead requires a reason, a successful macOS
-# notification, and valid reviewed human-account selector configuration. Its
-# canonical account is used unless the command supplies an explicit account;
+# sensitive cache miss instead requires a reason and valid reviewed
+# human-account selector configuration. It preflights idempotent `op signin`,
+# showing the macOS purpose notification only when authentication is
+# still waiting long enough to indicate a biometric prompt. Its canonical
+# account is used unless the command supplies an explicit account;
 # machine credentials are removed from that sensitive child. Sensitive cache
 # hits remain notification- and authentication-free. OP_DESKTOP=1 is neither
 # required nor a supported workaround for sensitive access.
@@ -273,9 +275,17 @@ cacheable_sensitive_read=0
 cache_key=""
 top_level_command=""
 has_explicit_account=0
+explicit_account=""
+capture_account_value=0
 skip_option_value=0
 for a in "$@"; do
   [[ "$a" == "--" ]] && break
+  if [[ "$capture_account_value" == "1" ]]; then
+    explicit_account="$a"
+    capture_account_value=0
+    skip_option_value=0
+    continue
+  fi
   if [[ "$skip_option_value" == "1" ]]; then
     skip_option_value=0
     continue
@@ -283,10 +293,12 @@ for a in "$@"; do
   case "$a" in
     --account)
       has_explicit_account=1
+      capture_account_value=1
       skip_option_value=1
       ;;
     --account=*)
       has_explicit_account=1
+      explicit_account="${a#--account=}"
       ;;
     --config|--encoding|--format|--session)
       skip_option_value=1
@@ -310,9 +322,12 @@ if [[ -n "$sensitive_vault" && "$top_level_command" == "read" && -n "${CONDUCTOR
   fi
 fi
 
-# A cache miss can cause Touch ID, so it always notifies. The legacy
-# OP_SENSITIVE_NOTIFICATION_SENT escape hatch is intentionally ignored here;
-# it previously allowed an unattributed fingerprint prompt.
+# A cache miss can require Touch ID. Preflight the idempotent `op signin` for
+# the exact account and start the notifier only if authentication is still
+# waiting after a short local-IPC grace period. This keeps the purpose visible
+# alongside a real biometric prompt without spamming already-authenticated
+# calls. The legacy OP_SENSITIVE_NOTIFICATION_SENT escape hatch remains
+# intentionally ignored.
 if [[ -n "$sensitive_vault" ]]; then
   reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
   if [[ ! "$reason" =~ [^[:space:]] ]]; then
@@ -323,32 +338,80 @@ if [[ -n "$sensitive_vault" ]]; then
     echo "Set SENSITIVE_ACCESS_REASON (or OP_ACCESS_REASON) to a concise explanation." >&2
     exit 3
   fi
+  if [[ "$has_explicit_account" != "1" ]] && ! load_human_account; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED invalid-account-config vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
+      >> "$LOG" 2>/dev/null
+    echo "ERROR: invalid human account selector configuration." >&2
+    exit 4
+  fi
+
+  auth_account="$explicit_account"
+  [[ "$has_explicit_account" == "1" ]] || auth_account="$HUMAN_ACCOUNT"
+  if [[ ! "$auth_account" =~ [^[:space:]] ]]; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED invalid-account-selector vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
+      >> "$LOG" 2>/dev/null
+    echo "ERROR: invalid human account selector." >&2
+    exit 4
+  fi
+
   requester="${CONDUCTOR_WORKSPACE_NAME:-${CONDUCTOR_WORKSPACE:-$parent}}"
-  notification_status=0
   notifier="$HERE/sensitive-access-notify"
   if [[ ! -e "$notifier" && ! -L "$notifier" ]]; then
-    notification_status=127
+    notification_preflight_status=127
   elif [[ -L "$notifier" || ! -f "$notifier" || ! -x "$notifier" ]] ||
        ! mode_is_not_group_or_other_writable "$notifier"; then
-    notification_status=126
+    notification_preflight_status=126
   else
-    "$notifier" "$sensitive_vault" "$sensitive_item" "$reason" "$requester" \
-      || notification_status=$?
+    notification_preflight_status=0
   fi
-  if [[ "$notification_status" != "0" ]]; then
+  if [[ "$notification_preflight_status" != "0" ]]; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED notification-failed notification-status=%s vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$notification_preflight_status" \
+      "$audit_vault" "$audit_item" >> "$LOG" 2>/dev/null
+    echo "ERROR: sensitive vault access notification failed." >&2
+    exit "$notification_preflight_status"
+  fi
+
+  notification_pid=""
+  sensitive_notification_shown=0
+  cleanup_pending_notification() {
+    if [[ -n "$notification_pid" ]]; then
+      kill "$notification_pid" 2>/dev/null
+      wait "$notification_pid" 2>/dev/null
+      notification_pid=""
+    fi
+  }
+  trap cleanup_pending_notification EXIT HUP INT TERM
+  (
+    sleep 0.25
+    exec "$notifier" "$sensitive_vault" "$sensitive_item" "$reason" "$requester"
+  ) &
+  notification_pid=$!
+
+  "$REAL_OP" signin --account "$auth_account" >/dev/null 2>&1
+  authentication_status=$?
+  kill "$notification_pid" 2>/dev/null
+  wait "$notification_pid" 2>/dev/null
+  notification_status=$?
+  notification_pid=""
+  trap - EXIT HUP INT TERM
+
+  if [[ "$notification_status" != "0" && "$notification_status" != "143" ]]; then
     printf '%s pid=%s parent=%s<-%s status=BLOCKED notification-failed notification-status=%s vault=%s item=%s\n' \
       "$(date '+%F %T')" "$$" "$parent" "$gparent" "$notification_status" \
       "$audit_vault" "$audit_item" >> "$LOG" 2>/dev/null
     echo "ERROR: sensitive vault access notification failed." >&2
     exit "$notification_status"
   fi
-
-  if ! load_human_account; then
-    printf '%s pid=%s parent=%s<-%s status=BLOCKED invalid-account-config vault=%s item=%s\n' \
-      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
-      >> "$LOG" 2>/dev/null
-    echo "ERROR: invalid human account selector configuration." >&2
-    exit 4
+  [[ "$notification_status" == "0" ]] && sensitive_notification_shown=1
+  if [[ "$authentication_status" != "0" ]]; then
+    printf '%s pid=%s parent=%s<-%s status=BLOCKED authentication-failed authentication-status=%s vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$authentication_status" \
+      "$audit_vault" "$audit_item" >> "$LOG" 2>/dev/null
+    echo "ERROR: sensitive vault authentication failed." >&2
+    exit "$authentication_status"
   fi
 fi
 
@@ -368,7 +431,8 @@ if [[ -n "$sensitive_vault" ]]; then
     child_argv=(--account "$HUMAN_ACCOUNT" "$@")
   fi
 
-  auth="interactive BIOMETRIC-PROMPT"
+  auth="interactive desktop-session(silent)"
+  [[ "$sensitive_notification_shown" == "1" ]] && auth="interactive BIOMETRIC-PROMPT"
 else
   auth="interactive BIOMETRIC-PROMPT"
   if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then

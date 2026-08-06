@@ -39,10 +39,13 @@ scripts/secrets/dev-env ts-prefect-prod \
   --reason "Activate the reviewed F0123 production prompt" -- <write-command>
 ```
 
-On a sensitive cache miss, the canonical shim must send a macOS notification immediately before
-Touch ID showing the vault/item, reason, and requester. It then selects the checked-in canonical
-human account unless the reviewed command supplies an explicit account. Missing reasons,
-notification failures, and invalid account selectors fail closed before invoking 1Password.
+On a sensitive cache miss, the canonical shim preflights the idempotent `op signin` for the selected
+human account. If authentication remains pending long enough to indicate a biometric prompt, it
+shows the macOS purpose notification alongside Touch ID with the vault/item, reason, and requester.
+Already-authenticated calls complete the preflight during the grace period and do not notify. The
+shim then selects the checked-in canonical human account unless the reviewed command supplies an
+explicit account. Missing reasons, unusable notification helpers, invalid account selectors,
+authentication failures, and notification failures block before the sensitive command runs.
 `OP_DESKTOP=1` is neither required nor a supported sensitive-access workaround.
 
 Never bypass this contract with `/opt/homebrew/bin/op`, an alternate wrapper, or an `OP_BIN` that
@@ -62,8 +65,8 @@ removed. Ordinary non-sensitive reads retain inherited or Keychain-backed silent
 behavior. The shim caches each resolved sensitive reference in a **memory-only helper scoped by
 `CONDUCTOR_SESSION_ID`**:
 
-- the first read requires `SENSITIVE_ACCESS_REASON`, sends the “what is it for?” notification,
-  and may prompt for Touch ID;
+- the first read requires `SENSITIVE_ACCESS_REASON`; when authentication is needed, it shows the
+  “what is it for?” notification alongside the Touch ID prompt;
 - repeated reads of the same reference and flags return from the session cache without another
   notification or fingerprint prompt;
 - values are never written to disk, command arguments, audit logs, or the ambient environment;

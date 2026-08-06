@@ -35,6 +35,7 @@ class SensitiveAccessFixture:
         self.state_dir = self.root / "state"
         self.home = self.root / "home"
         self.events_path = self.root / "events"
+        self.auth_calls_path = self.root / "auth-calls.jsonl"
         self.child_calls_path = self.root / "child-calls.jsonl"
         self.notify_calls_path = self.root / "notify-calls.jsonl"
         self.cache_calls_path = self.root / "cache-calls.jsonl"
@@ -64,12 +65,14 @@ class SensitiveAccessFixture:
                 "XDG_STATE_HOME": str(self.state_dir),
                 "PATH": f"{self.fake_path}:{self.base_env.get('PATH', '')}",
                 "FAKE_EVENTS": str(self.events_path),
+                "FAKE_AUTH_CALLS": str(self.auth_calls_path),
                 "FAKE_CHILD_CALLS": str(self.child_calls_path),
                 "FAKE_NOTIFY_CALLS": str(self.notify_calls_path),
                 "FAKE_CACHE_CALLS": str(self.cache_calls_path),
                 "FAKE_SECURITY_CALLS": str(self.security_calls_path),
                 "FAKE_HELPER_CALLS": str(self.helper_calls_path),
                 "FAKE_SECURITY_VALUE": KEYCHAIN_SENTINEL,
+                "FAKE_SIGNIN_DELAY": "0.35",
             }
         )
         for name in tuple(self.base_env):
@@ -143,9 +146,8 @@ class SensitiveAccessFixture:
                 import json
                 import os
                 import sys
+                import time
 
-                with open(os.environ["FAKE_EVENTS"], "a") as ledger:
-                    ledger.write("real\\n")
                 credential_names = sorted(
                     name
                     for name in os.environ
@@ -161,6 +163,16 @@ class SensitiveAccessFixture:
                     "argv": sys.argv[1:],
                     "env_present": credential_names,
                 }
+                if len(sys.argv) > 1 and sys.argv[1] == "signin":
+                    with open(os.environ["FAKE_EVENTS"], "a") as ledger:
+                        ledger.write("auth\\n")
+                    with open(os.environ["FAKE_AUTH_CALLS"], "a") as ledger:
+                        ledger.write(json.dumps(record, sort_keys=True) + "\\n")
+                    time.sleep(float(os.environ.get("FAKE_SIGNIN_DELAY", "0")))
+                    raise SystemExit(int(os.environ.get("FAKE_SIGNIN_EXIT", "0")))
+
+                with open(os.environ["FAKE_EVENTS"], "a") as ledger:
+                    ledger.write("real\\n")
                 with open(os.environ["FAKE_CHILD_CALLS"], "a") as ledger:
                     ledger.write(json.dumps(record, sort_keys=True) + "\\n")
                 sys.stdout.write("resolved-value")
@@ -377,6 +389,10 @@ class SensitiveAccessFixture:
         return self._json_lines(self.child_calls_path)
 
     @property
+    def auth_calls(self) -> list[dict[str, object]]:
+        return self._json_lines(self.auth_calls_path)
+
+    @property
     def notify_calls(self) -> list[dict[str, object]]:
         return self._json_lines(self.notify_calls_path)
 
@@ -399,6 +415,7 @@ class SensitiveAccessFixture:
     def persisted_observables(self) -> str:
         paths = (
             self.events_path,
+            self.auth_calls_path,
             self.child_calls_path,
             self.notify_calls_path,
             self.cache_calls_path,
@@ -469,7 +486,20 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
         expected_argv: list[str],
     ) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(fixture.events, ["notify", "real"])
+        self.assertEqual(fixture.events, ["auth", "notify", "real"])
+        if expected_argv[0] == "--account":
+            expected_account = expected_argv[1]
+        else:
+            expected_account = expected_argv[0].removeprefix("--account=")
+        self.assertEqual(
+            fixture.auth_calls,
+            [
+                {
+                    "argv": ["signin", "--account", expected_account],
+                    "env_present": [],
+                }
+            ],
+        )
         self.assertEqual(len(fixture.notify_calls), 1)
         self.assertEqual(fixture.notify_calls[0]["env_present"], [])
         self.assertEqual(
@@ -582,7 +612,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 self.assertEqual(fixture.child_calls, [])
                 self.assert_no_secret_sentinels(fixture, result)
 
-    def test_every_notifier_failure_blocks_before_auth_and_child(self) -> None:
+    def test_every_notifier_failure_blocks_before_sensitive_child(self) -> None:
         cases = (
             ("missing", None),
             ("non-executable", None),
@@ -613,7 +643,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
 
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("status=BLOCKED", fixture.audit)
-                expected_events = ["notify"] if exit_code is not None else []
+                expected_events = ["auth", "notify"] if exit_code is not None else []
                 self.assertEqual(fixture.events, expected_events)
                 if exit_code is not None:
                     self.assertEqual(fixture.notify_calls[0]["env_present"], [])
@@ -672,7 +702,10 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
 
             self.assertEqual(first.returncode, 0, first.stderr)
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(fixture.events, ["notify", "real", "notify", "real"])
+            self.assertEqual(
+                fixture.events,
+                ["auth", "notify", "real", "auth", "notify", "real"],
+            )
             self.assertEqual(len(fixture.notify_calls), 2)
             self.assertTrue(
                 all(call["env_present"] == [] for call in fixture.notify_calls)
@@ -712,6 +745,55 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 ],
             )
             self.assertIn("auth=interactive BIOMETRIC-PROMPT", fixture.audit)
+
+    def test_already_authenticated_preflight_suppresses_notification(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["item", "list", "--vault", "AUTODEV-sensitive"]
+            result = fixture.run_op(
+                args,
+                credentials=True,
+                env_updates={"FAKE_SIGNIN_DELAY": "0"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(fixture.events, ["auth", "real"])
+            self.assertEqual(fixture.notify_calls, [])
+            self.assertEqual(
+                fixture.auth_calls,
+                [
+                    {
+                        "argv": ["signin", "--account", CANONICAL_ACCOUNT],
+                        "env_present": [],
+                    }
+                ],
+            )
+            self.assertEqual(
+                fixture.child_calls,
+                [
+                    {
+                        "argv": ["--account", CANONICAL_ACCOUNT, *args],
+                        "env_present": [],
+                    }
+                ],
+            )
+            self.assertIn("auth=interactive desktop-session(silent)", fixture.audit)
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_failed_authentication_blocks_sensitive_child(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            result = fixture.run_op(
+                ["read", "op://AUTODEV-sensitive/ITEM/value"],
+                credentials=True,
+                env_updates={"FAKE_SIGNIN_EXIT": "17"},
+            )
+
+            self.assertEqual(result.returncode, 17)
+            self.assertIn("authentication failed", result.stderr)
+            self.assertIn("status=BLOCKED", fixture.audit)
+            self.assertEqual(fixture.events, ["auth", "notify"])
+            self.assertEqual(fixture.child_calls, [])
+            self.assertEqual(fixture.security_calls, [])
+            self.assert_no_secret_sentinels(fixture, result)
 
     def test_sensitive_classification_scrubs_before_helpers_and_never_calls_grep(
         self,
@@ -801,7 +883,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 ["--account", CANONICAL_ACCOUNT, *args],
             )
 
-    def test_invalid_shared_account_config_fails_closed_after_notifier_before_auth_or_child(
+    def test_invalid_shared_account_config_fails_closed_before_notifier_auth_or_child(
         self,
     ) -> None:
         cases: tuple[tuple[str, str | None, int], ...] = (
@@ -833,8 +915,8 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("account", result.stderr.lower())
                 self.assertIn("status=BLOCKED", fixture.audit)
-                self.assertEqual(fixture.events, ["notify"])
-                self.assertEqual(len(fixture.notify_calls), 1)
+                self.assertEqual(fixture.events, [])
+                self.assertEqual(fixture.notify_calls, [])
                 self.assertEqual(fixture.security_calls, [])
                 self.assertEqual(fixture.child_calls, [])
                 self.assert_no_secret_sentinels(fixture, result)
@@ -868,7 +950,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                     ],
                 )
 
-    def test_op_env_delegates_selector_validation_to_op_after_notification(
+    def test_op_env_delegates_selector_validation_to_op_before_notification(
         self,
     ) -> None:
         with SensitiveAccessFixture() as fixture:
@@ -878,9 +960,8 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("account", result.stderr.lower())
-            self.assertEqual(fixture.events, ["notify"])
-            self.assertEqual(len(fixture.notify_calls), 1)
-            self.assertEqual(fixture.notify_calls[0]["env_present"], [])
+            self.assertEqual(fixture.events, [])
+            self.assertEqual(fixture.notify_calls, [])
             self.assertEqual(fixture.security_calls, [])
             self.assertEqual(fixture.child_calls, [])
             self.assert_no_secret_sentinels(fixture, result)
@@ -1039,7 +1120,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(first.stdout, "resolved-value")
             self.assertEqual(second.stdout, "resolved-value")
-            self.assertEqual(fixture.events, ["notify", "real"])
+            self.assertEqual(fixture.events, ["auth", "notify", "real"])
             self.assertEqual(len(fixture.notify_calls), 1)
             self.assertEqual(len(fixture.child_calls), 1)
             self.assertEqual(
