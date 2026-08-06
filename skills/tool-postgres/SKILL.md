@@ -24,6 +24,10 @@ psql-cli <tier> "<SQL>"                     # run one read-only query (CSV)
 psql-cli <tier> search "<term>"              # find schema objects
 ```
 
+Follow [references/psql-cli-workflow.md](references/psql-cli-workflow.md) for the exact invocation
+order, shell-safe multiline SQL transport, failure classification, and connection-economical query
+bundling.
+
 `psql-cli` resolves the exact Git `origin` through `config/project-tools.json`. There is no
 default or fuzzy project/tier selection. Only tiers explicitly configured with canonical,
 non-sensitive `op://.../value` references are available; a project or tier without a profile
@@ -42,6 +46,16 @@ platform's PostgreSQL client package on Linux).
 available tier for one that is unavailable. Direct SQL is unavailable when the registry has no
 Postgres profile; use the project's supported application/API interface instead.
 
+## Failure discipline
+
+Treat one failed `psql-cli` call as evidence to classify, not as permission to invent a new database
+transport. Follow [references/application-shell-fallback.md](references/application-shell-fallback.md)
+before any provider shell fallback. If that exceptional path is authorized, copy and adapt
+[templates/readonly-query-bundle.mjs](templates/readonly-query-bundle.mjs),
+[templates/investigation-bundle.sql](templates/investigation-bundle.sql), and
+[templates/investigation-params.json](templates/investigation-params.json) instead of writing a new
+database transport.
+
 ## Mandatory query and payload bounds
 
 Every SQL call must be bounded before execution. Read-only access does not make an
@@ -58,6 +72,10 @@ unbounded read safe or token-efficient.
 - Bound JSON/array aggregates through a limited subquery; one aggregate cell must
   not hide an unbounded result.
 - Save verbose results to run-local scratch and return only a compact summary.
+
+When several small checks are known up front, return one structured statement rather than opening one
+connection per check. The exceptional application-shell path provides a parameterized bundle template;
+normal `psql-cli` calls remain plain single-statement SQL.
 
 If an exact full export is required, use a project-approved file/object-store export
 path rather than routing it through MCP or model context.
@@ -90,7 +108,7 @@ WHERE created_at > NOW() - INTERVAL '1 hour';
 SELECT status, COUNT(*) FROM schema.table
 WHERE created_at > NOW() - INTERVAL '24 hours'
 GROUP BY status
-ORDER BY COUNT(*) DESC
+ORDER BY COUNT(*) DESC, status
 LIMIT 100;
 ```
 
@@ -111,9 +129,14 @@ LIMIT 100;
 time — "0 calls" can mean always-failing, not never-ran):
 
 ```sql
-SELECT queryid, calls, mean_exec_time, total_exec_time, rows, query
-FROM pg_stat_statements ORDER BY mean_exec_time DESC LIMIT 10;
--- resource-intensive: ORDER BY total_exec_time DESC (or shared_blks_read DESC)
+SELECT userid, dbid, toplevel, queryid, calls, mean_exec_time, total_exec_time, rows,
+       left(query, 500) AS query_preview, octet_length(query) AS query_bytes
+FROM pg_stat_statements
+ORDER BY mean_exec_time DESC, dbid, userid, toplevel, queryid
+LIMIT 10;
+-- resource-intensive alternative:
+-- ORDER BY total_exec_time DESC, dbid, userid, toplevel, queryid
+-- or: ORDER BY shared_blks_read DESC, dbid, userid, toplevel, queryid
 ```
 
 **Analyze a specific query:**
@@ -137,22 +160,36 @@ FROM pg_statio_user_tables;
 ```sql
 SELECT count(*) AS conns, (SELECT setting::int FROM pg_settings WHERE name='max_connections') AS max
 FROM pg_stat_activity;
--- long-running holders: SELECT pid, state, now()-query_start AS age, left(query,80)
--- FROM pg_stat_activity WHERE state <> 'idle' ORDER BY age DESC;
+```
+
+**Long-running connection holders:**
+
+```sql
+SELECT pid, state, NOW() - query_start AS age,
+       left(query, 500) AS query_preview, octet_length(query) AS query_bytes
+FROM pg_stat_activity
+WHERE state <> 'idle'
+ORDER BY age DESC, pid
+LIMIT 20;
 ```
 
 **Vacuum / wraparound risk:**
 
 ```sql
-SELECT relname, last_autovacuum, n_dead_tup
-FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+SELECT schemaname, relname, last_autovacuum, n_dead_tup
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC, schemaname, relname
+LIMIT 10;
 ```
 
 **Unused / duplicate indexes:**
 
 ```sql
 SELECT schemaname, relname, indexrelname, idx_scan, pg_size_pretty(pg_relation_size(indexrelid)) AS size
-FROM pg_stat_user_indexes ORDER BY idx_scan ASC, pg_relation_size(indexrelid) DESC LIMIT 15;
+FROM pg_stat_user_indexes
+ORDER BY idx_scan ASC, pg_relation_size(indexrelid) DESC,
+         schemaname, relname, indexrelname
+LIMIT 15;
 ```
 
 ## Schema Exploration
@@ -161,14 +198,21 @@ Prefer `psql-cli <tier> search "<term>"` for interactive exploration. SQL equiva
 
 ```sql
 -- list schemas
-SELECT schema_name FROM information_schema.schemata;
+SELECT schema_name FROM information_schema.schemata
+ORDER BY schema_name
+LIMIT 100;
 
 -- list tables in a schema
-SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'public'
+ORDER BY table_name
+LIMIT 100;
 
 -- table structure
 SELECT column_name, data_type, is_nullable FROM information_schema.columns
-WHERE table_schema = 'public' AND table_name = 'users' ORDER BY ordinal_position;
+WHERE table_schema = 'public' AND table_name = 'users'
+ORDER BY ordinal_position
+LIMIT 100;
 ```
 
 ## Common Patterns
