@@ -24,6 +24,32 @@ psql-cli <tier> "<SQL>"                     # run one read-only query (CSV)
 psql-cli <tier> search "<term>"              # find schema objects
 ```
 
+Use this order for a database investigation:
+
+1. Run `psql-cli context <tier>` once to verify the resolved project, exact tier, and credential
+   reference without reading the credential.
+2. Design the smallest bounded SQL statement that answers the current questions.
+3. Run one `psql-cli` invocation. Combine closely related checks into one result when that avoids
+   repeated connections, but do not make an unbounded omnibus query.
+4. Inspect the result before deciding whether another query is necessary.
+
+Pass SQL as exactly one shell argument. For multiline SQL or PostgreSQL double-quoted identifiers,
+use a quoted heredoc so the shell cannot remove or reinterpret quotes:
+
+```bash
+psql-cli prod "$(cat <<'SQL'
+SELECT u.id, u.email, u."orgId"
+FROM "User" AS u
+WHERE u.id = 'known-id'
+LIMIT 1
+SQL
+)"
+```
+
+Do not embed identifiers such as `u."orgId"` or `"User"` unescaped inside a shell
+double-quoted SQL literal. The command may still run after the shell silently strips the identifier
+quotes, producing misleading SQL errors or different identifier casing.
+
 `psql-cli` resolves the exact Git `origin` through `config/project-tools.json`. There is no
 default or fuzzy project/tier selection. Only tiers explicitly configured with canonical,
 non-sensitive `op://.../value` references are available; a project or tier without a profile
@@ -42,6 +68,60 @@ platform's PostgreSQL client package on Linux).
 available tier for one that is unavailable. Direct SQL is unavailable when the registry has no
 Postgres profile; use the project's supported application/API interface instead.
 
+## Failure discipline
+
+Treat one failed `psql-cli` call as evidence to classify, not as permission to invent a new database
+transport.
+
+1. Preserve the original exit status and complete error (`set -o pipefail` when piping output).
+2. Re-run only the credential-free `psql-cli context <tier>` check if the resolved profile was not
+   already captured.
+3. Classify the failure before doing anything else:
+   - SQL/parser/relation errors: fix the SQL or inspect the schema, then retry once.
+   - Missing local `psql`: install or expose the PostgreSQL client as instructed above.
+   - Authentication, TLS, host, or stale-credential errors: the wrapper/profile is broken or the
+     registered credential is stale. Do not rewrite the query, change stdin/base64/file transport,
+     read a different secret, substitute a different tier, or repeatedly retry the same call.
+   - Timeout or truncation: make the query smaller; never raise the first-pass row or payload bounds.
+4. Prefer repairing or escalating the registered `psql-cli` profile. Do not silently bypass its
+   read-only credential and output controls by reaching into a deployed application's environment.
+
+Changing JavaScript import syntax, adding catch blocks, testing production-only code locally,
+base64-encoding a script, or copying it to a temporary file cannot fix a database authentication
+failure or a remote dependency-resolution failure. Diagnose credentials, working directory, runtime,
+and dependency availability before editing the query program.
+
+### Exceptional application-shell fallback
+
+Use a deployed application shell only when the repository's operational documentation explicitly
+permits it and the investigation cannot proceed through the registered wrapper or a supported API.
+Load the provider/deployment skill and repository runbook first. Application database credentials
+can be broader than the wrapper's read-only role, so keep the following controls even when the shell
+already exposes a connection URL:
+
+1. Open one shell preflight and inspect `pwd`, the documented deploy directory, runtime availability,
+   and dependency resolution before sending a query program. SSH home is not necessarily the deployed
+   application directory. For Render native runtimes, `/home/bun` is commonly the login directory while
+   the release and its installed packages are under `/home/bun/app`; verify this and `cd /home/bun/app`
+   before importing project dependencies. Do not generalize that path to other providers. Verify an
+   expected variable without revealing it with
+   `test -n "${SYSTEM_DATABASE_URL:-}" && echo SYSTEM_DATABASE_URL=set`, then verify dependency
+   resolution from the deploy directory. Never use `env`, `printenv`, or debug output that could dump
+   the connection value.
+2. Build one bounded query bundle locally after the preflight. Use one additional SSH invocation, one
+   database client, one explicit `BEGIN READ ONLY`, `SET LOCAL statement_timeout = '30000ms'`, and one
+   `ROLLBACK`/close path. Run all already-known related checks through that connection and emit one
+   compact structured result. This means two application-shell SSH invocations total: one preflight and
+   one query execution. Provider-runbook connection canaries are additional; perform or reuse them only
+   as that runbook permits.
+3. Do not open a new SSH and database connection for each count, relationship, or session check. Split
+   the bundle only when a later query genuinely depends on evidence from the first result.
+4. Never print the connection URL or environment values. Report variable names and behavioral checks
+   only.
+
+The fallback is not a second normal Postgres interface. Record why `psql-cli` was unavailable and
+return to the wrapper after its registered credential or connectivity is repaired.
+
 ## Mandatory query and payload bounds
 
 Every SQL call must be bounded before execution. Read-only access does not make an
@@ -58,6 +138,27 @@ unbounded read safe or token-efficient.
 - Bound JSON/array aggregates through a limited subquery; one aggregate cell must
   not hide an unbounded result.
 - Save verbose results to run-local scratch and return only a compact summary.
+
+When several small checks are known up front, return them from one statement rather than opening one
+connection per check. A JSON object of bounded scalar/subquery results is often the clearest shape:
+
+```sql
+SELECT jsonb_build_object(
+  'user', (
+    SELECT jsonb_build_object('id', id, 'role', role, 'orgId', "orgId")
+    FROM "User" WHERE id = 'known-id' LIMIT 1
+  ),
+  'active_memberships', (
+    SELECT COUNT(*) FROM "Member"
+    WHERE "userId" = 'known-id' AND status = 'active'
+  ),
+  'recent_sessions', (
+    SELECT COUNT(*) FROM "Session"
+    WHERE "userId" = 'known-id'
+      AND "createdAt" >= NOW() - INTERVAL '7 days'
+  )
+) AS investigation;
+```
 
 If an exact full export is required, use a project-approved file/object-store export
 path rather than routing it through MCP or model context.
