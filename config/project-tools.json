@@ -12,7 +12,7 @@
       ],
       "service_account": {
         "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-dev-token"
+        "keychain_item": "op-amaru-token"
       },
       "render": {
         "api_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
@@ -71,7 +71,7 @@
       ],
       "service_account": {
         "token_env": "TS_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-dev-token"
+        "keychain_item": "op-ts-token"
       },
       "render": {
         "api_key_ref": "op://TS/TS_RENDER_API_KEY/value",
