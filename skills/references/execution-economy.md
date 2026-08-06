@@ -73,6 +73,11 @@ Render deployment reads; and equivalent status checks. Background-command-plus-r
 are prohibited, including as a fallback. A process may poll; the model is sampled only after one
 terminal result or one timeout.
 
+Every pending condition has exactly one wait owner. Once selected, a delivery owner, parent,
+watcher, backup timer, fallback agent, or second waiter must not observe that condition. Other agents
+return the wait contract and terminate. The one deterministic waiter emits one terminal result or
+one timeout; the next model sampled is the single grader/verifier, not another watcher.
+
 - GitHub PR checks and Actions runs use `wait-ci <pr>` or `wait-ci --run <run-id>`.
   Prefect flow runs use
   `wait-prefect-flow <flow-run-id> --command-prefix '<project prefect command>'`. Shared waiters
@@ -137,8 +142,14 @@ records:
 
 Active `/ticket-flow` phases use the stricter
 `bin/phase-contract ticket-dispatch <envelope.json>` profile. It requires the runtime context
-receipt and fanout budget, and mechanically enforces ticket phase ceilings, the default one-role
-shape, the delta-review path, and full specialist reset at a new risk boundary.
+receipt, conditional fanout budget, and chained `ticket-run-budget-v1` receipt. It mechanically
+enforces ticket phase ceilings, cumulative delivery/environment model-session caps, repair-cycle
+caps, repair-owner-only same-risk deltas, and full specialist reset at a new risk boundary. Each
+valid dispatch emits the next cumulative receipt. Persist that exact JSON in the ticket's
+`run-budget <activation_key>` `learning_report` artifact with an optimistic
+`expected_updated_at` update before starting the session; pass the artifact body inline on the next
+dispatch. Rotation, retry, provider failure, compaction, and user-invoked resume never reset it. An
+over-budget dispatch returns `BUDGET_EXHAUSTED` and is terminal for that activation.
 
 The phase packet repeats those limits and requires the owner to count its turns and safe checkpoint
 advances. Harness `max_turns` and subprocess timeouts remain hard outer caps; set the packet budget
@@ -263,25 +274,23 @@ when the receipt/report fails. This is enforcement, never an instruction for the
 - Resolve that inventory as one batch. Run maintained formatter/lint/import autofixes across the
   whole changed surface directly without a subagent, then give all remaining findings
   to one repair chain. The repair builder still does not validate. Only after the entire batch is
-  repaired may the orchestrator rerun the canonical gate once on the changed tree. There are at
-  most three changed-tree whole-batch repair-and-rerun rounds total. A deterministic-only batch
-  needs no repair owner, but its gate rerun consumes one of those three executions. Every later
-  round starts with the same complete-inventory rule so it is reserved for genuinely new or
-  cascading failures. Record every failure-driven rerun and stop only
-  if the third round still fails, genuinely missing human information/authorization is required,
-  or an external condition no agent can change blocks progress. Focused diagnostics used to isolate
-  a gate failure are also orchestrator-owned and keyed by `(tree SHA, exact command)`.
-- Execute reusable gates through
-  `bin/validation-receipt --owner orchestrator -- <exact command>`. It persists the receipt under a
+  repaired may the orchestrator rerun the canonical gate once on the changed tree. `direct` and
+  `standard` have one changed-tree whole-batch repair-and-rerun cycle; explicit `heavy` has three.
+  A deterministic-only batch needs no repair owner, but its gate rerun consumes the same cycle.
+  Record every failure-driven rerun and return `BUDGET_EXHAUSTED` when the selected cap is spent.
+  Focused diagnostics used to isolate a gate failure are also orchestrator-owned and keyed by
+  `(tree SHA, exact command)`.
+- Execute reusable gates through a run-local registry:
+  `bin/validation-receipt --owner orchestrator --max-repair-runs <1-or-3> --registry <run-dir> --
+  <exact command>`. It persists the receipt under a
   key derived from the exact working-tree SHA and canonical working-directory + argv command. An
   exact-tree, exact-command PASS is returned without execution; any tree or command change
   invalidates reuse.
   An unchanged-tree failure cannot rerun. Record a
-  no-op repair without executing the duplicate gate, then dispatch the next fresh owner instead of
-  returning the work to the user. After each changed-tree whole-batch repair, the orchestrator may
-  execute the failed gate once, up to the ticket workflow's three-round cap. The wrapper permits
-  the initial execution plus those three changed-tree repair runs. Persist the round counter across
-  phase rotations and resumed invocations so context rotation can never reset the cap. The wrapper
+  no-op repair without executing the duplicate gate. After each changed-tree whole-batch repair,
+  the orchestrator may execute the failed gate once, up to the selected intensity's cap. Persist
+  the round counter across phase rotations and resumed invocations so context rotation can never
+  reset the cap. The wrapper
   mechanically rejects builder/reviewer ownership.
 - `bin/workflow-efficiency-report` parses compact-exec receipts and reports validation executions
   keyed by `(tree_sha, normalized_exact_command)`. It classifies `initial_run`,

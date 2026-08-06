@@ -10,41 +10,32 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
 1. **Resolve scope** — ticket/issue/conversation input, project, repo, branch, target.
    Decide and record `intensity` / `intensity_reason` / `intensity_floor` per
    `execution-intensity.md` once before planning.
-2. **Gather context** — bug investigation / triage and epic-context loading only. When Phase 3
-   invokes `/ticket-plan`, do **not** run codebase research or memory/similar-ticket searches here:
-   `/ticket-plan` Phases 3-4 are the single owner of knowledge retrieval. Only run that retrieval in
-   this phase when the path does not invoke `/ticket-plan`.
-3. **Plan** — run `/ticket-plan` (the single planning skill; intensity-driven light/heavy
-   gate) to create/update the **plan MCP artifact (mandatory at every intensity, including
-   `direct`)**. Carry `/ticket-plan`'s returned prior-knowledge blob
-   (the applicable rules/patterns it retrieved) forward into the build and review packets so
-   downstream agents inherit the same knowledge without re-searching.
-4. **Critic loop (`heavy` intensity only)** — adversarially review the plan for complex/cross-cutting
-   work and stop if open questions require user decisions. `direct` and `standard` skip the critic
-   panel and use one bounded native planner unless a peer-escalation trigger fires.
-5. **Build todos** — per intensity: minimal plan-derived `build_todo` artifacts on `direct`;
-   `/create-build-todos` on `standard`/`heavy` (deep research on `heavy`). Artifacts are always
-   MCP `build_todo`s for ticketed work.
-6. **Build** — invoke the `build` skill: partition the pending todo dependency DAG into the
-   smallest reasonable set of coherent sequential chains, assign one fresh builder per chain, and
-   checkpoint each covered todo individually. Builder chains implement and inspect code only; they
-   do not run tests, validation, typecheck, lint, builds, schema pulls/migrations, browser
-   verification, or health commands. Bounded self-repair is chain-local and resumes at the first
-   incomplete todo.
-   A builder that finds the plan wrong returns `needs_replan` → stop and revise the plan. Keep
-   unrelated fixes in a separate commit.
-7. **Write tests** — add focused tests for the changed behavior. In a ticket-orchestrated run,
-   the test-writing subagent writes tests but does not execute them.
-8. **Pre-review health + review/resolve** — after initial implementation and test-writing are
-   complete, the main orchestrator runs the canonical full health command once and records the PASS
-   by `(tree SHA, exact command)` (`direct` may use a single gate when
-   `execution-intensity.md` allows). Then invoke the `review` skill rather than hand-rolling review.
-   Reviewers judge the diff and recorded evidence only; resolution builders implement accepted
-   fixes only. Neither reviewer nor resolver subagents run validation. Review chooses a
-   genuinely light one-reviewer path or a heavy native specialist path and conditionally adds peer
-   providers only for explicit risk, uncertainty, or disagreement. When peers are required, wait
-   for their envelopes before the single synthesis; never simulate them. The main runner resolves
-   actionable findings.
+2. **Gather context once** — epic packet plus bug triage. Reuse a proven investigation. The compact
+   delivery owner performs bounded diagnosis and code/memory lookup in-session; spawn a separate
+   investigator only when an absent/unproven root cause forces the heavy path. Heavy knowledge
+   retrieval otherwise belongs to `/ticket-plan`.
+3. **Compact delivery (`direct` / `standard`)** — dispatch exactly one no-history delivery owner.
+   Before editing it persists the short **plan MCP artifact (mandatory at every intensity,
+   including `direct`)** and minimal `build_todo` artifacts. It then implements the whole bounded
+   change, writes focused tests, may run focused tests, and checkpoints each todo. It does not run
+   the canonical health gate. There is no separate planner, researcher, build-planner, `/build`
+   chain, or `/write-tests` agent.
+4. **Heavy delivery** — `/ticket-plan` owns research, planning, and the critic loop; then
+   `/create-build-todos`, `/build`, and `/write-tests` run as separate bounded roles. Builders and
+   test writers do not run validation, typecheck, lint, builds, schema pulls/migrations, browser
+   verification, or health commands. A builder that finds the plan wrong returns `needs_replan`.
+5. **Parent health gate** — after implementation and tests, the main orchestrator runs the canonical
+   full health command once and records the PASS by `(tree SHA, exact command)`.
+6. **Review** — `direct` has no independent review. `standard` dispatches exactly one native general
+   reviewer over the diff and recorded PASS. `heavy` invokes `/review` with conditional specialist
+   coverage. Reviewers never validate or edit. A review need discovered on `direct` raises it to
+   `standard`; a new safety boundary raises any path to `heavy` before dispatch.
+7. **One ordinary repair** — combine every health failure or accepted review finding into one
+   complete batch. `direct`/`standard` consume one repair-owner reservation total. Run maintained
+   deterministic autofixes first in the current orchestrator session; dispatch a fresh repair owner
+   only for remaining non-mechanical work. The repair owner does not validate. Do not re-review a
+   same-risk repair. A new risk boundary uses the heavy review path. `heavy` may use up to three
+   repair cycles.
 
    **Autonomous decision-ownership rule.** Severity and decision ownership are independent:
    a p1 finding is not `manual` merely because the affected surface is sensitive or destructive.
@@ -57,36 +48,29 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    plan-conformant and corroborated — multi-reviewer consensus, or a settled finding
    (`requires_verification: false`). An explicit `/ticket-flow prod` (or
    `/ticket-deploy prod|full`) invocation is standing approval for those fixes and for bounded
-   resolve/re-review rounds; do not stop merely to ask the user to approve an agent-found
+   repair work within the selected intensity's cumulative budget; do not stop merely to ask the
+   user to approve an agent-found
    deterministic correctness fix. Defer an uncorroborated or
    scope-expanding fix. A `manual` finding still requires the missing human decision, unless that
    decision is already recorded in the ticket or current conversation.
 
-   **Conditional coverage gate.** A routine light round is complete with its one native envelope.
-   When the review skill records a peer-escalation trigger, the round is not complete until both
+   **Conditional coverage gate.** A routine standard round is complete with its one native
+   envelope. Direct has no review envelope. When the review skill records a peer-escalation trigger,
+   the round is not complete until both
    peer envelopes were folded into synthesis or their failure is explicitly recorded as residual
    risk. Safety-critical native personas and adversarial checks remain mandatory even if peers fail
    or `mode:solo` was explicitly requested.
 
-   The canonical loop definition lives in the `review` skill. Rounds follow intensity
-   (`direct` ≤1, `standard` ≤1, `heavy` ≤2; light review path still one native reviewer unless
-   upgraded). Stop earlier when no actionable (`safe_auto`/`gated_auto`/`manual`)
-   findings remain, **or when a round's actionable findings were resolved and the adversarial
-   verify produced no contested findings** (a second round is spent only to resolve genuine
-   adversarial disagreement, not to re-confirm agreed fixes). Stop on unresolved design
-   decisions and surface any remaining unapproved `gated_auto` findings or genuinely undecided
-   `manual` findings for a human.
-9. **Final local verification** — if review resolution changed the tree since the pre-review PASS,
-   the main orchestrator runs the canonical full health command exactly once on the new final tree.
-   If the tree is unchanged, reuse the prior PASS. A failing gate runs the deterministic autofix
-   batch first, then enters the shared three-round repair
-   loop: dispatch one fresh narrow repair owner, rerun once on its changed tree, and continue until
-   PASS. Stop early only for genuinely missing human information/authorization or an external
-   condition no agent can change; focused diagnostics remain orchestrator-owned.
-10. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
+   The canonical heavy loop definition lives in the `review` skill. Stop on unresolved design
+   decisions and surface any genuinely undecided `manual` findings for a human.
+8. **Final local verification** — if a repair changed the tree since the first PASS, the main
+   orchestrator runs the canonical full health command exactly once on the new tree. If unchanged,
+   reuse the prior PASS. Exhaustion returns `BUDGET_EXHAUSTED`; it never rotates into a fresh repair
+   allowance.
+9. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
     the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny
     safe work). Epic-step landing remains parent-owned by the milestone/epic orchestrator.
-11. **Status update** — trust `/auto-deploy` for standalone deploy status, or set the
+10. **Status update** — trust `/auto-deploy` for standalone deploy status, or set the
     epic-step state according to ticket-lifecycle.md.
 
 ## Plan critic loop
@@ -95,8 +79,8 @@ The loop is bounded and evidence-driven:
 
 - use `execution-intensity.md` + `/ticket-plan`'s path gate for single tickets (critics are a
   `heavy` intensity step);
-- epic planning stays deep via `/epic-plan`; epic **step** tickets use at least `standard`
-  intensity and often `heavy` when safety surfaces apply;
+- epic planning stays deep via `/epic-plan`; epic **step** tickets are classified independently
+  and become `heavy` only when their own safety surfaces apply;
 - have critics check completeness, correctness, YAGNI/scope, contracts, data safety, and
   verification strategy;
 - revise once or a few bounded times until there are no unresolved critical findings;

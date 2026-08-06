@@ -109,13 +109,10 @@ available and its current branch is the branch intended for that repo's step. In
 create/reuse the step's Conductor workspace on that branch first and record its workspace id in
 the mapping.
 
-**Knowledge retrieval gate for the wave.** Before dispatching any step, run an
-`mcp__autodev-memory__search` query per repo/risk-boundary represented in the wave (schema/raw SQL,
-deploy/runtime, decrypt-proxy/tailnet/auth, encryption, external APIs, etc.) and brief the delegated
-`/ticket-flow` with the relevant entries. This is separate from `get_ticket`/`get_epic` and
-`search_tickets`: ticket artifacts explain planned work, while knowledge entries carry recurring
-gotchas that must constrain the build. If no relevant entries are found, record that in the wave
-handoff so later audits can distinguish "searched and none found" from "Codex/Grok skipped KB".
+**One retrieval owner per step.** Do not pre-run codebase, memory, or similar-ticket research for a
+wave. Pass any already-cited durable knowledge IDs from the epic packet unchanged; the compact
+delivery owner performs the one bounded lookup for its step, while the heavy path delegates it to
+`/ticket-plan`. The milestone owner reads only what it needs to sequence the DAG and gate.
 
 - independent different-repo steps may run in parallel;
 - same-repo steps default to serial unless their write scopes are demonstrably disjoint;
@@ -136,29 +133,37 @@ For each step ticket that is **not already `merged`**, run `/ticket-flow <ID> --
 `merged` (e.g. when entered via the ticket-flow hand-off). The `--epic-context` flag is required:
 it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand back into
 `/milestone-flow`. The dispatch carries the active shared-packet artifact id/version/hash rather
-than copied parent context, plus `intensity_floor: standard` (raise to `heavy` when the step
-plan/source names schema, auth, secrets, billing, deploy-config, or cross-repo contracts) per
+than copied parent context, plus `intensity_floor: none`. Epic membership is sequencing, not risk;
+raise to `heavy` only when the step plan/source names schema, auth, secrets, billing,
+deploy-config, or cross-repo contracts per
 `../references/execution-intensity.md`. Each non-skipped ticket-flow must:
 
 - load the parent epic plan and milestone contract;
 - build/review/local-verify the step;
-- persist the step's durable audit trail **on the step ticket**: the `build_todo` and `review_todo`
-  artifacts (plus a `plan` if the step needed its own). A step that lands with only a `source`
-  artifact is not auditable — later `/retrospect` / `/autodev-wtf` cannot tell what was built or
-  reviewed and wrongly reads it as "no workflow ran";
+- persist the step's durable audit trail **on the step ticket**: `plan` and `build_todo` artifacts,
+  plus `review_todo` for `standard`/`heavy`. A direct step records `review: not_required` in its
+  delivery receipt rather than manufacturing a reviewer artifact. A step that lands with only a
+  `source` artifact is not auditable;
 - land according to the milestone target;
 - set the step ticket to `merged` after a successful epic-step landing;
-- never run staging/production verification and never advance the milestone gate itself.
+- never run staging/production verification and never advance the milestone gate itself. Its
+  `fanout_budget.environment_verification_required` is `false`.
+
+After a step returns, import its latest `ticket-run-budget-v1` receipt into the durable epic
+`epic-run-budget-v1` artifact with `bin/phase-contract epic-budget`; use `reservation: null` only for
+this advancing roll-up. Persist the emitted receipt with `expected_updated_at` before dispatching
+anything else. This makes the child's internal delivery/review/repair sessions visible to the
+run-wide ledger without duplicating them.
 
 **Per-step audit gate (before §5).** After each wave, confirm via `get_ticket(detail="light",
-artifact_types=["build_todo", "review_todo"], include_events=false)` that every landed
-step ticket actually carries its `build_todo` and `review_todo` artifacts. A delegated
+artifact_types=["plan", "build_todo", "review_todo"], include_events=false)` that every landed
+step carries its plan/build todos and every non-direct step carries its review todos. A delegated
 `/ticket-flow` — especially a cross-provider (Codex/Grok) run whose MCP `create_artifact` calls
 silently no-op'd — can build, review, and land entirely in-session yet leave none of them on the
 ticket (this is exactly how E0014 M3 / F0179 landed with only `source` + `verification_evidence`).
-If any step is missing them, re-attach them from that step's build/review record before writing the
-gate package; do not mark the milestone auditably complete with steps that have no build/review
-trail.
+If any required artifact is missing, re-attach it from that step's structured delivery/review
+receipt before writing the gate package. Do not create a review artifact for a direct step solely to
+satisfy the audit.
 
 ### 5. Milestone gate package
 
@@ -217,6 +222,9 @@ Immediately after a successful deploy, run the explicit epic/milestone verifier:
 /ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote
 ```
 
+Before its fresh verifier session starts, reserve `session_role: "milestone_verifier"` and the
+current milestone id through `bin/phase-contract epic-budget`, then persist the emitted receipt.
+
 The verifier must write all required evidence destinations before the gate can advance:
 
 - canonical milestone-gate `verification_evidence` artifact on the epic;
@@ -241,18 +249,20 @@ re-run/fix the evidence write rather than marking the milestone complete.
   the exact deterministic poller command immediately to one fresh `fork_turns: "none"` leaf and
   make the parent block once for its terminal result. The parent never starts or polls a resumable
   process, polls the leaf, substitutes a CLI `--watch`, or performs repeated provider status reads.
+  This leaf is the only wait owner: the deploy owner terminates after returning the wait contract,
+  and no parent watcher, backup timer, fallback agent, or second waiter is permitted.
   After a successful predicate, start one fresh verifier agent and grade once. On timeout, persist
   the gate state and resume command and report it; never claim milestone success. Repeated `wait`,
   `write_stdin`, `wait_agent`, GitHub/Prefect/Render reads, or other model status checks are
   prohibited.
 - `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
-  Use one fresh no-history repair owner per round and persist the failure class, contract delta,
-  attempted fix, and round across rotations. Continue for up to three repair/redeploy/reverify
-  rounds — each round is a full ticket-flow plus deploy plus gate, so three failed rounds mean the
-  milestone's diagnosis is wrong, not that a fourth attempt is due.
+  Use one fresh no-history repair owner and persist the failure class, contract delta, attempted
+  fix, and round across rotations. Permit one automatic repair/redeploy/reverify cycle per
+  milestone run. A failed re-verification returns `BUDGET_EXHAUSTED`; it does not create a second
+  fix ticket or a fresh allowance.
   Stop earlier only for genuinely missing human information/authorization or an external condition
-  no agent can change; otherwise stop only if round 3 still fails.
+  no agent can change.
 
 Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
 milestone it was asked to execute.
@@ -274,6 +284,26 @@ with `max_packet_bytes: 16384` and these default hard per-generation budgets:
 
 This table is the required fixed context/token budget. An observable first compaction is an
 immediate `rotate_required` boundary.
+
+The packet references one durable epic `learning_report` titled `run-budget <activation_key>` whose
+metadata kind is `epic_run_budget`; the exact JSON body is the cumulative model-session receipt.
+Before the first wave, classify each step and derive the ceiling mechanically:
+
+```text
+delivery ceiling = 2 * direct_steps + 3 * standard_steps + 12 * heavy_steps
+milestone overhead = 6 * milestone_count
+production overhead = 3 when explicitly authorized, otherwise 0
+epic ceiling = delivery ceiling + milestone overhead + production overhead
+```
+
+The milestone overhead covers its owner, wait-if-needed, verifier, and the same roles around the one
+permitted repair gate. Before a milestone waiter leaf, verifier, or repair owner starts, call
+`bin/phase-contract epic-budget` with the corresponding `milestone_waiter`,
+`milestone_verifier`, or `milestone_repair_owner` reservation and persist the emitted artifact body
+using `expected_updated_at`. The repair reservation starts the milestone's single repair-cycle id.
+Newly attached fix tickets add their classified delivery allowance once with a named reason;
+retries, rotations, and resumed conversations add nothing. Exhaustion is terminal
+`BUDGET_EXHAUSTED`, never a reason to mint a new packet/run id.
 
 An execution wave with more than eight safe step checkpoints must be split into generations. On a
 valid `rotate_required`, persist every returned per-step completion before dispatching a fresh

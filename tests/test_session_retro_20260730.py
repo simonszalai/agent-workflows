@@ -15,6 +15,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def deterministic_run_id(contract_version: str, scope_id: str, activation_key: str) -> str:
+    material = f"{contract_version}:{scope_id}:{activation_key}".encode()
+    return hashlib.sha256(material).hexdigest()
+
+
 def run_script(
     name: str,
     *args: str,
@@ -434,6 +439,25 @@ class BoundedOwnerDispatchTest(unittest.TestCase):
                 "artifact_refs": refs,
             },
         }
+        if phase == "deployment":
+            envelope["run_budget"] = {
+                "contract_version": "ticket-run-budget-v1",
+                "ticket_id": "F0123",
+                "run_id": deterministic_run_id(
+                    "ticket-run-budget-v1", "F0123", "F0123-activation-1"
+                ),
+                "activation_key": "F0123-activation-1",
+                "intensity": "standard",
+                "budget_scope": "environment",
+                "session_id": "deployment-owner-1",
+                "session_role": "deployment_owner",
+                "max_sessions": 6,
+                "max_repair_cycles": 1,
+                "intensity_escalation_reason": None,
+                "starts_repair_cycle": False,
+                "repair_cycle_id": None,
+                "prior_receipt": None,
+            }
         path = root / "dispatch.json"
         path.write_text(json.dumps(envelope))
         return path, envelope
@@ -448,6 +472,8 @@ class BoundedOwnerDispatchTest(unittest.TestCase):
                     path, envelope = self.envelope(root, phase)
                     accepted = run_script("phase-contract", "owner-dispatch", str(path))
                     self.assertEqual(accepted.returncode, 0, accepted.stdout)
+                    if phase == "deployment":
+                        self.assertIn("run_budget_receipt", json.loads(accepted.stdout))
 
                     for field, value, expected in (
                         ("fork_mode", "all", "prohibited"),
@@ -491,6 +517,16 @@ class BoundedOwnerDispatchTest(unittest.TestCase):
             path.write_text(json.dumps(envelope))
             rejected = run_script("phase-contract", "owner-dispatch", str(path))
             self.assertIn("detail must equal light", rejected.stdout)
+
+    def test_deployment_owner_requires_environment_run_budget_reservation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, envelope = self.envelope(root, "deployment")
+            del envelope["run_budget"]
+            path.write_text(json.dumps(envelope))
+            rejected = run_script("phase-contract", "owner-dispatch", str(path))
+            self.assertEqual(rejected.returncode, 2, rejected.stdout)
+            self.assertIn("run_budget must be an object", rejected.stdout)
 
 
 class DeployReceiptPersistenceTest(unittest.TestCase):

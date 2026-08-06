@@ -50,12 +50,21 @@ Read and follow:
 - `../references/ci-self-heal.md`
 - the called skills' own boundaries
 
+Consume the ticket's persisted intensity and `ticket-run-budget-v1` receipt. If an older ticket has
+neither, classify it once from the current plan/diff and create the receipt before the first model
+dispatch. Never default an unclassified ticket to `heavy` merely to obtain the larger repair cap.
+The durable receipt is the exact ticket `learning_report` whose title is
+`run-budget <activation_key>` and metadata `kind` is `ticket_run_budget`; load/update only that
+artifact with optimistic concurrency. A local scratch copy is not resume state.
+
 ### Fresh deployment-owner boundary
 
 **Already-fresh callers skip the dispatch.** When the invoking agent is itself a fresh
 `fork_turns: "none"` agent dispatched for this ticket's deploy phase with a bounded checkpoint
 packet (the normal `/ticket-flow` §3→§4 hand-off), it **is** the deployment owner: it declares
-`mode: deployment_owner`, records that in its envelope, and continues with the process below.
+`mode: deployment_owner`, verifies that its session id is the latest persisted `deployment_owner`
+environment reservation for the active receipt, records that in its envelope, and continues with
+the process below. A missing/mismatched reservation is a hard stop, not permission to self-allocate.
 Spawning a second owner from an agent that is already fresh and bounded doubles the rollouts and
 the wait for zero isolation gain. The dispatcher path below exists for long-lived callers —
 interactive sessions and orchestrators still carrying prior-phase history.
@@ -75,11 +84,17 @@ remote mutation itself:
 4. Create a `contract_profile: "bounded-owner"` envelope with `phase_name: "deployment"`,
    `fork_mode: "none"`, `owner_role: "deployment_owner"`, `dispatch_depth: 0`,
    `redispatch_allowed: false`, and
-   `context_strategy: "light_manifest_exact_artifacts"`. Validate it before dispatch:
+   `context_strategy: "light_manifest_exact_artifacts"`. Include `run_budget` with
+   `budget_scope: "environment"`, `session_role: "deployment_owner"`, and the exact persisted prior
+   receipt inline. Validate it before dispatch:
 
    ```text
    bin/phase-contract owner-dispatch <absolute-envelope-path>
    ```
+
+   `owner-dispatch` emits the next `run_budget_receipt`. Update the durable receipt artifact using
+   `expected_updated_at` before dispatch; on a compare-and-set conflict, do not spawn from the stale
+   reservation.
 
 5. Dispatch exactly one fresh owner and block once for its terminal result:
 
@@ -97,9 +112,23 @@ An invocation already marked `mode: deployment_owner` must verify the validated 
 continue with the process below. It must never dispatch another deployment owner. This marker and
 the envelope's `redispatch_allowed: false` are the recursion guard.
 
+`owner-dispatch` is also the deployment owner's environment-budget reservation; it is not a
+substitute for later reservations. Before a fresh deterministic-waiter or verifier session, validate
+a `ticket-dispatch` envelope for `phase_name: "deploy_verify"`, the corresponding
+`session_role`, and the same inline prior receipt, then persist its emitted receipt with
+`expected_updated_at` before spawn. Before any repair owner, reserve
+`session_role: "repair_owner"` and `starts_repair_cycle: true`: code changes consume `delivery`,
+while verifier/evidence/capacity repairs consume `environment`. The original deployment owner
+is not respawned: the bounded repair owner also performs any invalidated health/deploy mechanics,
+then returns before a fresh waiter/verifier grades it. Those wait/verifier sessions consume the
+environment bucket in order. A failed launch after persistence still consumes its reservation. No
+role, rotation, retry, resumed invocation, or owner boundary bypasses this sequence.
+
 All CI and Prefect waits must use one bounded waiter process. In Conductor, dispatch only the wait
 to one fresh leaf with `fork_turns: "none"`, then block once for its terminal result. Never poll a
 resumable process session or re-sample the parent model while the external run is pending.
+The deployment owner returns the wait contract and stops watching before that leaf starts. No
+parent watcher, backup timer, fallback agent, or second waiter may observe the same condition.
 
 For each activated revision, `/ticket-verify` compiles all finalized rows into exactly one
 `bin/deploy-verify-controller` manifest. This orchestrator consumes only its terminal JSON receipt
@@ -203,42 +232,47 @@ Handle the verdict as follows:
 
 Track staging revision sequence by activation key + evidence-contract version. After two staging
 revisions for the same pair, enter stabilization mode: persist the latest failure class and exact
-contract delta before any third code mutation. Same-risk follow-ups use one delta builder and one
-delta reviewer; a newly crossed security, auth, runtime-protocol, migration, destructive-data, or
+contract delta before any third code mutation. Same-risk follow-ups use one repair owner and no
+re-review; a newly crossed security, auth, runtime-protocol, migration, destructive-data, or
 browser-patch boundary resets to the full/heavy review path with its specialist coverage. Rotation
 continues these gates from the immutable checkpoint; it never skips them.
 
 #### Staging repair/redeploy/reverify loop
 
-The deployment owner owns this loop. `/ticket-verify` diagnoses and persists truth; it never
-recursively invokes another deployment owner.
+The outer `/ticket-deploy` dispatcher owns this loop. `/ticket-verify` diagnoses and persists truth;
+it never recursively invokes another deployment owner, and a repair cycle does not spawn a second
+deployment owner.
 
 1. Persist `repair_round`, activation key, evidence-contract version, failed evidence artifact,
    investigation artifact, failure class, exact failing rows, and prior attempted fix. The initial
-   verification is round 0. Permit at most **three repair rounds**, each followed by one new
-   verification attempt. Persist the counter across rotations and resumed invocations; neither a
-   new agent nor a new `/ticket-flow` turn resets it. Three distinct fresh-owner fixes that all
-   fail verification mean the failure class is misdiagnosed or the evidence contract is wrong —
-   more rounds compound the wrong theory instead of testing a new one.
+   verification is round 0. The repair counter is shared with local build/review repair: permit
+   **one total repair round** for `direct`/`standard` and three only for explicit `heavy`, so zero
+   remain here if an ordinary local repair already consumed it. Each environment repair is followed
+   by one new verification attempt. Persist the counter and chained
+   `ticket-run-budget-v1` receipt across rotations and resumed invocations; neither a new agent nor a
+   new `/ticket-flow` turn resets it.
 2. For every agent-resolvable `FAIL` or `BLOCKED`, dispatch exactly one fresh
    `fork_turns: "none"` repair subagent with the bounded failure packet. Route by class:
-   `code_defect` through the normal delta builder, review, canonical local health gate, commit/push,
-   deploy; `verifier_defect` to the verifier owner; `environment_capacity` to the environment owner;
+   `code_defect` through the normal repair owner, canonical local health gate, commit/push, and
+   deploy (no same-risk re-review); `verifier_defect` to the verifier owner;
+   `environment_capacity` to the environment owner;
    `external_observation` to the observation/provider owner; `invalid_evidence` to the evidence-
-   contract owner; `unknown` to one fresh bounded investigator or the exact missing-evidence owner.
-   The repair owner changes only its assigned surface and never grades its own fix.
-3. Re-run every lifecycle stage invalidated by the repair. Product/config changes require review,
-   a final-tree health PASS, commit/push, and staging redeploy before verification. Verifier or
-   evidence-only repairs reuse the activated product revision only when identity proves it is still
-   current. Then invoke `/ticket-verify staging <ID> --no-promote --produce-evidence` once.
-4. On another failure, persist the delta and start the next fresh repair owner. Do not stop because
-   the failure changed shape, because several deterministic diagnostics remain, or because a phase
-   agent exhausted its own context; rotate from the durable checkpoint and continue.
-5. Stop successfully on exact `PASS`. Stop unsuccessfully only when round 3 still fails, required
-   human information/authorization is genuinely absent, or an external condition is proven
-   unchangeable by agents. `unknown` alone is not a stop: name and pursue the missing-evidence route
-   in the next round unless that evidence requires one of those genuine external inputs. Report all
-   three attempted deltas when the cap is exhausted.
+   contract owner; `unknown` to the exact missing-evidence owner when known. Only an already-`heavy`
+   run may spend one separate investigator session after the verifier's in-session diagnosis; an
+   ordinary run preserves `unknown` and stops rather than adding hidden fanout.
+   The repair owner changes only its assigned surface and may run required local health/deploy
+   mechanics, but it never produces the environment-verification verdict for its own fix.
+3. Re-run every lifecycle stage invalidated by the repair. Product/config changes reuse the prior
+   review disposition when same-risk, or run full heavy review only after a new boundary; they still
+   require a final-tree health PASS, commit/push, and staging redeploy before verification. Verifier
+   or evidence-only repairs reuse the activated product revision only when identity proves it is
+   still current. Then invoke `/ticket-verify staging <ID> --no-promote --produce-evidence` once.
+4. On another failure, persist the delta. Continue only when the selected intensity still has both
+   a repair cycle and model-session capacity. Otherwise return `BUDGET_EXHAUSTED`; context rotation
+   and a fresh user turn do not add capacity.
+5. Stop successfully on exact `PASS`. Stop unsuccessfully on budget exhaustion, genuinely absent
+   human information/authorization, or an external condition proven unchangeable by agents. Report
+   every attempted delta when the cap is exhausted.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 
@@ -322,8 +356,8 @@ investigation classifies every failed row; route on that classification:
   surface — re-finalize the `deployment_guide` contract with the recorded revision reason — then
   re-run `/ticket-verify production <ID>` against the already-live revision. No product code,
   redeploy, or environment mutation is permitted in this loop; a repair that would need any of
-  those disqualifies the path. The staging loop's three-round cap and persisted counter apply
-  (production verification failures share the same `repair_round` ledger).
+  those disqualifies the path. The selected intensity's persisted repair/session caps apply
+  (production verification failures share the same `repair_round` and run-budget receipt).
 - **Anything else** — any `code_defect`, `environment_capacity`, `external_observation`,
   `unknown`, mixed classification, or non-empty product-failure field: stop at the production
   safety boundary with the persisted remediation route.

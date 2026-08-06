@@ -1,19 +1,17 @@
 ---
 name: ticket-build
 description: >-
-  Implementation phase for one planned ticket: intensity-aware build todos, build, adaptive
-  review, resolve findings, and the local health gates. Thin orchestrator over create-build-todos,
-  build, write-tests, review, and resolve-review; does not plan, land, deploy, or verify
-  environments.
+  Implementation phase for one planned ticket: compact direct/standard delivery, full heavy
+  machinery, independent review when required, and parent-owned local health gates.
 max_turns: 100
 ---
 
 # Ticket Build
 
 Implement one ticket that already has a **plan MCP artifact**, through a locally verified tree
-with all build/review artifacts persisted. This is an orchestrator over existing phase owners
-(`/create-build-todos`, `/build`, `/write-tests`, `/review`, `/resolve-review`); it does not
-reimplement them and does not land, merge, deploy, or run environment verification — those belong
+with all required artifacts persisted. `direct`/`standard` use one compact delivery owner;
+`heavy` orchestrates `/create-build-todos`, `/build`, `/write-tests`, `/review`, and
+`/resolve-review`. It does not land, merge, deploy, or run environment verification — those belong
 to `/ticket-deploy`. Intensity (`direct` / `standard` / `heavy`) follows
 `../references/execution-intensity.md`.
 
@@ -41,29 +39,25 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
 1. **Load context once.** `get_ticket(detail="full", artifact_types=["source", "plan"],
    include_events=false)`; cache the response. Carry forward the planner's prior-knowledge blob
    into the build and review packets so builders and reviewers inherit the same knowledge without
-   re-searching. Resolve intensity from the parent packet or standalone flags/gate; epic steps
-   floor at `standard`. Record `intensity` / `intensity_reason` / `intensity_floor` on every
-   child packet.
+   re-searching. Resolve intensity from the parent packet or standalone flags/gate; epic membership
+   alone has no floor. Record `intensity` / `intensity_reason` / `intensity_floor` on every child
+   packet.
 2. **Honor dashboard review comments.** Check `open_comment_count`; if the user left open review
    comments on the plan/source, resolve them (revise via `/ticket-plan` when the plan itself must
    change) before building. Do not build past unresolved feedback. There is no `approved` status;
    leaving `planned` means setting `in_progress`.
-3. **Build todos (intensity-aware).** Always produce MCP `build_todo` artifacts (audit/resume):
-   - **`direct`:** do **not** spawn the deep build-planner. Materialize minimal todos from the
-     plan (one todo per clear plan step, or a single todo for a one-step plan): objective, files,
-     acceptance, complexity tag. Finalize `deployment_guide` only when deploy shape is
-     non-trivial; otherwise leave/skip draft with an explicit reason.
-   - **`standard`:** invoke `/create-build-todos` (normal depth); a single-step plan may yield
-     one deepened todo.
-   - **`heavy`:** invoke `/create-build-todos` with deep research.
-4. **Implement.** Invoke `/build`: partition the dependency DAG into coherent sequential builder
-   chains, checkpoint every covered todo individually, and keep unrelated lint/type fixes in a
-   separate commit. Builder-chain subagents implement only; they do not run validation.
-5. **Write tests.** On `direct`, the builder chain writes focused tests in-chain when behavior
-   changed — no separate test-writer agent. On `standard`/`heavy`, invoke `/write-tests` in
-   orchestrator mode for the whole initial change set when behavior changed. The test-writing
-   subagent writes tests but does not execute them.
-6. **Pre-review health gate (main orchestrator only).** After all initial implementation and
+3. **Deliver (intensity-aware).** Always produce MCP `build_todo` artifacts for audit/resume.
+   - **`direct` / `standard`:** dispatch exactly one fresh `fork_turns: "none"`
+     `delivery_owner`. It
+     mechanically materializes minimal todos from the approved plan, implements the whole bounded
+     change, writes focused behavior tests, may run focused tests, checkpoints each todo, and
+     returns one structured receipt. Do not invoke `/create-build-todos`, `/build`, or
+     `/write-tests`; do not split planning, implementation, and tests across agents.
+   - **`heavy`:** invoke `/create-build-todos` with deep research, `/build` over coherent
+     sequential chains, then `/write-tests` once when behavior changed. These subagents do not run
+     validation.
+   Finalize `deployment_guide` only when deploy shape is non-trivial; otherwise record the skip.
+4. **Pre-review health gate (main orchestrator only).** After all initial implementation and
    test-writing changes are present, run the canonical project health command exactly once. Record
    the PASS by `(tree SHA, exact command)`. On failure, do not repair from the bounded tail or from
    only the first failed layer. Inspect the complete `output_file` with bounded searches and build
@@ -75,52 +69,53 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    gate log, every leaf check and exit status, diagnostic categories/files, and
    `completeness: complete`; repair dispatch is forbidden while completeness is unknown.
 
-   Resolve the inventory as one batch. The orchestrator first runs the project's maintained
-   deterministic autofixes (formatter `--write`/`--fix`, lint autofix, import ordering) across the
-   whole changed surface without a subagent. If non-mechanical findings
-   remain, dispatch one repair chain with the entire remaining inventory; never dispatch or
-   validate one category, command, or file at a time. The repair builder still does not validate.
+   Resolve the inventory as one batch. Before the first changed-tree repair, reserve the shared
+   repair-cycle id in the durable ticket budget. The orchestrator first runs the project's
+   maintained deterministic autofixes (formatter `--write`/`--fix`, lint autofix, import ordering)
+   across the whole changed surface without a fresh subagent; for accounting, its current session
+   is the reserved `repair_owner`. If non-mechanical findings remain, the same reservation is handed
+   to one repair chain with the entire remaining inventory; never dispatch or validate one category,
+   command, or file at a time. The repair builder still does not validate.
    Only after the whole batch is repaired does this orchestrator rerun the canonical gate once on
    the changed tree. Diagnostics that a maintained CLI can fix never get an LLM repair owner.
-   The workflow permits at most three changed-tree whole-batch repair-and-rerun rounds total. A
-   deterministic-only batch needs no repair owner but its gate rerun still consumes one of those
-   three executions. Each later round begins with the same complete-inventory rule so only genuinely
-   new or cascading failures can appear later. Record every
-   failure-driven rerun and stop only if the third round still fails — three fresh-owner rounds
-   after a deterministic batch means the failure is not mechanical, and more rounds have
-   historically bought hours, not fixes. A repair that does not change the tree records a no-op and skips the invalid
-   duplicate gate execution before the next fresh repair owner. Stop before the cap only when the
-   repair requires genuinely missing human information/authorization or an external condition no
-   agent can change.
+   `direct`/`standard` permit one changed-tree whole-batch repair-and-rerun cycle total; `heavy`
+   permits three. Run the gate through a run-local receipt registry so rotation or resume cannot
+   renew the chosen cap:
+
+   ```bash
+   MAX_REPAIRS=1  # heavy: 3
+   bin/validation-receipt --owner orchestrator --max-repair-runs "$MAX_REPAIRS" \
+     --registry <run-dir> -- <exact command>
+   ```
+
+   A deterministic-only batch needs no fresh repair subagent, but its gate rerun consumes the same
+   durably reserved cycle. A no-op repair skips the invalid duplicate gate. When the selected cap
+   is exhausted, return `BUDGET_EXHAUSTED`. Stop earlier only when the repair requires genuinely
+   missing human information/authorization or an external condition no agent can change.
    On **`direct`**, when risk surfaces are absent, this may be the only full gate if review does
    not change the tree. Never skip health entirely.
-7. **Review and resolve.** Invoke the `/review` skill with the intensity packet (do not hand-roll
-   it): light path for `direct`/`standard` unless safety triggers upgrade; heavy when intensity
-   or the review path gate requires it. Conditionally escalate peers, synthesize once, and hand
-   actionable findings to `/resolve-review`. Resolve rounds: `direct` ≤1, `standard` ≤1,
-   `heavy` ≤2 (stop earlier when no actionable findings remain). Apply the conditional coverage
-   gate in `execution-phases.md` only when peer escalation fired. Reviewers inspect the diff and
-   recorded evidence only, and resolution builders implement only; neither runs validation. Stop
-   for unresolved design decisions. If the diff first crosses a safety floor, escalate intensity
-   for review/resolve and record the new reason.
-8. **Persistence gate (cross-provider MCP paths only).** On Codex or other cross-provider runs
+5. **Review and resolve.** `direct` has no independent review. `standard` dispatches exactly one
+   native general reviewer; `heavy` invokes `/review` and conditionally adds specialists/peers.
+   Reviewers inspect the diff and evidence only. Add accepted same-risk findings to the one ordinary
+   repair batch; do not re-review its result. A new safety boundary escalates to heavy review before
+   repair. Stop for unresolved design decisions.
+6. **Persistence gate (cross-provider MCP paths only).** On Codex or other cross-provider runs
    `create_artifact` can silently no-op, so confirm via `get_ticket(detail="light",
    artifact_types=["build_todo", "review_todo"], include_events=false)` that the ticket carries
    its `build_todo` artifacts and the `review_todo` artifacts the adaptive review wrote, and
    re-issue anything missing. On native runs, trust the `create_artifact` results — this guards a
    known transport failure, it is not a re-read of your own work. Either way, a ticket must not
    proceed to landing with only a `source` artifact (plan + build_todos required).
-9. **Final health gate (main orchestrator only).** Compare the final tree SHA to the pre-review
+7. **Final health gate (main orchestrator only).** Compare the final tree SHA to the pre-review
    PASS. If unchanged, reuse that PASS. If review resolution changed the tree, run the same
    canonical full health command exactly once on the new final tree. This makes at most two normal
    full gates: post-build/pre-review and post-resolution/final. Focused diagnostics are permitted
    only to identify a failing orchestrator gate and are keyed by `(tree SHA, exact command)`.
    A failure uses the same complete-inventory, deterministic-autofix-batch-first,
-   fresh-repair-owner, whole-batch rerun contract and three-round cap from
-   step 6; never return a resumable formatting, lint, type, test, or other deterministic failure to
-   the user merely to obtain a fresh attempt budget.
+   fresh-repair-owner, whole-batch rerun contract and intensity cap from step 4. Exhaustion is
+   `BUDGET_EXHAUSTED`; a fresh invocation does not create another attempt.
    Do not query staging/prod as verification and do not trigger flows/processes.
-10. **Push.** Before the push, run the pre-push local CI parity gate from
+8. **Push.** Before the push, run the pre-push local CI parity gate from
    `../references/ci-self-heal.md` (`bin/ci-local --run --receipt <absolute-receipt-path>` at the
    final tree, with judgment on its SKIPs), batch-repair every locally reproducible failure, and
    validate the exact-tree receipt with `bin/ci-local --require-receipt <absolute-receipt-path>` so
@@ -130,29 +125,32 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
 
 ### Phase checkpoints, rotation, and command output
 
-- Build-todo creation, implementation, test-writing, pre-review health, review, review resolution,
-  and final health are durable phase boundaries. Persist the current MCP artifacts and tree SHA at
-  each boundary, then start the next phase in a fresh `fork_turns: "none"` agent with only its
-  bounded checkpoint/packet (including intensity fields). The health phase owner is an
-  orchestrator, never a builder/reviewer/resolver subagent.
+- Compact todo creation, implementation, and focused tests are one delivery-owner session, not
+  fresh agents at internal checkpoints. Review and optional repair are separate no-history
+  sessions. Heavy subphases remain separate. Persist MCP artifacts and tree SHA at every boundary.
+  The health phase owner is the orchestrator, never a delivery/reviewer/repair subagent.
 - Apply the validated dispatch/result/rotation contract in `execution-economy.md` with
   `max_packet_bytes: 16384` and these default hard per-generation budgets:
 
   | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed |
   |---|---:|---:|---:|---:|
-  | build-todo creation | 30 | 4 | 30 min | 60,000 |
-  | implementation | 80 | 12 | 120 min | 160,000 |
-  | test-writing | 40 | 4 | 45 min | 80,000 |
+  | compact delivery owner | 40 | 12 | 60 min | 90,000 |
+  | heavy build-todo creation | 30 | 4 | 30 min | 60,000 |
+  | heavy implementation | 80 | 12 | 120 min | 160,000 |
+  | heavy test-writing | 40 | 4 | 45 min | 80,000 |
   | each health gate | 30 | 2 | 45 min | 60,000 |
   | review | 50 | 6 | 60 min | 90,000 |
   | review resolution | 50 | 8 | 60 min | 100,000 |
 
 - This table is the required fixed context/token budget. An observable first compaction is an
   immediate `rotate_required` boundary.
-- A valid `rotate_required` persists every completed todo/finding and the current tree SHA before a
-  fresh `fork_turns: "none"` replacement starts at the first incomplete unit. The old owner gets no
-  follow-up work. Preserve the coherent builder chain and orchestrator-owned validation contract:
-  rotate a chain at the next safe per-todo checkpoint; never make a builder validate or drop a gate.
+- Before every model session, reserve it against the inherited `ticket-run-budget-v1` receipt with
+  `bin/phase-contract ticket-dispatch`. Pass the exact durable `run-budget <activation_key>` artifact
+  body inline as `prior_receipt`, then update that same artifact with `expected_updated_at` before
+  spawn. A valid `rotate_required` consumes another session. If the cumulative cap is exhausted,
+  return `BUDGET_EXHAUSTED`; do not renew it. Otherwise persist every completed todo/finding and the
+  tree SHA before a fresh no-history replacement starts at the first incomplete unit. The old owner
+  gets no follow-up work. A heavy builder chain rotates only at the next safe per-todo checkpoint.
 - Tests, builds, migrations, large diffs, and other noisy commands must use `bin/compact-exec` or an
   established equally compact stricter wrapper. Full output stays in the log; the model receives
   only the bounded summary/tail. On failure, report the absolute `output_file` and exact
@@ -164,11 +162,12 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
 Ticket build complete: F0123
 Intensity: {direct|standard|heavy} ({reason}; floor={none|standard|heavy})
 Branch: {branch} (pushed)
-Build todos: {n} completed; review: {light|heavy}, {n} findings resolved
+Build todos: {n} completed; review: {none|general|heavy}, {n} findings resolved
 Pre-review health gate: PASS ({command} @ {sha})
 Final health gate: REUSED ({command} @ {sha}) | PASS ({command} @ {final sha})
 Artifacts: plan present; build_todo x{n}, review_todo x{n} persisted
 Rotations: {count}; reasons: {reason counts}; productive/stall/elapsed: {when available}
+Run budget: delivery {used}/{cap}; repair cycles {used}/{cap}
 Next: /ticket-deploy F0123 staging|prod|full
 ```
 

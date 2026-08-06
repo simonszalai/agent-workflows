@@ -9,6 +9,9 @@ max_turns: 100
 End-to-end epic execution coordinator. Use this when the user asks to run an epic, execute an
 entire epic, continue across milestones, or do it without further human intervention.
 
+The user entrypoint remains `/epic-flow`; this skill invokes the deterministic contract binaries
+itself. Do not ask the user to construct or run budget envelopes manually.
+
 ## Operating modes
 
 `/epic-flow` has three modes:
@@ -112,6 +115,54 @@ Read before acting:
   after the packet version advances or when a specifically named missing fact is required. Route a
   missing-fact request to the orchestrator for a bounded packet update; do not independently reload
   the whole epic.
+- Before the first milestone dispatch, classify every step and create one epic `learning_report`
+  titled `run-budget <activation_key>` with metadata `kind: "epic_run_budget"` and body equal to the
+  exact `epic-run-budget-v1` receipt. Derive its ceiling with
+  `bin/phase-contract epic-budget <budget.json>`: delivery is `2 * direct_steps + 3 *
+  standard_steps + 12 * heavy_steps`, milestone overhead is `6 * milestone_count`, and production
+  adds `3` only when explicitly authorized. Initial `step_addition_reasons` must cover every
+  classified step. Persist each emitted receipt with
+  `expected_updated_at` before its reserved milestone/waiter/verifier/repair/production session
+  starts. Each milestone packet references this artifact id/version/hash; it does not copy or reset
+  the ledger.
+- Import each step's latest `ticket-run-budget-v1` terminal receipt through `ticket_run_receipts`
+  after the child returns; `reservation: null` is permitted only for that advancing roll-up. New fix
+  tickets may enlarge the ceiling once through a named `step_addition_reasons` entry, and a step may
+  only raise intensity through `step_intensity_escalation_reasons`. Each
+  `step_activation_keys` value is fixed for the epic run and must match that ticket's receipt.
+  `run_id` is the deterministic SHA-256 of
+  `epic-run-budget-v1:epic_id:activation_key`; multiple active artifacts for it are a hard conflict.
+  Resume, rotation, retry, packet version, and a new milestone session never add capacity. A
+  same-activation `BUDGET_EXHAUSTED` receipt is terminal.
+
+  ```json
+  {
+    "contract_version": "epic-run-budget-v1",
+    "epic_id": "E0007",
+    "run_id": "<SHA-256 of epic-run-budget-v1:epic_id:activation_key>",
+    "activation_key": "<epic plan/step activation>",
+    "step_intensities": {"F0101": "direct", "F0102": "standard"},
+    "step_activation_keys": {"F0101": "<fixed>", "F0102": "<fixed>"},
+    "step_addition_reasons": {
+      "F0101": "planned M1 step",
+      "F0102": "planned M2 step"
+    },
+    "step_intensity_escalation_reasons": {},
+    "milestone_ids": ["M1", "M2"],
+    "production_authorized": false,
+    "production_authorization_reason": null,
+    "max_sessions": 17,
+    "ticket_run_receipts": [],
+    "reservation": {
+      "session_id": "<unique delegated session>",
+      "session_role": "milestone_owner",
+      "milestone_id": "M1",
+      "starts_repair_cycle": false,
+      "repair_cycle_id": null
+    },
+    "prior_receipt": null
+  }
+  ```
 - If the epic spans multiple repos, resolve every involved repo to an actual Conductor workspace
   path or linked directory using `conductor-multi-repo.md`. Declare a repo missing only on
   **positive evidence of absence**: check the Conductor workspace map, linked directories inside
@@ -152,6 +203,11 @@ For each milestone in dependency order:
    verifier mode. Dispatch with `fork_turns: "none"` and only the active milestone packet
    artifact id/version/hash plus the exact command and result schema. The accumulated root thread never
    performs production verification or remediation piecemeal.
+   Each milestone gets a new session even when the prior one ended cleanly and the next step uses
+   the same repo. Reserve `session_role: "milestone_owner"` against the durable epic budget before
+   dispatch. Never resume, follow up, or reuse a prior milestone owner. Consume only its compact
+   terminal receipt plus durable artifact ids, update the next packet, and dispatch a new no-history
+   owner.
 3. Accept milestone success only when `/milestone-flow` reports the selected environment `PASS`
    (staging normally, production only after the mechanical capability gate) and artifact ids
    for all required evidence destinations:
@@ -182,6 +238,11 @@ After the final milestone has a staging `PASS`:
   /ticket-promote --epic <EPIC_ID>
   /ticket-verify production --epic <EPIC_ID>
   ```
+
+Reserve each fresh production owner/waiter/verifier against the same epic receipt with
+`session_role: "production_owner"`, `production_waiter`, or `production_verifier`. The validator
+permits at most three and rejects them unless `production_authorized` was durably raised with the
+current invocation's explicit authorization reason.
 
 `/ticket-promote --epic` must promote only the verified epic step commits, in milestone
 order, using isolated worktrees and the repo's production deployment instructions. It must not
@@ -214,6 +275,10 @@ Every delegated epic/milestone call uses `fork_turns: "none"` and the shared pac
 history fork is allowed only when a self-contained packet is genuinely impossible: record the
 reason before dispatch and use the smallest explicit numeric count of recent turns. Never use an
 all-history fork.
+
+The root carries only durable receipts across milestone boundaries. Child commentary, tool logs,
+watcher state, and conversation history are not copied into the next packet. This makes the fresh
+session boundary effective rather than nominal.
 
 ## Phase checkpoints and rotation
 
@@ -249,8 +314,8 @@ Any production or epic remediation that changes code/config/auth becomes a new f
 step attached to the failed milestone. It must pass normal build, review, landing, config/secret
 ownership, deploy, and re-verification stages. Never finish through ticketless `/go-fable`, an
 untracked auxiliary branch, or a detached verifier implementation. Child step tickets receive
-`intensity_floor: standard` (or higher when the step plan names a safety surface) per
-`../references/execution-intensity.md`.
+`intensity_floor: none`; epic membership alone is not a risk signal. Raise to `heavy` only when the
+step itself names a safety surface per `../references/execution-intensity.md`.
 
 ## Output
 

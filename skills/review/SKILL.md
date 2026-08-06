@@ -308,10 +308,11 @@ escalation trigger in the ticket phase's mechanically validated `fanout_budget`;
 availability or curiosity is not a trigger. A second (maximum third on heavy scope) wave is allowed
 only when an independent peer materially disagreed, not merely to re-confirm fixes.
 
-A same-risk follow-up revision uses one delta builder and one delta reviewer over the prior
-reviewed tree. If the delta first crosses security, auth, runtime-protocol, migration,
-destructive-data, or browser-patch risk, reset to the full/heavy path and retain the matching
-specialist coverage. Never label a new boundary "delta" to save fanout.
+A same-risk follow-up revision uses one repair owner and reuses the prior review disposition; it
+does not dispatch a reviewer solely to re-confirm the fix. The parent still runs final-tree health.
+If the delta first crosses security, auth, runtime-protocol, migration, destructive-data, or
+browser-patch risk, reset to the full/heavy path and retain the matching specialist coverage. Never
+label a new boundary "delta" to save fanout.
 
 Reviewers never rerun validation; they review the bounded diff and recorded orchestrator evidence
 only. Resolution builders also do not validate. After all fixes, the main orchestrator reuses an
