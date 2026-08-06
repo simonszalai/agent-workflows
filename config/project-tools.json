@@ -47,7 +47,8 @@
         "github.com/simonszalai/autodev-memory"
       ],
       "service_account": {
-        "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN"
+        "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN",
+        "keychain_item": "op-autodev-token"
       },
       "render": {
         "api_key_ref": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
@@ -108,7 +109,8 @@
         "github.com/szaboszerszam/workflow_pro"
       ],
       "service_account": {
-        "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN"
+        "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
+        "keychain_item": "op-workflow-pro-token"
       },
       "render": {
         "api_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
