@@ -64,7 +64,7 @@ EXPECTED_RENDER_REFS = {
     "amaru": "op://AMARU/AMARU_RENDER_API_KEY/value",
     "autodev": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
     "ts": "op://TS/TS_RENDER_API_KEY/value",
-    "workflow-pro": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
+    "workflow-pro": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
 }
 
 EXPECTED_POSTGRES_REFS = {

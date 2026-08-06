@@ -108,7 +108,7 @@
         "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN"
       },
       "render": {
-        "api_key_ref": "op://WORKFLOW_PRO-sensitive/WORKFLOW_RENDER_API_KEY/value",
+        "api_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
         "workspace": {
           "discover_service_names": [
             "gmail-rfq-sync",
