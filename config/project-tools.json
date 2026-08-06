@@ -30,6 +30,9 @@
           },
           "staging": {
             "dsn_ref": "op://AMARU/STAGING_POSTGRES_URL/value"
+          },
+          "prod": {
+            "dsn_ref": "op://AMARU/PROD_POSTGRES_URL_RO/value"
           }
         }
       },

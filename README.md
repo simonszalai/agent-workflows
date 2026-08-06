@@ -110,8 +110,8 @@ closed. See `skills/tool-render/SKILL.md`.
 
 `psql-cli` resolves the project by exact origin and exposes only explicitly configured tiers.
 `psql-cli context [tier]` performs a credential-free selection check. Query execution accepts
-only one read-only SQL statement, injects the configured DSN only as `PGDATABASE`, strips
-1Password credentials from the `psql` child, enforces a read-only transaction/session timeout,
+only one read-only SQL statement, parses the configured URI into dedicated libpq `PG*` variables,
+strips 1Password credentials from the `psql` child, enforces a read-only transaction/session timeout,
 and caps output. There is no default/fuzzy tier, sensitive-reference route, or mutation mode.
 Projects without a PostgreSQL profile, and tiers absent from a profile, fail closed.
 

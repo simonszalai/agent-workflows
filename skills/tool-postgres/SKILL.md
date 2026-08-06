@@ -31,9 +31,9 @@ fails closed. For deliberate work outside the registered repository, both `--pro
 `--allow-cross-project` are required.
 
 Credentials resolve lazily through the selected project's service-account environment/Keychain
-profile and the audited `bin/op` shim. The DSN is injected only as `PGDATABASE` into `psql`; it is
-never put in argv, a file, or logs. Output defaults to a 50 KiB cap and carries an explicit
-`TRUNCATED` marker. Add a tighter `LIMIT`; do not rerun an unbounded query.
+profile and the audited `bin/op` shim. The URI is parsed into dedicated libpq `PG*` environment
+variables for `psql`; it is never put in argv, a file, or logs. Output defaults to a 50 KiB cap
+and carries an explicit `TRUNCATED` marker. Add a tighter `LIMIT`; do not rerun an unbounded query.
 
 If `psql` is missing, install the PostgreSQL client (`brew install libpq` on macOS or the
 platform's PostgreSQL client package on Linux).
