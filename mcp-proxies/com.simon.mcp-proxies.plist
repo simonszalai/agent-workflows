@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Loopback MCP auth proxies (render 8789, tailscale 8790, autodev-memory 8792).
+<!-- Loopback MCP auth proxies (project-routed autodev-memory 8792, context7 8793).
      Install: cp to ~/Library/LaunchAgents/ then
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.simon.mcp-proxies.plist
-     Unlike the mcp-gateway plist, retrying is FREE here — credentials come from the
-     Keychain service-account token, never Touch ID — so StartInterval re-runs the
+     Unlike the retired mcp-gateway plist, retrying is FREE here: credentials come from
+     project-specific Keychain service-account tokens, never Touch ID. StartInterval re-runs the
      idempotent `ensure` every 5 minutes as a self-heal (a healthy listener is left
      alone; a dead one is restarted). -->
 <plist version="1.0">

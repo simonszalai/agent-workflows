@@ -108,7 +108,7 @@ def selection_for_agent(cwd: Path, agent_type: str) -> tuple[list[str], list[str
     return list(dict.fromkeys(tags)), list(dict.fromkeys(types))
 
 
-def load_api_config() -> tuple[str, str]:
+def load_api_config(project: str) -> tuple[str, str]:
     values: dict[str, str] = {}
     env_file = Path.home() / ".config" / "autodev-memory" / ".env"
     try:
@@ -124,24 +124,29 @@ def load_api_config() -> tuple[str, str]:
         key, value = line.split("=", 1)
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key.strip()):
             values[key.strip()] = value.strip().strip("\"'")
+    if os.environ.get("CONDUCTOR_IS_LOCAL") in {"0", "1"} and project:
+        route = "workflow-pro" if project == "workflow_pro" else project
+        return f"http://127.0.0.1:8792/{route}", ""
     url = os.environ.get("AUTODEV_MEMORY_API_URL", values.get("AUTODEV_MEMORY_API_URL", ""))
     token = os.environ.get("AUTODEV_MEMORY_API_TOKEN", values.get("AUTODEV_MEMORY_API_TOKEN", ""))
     return url.rstrip("/"), token
 
 
 def _post(path: str, body: dict[str, Any], *, repo: str, timeout: float = 10) -> dict[str, Any]:
-    url, token = load_api_config()
-    if not url or not token:
+    url, token = load_api_config(str(body.get("project", "")))
+    if not url:
         raise RuntimeError("configuration_unavailable")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Hook-Source": "managed-task-packet",
+        "X-Repo": repo,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         url + path,
         data=json.dumps(body).encode(),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "X-Hook-Source": "managed-task-packet",
-            "X-Repo": repo,
-        },
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:

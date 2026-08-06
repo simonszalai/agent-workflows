@@ -17,7 +17,7 @@ from memory_context import (  # noqa: E402
     PacketError, _append_telemetry, invalidate_cache, parse_session_response, read_cache,
     render_parent_context, render_task_packet, write_cache,
 )
-from task_packet import retrieve_task_context, selection_for_agent  # noqa: E402
+from task_packet import load_api_config, retrieve_task_context, selection_for_agent  # noqa: E402
 
 
 def response(text: str = "critical rule", child: str = "child rule") -> dict[str, object]:
@@ -40,6 +40,21 @@ def response(text: str = "critical rule", child: str = "child rule") -> dict[str
 
 
 class MemoryContextTest(unittest.TestCase):
+    def test_task_packet_uses_same_project_route_in_conductor(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CONDUCTOR_IS_LOCAL": "0",
+                "AUTODEV_MEMORY_API_URL": "https://wrong.invalid",
+                "AUTODEV_MEMORY_API_TOKEN": "wrong-token",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                load_api_config("workflow_pro"),
+                ("http://127.0.0.1:8792/workflow-pro", ""),
+            )
+
     def test_canonical_producer_fixture_is_consumed(self) -> None:
         fixture = json.loads((ROOT / "tests/fixtures/session-packet-v2.json").read_text())
         packet = parse_session_response(fixture)

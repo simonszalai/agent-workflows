@@ -75,19 +75,38 @@ variant, not a fourth provider.
 
 ### MCP access — two loopback proxies + CLI wrappers (2026-07-28 consolidation)
 
-Only two shared development MCP servers exist: **autodev-memory** (`127.0.0.1:8792`) and
-**context7** (`127.0.0.1:8793`). Each is a single-upstream loopback auth proxy
-(`mcp-proxies/mcp-proxy.mjs`) started under `op run` with the Keychain
-TS service-account token (`op-ts-token`) — silent, no biometric prompts; credentials
-live only in the proxy's process memory. Repos check in static-URL project configs
-(`.mcp.json`, `.codex/config.toml`, `.grok/config.toml`); clients hold no secrets
-and there is no user-scope MCP config. Install once per machine:
+Only two shared development proxy processes exist: **autodev-memory**
+(`127.0.0.1:8792/<project>/*`) and **context7** (`127.0.0.1:8793`). AutoDEV's one process
+routes the checked-in project prefixes `amaru`, `autodev`, `ts`, and `workflow-pro` to
+separate project-restricted bearers. The upstream service pins every tool/REST request to
+the selected bearer, so a model-supplied wrong project argument cannot cross the route.
+There is no default route.
+
+Both processes use `mcp-proxies/mcp-proxy.mjs` and resolve their values-free env files once
+at startup. Each AutoDEV bearer is read with its own project's Keychain service-account token;
+Context7 uses `op-ts-token`. The launcher then replaces itself with Node, so only two proxy
+processes remain. Bearers remain only in process memory and no 1Password call occurs per MCP request. Repos check in
+static project URLs in `.mcp.json`, `.codex/config.toml`, and `.grok/config.toml`; clients
+hold no secrets and there is no user-scope MCP config. Install once per machine:
 
 ```bash
 cp ~/dev/agent-workflows/mcp-proxies/com.simon.mcp-proxies.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.simon.mcp-proxies.plist
-~/dev/agent-workflows/mcp-proxies/start-proxies.sh status   # both healthy
+~/dev/agent-workflows/mcp-proxies/start-proxies.sh status   # routes pinned + context7 healthy
 ```
+
+AutoDEV route URLs use the project registry identity, for example
+`http://127.0.0.1:8792/amaru/mcp`; REST hooks use the same prefix, for example the
+base URL `http://127.0.0.1:8792/amaru`. The explicit route is the client-side identity;
+the restricted bearer is the server-side enforcement. Adding a project requires both a
+route entry and a server-recognized restricted bearer, followed by the identity canary in
+`start-proxies.sh status`.
+
+Conductor cloud workspaces run `mcp-proxies/start-cloud-proxies.sh`. It resolves the exact
+Git origin through `config/project-tools.json`, reads only that project's restricted bearer,
+and starts a fixed-prefix AutoDEV proxy on the same port. The script also starts Context7,
+using an injected key when one exists and its documented lower unauthenticated rate limit
+otherwise. Cloud and Mac client files therefore use identical loopback URLs.
 
 Everything else is a **CLI via the shell**, with the same silent per-call credential
 resolution (see the matching `skills/tool-*` references):

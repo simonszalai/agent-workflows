@@ -138,9 +138,19 @@ _mem_parse_env() {
     fi
   fi
 
-  MEM_URL="${AUTODEV_MEMORY_API_URL:-http://localhost:8475}"
-  MEM_TOKEN="${AUTODEV_MEMORY_API_TOKEN:-}"
-  if [[ -z "$MEM_TOKEN" ]]; then
+  # Conductor local and cloud workspaces use the same project-routed loopback proxy.
+  # The checked-in project marker selects the URL; the proxy supplies a restricted
+  # bearer and the server pins all tool/REST project fields to that identity.
+  if [[ "${CONDUCTOR_IS_LOCAL:-}" == "0" || "${CONDUCTOR_IS_LOCAL:-}" == "1" ]]; then
+    local mem_route="$MEM_PROJECT"
+    [[ "$mem_route" == "workflow_pro" ]] && mem_route="workflow-pro"
+    MEM_URL="http://127.0.0.1:8792/${mem_route}"
+    MEM_TOKEN=""
+  else
+    MEM_URL="${AUTODEV_MEMORY_API_URL:-http://localhost:8475}"
+    MEM_TOKEN="${AUTODEV_MEMORY_API_TOKEN:-}"
+  fi
+  if [[ -z "$MEM_TOKEN" && "$MEM_URL" != http://127.0.0.1:8792/* ]]; then
     echo "HOOK ERROR [mem-lib]: AUTODEV_MEMORY_API_TOKEN not set" >&2
     return 1
   fi
@@ -244,7 +254,6 @@ mem_curl() {
     -sS
     --max-time 30
     -w '\n%{http_code}'
-    -H "Authorization: Bearer $MEM_TOKEN"
     -H "X-Hook-Source: $hook_source"
     -H "X-Session-Id: ${MEM_SESSION_ID:-}"
     -H "X-Claude-Session-Id: ${MEM_CLAUDE_SESSION_ID:-}"
@@ -256,6 +265,10 @@ mem_curl() {
     -H "X-Workspace: ${CONDUCTOR_WORKSPACE_NAME:-}"
     -H "X-Conductor-Root: ${CONDUCTOR_ROOT_PATH:-}"
   )
+
+  if [[ -n "$MEM_TOKEN" ]]; then
+    curl_args+=(-H "Authorization: Bearer $MEM_TOKEN")
+  fi
 
   if [[ "$method" == "POST" ]]; then
     curl_args+=(-X POST -H "Content-Type: application/json" -d "$body")

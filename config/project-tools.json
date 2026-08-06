@@ -14,6 +14,10 @@
         "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-amaru-token"
       },
+      "autodev_memory": {
+        "route": "amaru",
+        "token_ref": "op://AMARU/AMARU_AUTODEV_MEMORY_API_TOKEN/value"
+      },
       "render": {
         "api_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
         "workspace": {
@@ -50,6 +54,10 @@
         "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-autodev-token"
       },
+      "autodev_memory": {
+        "route": "autodev",
+        "token_ref": "op://AUTODEV/AUTODEV_AUTODEV_MEMORY_API_TOKEN/value"
+      },
       "render": {
         "api_key_ref": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
         "workspace": {
@@ -73,6 +81,10 @@
       "service_account": {
         "token_env": "TS_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-ts-token"
+      },
+      "autodev_memory": {
+        "route": "ts",
+        "token_ref": "op://TS/TS_AUTODEV_MEMORY_API_TOKEN/value"
       },
       "render": {
         "api_key_ref": "op://TS/TS_RENDER_API_KEY/value",
@@ -111,6 +123,10 @@
       "service_account": {
         "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-workflow-pro-token"
+      },
+      "autodev_memory": {
+        "route": "workflow-pro",
+        "token_ref": "op://WORKFLOW_PRO/WORKFLOW_PRO_AUTODEV_MEMORY_API_TOKEN/value"
       },
       "render": {
         "api_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
