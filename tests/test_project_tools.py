@@ -56,8 +56,10 @@ EXPECTED_SERVICE_ACCOUNT_TOKEN_ENVS = {
 }
 
 EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS = {
-    "amaru": "op-dev-token",
-    "ts": "op-dev-token",
+    "amaru": "op-amaru-token",
+    "autodev": "op-autodev-token",
+    "ts": "op-ts-token",
+    "workflow-pro": "op-workflow-pro-token",
 }
 
 EXPECTED_RENDER_REFS = {

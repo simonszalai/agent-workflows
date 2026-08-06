@@ -12,7 +12,7 @@
       ],
       "service_account": {
         "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-dev-token"
+        "keychain_item": "op-amaru-token"
       },
       "render": {
         "api_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
@@ -44,7 +44,8 @@
         "github.com/simonszalai/autodev-memory"
       ],
       "service_account": {
-        "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN"
+        "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN",
+        "keychain_item": "op-autodev-token"
       },
       "render": {
         "api_key_ref": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
@@ -68,7 +69,7 @@
       ],
       "service_account": {
         "token_env": "TS_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-dev-token"
+        "keychain_item": "op-ts-token"
       },
       "render": {
         "api_key_ref": "op://TS/TS_RENDER_API_KEY/value",
@@ -105,7 +106,8 @@
         "github.com/szaboszerszam/workflow_pro"
       ],
       "service_account": {
-        "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN"
+        "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
+        "keychain_item": "op-workflow-pro-token"
       },
       "render": {
         "api_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",

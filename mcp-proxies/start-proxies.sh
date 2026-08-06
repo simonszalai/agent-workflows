@@ -10,7 +10,7 @@
 # bin/slack-api, and bin/psql-cli (see skills/tool-*).
 #
 # Credentials: resolved per proxy via `op run --env-file=proxies.env`, authenticated
-# by the Keychain service-account token (op-dev-token) — silent, no Touch ID. Keys
+# by the TS Keychain service-account token (op-ts-token) — silent, no Touch ID. Keys
 # live only in each proxy's process memory; the clients hold nothing.
 #
 # Runs under launchd (com.simon.mcp-proxies.plist: RunAtLoad + StartInterval
@@ -44,8 +44,8 @@ listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 sa_token() {
   local tok="${OP_SERVICE_ACCOUNT_TOKEN:-}"
-  [ -n "$tok" ] || tok="$(security find-generic-password -s op-dev-token -a simon -w 2>/dev/null || true)"
-  [ -n "$tok" ] || { log "ERROR: no service-account token (Keychain op-dev-token)"; return 1; }
+  [ -n "$tok" ] || tok="$(security find-generic-password -s op-ts-token -a simon -w 2>/dev/null || true)"
+  [ -n "$tok" ] || { log "ERROR: no service-account token (Keychain op-ts-token)"; return 1; }
   printf '%s' "$tok"
 }
 
