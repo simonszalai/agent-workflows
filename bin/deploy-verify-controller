@@ -418,6 +418,64 @@ def run_logged(
     return exit_code, timed_out, observed, metadata
 
 
+def attest_source_tree(manifest: dict) -> dict:
+    """Prove the command working tree is the clean tree of the target revision."""
+    working_directory = manifest["_working_directory"]
+    log_dir = manifest["_log_dir"]
+    checks = (
+        ("repository_root", ["git", "rev-parse", "--show-toplevel"]),
+        ("head", ["git", "rev-parse", "--verify", "HEAD^{commit}"]),
+        ("tree", ["git", "rev-parse", "--verify", "HEAD^{tree}"]),
+        (
+            "status",
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        ),
+    )
+    observed: dict[str, str] = {}
+    logs: dict[str, dict] = {}
+    for name, command in checks:
+        path = log_dir / f"source-{name}.log"
+        exit_code, timed_out, value, metadata = run_logged(
+            command, path, 10, working_directory
+        )
+        logs[name] = metadata
+        if timed_out or exit_code != 0:
+            raise ContractError(
+                f"working_directory source identity {name} check failed"
+            )
+        observed[name] = value
+
+    try:
+        repository_root = Path(observed["repository_root"]).resolve(strict=True)
+        exact_working_directory = working_directory.resolve(strict=True)
+    except OSError as exc:
+        raise ContractError(
+            f"cannot resolve working_directory source identity: {exc}"
+        ) from exc
+    if repository_root != exact_working_directory:
+        raise ContractError("working_directory must be the Git worktree root")
+    if observed["head"] != manifest["revision"]:
+        raise ContractError(
+            "working_directory HEAD does not equal the manifest revision"
+        )
+    if observed["status"]:
+        raise ContractError(
+            "working_directory has tracked or untracked source-tree changes"
+        )
+    return {
+        "repository_root": str(repository_root),
+        "head": observed["head"],
+        "tree": observed["tree"],
+        "clean": True,
+        "logs": logs,
+    }
+
+
+def source_identity_matches(left: dict, right: dict) -> bool:
+    fields = ("repository_root", "head", "tree", "clean")
+    return all(left.get(field) == right.get(field) for field in fields)
+
+
 def receipt_base(manifest: dict, state: dict) -> dict:
     return {
         "schema_version": 2,
@@ -428,6 +486,7 @@ def receipt_base(manifest: dict, state: dict) -> dict:
         "contract_version": manifest["contract_version"],
         "staging_revision": manifest["staging_revision"],
         "working_directory": str(manifest["_working_directory"]),
+        "source_identity": state.get("source_identity"),
         "manifest_sha256": state["manifest_sha256"],
         "state_path": str(manifest["_state_path"]),
         "receipt_path": str(manifest["_receipt_path"]),
@@ -566,7 +625,20 @@ def execute(manifest: dict, manifest_path: Path, *, resume: bool) -> tuple[dict,
                 "next_row_index": 0,
                 "rows": [],
             }
-            atomic_write(state_path, state)
+
+        source_identity = attest_source_tree(manifest)
+        prior_source_identity = state.get("source_identity")
+        if prior_source_identity is None and state["rows"]:
+            raise ContractError(
+                "existing state with executed rows predates source identity attestation"
+            )
+        if prior_source_identity is not None:
+            if not source_identity_matches(prior_source_identity, source_identity):
+                raise ContractError(
+                    "working_directory source identity changed before resume"
+                )
+        state["source_identity"] = source_identity
+        atomic_write(state_path, state)
 
         deadline = time.monotonic() + manifest["overall_timeout_seconds"]
         if "pre_identity" not in state:
@@ -575,6 +647,14 @@ def execute(manifest: dict, manifest_path: Path, *, resume: bool) -> tuple[dict,
                 return timeout, 4
             state["pre_identity"] = observed
             atomic_write(state_path, state)
+
+        row_source_identity = attest_source_tree(manifest)
+        if not source_identity_matches(state["source_identity"], row_source_identity):
+            raise ContractError(
+                "working_directory source identity changed before command rows"
+            )
+        state["source_identity"] = row_source_identity
+        atomic_write(state_path, state)
 
         prior_by_id = {row["id"]: row for row in state["rows"]}
         for index in range(state["next_row_index"], len(manifest["rows"])):

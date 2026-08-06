@@ -429,7 +429,9 @@ row. It records:
   class and contract delta.
 
 Run the controller as one blocking foreground call. It deterministically waits for the exact
-revision, attests runtime identity, executes the rows in manifest order, refuses unsupported
+revision, first requires the working directory to be the clean Git worktree root at that exact
+HEAD and records its commit/tree identity, attests runtime identity, executes the rows in manifest
+order, refuses unsupported
 surfaces, stops high-N work after a failed canary, reattests identity, persists full logs/state,
 and emits one compact terminal JSON receipt. The model consumes only that terminal receipt or one
 bounded `timeout` with its exact `resume_command`; it never drives row/status polling. In

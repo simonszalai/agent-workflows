@@ -35,10 +35,37 @@ def reference(path: Path) -> dict[str, str]:
     }
 
 
+def initialize_git_worktree(root: Path) -> tuple[Path, str]:
+    repo = root / "repo"
+    if not repo.exists():
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Contract Test"],
+            check=True,
+        )
+        (repo / "source.txt").write_text("revision-bound source\n")
+        subprocess.run(["git", "-C", str(repo), "add", "source.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True
+        )
+    revision = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repo, revision
+
+
 class DeployVerifyControllerTest(unittest.TestCase):
     def manifest(self, root: Path) -> dict:
         root.mkdir(parents=True, exist_ok=True)
-        revision = "a" * 40
+        working_directory, revision = initialize_git_worktree(root)
         return {
             "schema_version": 2,
             "run_id": "ticket-rev-1",
@@ -54,7 +81,7 @@ class DeployVerifyControllerTest(unittest.TestCase):
             "environment": "staging",
             "activation_key": "ticket-activation",
             "contract_version": "guide-v1",
-            "working_directory": str(root),
+            "working_directory": str(working_directory),
             "staging_revision": 1,
             "prior_staging_revisions": [],
             "state_path": str(root / "state.json"),
@@ -126,13 +153,16 @@ class DeployVerifyControllerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manifest_path = root / "manifest.json"
-            manifest_path.write_text(json.dumps(self.manifest(root)))
+            manifest = self.manifest(root)
+            manifest_path.write_text(json.dumps(manifest))
             completed = run_script("deploy-verify-controller", str(manifest_path))
             self.assertEqual(completed.returncode, 0, completed.stdout)
             receipt = json.loads(completed.stdout)
             self.assertEqual(receipt["verdict"], "PASS")
             self.assertTrue(receipt["ship_gate_passed"])
             self.assertEqual(receipt["observation_failures"], 1)
+            self.assertEqual(receipt["source_identity"]["head"], manifest["revision"])
+            self.assertTrue(receipt["source_identity"]["clean"])
             telemetry = next(row for row in receipt["rows"] if row["id"] == "telemetry")
             self.assertEqual(telemetry["next_owner"], "observation_owner")
             self.assertTrue(Path(telemetry["log_file"]).is_file())
@@ -149,6 +179,53 @@ class DeployVerifyControllerTest(unittest.TestCase):
             rejected = run_script("deploy-verify-controller", str(manifest_path))
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("manifest changed", rejected.stdout)
+
+    def test_source_revision_mismatch_fails_before_any_command_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "row-ran"
+            manifest = self.manifest(root)
+            mismatched_revision = "b" * 40
+            manifest["revision"] = mismatched_revision
+            manifest["runtime_identity"]["expected"] = mismatched_revision
+            manifest["runtime_identity"]["command"] = [
+                sys.executable,
+                "-c",
+                f"print({mismatched_revision!r})",
+            ]
+            manifest["rows"][0]["command"] = [
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            ]
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+
+            completed = run_script("deploy-verify-controller", str(manifest_path))
+
+            self.assertEqual(completed.returncode, 2, completed.stdout)
+            self.assertIn("HEAD does not equal", completed.stdout)
+            self.assertFalse(marker.exists())
+
+    def test_dirty_source_tree_fails_even_when_head_matches_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "row-ran"
+            manifest = self.manifest(root)
+            Path(manifest["working_directory"], "source.txt").write_text("changed\n")
+            manifest["rows"][0]["command"] = [
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            ]
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+
+            completed = run_script("deploy-verify-controller", str(manifest_path))
+
+            self.assertEqual(completed.returncode, 2, completed.stdout)
+            self.assertIn("source-tree changes", completed.stdout)
+            self.assertFalse(marker.exists())
 
     def test_manifest_fails_closed_for_statistics_stabilization_and_surfaces(self) -> None:
         mutations = []
