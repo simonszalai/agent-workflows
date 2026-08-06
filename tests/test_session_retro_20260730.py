@@ -36,6 +36,33 @@ def reference(path: Path) -> dict[str, str]:
     }
 
 
+def initialize_git_worktree(root: Path) -> tuple[Path, str]:
+    repo = root / "repo"
+    if not repo.exists():
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Contract Test"],
+            check=True,
+        )
+        (repo / "source.txt").write_text("revision-bound source\n")
+        subprocess.run(["git", "-C", str(repo), "add", "source.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True
+        )
+    revision = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return repo, revision
+
+
 class PollAttributionTest(unittest.TestCase):
     def write_session(self, path: Path, records: list[dict]) -> None:
         values = [{"type": "session_meta", "payload": {"id": "root"}}, *records]
@@ -468,7 +495,7 @@ class BoundedOwnerDispatchTest(unittest.TestCase):
 
 class DeployReceiptPersistenceTest(unittest.TestCase):
     def manifest(self, root: Path, *, fails: bool = False) -> dict:
-        revision = "a" * 40
+        working_directory, revision = initialize_git_worktree(root)
         return {
             "schema_version": 2,
             "run_id": "run-1",
@@ -484,7 +511,7 @@ class DeployReceiptPersistenceTest(unittest.TestCase):
             "environment": "staging",
             "activation_key": "activation",
             "contract_version": "v1",
-            "working_directory": str(root),
+            "working_directory": str(working_directory),
             "staging_revision": 1,
             "prior_staging_revisions": [],
             "state_path": str(root / "state.json"),
