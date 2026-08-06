@@ -219,6 +219,53 @@ dsn="$(OP_SERVICE_ACCOUNT_TOKEN="$sa_token" "$OP_WRAPPER" read --no-newline "$ds
 unset sa_token
 [[ -n "$dsn" ]] || fail "1Password returned an empty PostgreSQL credential for $project/$tier" 3
 
+# Split URI credentials into libpq's dedicated environment variables. Some
+# client builds treat a URI in PGDATABASE as a literal database name, which can
+# echo the full credential on connection failure.
+connection_json="$(POSTGRES_DSN="$dsn" python3 - <<'PY'
+import json
+import os
+import sys
+from urllib.parse import parse_qs, unquote, urlsplit
+
+raw = os.environ["POSTGRES_DSN"]
+if not raw.startswith(("postgres://", "postgresql://")):
+    print("psql-cli: PostgreSQL credential must be a postgres:// or postgresql:// URI", file=sys.stderr)
+    raise SystemExit(2)
+uri = urlsplit(raw)
+query = parse_qs(uri.query, keep_blank_values=True)
+allowed_params = {"application_name", "options", "sslmode", "sslrootcert", "target_session_attrs"}
+unknown = sorted(set(query) - allowed_params)
+if unknown:
+    print("psql-cli: unsupported PostgreSQL URI option(s): " + ", ".join(unknown), file=sys.stderr)
+    raise SystemExit(2)
+if not uri.hostname or not uri.path.lstrip("/") or uri.username is None:
+    print("psql-cli: PostgreSQL URI is missing host, database, or user", file=sys.stderr)
+    raise SystemExit(2)
+print(json.dumps({
+    "host": uri.hostname, "port": str(uri.port or 5432),
+    "database": uri.path.lstrip("/"), "user": unquote(uri.username),
+    "password": unquote(uri.password or ""),
+    "sslmode": query.get("sslmode", [""])[0],
+    "sslrootcert": query.get("sslrootcert", [""])[0],
+    "target_session_attrs": query.get("target_session_attrs", [""])[0],
+    "application_name": query.get("application_name", [""])[0],
+    "options": query.get("options", [""])[0],
+}))
+PY
+)" || fail "could not safely parse PostgreSQL credential for $project/$tier" 3
+pg_host="$(jq -er '.host' <<<"$connection_json")"
+pg_port="$(jq -er '.port' <<<"$connection_json")"
+pg_database="$(jq -er '.database' <<<"$connection_json")"
+pg_user="$(jq -er '.user' <<<"$connection_json")"
+pg_password="$(jq -er '.password' <<<"$connection_json")"
+pg_sslmode="$(jq -r '.sslmode' <<<"$connection_json")"
+pg_sslrootcert="$(jq -r '.sslrootcert' <<<"$connection_json")"
+pg_target_session_attrs="$(jq -r '.target_session_attrs' <<<"$connection_json")"
+pg_application_name="$(jq -r '.application_name' <<<"$connection_json")"
+pg_uri_options="$(jq -r '.options' <<<"$connection_json")"
+unset dsn connection_json
+
 output_file=""
 marker_file=""
 cleanup() {
@@ -233,8 +280,9 @@ output_file="$(mktemp "${TMPDIR:-/tmp}/psql-cli-output.XXXXXX")"
 marker_file="$(mktemp "${TMPDIR:-/tmp}/psql-cli-marker.XXXXXX")"
 chmod 600 "$output_file" "$marker_file"
 
-# Defense in depth: psql receives the DSN only in PGDATABASE, no 1Password credentials,
-# a read-only session default, and an explicit read-only transaction in this same session.
+# Defense in depth: psql receives only parsed libpq connection variables, no
+# 1Password credentials, a read-only session default, and an explicit read-only
+# transaction in this same session.
 for variable_name in $(compgen -v); do
   case "$variable_name" in
     OP_SERVICE_ACCOUNT_TOKEN|OP_CONNECT_HOST|OP_CONNECT_TOKEN|OP_SESSION_*|*_OP_SERVICE_ACCOUNT_TOKEN)
@@ -246,9 +294,16 @@ session_sql="BEGIN READ ONLY;
 $query;
 COMMIT;"
 
+unset PGSSLMODE PGSSLROOTCERT PGTARGETSESSIONATTRS PGAPPNAME
+[[ -z "$pg_sslmode" ]] || export PGSSLMODE="$pg_sslmode"
+[[ -z "$pg_sslrootcert" ]] || export PGSSLROOTCERT="$pg_sslrootcert"
+[[ -z "$pg_target_session_attrs" ]] || export PGTARGETSESSIONATTRS="$pg_target_session_attrs"
+[[ -z "$pg_application_name" ]] || export PGAPPNAME="$pg_application_name"
+
 set +e
-PGDATABASE="$dsn" \
-PGOPTIONS='-c statement_timeout=30000 -c default_transaction_read_only=on' \
+PGHOST="$pg_host" PGPORT="$pg_port" PGDATABASE="$pg_database" \
+PGUSER="$pg_user" PGPASSWORD="$pg_password" \
+PGOPTIONS="${pg_uri_options:+$pg_uri_options }-c statement_timeout=30000 -c default_transaction_read_only=on" \
 PGCONNECT_TIMEOUT=15 \
   "$psql_bin" -X -q -v ON_ERROR_STOP=1 --csv -P pager=off \
   <<<"$session_sql" 2>&1 |
@@ -278,7 +333,9 @@ pipeline_status=("${PIPESTATUS[@]}")
 set -e
 psql_status="${pipeline_status[0]}"
 filter_status="${pipeline_status[1]}"
-unset dsn PGDATABASE
+unset pg_host pg_port pg_database pg_user pg_password pg_sslmode pg_sslrootcert
+unset pg_target_session_attrs pg_application_name pg_uri_options
+unset PGSSLMODE PGSSLROOTCERT PGTARGETSESSIONATTRS PGAPPNAME
 
 cat "$output_file"
 if [[ -s "$marker_file" ]]; then

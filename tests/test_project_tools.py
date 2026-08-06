@@ -72,7 +72,8 @@ EXPECTED_RENDER_REFS = {
 EXPECTED_POSTGRES_REFS = {
     "amaru": {
         "dev": "op://AMARU/DEV_POSTGRES_URL/value",
-        "staging": "op://AMARU/STAGING_POSTGRES_URL/value",
+        "staging": "op://AMARU/STAGING_POSTGRES_URL_RO/value",
+        "prod": "op://AMARU/PROD_POSTGRES_URL_RO/value",
     },
     "ts": {
         "dev": "op://TS/DEV_POSTGRES_URL/value",
@@ -235,8 +236,10 @@ esac
         self.fake_psql.write_text(
             """#!/usr/bin/env bash
 set -euo pipefail
-if [[ "${PGDATABASE:-}" != "postgresql://fake-user:fake-password@fake.invalid/database" ]]; then
-  echo "unexpected or missing PGDATABASE" >&2
+if [[ "${PGHOST:-}" != "fake.invalid" || "${PGPORT:-}" != "5432" || \
+      "${PGDATABASE:-}" != "database" || "${PGUSER:-}" != "fake-user" || \
+      "${PGPASSWORD:-}" != "fake-password" ]]; then
+  echo "unexpected or missing parsed PostgreSQL connection variables" >&2
   exit 90
 fi
 if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}${OP_CONNECT_HOST:-}${OP_CONNECT_TOKEN:-}${OP_SESSION_TEST:-}${ALPHA_OP_SERVICE_ACCOUNT_TOKEN:-}${BETA_OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
@@ -245,7 +248,7 @@ if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}${OP_CONNECT_HOST:-}${OP_CONNECT_TOKEN:-}
 fi
 printf 'args=' >> "$PSQL_FAKE_LOG"
 printf '<%s>' "$@" >> "$PSQL_FAKE_LOG"
-printf '\\nPGDATABASE=set\\nPGOPTIONS=%s\\nPGCONNECT_TIMEOUT=%s\\n' \
+printf '\\nPGDATABASE=set\\nPGPASSWORD=set\\nPGOPTIONS=%s\\nPGCONNECT_TIMEOUT=%s\\n' \
   "${PGOPTIONS:-}" "${PGCONNECT_TIMEOUT:-}" >> "$PSQL_FAKE_LOG"
 cat > "$PSQL_FAKE_INPUT_LOG"
 if [[ -n "${PSQL_FAKE_BYTES:-}" ]]; then
