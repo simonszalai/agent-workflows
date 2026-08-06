@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Show a value-free macOS notification immediately before sensitive vault access.
+# Show a value-free macOS notification alongside pending sensitive authentication.
 set -euo pipefail
 
 vault="${1:-}"
