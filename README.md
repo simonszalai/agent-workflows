@@ -78,7 +78,7 @@ variant, not a fourth provider.
 Only two shared development MCP servers exist: **autodev-memory** (`127.0.0.1:8792`) and
 **context7** (`127.0.0.1:8793`). Each is a single-upstream loopback auth proxy
 (`mcp-proxies/mcp-proxy.mjs`) started under `op run` with the Keychain
-service-account token (`op-dev-token`) — silent, no biometric prompts; credentials
+TS service-account token (`op-ts-token`) — silent, no biometric prompts; credentials
 live only in the proxy's process memory. Repos check in static-URL project configs
 (`.mcp.json`, `.codex/config.toml`, `.grok/config.toml`); clients hold no secrets
 and there is no user-scope MCP config. Install once per machine:
@@ -110,8 +110,8 @@ closed. See `skills/tool-render/SKILL.md`.
 
 `psql-cli` resolves the project by exact origin and exposes only explicitly configured tiers.
 `psql-cli context [tier]` performs a credential-free selection check. Query execution accepts
-only one read-only SQL statement, injects the configured DSN only as `PGDATABASE`, strips
-1Password credentials from the `psql` child, enforces a read-only transaction/session timeout,
+only one read-only SQL statement, parses the configured URI into dedicated libpq `PG*` variables,
+strips 1Password credentials from the `psql` child, enforces a read-only transaction/session timeout,
 and caps output. There is no default/fuzzy tier, sensitive-reference route, or mutation mode.
 Projects without a PostgreSQL profile, and tiers absent from a profile, fail closed.
 

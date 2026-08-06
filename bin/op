@@ -8,7 +8,7 @@
 #
 # SILENT-BY-DEFAULT (2026-07-08): non-sensitive reads retain an inherited
 # OP_SERVICE_ACCOUNT_TOKEN or the Keychain-backed token (service
-# "op-dev-token"), injected only into the exec'd op process. A detected
+# "op-ts-token"), injected only into the exec'd op process. A detected
 # sensitive cache miss instead requires a reason, a successful macOS
 # notification, and valid reviewed human-account selector configuration. Its
 # canonical account is used unless the command supplies an explicit account;
@@ -374,7 +374,7 @@ else
   if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
     auth="service-account(silent)"
   elif [ "$wants_desktop" != "1" ]; then
-    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s op-dev-token -w 2>/dev/null)"
+    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s op-ts-token -a simon -w 2>/dev/null)"
     if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
       export OP_SERVICE_ACCOUNT_TOKEN
       auth="service-account(keychain)"
