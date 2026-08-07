@@ -1,0 +1,206 @@
+"""End-to-end coverage for bin/rotate-secret against fake op + fake sync."""
+
+from __future__ import annotations
+
+import json
+import unittest
+
+from secrets_common import ROOT, SecretsSandbox, run
+
+ROTATE = str(ROOT / "bin" / "rotate-secret")
+
+SELF_MINTED_REF = "op://TESTVAULT/API_HMAC_SECRET/value"
+MANUAL_REF = "op://TESTVAULT/EXTERNAL_API_KEY/value"
+PG_REF = "op://TESTVAULT-sensitive/PROD_POSTGRES_URL_APP/value"
+
+
+class RotateSecretTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.sb = SecretsSandbox()
+        self.addCleanup(self.sb.close)
+        self.registry_path = self.sb.root / "secret-rotation.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "secrets": [
+                        {
+                            "id": "test-hmac",
+                            "project": "testproj",
+                            "ref": SELF_MINTED_REF,
+                            "provider": "self_minted",
+                            "mode": "SELF_MINTED",
+                            "generate": {"format": "hex", "bytes": 16},
+                            "owner_repo": str(self.sb.repo),
+                            "consumers": [
+                                {"repo": str(self.sb.root / "consumer-a"), "dest": "srv-a", "env": "HMAC"},
+                                {"repo": str(self.sb.root / "consumer-b"), "dest": "srv-b", "env": "HMAC"},
+                            ],
+                        },
+                        {
+                            "id": "test-manual",
+                            "project": "testproj",
+                            "ref": MANUAL_REF,
+                            "provider": "manual",
+                            "mode": "MANUAL",
+                            "owner_repo": str(self.sb.repo),
+                            "consumers": [
+                                {"repo": str(self.sb.repo), "dest": "srv-a", "env": "EXTERNAL_API_KEY"}
+                            ],
+                            "playbook": "1. Mint a new key in the provider dashboard.\n2. Revoke the old key after fan-out.",
+                        },
+                        {
+                            "id": "test-postgres",
+                            "project": "testproj",
+                            "ref": PG_REF,
+                            "provider": "postgres",
+                            "mode": "DUAL_KEY",
+                            "owner_repo": str(self.sb.repo),
+                            "consumers": [],
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def env(self, **extra: str) -> dict[str, str]:
+        return self.sb.env(
+            SECRET_ROTATION_CONFIG=str(self.registry_path),
+            SYNC_SECRETS_BIN=str(self.sb.fakebin / "sync-secrets-fake"),
+            **extra,
+        )
+
+    def rotate(self, *args: str, env: dict[str, str] | None = None, stdin: str | None = None):
+        return run([ROTATE, *args], env if env is not None else self.env(), stdin=stdin)
+
+    def sync_calls(self) -> list[str]:
+        return [l for l in self.sb.log_lines() if l.startswith("SYNC ")]
+
+    def stored_value(self, ref: str) -> str:
+        rest = ref.removeprefix("op://")
+        vault, item, field = rest.split("/")
+        return (self.sb.state / f"{vault}__{item}__{field}").read_text(encoding="utf-8")
+
+    # --- registry gate --------------------------------------------------------
+
+    def test_unknown_item_exits_2_and_lists_known_entries(self) -> None:
+        proc = self.rotate("--ref", "op://TESTVAULT/NOT_REGISTERED/value", "--reason", "t", "--yes")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("no rotation registry entry", proc.stderr)
+        self.assertIn("test-hmac", proc.stderr)
+        self.assertIn("test-manual", proc.stderr)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_project_item_field_triple_resolves_the_same_entry(self) -> None:
+        proc = self.rotate(
+            "--project", "testproj", "--item", "API_HMAC_SECRET", "--field", "value",
+            "--dry-run",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("test-hmac", proc.stdout)
+
+    # --- dry-run ----------------------------------------------------------------
+
+    def test_dry_run_prints_handler_and_full_fanout_and_mutates_nothing(self) -> None:
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("provider: self_minted", proc.stdout)
+        self.assertIn(str(self.sb.repo), proc.stdout)
+        self.assertIn("consumer-a", proc.stdout)
+        self.assertIn("consumer-b", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])  # no op, no sync
+
+    # --- live refusals ------------------------------------------------------------
+
+    def test_live_rotation_requires_reason(self) -> None:
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--yes")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--reason", proc.stderr)
+
+    def test_live_rotation_refuses_agent_shell(self) -> None:
+        proc = self.rotate(
+            "--ref", SELF_MINTED_REF, "--reason", "t", "--yes",
+            env=self.env(CLAUDECODE="1"),
+        )
+        self.assertEqual(proc.returncode, 3)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_non_interactive_live_rotation_requires_yes(self) -> None:
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--yes", proc.stderr)
+
+    # --- self_minted ---------------------------------------------------------------
+
+    def test_self_minted_writes_vault_and_fans_out_to_every_consumer(self) -> None:
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--reason", "rotate hmac", "--yes")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        value = self.stored_value(SELF_MINTED_REF)
+        self.assertEqual(len(value), 32)  # 16 bytes hex
+        # the minted value never reaches stdout/stderr or the argv log
+        combined = proc.stdout + proc.stderr + "\n".join(self.sb.log_lines())
+        self.assertNotIn(value, combined)
+        calls = self.sync_calls()
+        self.assertEqual(len(calls), 3)  # owner + 2 consumers, deduped
+        for repo in (self.sb.repo, self.sb.root / "consumer-a", self.sb.root / "consumer-b"):
+            self.assertTrue(
+                any(f"--repo {repo}" in c and f"--changed {SELF_MINTED_REF}" in c for c in calls),
+                f"missing sync fan-out for {repo}: {calls}",
+            )
+
+    def test_self_minted_rerun_replaces_the_item_in_place(self) -> None:
+        first = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t", "--yes")
+        v1 = self.stored_value(SELF_MINTED_REF)
+        second = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t", "--yes")
+        v2 = self.stored_value(SELF_MINTED_REF)
+        self.assertEqual((first.returncode, second.returncode), (0, 0))
+        self.assertNotEqual(v1, v2)
+
+    def test_failed_fanout_after_mint_exits_5_with_recovery(self) -> None:
+        proc = self.rotate(
+            "--ref", SELF_MINTED_REF, "--reason", "t", "--yes",
+            env=self.env(FAKE_SYNC_EXIT="1"),
+        )
+        self.assertEqual(proc.returncode, 5)
+        self.assertIn("vault now holds the NEW value", proc.stderr)
+        self.assertIn("sync-secrets --repo", proc.stderr)
+        # the vault write still happened (safe documented state)
+        self.assertTrue(len(self.stored_value(SELF_MINTED_REF)) > 0)
+
+    # --- manual ------------------------------------------------------------------
+
+    def test_manual_provider_prints_playbook_exits_3_changes_nothing(self) -> None:
+        proc = self.rotate("--ref", MANUAL_REF, "--reason", "t", "--yes")
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn("provider dashboard", proc.stdout)
+        self.assertIn("--complete", proc.stdout)
+        self.assertEqual(self.sync_calls(), [])
+        self.assertFalse((self.sb.state / "TESTVAULT__EXTERNAL_API_KEY__value").exists())
+
+    def test_complete_reads_stdin_once_writes_vault_and_fans_out(self) -> None:
+        proc = self.rotate(
+            "--ref", MANUAL_REF, "--reason", "t", "--complete",
+            stdin="externally-minted-value-123",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertEqual(self.stored_value(MANUAL_REF), "externally-minted-value-123")
+        self.assertNotIn("externally-minted-value-123", proc.stdout + proc.stderr)
+        self.assertEqual(len(self.sync_calls()), 1)
+
+    def test_complete_with_empty_stdin_refuses_and_leaves_vault_untouched(self) -> None:
+        proc = self.rotate("--ref", MANUAL_REF, "--reason", "t", "--complete", stdin="")
+        self.assertEqual(proc.returncode, 2)
+        self.assertFalse((self.sb.state / "TESTVAULT__EXTERNAL_API_KEY__value").exists())
+
+    # --- postgres stub --------------------------------------------------------------
+
+    def test_postgres_stub_exits_4_for_non_amaru_projects(self) -> None:
+        proc = self.rotate("--ref", PG_REF, "--reason", "t", "--yes",
+                           env=self.env(SECRETS_ALLOW_AGENT="1"))
+        self.assertEqual(proc.returncode, 4)
+        self.assertIn("slice 3/4", proc.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
