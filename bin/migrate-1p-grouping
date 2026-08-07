@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+# migrate-1p-grouping — slice 6: regroup flat 1Password items into
+# product-grouped items (one item = one product/subsystem per project; fields =
+# that product's secrets; environment encoded in ITEM NAMES). Driven entirely by
+# the committed mapping config/1p-grouping.json (old ref -> new item/field/vault).
+#
+# ENVNAMEs never change — only REFs. Old items are NEVER deleted here; deletion
+# is slice 7 (--retire-plan only PRINTS candidates).
+#
+# modes:
+#   --plan                 (default) print the full mapping plan from config.
+#                          Credential-free: zero op calls, works anywhere.
+#   --copy --reason X      human terminal: for every mapping whose source item
+#                          exists, read old value -> upsert the grouped item
+#                          field (immutable id) -> verify byte-equality by
+#                          re-read. Skips pending_source rows. Idempotent.
+#   --verify               re-read both sides of every mapping, hash-compare,
+#                          report a table. A full pass records verify state
+#                          (keyed by the mapping content hash) that --apply-refs
+#                          requires.
+#   --apply-refs [--repo <path>]
+#                          rewrite every mapped op:// ref across the configured
+#                          repos' WORKING TREES (manifests + configs + docs).
+#                          Refuses without a matching --verify pass. Prints a
+#                          per-repo diff summary; the human reviews and each
+#                          repo gets its own PR.
+#   --retire-plan          slice-7 preview: PRINT the old items safe to delete
+#                          (copy verified + zero remaining working-tree refs).
+#                          Mutates nothing.
+#
+# exit codes: 0 ok, 1 operational (mismatch/missing), 2 usage/config, 3 refusal
+#   (agent shell on --copy/--verify; --apply-refs without verify state).
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
+GROUPING_CONFIG="${GROUPING_CONFIG:-$HERE/../config/1p-grouping.json}"
+STATE_DIR="${GROUPING_STATE_DIR:-$HOME/.local/state/agent-workflows/1p-grouping}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  migrate-1p-grouping [--plan]
+  migrate-1p-grouping --copy --reason "<why>"
+  migrate-1p-grouping --verify [--reason "<why>"]
+  migrate-1p-grouping --apply-refs [--repo <path>]
+  migrate-1p-grouping --retire-plan
+
+Regroups flat 1Password items into product-grouped items per
+config/1p-grouping.json. --plan is credential-free; --copy/--verify run from a
+human terminal (Touch ID for *-sensitive vaults); --apply-refs rewrites mapped
+refs in the configured repos' working trees only after a full --verify pass.
+Nothing here ever deletes a vault item.
+EOF
+  exit 2
+}
+
+mode="plan" reason="" only_repo=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --plan) mode="plan"; shift ;;
+    --copy) mode="copy"; shift ;;
+    --verify) mode="verify"; shift ;;
+    --apply-refs) mode="apply-refs"; shift ;;
+    --retire-plan) mode="retire-plan"; shift ;;
+    --reason) reason="${2:?}"; shift 2 ;;
+    --reason=*) reason="${1#*=}"; shift ;;
+    --repo) only_repo="${2:?}"; shift 2 ;;
+    --repo=*) only_repo="${1#*=}"; shift ;;
+    -h|--help) usage ;;
+    *) echo "ERROR: unknown argument: $1" >&2; usage ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: missing dependency: jq" >&2; exit 2; }
+command -v shasum >/dev/null 2>&1 || { echo "ERROR: missing dependency: shasum" >&2; exit 2; }
+[[ -f "$GROUPING_CONFIG" ]] || { echo "ERROR: grouping config not found: $GROUPING_CONFIG" >&2; exit 2; }
+
+# --- config validation (pure; every mode starts here) ------------------------
+jq -e '
+  .schema_version == 1
+  and (.repos | type == "array" and length > 0 and all(.[]; type == "string"))
+  and (.mappings | type == "array" and length > 0)
+  and all(.mappings[];
+    (.project | type) == "string"
+    and (.group | type) == "string"
+    and (.old_ref | type == "string" and test("^op://[^/]+/[^/]+/[^/]+$"))
+    and (.vault | type) == "string"
+    and (.new_item | type == "string" and (contains("/") | not))
+    and (.new_field | type == "string" and (contains("/") | not))
+    and ((.pending_source // false) | type) == "boolean")
+' "$GROUPING_CONFIG" >/dev/null \
+  || { echo "ERROR: invalid grouping config shape: $GROUPING_CONFIG" >&2; exit 2; }
+
+dup_old="$(jq -r '[.mappings[].old_ref] | group_by(.) | map(select(length > 1) | .[0]) | .[]' "$GROUPING_CONFIG")"
+if [[ -n "$dup_old" ]]; then
+  echo "ERROR: duplicate old_ref in mapping:" >&2
+  printf '%s\n' "$dup_old" | sed 's/^/  /' >&2
+  exit 2
+fi
+dup_new="$(jq -r '[.mappings[] | "op://\(.vault)/\(.new_item)/\(.new_field)"]
+  | group_by(.) | map(select(length > 1) | .[0]) | .[]' "$GROUPING_CONFIG")"
+if [[ -n "$dup_new" ]]; then
+  echo "ERROR: two old refs map onto the same new field:" >&2
+  printf '%s\n' "$dup_new" | sed 's/^/  /' >&2
+  exit 2
+fi
+# Vault-sensitivity guard: a grouped item title must not exist in BOTH a
+# *-sensitive vault and its regular sibling under the same project (prod-write
+# and prod-RO never share an SA-readable item; RO gets a sibling item name).
+mixed="$(jq -r '
+  [.mappings[] | {project, title: .new_item, sens: (.vault | endswith("-sensitive"))}]
+  | group_by(.project + "/" + .title)
+  | map(select((map(.sens) | unique | length) > 1) | .[0] | "\(.project): \(.title)")
+  | .[]' "$GROUPING_CONFIG")"
+if [[ -n "$mixed" ]]; then
+  echo "ERROR: grouped item title spans a sensitive AND a regular vault (split it):" >&2
+  printf '%s\n' "$mixed" | sed 's/^/  /' >&2
+  exit 2
+fi
+
+new_ref_of() { # mapping json -> op://vault/item/field
+  jq -r '"op://\(.vault)/\(.new_item)/\(.new_field)"' <<< "$1"
+}
+
+mapping_sha() { # content hash of the mapping payload (gates apply-refs on verify)
+  jq -cS '{repos, mappings}' "$GROUPING_CONFIG" | shasum -a 256 | cut -d' ' -f1
+}
+
+mappings_json() { jq -c '.mappings[]' "$GROUPING_CONFIG"; }
+repos_list() { jq -r '.repos[]' "$GROUPING_CONFIG"; }
+
+# --- plan (credential-free: config only, no op, no filesystem scans) ---------
+if [[ "$mode" == "plan" ]]; then
+  echo "migrate-1p-grouping plan ($GROUPING_CONFIG)"
+  echo
+  jq -r '
+    .mappings
+    | group_by(.project) | .[]
+    | "== \(.[0].project) ==",
+      (group_by(.group) | .[]
+        | "  \(.[0].group):",
+          (.[] | "    \(.old_ref)"
+            + " -> op://\(.vault)/\(.new_item)/\(.new_field)"
+            + (if .pending_source // false then "   [pending source]" else "" end))),
+      ""
+  ' "$GROUPING_CONFIG"
+  jq -r '
+    .mappings as $m
+    | "refs mapped: \($m | length)"
+      + "  grouped items: \([$m[] | "\(.vault)/\(.new_item)"] | unique | length)"
+      + "  pending sources: \([$m[] | select(.pending_source // false)] | length)",
+    ($m | group_by(.project) | map("  \(.[0].project): \(length) refs, \([.[] | "\(.vault)/\(.new_item)"] | unique | length) items") | .[]),
+    "repos: \(.repos | length)"
+  ' "$GROUPING_CONFIG"
+  echo
+  echo "(plan is config-only: nothing was read from 1Password or the repos)"
+  exit 0
+fi
+
+# --- retire-plan (print-only slice-7 preview; no op calls) -------------------
+if [[ "$mode" == "retire-plan" ]]; then
+  sha="$(mapping_sha)"
+  if [[ ! -f "$STATE_DIR/verified-$sha" ]]; then
+    echo "retire-plan: no --verify pass recorded for the current mapping — nothing is safe to retire yet."
+    exit 0
+  fi
+  safe=0 blocked=0
+  echo "retire-plan: old items safe to delete in slice 7 (PRINT ONLY — nothing is deleted):"
+  while IFS=$'\t' read -r vault title pending; do
+    if [[ "$pending" == "true" ]]; then
+      echo "  skip (pending source, item does not exist yet): op://$vault/$title"
+      continue
+    fi
+    dangling=""
+    while IFS= read -r repo; do
+      [[ -d "$repo" ]] || { dangling="$repo (missing checkout)"; break; }
+      if git -C "$repo" grep -Il --fixed-strings "op://$vault/$title/" -- . >/dev/null 2>&1; then
+        dangling="$repo"
+        break
+      fi
+    done < <(repos_list)
+    if [[ -n "$dangling" ]]; then
+      echo "  NOT safe (refs remain in $dangling): op://$vault/$title"
+      blocked=$((blocked + 1))
+    else
+      echo "  safe: op://$vault/$title"
+      safe=$((safe + 1))
+    fi
+  done < <(jq -r '.mappings[]
+    | [(.old_ref | sub("^op://"; "") | split("/")[0]),
+       (.old_ref | sub("^op://"; "") | split("/")[1]),
+       ((.pending_source // false) | tostring)] | @tsv' "$GROUPING_CONFIG" | sort -u)
+  echo "retire-plan: $safe safe, $blocked blocked. Deletion itself is slice 7 and manual."
+  exit 0
+fi
+
+# --- apply-refs (working-tree rewrite; gated on a full verify pass) ----------
+if [[ "$mode" == "apply-refs" ]]; then
+  sha="$(mapping_sha)"
+  if [[ ! -f "$STATE_DIR/verified-$sha" ]]; then
+    echo "ERROR: refusing --apply-refs: no --verify pass recorded for the current mapping." >&2
+    echo "Run migrate-1p-grouping --verify (all non-pending mappings must pass) first." >&2
+    exit 3
+  fi
+  repos=()
+  if [[ -n "$only_repo" ]]; then
+    only_repo="$(cd "$only_repo" 2>/dev/null && pwd)" || { echo "ERROR: --repo path does not exist" >&2; exit 2; }
+    repos_list | grep -Fxq "$only_repo" \
+      || { echo "ERROR: --repo $only_repo is not in the grouping config repos list" >&2; exit 2; }
+    repos=("$only_repo")
+  else
+    while IFS= read -r r; do repos+=("$r"); done < <(repos_list)
+  fi
+
+  pairs="$(jq -r '.mappings[] | "\(.old_ref)\t" + "op://\(.vault)/\(.new_item)/\(.new_field)"' "$GROUPING_CONFIG")"
+  total=0
+  for repo in "${repos[@]}"; do
+    [[ -d "$repo/.git" || -f "$repo/.git" ]] || { echo "ERROR: not a git checkout: $repo" >&2; exit 2; }
+    # The grouping mapping itself must keep its old_ref keys verbatim.
+    files="$(while IFS=$'\t' read -r old_ref _; do
+        git -C "$repo" grep -Il --fixed-strings "$old_ref" -- . ':!config/1p-grouping.json' 2>/dev/null || true
+      done <<< "$pairs" | sort -u)"
+    if [[ -z "$files" ]]; then
+      echo "== $repo: no mapped refs =="
+      continue
+    fi
+    count=0
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      REWRITE_PAIRS="$pairs" python3 - "$repo/$f" <<'PYEOF'
+import os, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    text = fh.read()
+for line in os.environ["REWRITE_PAIRS"].splitlines():
+    old, new = line.split("\t")
+    text = text.replace(old, new)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(text)
+PYEOF
+      count=$((count + 1))
+    done <<< "$files"
+    total=$((total + count))
+    echo "== $repo: rewrote refs in $count file(s) =="
+    git -C "$repo" diff --stat | sed 's/^/  /'
+  done
+  echo
+  echo "apply-refs: $total file(s) rewritten across ${#repos[@]} repo(s) (working trees only)."
+  echo "Next: review each repo diff and open one PR per repo. Old items stay until slice 7."
+  exit 0
+fi
+
+# --- copy / verify (live vault access; human terminal) -----------------------
+# shellcheck source=../secrets/lib/read.sh
+source "$SECRETS_LIB/read.sh"
+# shellcheck source=../secrets/lib/vault.sh
+source "$SECRETS_LIB/vault.sh"
+need shasum
+
+if [[ "$mode" == "copy" ]]; then
+  [[ -n "$reason" ]] || { echo "ERROR: --copy requires --reason (sensitive-vault reads)." >&2; exit 2; }
+fi
+[[ -n "$reason" ]] && export SENSITIVE_ACCESS_REASON="$reason"
+guard_agent_shell || exit 3
+
+# Upsert one field on a grouped item: create the item when absent, append the
+# field when the item exists without it, replace in place when it exists.
+# Always verifies by re-read; byte-equality required. Values stay in memory.
+grouped_upsert_field() { # new_ref (value in $VAULT_VALUE)
+  local ref="$1" item_id existing="" check=""
+  local REF_VAULT REF_TITLE REF_FIELD
+  ref_parts "$ref" || return 2
+  [[ -n "${VAULT_VALUE:-}" ]] || { echo "ERROR: refusing to write an empty value to $ref." >&2; return 1; }
+  if item_id="$(vault_item_id "$ref")"; then
+    if existing="$(op_vault_read "$ref" 2>/dev/null)" && [[ -n "$existing" ]]; then
+      existing=""
+      vault_replace_value "$ref"
+      return $?
+    fi
+    existing=""
+    # Item exists, field does not: append the field by immutable id.
+    op_vault_mutation "$REF_VAULT" item get "$item_id" --vault "$REF_VAULT" --format json \
+      | REF_FIELD="$REF_FIELD" jq -e '
+          if ([.fields[]? | select(.label == env.REF_FIELD)] | length) == 0
+          then .fields += [{label: env.REF_FIELD, type: "CONCEALED", value: env.VAULT_VALUE}]
+          else error("field unexpectedly appeared during upsert") end' \
+      | op_vault_mutation "$REF_VAULT" item edit "$item_id" --vault "$REF_VAULT" >/dev/null
+    check="$(op_vault_read "$ref")" || return $?
+    [[ "$check" == "$VAULT_VALUE" ]] || { echo "ERROR: appended field did not verify ($ref)." >&2; return 1; }
+    [[ "$(vault_item_id "$ref")" == "$item_id" ]] || { echo "ERROR: item identity changed during upsert ($ref)." >&2; return 1; }
+    check=""
+    echo "  vault: added field to grouped item ($ref)"
+  else
+    local rc=$?
+    [[ "$rc" == "1" ]] || return "$rc"
+    vault_create_value "$ref"
+  fi
+}
+
+if [[ "$mode" == "copy" ]]; then
+  copied=0 skipped_pending=0 missing=0 failed=0
+  while IFS= read -r m; do
+    old_ref="$(jq -r '.old_ref' <<< "$m")"
+    new_ref="$(new_ref_of "$m")"
+    if [[ "$(jq -r '.pending_source // false' <<< "$m")" == "true" ]]; then
+      echo "skip (pending source): $old_ref"
+      skipped_pending=$((skipped_pending + 1))
+      continue
+    fi
+    src_rc=0
+    vault_item_id "$old_ref" >/dev/null 2>&1 || src_rc=$?
+    if [[ "$src_rc" -eq 1 ]]; then
+      echo "skip (source item absent — mark pending_source or provision it): $old_ref"
+      missing=$((missing + 1))
+      continue
+    elif [[ "$src_rc" -ne 0 ]]; then
+      echo "ERROR: source item unproven (duplicate title or vault enumeration failed): $old_ref" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    value="$(op_vault_read "$old_ref")" || { echo "ERROR: read failed: $old_ref" >&2; failed=$((failed + 1)); continue; }
+    if [[ -z "$value" ]]; then
+      echo "ERROR: source resolved empty — refusing to copy: $old_ref" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if VAULT_VALUE="$value" grouped_upsert_field "$new_ref"; then
+      echo "copied: $old_ref -> $new_ref"
+      copied=$((copied + 1))
+    else
+      echo "ERROR: upsert failed: $old_ref -> $new_ref" >&2
+      failed=$((failed + 1))
+    fi
+    value=""
+  done < <(mappings_json)
+  echo
+  echo "copy: $copied copied/converged, $skipped_pending pending skipped, $missing sources absent, $failed failed."
+  echo "Old items were NOT touched (deletion is slice 7). Re-running converges; next: --verify."
+  [[ "$failed" -eq 0 ]] || exit 1
+  exit 0
+fi
+
+# --verify
+ok=0 bad=0 pending=0
+printf '%-14s %s\n' "STATUS" "MAPPING"
+while IFS= read -r m; do
+  old_ref="$(jq -r '.old_ref' <<< "$m")"
+  new_ref="$(new_ref_of "$m")"
+  if [[ "$(jq -r '.pending_source // false' <<< "$m")" == "true" ]]; then
+    printf '%-14s %s\n' "PENDING" "$old_ref (source not provisioned yet — excluded from the gate)"
+    pending=$((pending + 1))
+    continue
+  fi
+  old_hash="" new_hash=""
+  if v="$(op_vault_read "$old_ref" 2>/dev/null)" && [[ -n "$v" ]]; then
+    old_hash="$(printf %s "$v" | shasum -a 256 | cut -d' ' -f1)"
+  fi
+  if w="$(op_vault_read "$new_ref" 2>/dev/null)" && [[ -n "$w" ]]; then
+    new_hash="$(printf %s "$w" | shasum -a 256 | cut -d' ' -f1)"
+  fi
+  v="" w=""
+  if [[ -z "$old_hash" ]]; then
+    printf '%-14s %s\n' "SOURCE_MISSING" "$old_ref (mark pending_source or provision it)"
+    bad=$((bad + 1))
+  elif [[ -z "$new_hash" ]]; then
+    printf '%-14s %s\n' "TARGET_MISSING" "$old_ref -> $new_ref (run --copy)"
+    bad=$((bad + 1))
+  elif [[ "$old_hash" == "$new_hash" ]]; then
+    printf '%-14s %s\n' "OK" "$old_ref -> $new_ref"
+    ok=$((ok + 1))
+  else
+    printf '%-14s %s\n' "MISMATCH" "$old_ref -> $new_ref (re-run --copy; a rotation may have raced)"
+    bad=$((bad + 1))
+  fi
+done < <(mappings_json)
+echo
+echo "verify: $ok OK, $bad failing, $pending pending."
+if [[ "$bad" -eq 0 ]]; then
+  mkdir -p "$STATE_DIR"
+  sha="$(mapping_sha)"
+  printf 'verified %s mapping %s ok=%s pending=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha" "$ok" "$pending" \
+    > "$STATE_DIR/verified-$sha"
+  echo "verify state recorded: $STATE_DIR/verified-$sha (unlocks --apply-refs for this mapping)."
+  exit 0
+fi
+echo "verify FAILED — --apply-refs stays locked until every non-pending mapping is OK." >&2
+exit 1
