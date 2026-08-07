@@ -159,6 +159,10 @@
             "dsn_ref": "op://WORKFLOW_PRO/PROD_POSTGRES_URL_RO/value"
           }
         }
+      },
+      "resend": {
+        "api_key_ref": "op://WORKFLOW_PRO/RESEND_API_KEY/value",
+        "canary_domain": "workflowtech.hu"
       }
     }
   }
