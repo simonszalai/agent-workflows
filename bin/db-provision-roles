@@ -29,27 +29,26 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
 OP_BIN="${OP_BIN:-$HERE/op}"
-OP_HUMAN_ACCOUNT="${OP_HUMAN_ACCOUNT:-SVKNULWI3VCHVHQ77S27TZQLAY}"
-SENSITIVE_NOTIFY_BIN="${SENSITIVE_NOTIFY_BIN:-$HERE/sensitive-access-notify}"
 RENDER_CLI="${RENDER_CLI:-$HERE/render-cli}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 2; }; }
 
-op_human() { env -u OP_SERVICE_ACCOUNT_TOKEN "$OP_BIN" --account "$OP_HUMAN_ACCOUNT" "$@"; }
+op_desktop() {
+  env -u OP_SERVICE_ACCOUNT_TOKEN OP_USE_CANONICAL_HUMAN_ACCOUNT=1 "$OP_BIN" "$@"
+}
 
-notify_sensitive_access() {
-  local ref="$1" path vault item reason requester
-  path="${ref#op://}"
-  vault="${path%%/*}"
-  path="${path#*/}"
-  item="${path%%/*}"
-  reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
-  [[ -n "$reason" ]] || {
-    echo "ERROR: sensitive vault access to $vault/$item requires --reason." >&2
-    return 3
-  }
-  requester="${CONDUCTOR_WORKSPACE_NAME:-${CONDUCTOR_WORKSPACE:-$(basename "$PWD")}}"
-  "$SENSITIVE_NOTIFY_BIN" "$vault" "$item" "$reason" "$requester"
+op_vault_mutation() { # vault, op args...
+  local vault="$1"
+  shift
+  if [[ "$vault" == *-sensitive ]]; then
+    # The canonical op shim selects the reviewed human account and notifies only
+    # when its authentication preflight finds a pending biometric request.
+    "$OP_BIN" "$@"
+  else
+    # Regular-vault writes still require the desktop account rather than the
+    # read-only service account, but must not produce a sensitive notification.
+    op_desktop "$@"
+  fi
 }
 
 guard_agent_shell() {
@@ -113,28 +112,26 @@ with_owner_options() {
 
 vault_upsert() {
   local vault="$1" title="$2"
-  # Always notify for audit; sensitive vaults also need Touch ID via op_human.
-  notify_sensitive_access "op://$vault/$title/value" || true
-  if op_human item get --vault "$vault" "$title" >/dev/null 2>&1; then
-    op_human item delete --vault "$vault" "$title" >/dev/null
+  if op_vault_mutation "$vault" item get --vault "$vault" "$title" >/dev/null 2>&1; then
+    op_vault_mutation "$vault" item delete --vault "$vault" "$title" >/dev/null
   fi
   jq -n --arg vault "$vault" --arg title "$title" \
     '{title:$title, vault:{name:$vault}, category:"SECURE_NOTE",
       fields:[{label:"value", type:"CONCEALED", value:env.UPSERT_VALUE}]}' \
-    | op_human item create --format json - >/dev/null
+    | op_vault_mutation "$vault" item create --vault "$vault" --format json - >/dev/null
   echo "  vault: upserted op://$vault/$title/value"
 }
 
 vault_read_optional() {
   local ref="$1"
-  # Prefer human for sensitive; SA for regular if available.
+  # The canonical op shim owns sensitive auth and notification. Regular reads
+  # prefer the service account, falling back to the desktop account if absent.
   if [[ "$ref" == op://*-sensitive/* ]]; then
-    notify_sensitive_access "$ref" || return 1
-    op_human read --no-newline "$ref" 2>/dev/null || return 1
+    "$OP_BIN" read --no-newline "$ref" 2>/dev/null || return 1
   else
     local tok="${OP_SERVICE_ACCOUNT_TOKEN:-}"
     if [[ -z "$tok" ]]; then
-      op_human read --no-newline "$ref" 2>/dev/null || return 1
+      op_desktop read --no-newline "$ref" 2>/dev/null || return 1
     else
       OP_SERVICE_ACCOUNT_TOKEN="$tok" "$OP_BIN" read --no-newline "$ref" 2>/dev/null || return 1
     fi
