@@ -94,14 +94,18 @@ EXPECTED_POSTGRES_REFS = {
         "staging": "op://AMARU/STAGING_POSTGRES_URL_RO/value",
         "prod": "op://AMARU/PROD_POSTGRES_URL_RO/value",
     },
+    "autodev": {
+        "prod": "op://AUTODEV/PROD_POSTGRES_URL_RO/value",
+    },
     "ts": {
         "dev": "op://TS/DEV_POSTGRES_URL/value",
-        "staging": "op://TS/STAGING_POSTGRES_URL/value",
+        "staging": "op://TS/STAGING_POSTGRES_URL_RO/value",
         "prod": "op://TS/PROD_POSTGRES_URL_RO/value",
     },
     "workflow-pro": {
         "dev": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value",
-        "staging": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL/value",
+        "staging": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_RO/value",
+        "prod": "op://WORKFLOW_PRO/PROD_POSTGRES_URL_RO/value",
     },
 }
 
@@ -461,7 +465,6 @@ printf '{"ok":true}\\n'
             },
             EXPECTED_POSTGRES_REFS,
         )
-        self.assertNotIn("postgres", projects["autodev"])
         self.assertEqual(
             projects["ts"]["slack"],
             {"token_ref": "op://TS/TS_SLACK_MCP_USER_TOKEN/value"},

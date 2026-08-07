@@ -72,7 +72,7 @@ class SensitiveAccessFixture:
                 "FAKE_SECURITY_CALLS": str(self.security_calls_path),
                 "FAKE_HELPER_CALLS": str(self.helper_calls_path),
                 "FAKE_SECURITY_VALUE": KEYCHAIN_SENTINEL,
-                "FAKE_SIGNIN_DELAY": "0.35",
+                "FAKE_SIGNIN_DELAY": "0.75",
             }
         )
         for name in tuple(self.base_env):
