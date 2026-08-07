@@ -785,6 +785,8 @@ class WorkflowEfficiencyTest(unittest.TestCase):
 
         self.assertIn("ts-prefect-prod-ro", sensitive)
         self.assertIn("do not fall back to Touch ID", sensitive)
+        self.assertIn("Notification ownership is exclusive", sensitive)
+        self.assertIn("must not produce the user notification itself", sensitive)
         self.assertNotIn('"Verify F0123 production schema', sensitive)
         self.assertIn("mcp__autodev_memory__search", memory)
         self.assertIn("mcp__autodev_memory__expand_entries", memory)

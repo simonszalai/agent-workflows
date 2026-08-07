@@ -48,6 +48,12 @@ explicit account. Missing reasons, unusable notification helpers, invalid accoun
 authentication failures, and notification failures block before the sensitive command runs.
 `OP_DESKTOP=1` is neither required nor a supported sensitive-access workaround.
 
+Notification ownership is exclusive to the canonical `bin/op` shim. Project-level wrappers must
+not invoke a notifier, call `osascript`, pre-announce sensitive access, or set
+`OP_SENSITIVE_NOTIFICATION_SENT`; they pass the reason to the canonical shim and let it decide
+whether authentication is actually pending. A project wrapper may validate that a reason exists
+before starting a multi-read operation, but it must not produce the user notification itself.
+
 Never bypass this contract with `/opt/homebrew/bin/op`, an alternate wrapper, or an `OP_BIN` that
 does not name the canonical shim in the consumer/provider's reviewed root. Never print or log
 resolved values. Never request Touch ID or use a `*-sensitive` profile merely to complete a
