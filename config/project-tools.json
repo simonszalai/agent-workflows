@@ -66,6 +66,13 @@
             "autodev-memory"
           ]
         }
+      },
+      "postgres": {
+        "tiers": {
+          "prod": {
+            "dsn_ref": "op://AUTODEV/PROD_POSTGRES_URL_RO/value"
+          }
+        }
       }
     },
     "ts": {
@@ -102,7 +109,7 @@
             "dsn_ref": "op://TS/DEV_POSTGRES_URL/value"
           },
           "staging": {
-            "dsn_ref": "op://TS/STAGING_POSTGRES_URL/value"
+            "dsn_ref": "op://TS/STAGING_POSTGRES_URL_RO/value"
           },
           "prod": {
             "dsn_ref": "op://TS/PROD_POSTGRES_URL_RO/value"
@@ -146,7 +153,10 @@
             "dsn_ref": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value"
           },
           "staging": {
-            "dsn_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL/value"
+            "dsn_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_RO/value"
+          },
+          "prod": {
+            "dsn_ref": "op://WORKFLOW_PRO/PROD_POSTGRES_URL_RO/value"
           }
         }
       }

@@ -1,0 +1,553 @@
+#!/usr/bin/env bash
+# db-provision-roles — multi-project four-role Postgres + 1Password provisioner
+#
+# Canonical secret names (vault scopes the project; no project prefix on items):
+#   {PROD|STAGING}_POSTGRES_URL_{ROOT|OWNER|APP|RO}
+#
+# Vault routing (Amaru policy):
+#   prod ROOT/OWNER/APP → <PROJECT>-sensitive  (Touch ID)
+#   prod RO + all staging → <PROJECT>          (service-account readable)
+#
+# Postgres logins always include the project slug:
+#   {slug}_owner  {slug}_app  {slug}_ro
+# Root is the Render provider default username (not renamed).
+#
+# owner_kind:
+#   render_credential (default) — Render POST /postgres/{id}/credentials; URL
+#     carries ?options=-c role=<table_owner> for the ownership trick.
+#   sql_role — CREATE ROLE as a privileged admin (Autodev on the shared box;
+#     avoids flipping Workflow's default Render credential).
+#
+# Values never reach stdout/stderr/argv. HUMAN TERMINAL for live runs (Touch ID).
+#
+# usage:
+#   db-provision-roles --project <id> <staging|prod|all> --reason "<why>" [--dry-run]
+#   db-provision-roles --list
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
+OP_BIN="${OP_BIN:-$HERE/op}"
+OP_HUMAN_ACCOUNT="${OP_HUMAN_ACCOUNT:-SVKNULWI3VCHVHQ77S27TZQLAY}"
+SENSITIVE_NOTIFY_BIN="${SENSITIVE_NOTIFY_BIN:-$HERE/sensitive-access-notify}"
+RENDER_CLI="${RENDER_CLI:-$HERE/render-cli}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 2; }; }
+
+op_human() { env -u OP_SERVICE_ACCOUNT_TOKEN "$OP_BIN" --account "$OP_HUMAN_ACCOUNT" "$@"; }
+
+notify_sensitive_access() {
+  local ref="$1" path vault item reason requester
+  path="${ref#op://}"
+  vault="${path%%/*}"
+  path="${path#*/}"
+  item="${path%%/*}"
+  reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
+  [[ -n "$reason" ]] || {
+    echo "ERROR: sensitive vault access to $vault/$item requires --reason." >&2
+    return 3
+  }
+  requester="${CONDUCTOR_WORKSPACE_NAME:-${CONDUCTOR_WORKSPACE:-$(basename "$PWD")}}"
+  "$SENSITIVE_NOTIFY_BIN" "$vault" "$item" "$reason" "$requester"
+}
+
+guard_agent_shell() {
+  if [[ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CONDUCTOR_WORKSPACE:-}" && -z "${SECRETS_ALLOW_AGENT:-}" ]]; then
+    echo "ERROR: refusing 1Password/Render credential mutations from an agent shell." >&2
+    echo "Run from a normal terminal, or SECRETS_ALLOW_AGENT=1 if you know better." >&2
+    exit 3
+  fi
+}
+
+# SA token for non-sensitive op reads (optional; human account used for all vault writes).
+sa_token_for_keychain() {
+  local item="$1"
+  security find-generic-password -s "$item" -a simon -w 2>/dev/null || true
+}
+
+urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
+
+parse_url() {
+  local url="$1"
+  [[ "$url" =~ ^postgres(ql)?://(([^:@/]+)(:([^@]*))?@)?([^:/?]+)(:([0-9]+))?/([^?]+)(\?(.*))?$ ]] || {
+    echo "ERROR: database URL did not parse" >&2
+    return 3
+  }
+  U_USER="${BASH_REMATCH[3]}" U_PASS="${BASH_REMATCH[5]}" U_HOST="${BASH_REMATCH[6]}"
+  U_PORT="${BASH_REMATCH[8]:-5432}" U_DB="${BASH_REMATCH[9]}" U_QUERY="${BASH_REMATCH[11]:-}"
+}
+
+run_psql_url() {
+  local url="$1"; shift
+  local U_USER U_PASS U_HOST U_PORT U_DB U_QUERY
+  parse_url "$url" || return $?
+  local sslmode="" options=""
+  [[ "$U_QUERY" =~ (^|\&)sslmode=([^&]+) ]] && sslmode="${BASH_REMATCH[2]}" || :
+  [[ "$U_QUERY" =~ (^|\&)options=([^&]+) ]] && options="$(urldecode "${BASH_REMATCH[2]}")" || :
+  (
+    export PGHOST="$U_HOST" PGPORT="$U_PORT" PGDATABASE="$U_DB" PGCONNECT_TIMEOUT=15
+    if [[ -n "$U_USER" ]]; then export PGUSER="$(urldecode "$U_USER")"; fi
+    if [[ -n "$U_PASS" ]]; then export PGPASSWORD="$(urldecode "$U_PASS")"; fi
+    if [[ -n "$sslmode" ]]; then export PGSSLMODE="$sslmode"; fi
+    if [[ -n "$options" ]]; then export PGOPTIONS="$options"; fi
+    exec psql -X "$@"
+  )
+}
+
+compose_url() {
+  local owner_url="$1" user="$2" pass="$3"
+  local U_USER U_PASS U_HOST U_PORT U_DB U_QUERY sslmode=""
+  parse_url "$owner_url" || return $?
+  [[ "$U_QUERY" =~ (^|\&)sslmode=([^&]+) ]] && sslmode="?sslmode=${BASH_REMATCH[2]}" || :
+  printf 'postgresql://%s:%s@%s:%s/%s%s' "$user" "$pass" "$U_HOST" "$U_PORT" "$U_DB" "$sslmode"
+}
+
+with_owner_options() {
+  local url="$1" role="$2"
+  if [[ "$url" == *"options="* ]]; then printf %s "$url"
+  elif [[ "$url" == *\?* ]]; then printf '%s&options=-c%%20role%%3D%s' "$url" "$role"
+  else printf '%s?options=-c%%20role%%3D%s' "$url" "$role"
+  fi
+}
+
+vault_upsert() {
+  local vault="$1" title="$2"
+  # Always notify for audit; sensitive vaults also need Touch ID via op_human.
+  notify_sensitive_access "op://$vault/$title/value" || true
+  if op_human item get --vault "$vault" "$title" >/dev/null 2>&1; then
+    op_human item delete --vault "$vault" "$title" >/dev/null
+  fi
+  jq -n --arg vault "$vault" --arg title "$title" \
+    '{title:$title, vault:{name:$vault}, category:"SECURE_NOTE",
+      fields:[{label:"value", type:"CONCEALED", value:env.UPSERT_VALUE}]}' \
+    | op_human item create --format json - >/dev/null
+  echo "  vault: upserted op://$vault/$title/value"
+}
+
+vault_read_optional() {
+  local ref="$1"
+  # Prefer human for sensitive; SA for regular if available.
+  if [[ "$ref" == op://*-sensitive/* ]]; then
+    notify_sensitive_access "$ref" || return 1
+    op_human read --no-newline "$ref" 2>/dev/null || return 1
+  else
+    local tok="${OP_SERVICE_ACCOUNT_TOKEN:-}"
+    if [[ -z "$tok" ]]; then
+      op_human read --no-newline "$ref" 2>/dev/null || return 1
+    else
+      OP_SERVICE_ACCOUNT_TOKEN="$tok" "$OP_BIN" read --no-newline "$ref" 2>/dev/null || return 1
+    fi
+  fi
+}
+
+cfg_get() {
+  local query="$1"
+  jq -er "$query" "$CONFIG"
+}
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  db-provision-roles --project <amaru|ts|workflow-pro|autodev> <staging|prod|all> --reason "<why>" [--dry-run]
+  db-provision-roles --list
+
+Idempotent. Rotates app/ro passwords, upserts the eight (or four for autodev) vault items.
+Creates the Render owner credential when missing (dedicated DBs only).
+EOF
+  exit 2
+}
+
+list_projects() {
+  jq -r '.projects | keys[]' "$CONFIG"
+  exit 0
+}
+
+PROJECT="" TIER_ARG="" DRY_RUN=0 REASON=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list) list_projects ;;
+    --project) PROJECT="${2:?}"; shift 2 ;;
+    --project=*) PROJECT="${1#*=}"; shift ;;
+    staging|prod|all) TIER_ARG="$1"; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --reason) REASON="${2:?}"; shift 2 ;;
+    --reason=*) REASON="${1#*=}"; shift ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+
+[[ -n "$PROJECT" ]] || usage
+[[ -n "$TIER_ARG" ]] || usage
+if [[ "$DRY_RUN" -eq 0 && -z "$REASON" ]]; then
+  echo "ERROR: --reason is required for live runs." >&2
+  exit 2
+fi
+export SENSITIVE_ACCESS_REASON="${REASON:-dry-run}"
+
+need jq; need openssl; need psql; need curl
+[[ -f "$CONFIG" ]] || { echo "ERROR: config not found: $CONFIG" >&2; exit 2; }
+cfg_get ".projects[\"$PROJECT\"]" >/dev/null || {
+  echo "ERROR: unknown project '$PROJECT'. Known: $(list_projects 2>/dev/null | tr '\n' ' ')" >&2
+  exit 2
+}
+
+if [[ "$DRY_RUN" -eq 0 ]]; then
+  guard_agent_shell
+fi
+
+VAULT="$(cfg_get ".projects[\"$PROJECT\"].vault")"
+VAULT_SENS="$(cfg_get ".projects[\"$PROJECT\"].vault_sensitive")"
+RENDER_KEY_REF="$(cfg_get ".projects[\"$PROJECT\"].render_key_ref")"
+RENDER_PROJECT="$(cfg_get ".projects[\"$PROJECT\"].render_project")"
+SLUG="$(cfg_get ".projects[\"$PROJECT\"].slug")"
+OWNER_CRED="$(cfg_get ".projects[\"$PROJECT\"].roles.owner")"
+APP_ROLE="$(cfg_get ".projects[\"$PROJECT\"].roles.app")"
+RO_ROLE="$(cfg_get ".projects[\"$PROJECT\"].roles.ro")"
+OWNER_KIND="$(jq -r ".projects[\"$PROJECT\"].owner_kind // \"render_credential\"" "$CONFIG")"
+
+# Load SA token for regular vault reads when available
+case "$PROJECT" in
+  amaru) tok="$(sa_token_for_keychain op-amaru-token)" ;;
+  ts) tok="$(sa_token_for_keychain op-ts-token)" ;;
+  workflow-pro) tok="$(sa_token_for_keychain op-workflow-pro-token)" ;;
+  autodev) tok="$(sa_token_for_keychain op-autodev-token)"; [[ -n "$tok" ]] || tok="$(sa_token_for_keychain op-workflow-pro-token)" ;;
+  *) tok="" ;;
+esac
+[[ -n "$tok" ]] && export OP_SERVICE_ACCOUNT_TOKEN="$tok"
+
+render_api_get() {
+  local path="$1"
+  # render-cli prints a context line then body; strip non-json prefix.
+  local out
+  out="$("$RENDER_CLI" --project "$RENDER_PROJECT" api GET "$path" 2>/dev/null)" || return $?
+  printf '%s' "${out#*\{}" | { echo -n '{'; cat; }
+}
+
+render_api_get_json() {
+  local path="$1" out
+  out="$("$RENDER_CLI" --project "$RENDER_PROJECT" api GET "$path" 2>&1)" || {
+    echo "ERROR: render GET $path failed" >&2
+    return 3
+  }
+  # Drop leading context line(s) until first { or [
+  printf '%s\n' "$out" | awk 'BEGIN{p=0} /^[\[{]/{p=1} p{print}'
+}
+
+render_create_owner() {
+  local db_id="$1"
+  echo "  render: creating credential $OWNER_CRED on $db_id (becomes default)"
+  if [[ "$DRY_RUN" -eq 1 ]]; then return 0; fi
+  jq -n --arg u "$OWNER_CRED" '{username:$u}' \
+    | "$RENDER_CLI" --project "$RENDER_PROJECT" --write \
+        --reason "$SENSITIVE_ACCESS_REASON" \
+        api POST "/v1/postgres/$db_id/credentials" 2>/dev/null \
+    || {
+      echo "ERROR: failed to create Render credential $OWNER_CRED" >&2
+      return 3
+    }
+  # brief wait for credential to become default
+  sleep 3
+}
+
+render_conninfo_user() {
+  # Prints only the username of the default credential (safe).
+  local db_id="$1" json user
+  json="$(render_api_get_json "/v1/postgres/$db_id/connection-info")" || return $?
+  user="$(printf '%s' "$json" | jq -r '
+    (.externalConnectionString // empty)
+    | capture("postgres(?:ql)?://(?<u>[^:]+)").u
+  ')"
+  printf '%s' "$user"
+}
+
+render_conninfo_urls() {
+  # Sets EXT_URL INT_URL in caller via nameref-style globals (never printed).
+  local db_id="$1" json
+  json="$(render_api_get_json "/v1/postgres/$db_id/connection-info")" || return $?
+  EXT_URL="$(printf '%s' "$json" | jq -r '.externalConnectionString')"
+  INT_URL="$(printf '%s' "$json" | jq -r '.internalConnectionString')"
+  [[ -n "$EXT_URL" && "$EXT_URL" != null && -n "$INT_URL" && "$INT_URL" != null ]] || return 3
+}
+
+sql_provision_roles() {
+  # stdin not used; runs as owner_url. Creates/rotates APP_ROLE and RO_ROLE.
+  local owner_url="$1" database="$2"
+  local app_pw ro_pw
+  app_pw="$(openssl rand -hex 24)"
+  ro_pw="$(openssl rand -hex 24)"
+  APP_PW="$app_pw" RO_PW="$ro_pw" APP_ROLE="$APP_ROLE" RO_ROLE="$RO_ROLE" \
+    run_psql_url "$owner_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set app_pw `printf %s "$APP_PW"`
+\set ro_pw `printf %s "$RO_PW"`
+\set app_role `printf %s "$APP_ROLE"`
+\set ro_role `printf %s "$RO_ROLE"`
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'app_role', :'app_pw')
+WHERE to_regrole(:'app_role') IS NULL \gexec
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'app_role', :'app_pw')
+WHERE to_regrole(:'app_role') IS NOT NULL \gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'app_role') \gexec
+SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app_role') \gexec
+SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', :'app_role') \gexec
+SELECT format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', :'app_role') \gexec
+-- Keep migration bookkeeping owner-only when present
+SELECT format('REVOKE ALL PRIVILEGES ON TABLE %I FROM %I', '_prisma_migrations', :'app_role')
+WHERE to_regclass('public._prisma_migrations') IS NOT NULL \gexec
+SELECT format('REVOKE ALL PRIVILEGES ON TABLE %I FROM %I', 'alembic_version', :'app_role')
+WHERE to_regclass('public.alembic_version') IS NOT NULL \gexec
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+  :'app_role') \gexec
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I',
+  :'app_role') \gexec
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'ro_role', :'ro_pw')
+WHERE to_regrole(:'ro_role') IS NULL \gexec
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'ro_role', :'ro_pw')
+WHERE to_regrole(:'ro_role') IS NOT NULL \gexec
+SELECT format('ALTER ROLE %I SET default_transaction_read_only = on', :'ro_role') \gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'ro_role') \gexec
+SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'ro_role') \gexec
+SELECT format('GRANT SELECT ON ALL TABLES IN SCHEMA public TO %I', :'ro_role') \gexec
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO %I',
+  :'ro_role') \gexec
+DO $do$
+DECLARE t record;
+  ro text := current_setting('ro_role', true);
+BEGIN
+  -- ro_role via env not available inside DO; use to_regrole scan of policies by name pattern later.
+  NULL;
+END
+$do$;
+SQL
+  # RLS SELECT policies for RO (separate so role name interpolates safely)
+  RO_ROLE="$RO_ROLE" run_psql_url "$owner_url" -q -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+DECLARE t record;
+BEGIN
+  FOR t IN SELECT schemaname, tablename FROM pg_tables
+           WHERE schemaname = 'public' AND rowsecurity LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_policies
+      WHERE schemaname = t.schemaname AND tablename = t.tablename
+        AND policyname = '${RO_ROLE}_read'
+    ) THEN
+      EXECUTE format(
+        'CREATE POLICY %I ON %I.%I FOR SELECT TO %I USING (true)',
+        '${RO_ROLE}_read', t.schemaname, t.tablename, '${RO_ROLE}');
+    END IF;
+  END LOOP;
+END \$\$;
+SQL
+  APP_PW_OUT="$app_pw"
+  RO_PW_OUT="$ro_pw"
+}
+
+sql_provision_autodev_owner() {
+  # Create autodev_owner as SQL role with CREATEROLE-like grants via admin session.
+  local admin_url="$1"
+  local owner_pw
+  owner_pw="$(openssl rand -hex 24)"
+  OWNER_PW="$owner_pw" OWNER_CRED="$OWNER_CRED" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set owner_pw `printf %s "$OWNER_PW"`
+\set owner_cred `printf %s "$OWNER_CRED"`
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L CREATEDB CREATEROLE', :'owner_cred', :'owner_pw')
+WHERE to_regrole(:'owner_cred') IS NULL \gexec
+SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L CREATEDB CREATEROLE', :'owner_cred', :'owner_pw')
+WHERE to_regrole(:'owner_cred') IS NOT NULL \gexec
+SQL
+  # Grant connect + schema powers on each mem_* DB is done per-database below.
+  OWNER_PW_OUT="$owner_pw"
+}
+
+provision_tier() {
+  local tier="$1"
+  local P db_id table_owner database write_vault item_prefix
+  if ! jq -e ".projects[\"$PROJECT\"].tiers[\"$tier\"]" "$CONFIG" >/dev/null 2>&1; then
+    echo "  skip $tier (not configured for $PROJECT)"
+    return 0
+  fi
+  db_id="$(cfg_get ".projects[\"$PROJECT\"].tiers[\"$tier\"].db_id")"
+  table_owner="$(cfg_get ".projects[\"$PROJECT\"].tiers[\"$tier\"].table_owner")"
+  database="$(cfg_get ".projects[\"$PROJECT\"].tiers[\"$tier\"].database")"
+
+  if [[ "$tier" == prod ]]; then
+    P="PROD_"
+    write_vault="$VAULT_SENS"
+  else
+    P="STAGING_"
+    write_vault="$VAULT"   # staging writes in regular vault
+  fi
+
+  echo "== $PROJECT / $tier =="
+  echo "  db_id=$db_id database=$database table_owner=$table_owner owner_kind=$OWNER_KIND"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    cat <<PLAN
+  would ensure owner login=$OWNER_CRED (kind=$OWNER_KIND)
+  would rotate/create $APP_ROLE + $RO_ROLE on $database
+  would upsert op://$write_vault/${P}POSTGRES_URL_ROOT|OWNER|APP
+  would upsert op://$VAULT/${P}POSTGRES_URL_RO
+PLAN
+    return 0
+  fi
+
+  local EXT_URL INT_URL default_user owner_ext owner_int owner_url
+
+  if [[ "$OWNER_KIND" == "sql_role" ]]; then
+    # Autodev shared-box path: connect as the shared instance's Render default
+    # (workflow_owner). INHERIT already grants table-owner privileges (render);
+    # do NOT SET ROLE — that path failed CREATEROLE in practice.
+    render_conninfo_urls "$db_id" || { echo "ERROR: connection-info failed" >&2; return 3; }
+    default_user="$(parse_url "$EXT_URL"; printf '%s' "$U_USER")"
+    echo "  render default credential user=$default_user (sql_role admin; no SET ROLE)"
+    local admin_url="$EXT_URL"
+    local effective
+    effective="$(run_psql_url "$admin_url" -q -t -A -v ON_ERROR_STOP=1 -c 'SELECT current_user' | tr -d '[:space:]')"
+    echo "  admin session current_user=$effective"
+
+    sql_provision_autodev_owner "$admin_url"
+    owner_ext="$(compose_url "$EXT_URL" "$OWNER_CRED" "$OWNER_PW_OUT")"
+    owner_int="$(compose_url "$INT_URL" "$OWNER_CRED" "$OWNER_PW_OUT")"
+
+    local dbs=("$database") extra d
+    extra="$(jq -r ".projects[\"$PROJECT\"].tiers[\"$tier\"].extra_databases // [] | .[]" "$CONFIG" 2>/dev/null || true)"
+    while IFS= read -r d; do [[ -n "$d" ]] && dbs+=("$d"); done <<<"$extra"
+    parse_url "$admin_url"
+    local admin_user="$U_USER" admin_pass="$U_PASS" admin_host="$U_HOST" admin_port="$U_PORT"
+    for d in "${dbs[@]}"; do
+      echo "  grants on database $d for $OWNER_CRED"
+      # Identifiers are config-controlled (mem_*), not user input.
+      run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 \
+        -c "GRANT CONNECT ON DATABASE ${d} TO ${OWNER_CRED};"
+      local admin_to_db
+      admin_to_db="$(printf 'postgresql://%s:%s@%s:%s/%s' "$admin_user" "$admin_pass" "$admin_host" "$admin_port" "$d")"
+      run_psql_url "$admin_to_db" -q -v ON_ERROR_STOP=1 \
+        -c "GRANT ALL ON SCHEMA public TO ${OWNER_CRED}; GRANT ALL ON ALL TABLES IN SCHEMA public TO ${OWNER_CRED}; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ${OWNER_CRED};"
+    done
+    parse_url "$owner_ext"
+    owner_url="$(printf 'postgresql://%s:%s@%s:%s/%s' "$U_USER" "$U_PASS" "$U_HOST" "$U_PORT" "$database")"
+  else
+    # Dedicated DB: ensure Render owner credential is default
+    default_user="$(render_conninfo_user "$db_id")"
+    echo "  render default credential user=$default_user"
+    if [[ "$default_user" != "$OWNER_CRED" ]]; then
+      echo "  bootstrap: default is '$default_user' — will create/ensure $OWNER_CRED"
+      # Capture ROOT from current default before flipping
+      render_conninfo_urls "$db_id"
+      local root_ext="$EXT_URL"
+      # Create owner credential (becomes new default)
+      render_create_owner "$db_id"
+      # Save ROOT if we still have the pre-flip URL
+      if [[ -n "$root_ext" ]]; then
+        UPSERT_VALUE="$root_ext" vault_upsert "$write_vault" "${P}POSTGRES_URL_ROOT"
+      fi
+    else
+      # Owner already default — try keep existing ROOT vault item; else warn
+      local existing_root=""
+      existing_root="$(vault_read_optional "op://$write_vault/${P}POSTGRES_URL_ROOT/value" 2>/dev/null || true)"
+      if [[ -z "$existing_root" ]]; then
+        # try unsuffixed legacy
+        existing_root="$(vault_read_optional "op://$write_vault/${P}POSTGRES_URL/value" 2>/dev/null || true)"
+        if [[ -z "$existing_root" && "$tier" == prod ]]; then
+          existing_root="$(vault_read_optional "op://$VAULT_SENS/PROD_POSTGRES_URL/value" 2>/dev/null || true)"
+        fi
+        if [[ -z "$existing_root" && "$tier" == staging ]]; then
+          existing_root="$(vault_read_optional "op://$VAULT/STAGING_POSTGRES_URL/value" 2>/dev/null || true)"
+        fi
+      fi
+      if [[ -n "$existing_root" ]]; then
+        parse_url "$existing_root"
+        # Only keep as ROOT if username is NOT the owner credential
+        if [[ "$U_USER" != "$OWNER_CRED" ]]; then
+          UPSERT_VALUE="$existing_root" vault_upsert "$write_vault" "${P}POSTGRES_URL_ROOT"
+        else
+          echo "  WARN: no distinct ROOT URL found (only owner). Seed ROOT manually from TablePlus/provider default." >&2
+        fi
+      else
+        echo "  WARN: no ROOT URL available to seed. Create TablePlus root from Render dashboard once." >&2
+      fi
+    fi
+
+    render_conninfo_urls "$db_id"
+    parse_url "$EXT_URL"
+    [[ "$U_USER" == "$OWNER_CRED" ]] || {
+      echo "ERROR: after bootstrap, default user is '$U_USER', expected '$OWNER_CRED'" >&2
+      return 3
+    }
+    owner_ext="$(with_owner_options "$EXT_URL" "$table_owner")"
+    owner_int="$(with_owner_options "$INT_URL" "$table_owner")"
+    owner_url="$owner_ext"
+
+    local effective
+    effective="$(run_psql_url "$owner_url" -q -t -A -v ON_ERROR_STOP=1 -c 'SELECT current_user' | tr -d '[:space:]')"
+    [[ "$effective" == "$table_owner" ]] || {
+      echo "ERROR: owner session current_user='$effective', expected '$table_owner'." >&2
+      echo "Render credential must be a member of $table_owner; URL must carry options=-c role=$table_owner." >&2
+      return 3
+    }
+    echo "  owner session verified (current_user=$table_owner)"
+  fi
+
+  # App + RO on the target database
+  sql_provision_roles "$owner_url" "$database"
+  local app_pw="$APP_PW_OUT" ro_pw="$RO_PW_OUT"
+
+  local app_ext app_int ro_ext
+  app_ext="$(compose_url "$owner_url" "$APP_ROLE" "$app_pw")"
+  if [[ -n "${INT_URL:-}" ]]; then
+    app_int="$(compose_url "$(with_owner_options "$INT_URL" "$table_owner")" "$APP_ROLE" "$app_pw")"
+    # strip options from app_int — compose_url already strips query except sslmode from owner_url;
+    # recompose from INT_URL without options:
+    app_int="$(compose_url "$INT_URL" "$APP_ROLE" "$app_pw")"
+    owner_int="$(with_owner_options "$INT_URL" "$table_owner")"
+  else
+    app_int="$(compose_url "$owner_url" "$APP_ROLE" "$app_pw")"
+    owner_int="$owner_url"
+  fi
+  ro_ext="$(compose_url "$owner_url" "$RO_ROLE" "$ro_pw")"
+
+  # Verify
+  run_psql_url "$app_ext" -q -t -A -v ON_ERROR_STOP=1 -c "SELECT current_user" >/dev/null
+  run_psql_url "$ro_ext" -q -t -A -v ON_ERROR_STOP=1 -c "SELECT current_user" >/dev/null
+  if run_psql_url "$ro_ext" -q -v ON_ERROR_STOP=1 -c "CREATE TABLE _provision_ro_probe(id int)" >/dev/null 2>&1; then
+    echo "ERROR: $RO_ROLE was able to CREATE TABLE" >&2
+    return 3
+  fi
+  echo "  verified $APP_ROLE + $RO_ROLE (RO cannot write)"
+
+  # For sql_role owner, also store external owner URL without SET ROLE
+  if [[ "$OWNER_KIND" == "sql_role" ]]; then
+    UPSERT_VALUE="$owner_ext" vault_upsert "$write_vault" "${P}POSTGRES_URL_OWNER"
+  else
+    UPSERT_VALUE="$owner_int" vault_upsert "$write_vault" "${P}POSTGRES_URL_OWNER"
+  fi
+  UPSERT_VALUE="$app_int" vault_upsert "$write_vault" "${P}POSTGRES_URL_APP"
+  UPSERT_VALUE="$ro_ext" vault_upsert "$VAULT" "${P}POSTGRES_URL_RO"
+  echo "  done $tier"
+}
+
+case "$TIER_ARG" in
+  all)
+    provision_tier staging
+    provision_tier prod
+    ;;
+  staging|prod)
+    provision_tier "$TIER_ARG"
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+cat <<EOF
+
+Done for project=$PROJECT tier=$TIER_ARG.
+Next:
+  1. Point service DATABASE_URL → *_APP, MIGRATE/SYSTEM → *_OWNER (manifest / sync).
+  2. Redeploy every re-pointed service.
+  3. Update project-tools.json postgres tiers to *_RO only.
+  4. Retire unsuffixed PROD_POSTGRES_URL / STAGING_POSTGRES_URL aliases after cutover.
+EOF

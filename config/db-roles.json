@@ -1,0 +1,117 @@
+{
+  "$comment": [
+    "Four-role Postgres credential split (root/owner/app/ro) across projects.",
+    "Secret names (no project prefix — vault scopes the project):",
+    "  {PROD|STAGING}_POSTGRES_URL_{ROOT|OWNER|APP|RO}",
+    "Vault routing (Amaru policy):",
+    "  prod write (ROOT/OWNER/APP) → <PROJECT>-sensitive",
+    "  prod RO + all staging → <PROJECT> regular (SA-readable)",
+    "Postgres login names always include the project slug (roles are catalog-global;",
+    "Workflow + Autodev share dpg-d66ig… so collisions matter).",
+    "Root username is the Render provider default and is NOT renamed."
+  ],
+  "projects": {
+    "amaru": {
+      "vault": "AMARU",
+      "vault_sensitive": "AMARU-sensitive",
+      "render_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
+      "render_project": "amaru",
+      "slug": "amaru",
+      "roles": {
+        "owner": "amaru_owner",
+        "app": "amaru_app",
+        "ro": "amaru_ro"
+      },
+      "tiers": {
+        "prod": {
+          "db_id": "dpg-d506fs6r433s73ei9470-a",
+          "table_owner": "amaru_db_user",
+          "database": "amaru_db"
+        },
+        "staging": {
+          "db_id": "dpg-d7md6l67r5hc7384k0p0-a",
+          "table_owner": "amaru_staging",
+          "database": "amaru_staging"
+        }
+      }
+    },
+    "ts": {
+      "vault": "TS",
+      "vault_sensitive": "TS-sensitive",
+      "render_key_ref": "op://TS/TS_RENDER_API_KEY/value",
+      "render_project": "ts",
+      "slug": "ts",
+      "roles": {
+        "owner": "ts_owner",
+        "app": "ts_app",
+        "ro": "ts_ro"
+      },
+      "tiers": {
+        "prod": {
+          "db_id": "dpg-d1rh6dmmcj7s73e4qigg-a",
+          "table_owner": "ts_user",
+          "database": "ts_znde_hu05",
+          "root_username": "ts_root",
+          "notes": "Render databaseUser is ts_root (ROOT item). Application tables are owned by ts_user; Render owner credential membership targets ts_user."
+        },
+        "staging": {
+          "db_id": "dpg-d6j3b7vgi27c73f3i42g-a",
+          "table_owner": "ts_duoh_user",
+          "database": "ts_duoh",
+          "root_username": "ts_duoh_user"
+        }
+      }
+    },
+    "workflow-pro": {
+      "vault": "WORKFLOW_PRO",
+      "vault_sensitive": "WORKFLOW_PRO-sensitive",
+      "render_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
+      "render_project": "workflow-pro",
+      "slug": "workflow",
+      "roles": {
+        "owner": "workflow_owner",
+        "app": "workflow_app",
+        "ro": "workflow_ro"
+      },
+      "tiers": {
+        "prod": {
+          "db_id": "dpg-d66igcali9vc739u9m6g-a",
+          "table_owner": "render",
+          "database": "workflowpro_nmxf"
+        },
+        "staging": {
+          "db_id": "dpg-d86qe11kh4rs73evj8ng-a",
+          "table_owner": "workflow_staging_user",
+          "database": "workflow_staging"
+        }
+      }
+    },
+    "autodev": {
+      "vault": "AUTODEV",
+      "vault_sensitive": "AUTODEV-sensitive",
+      "render_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
+      "render_project": "workflow-pro",
+      "slug": "autodev",
+      "owner_kind": "sql_role",
+      "shared_instance_note": "Same Render Postgres as workflow-pro prod (dpg-d66ig…). Creating a Render credential would flip the instance default away from workflow_owner — so autodev_owner is a SQL role provisioned as the shared admin, not a Render credential. Root remains the instance admin (render).",
+      "roles": {
+        "owner": "autodev_owner",
+        "app": "autodev_app",
+        "ro": "autodev_ro"
+      },
+      "tiers": {
+        "prod": {
+          "db_id": "dpg-d66igcali9vc739u9m6g-a",
+          "table_owner": "render",
+          "database": "mem_autodev",
+          "extra_databases": ["mem_global", "mem_workflow_pro"],
+          "admin_via": {
+            "project": "workflow-pro",
+            "owner_cred": "workflow_owner",
+            "table_owner": "render"
+          }
+        }
+      }
+    }
+  }
+}
