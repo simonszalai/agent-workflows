@@ -77,6 +77,13 @@ resolve_real_op() {
 
 resolve_real_op || exit $?
 
+canonical_human_requested="${OP_USE_CANONICAL_HUMAN_ACCOUNT:-0}"
+unset OP_USE_CANONICAL_HUMAN_ACCOUNT
+if [[ "$canonical_human_requested" != "0" && "$canonical_human_requested" != "1" ]]; then
+  echo "ERROR: OP_USE_CANONICAL_HUMAN_ACCOUNT must be 0 or 1." >&2
+  exit 2
+fi
+
 inspect_file_mode() {
   local path="$1"
   local candidate=""
@@ -249,9 +256,22 @@ if [[ -z "$sensitive_vault" && -n "$env_file" &&
   fi
 fi
 
-if [[ -n "$sensitive_vault" ]]; then
-  # No machine credential may reach any process after sensitive detection,
-  # including the cache helper and notifier on paths that block before op.
+# Commands such as `op inject` receive refs on stdin, which cannot be inspected
+# here without consuming the caller's stream. A reviewed wrapper can provide a
+# value-free vault/item hint so this shim still owns the sensitive auth gate.
+if [[ -z "$sensitive_vault" && -n "${OP_SENSITIVE_VAULT_HINT:-}" ]]; then
+  if [[ ! "$OP_SENSITIVE_VAULT_HINT" =~ ^[^/[:space:]]+-sensitive$ ]]; then
+    echo "ERROR: invalid OP_SENSITIVE_VAULT_HINT; expected a *-sensitive vault name." >&2
+    exit 2
+  fi
+  sensitive_vault="$OP_SENSITIVE_VAULT_HINT"
+  sensitive_item="${OP_SENSITIVE_ITEM_HINT:-streamed input}"
+fi
+unset OP_SENSITIVE_VAULT_HINT OP_SENSITIVE_ITEM_HINT
+
+if [[ -n "$sensitive_vault" || "$canonical_human_requested" == "1" ]]; then
+  # No machine credential may reach any human-account process, including the
+  # cache helper and notifier on paths that block before the real op command.
   unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
   for variable_name in "${!OP_SESSION_@}"; do
     unset "$variable_name"
@@ -311,6 +331,11 @@ for a in "$@"; do
       ;;
   esac
 done
+if [[ "$canonical_human_requested" == "1" && "$has_explicit_account" != "1" &&
+      -z "$sensitive_vault" ]] && ! load_human_account; then
+  echo "ERROR: invalid human account selector configuration." >&2
+  exit 4
+fi
 if [[ -n "$sensitive_vault" && "$top_level_command" == "read" && -n "${CONDUCTOR_SESSION_ID:-}" ]]; then
   cacheable_sensitive_read=1
   cache_key="$(printf '%s\0' "$@" | shasum -a 256 | awk '{print $1}')"
@@ -422,6 +447,7 @@ fi
 # desktop path without changing silent service-account behavior.
 wants_desktop=0
 [[ "$has_explicit_account" == "1" ]] && wants_desktop=1
+[[ "$canonical_human_requested" == "1" ]] && wants_desktop=1
 [ "${OP_DESKTOP:-0}" = "1" ] && wants_desktop=1
 case "$top_level_command" in signin|account) wants_desktop=1 ;; esac
 
@@ -433,6 +459,11 @@ if [[ -n "$sensitive_vault" ]]; then
 
   auth="interactive desktop-session(silent)"
   [[ "$sensitive_notification_shown" == "1" ]] && auth="interactive BIOMETRIC-PROMPT"
+elif [[ "$canonical_human_requested" == "1" ]]; then
+  if [[ "$has_explicit_account" != "1" ]]; then
+    child_argv=(--account "$HUMAN_ACCOUNT" "$@")
+  fi
+  auth="interactive canonical-account(silent)"
 else
   auth="interactive BIOMETRIC-PROMPT"
   if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then

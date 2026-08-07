@@ -427,6 +427,23 @@ class SensitiveAccessFixture:
 
 
 class SensitiveAccessNotificationTest(unittest.TestCase):
+    def test_no_other_binary_owns_sensitive_access_notifications(self) -> None:
+        canonical_owners = {"op", "sensitive-access-notify"}
+        forbidden_markers = (
+            "SENSITIVE_NOTIFY_BIN",
+            "notify_sensitive_access",
+            "OP_SENSITIVE_NOTIFICATION_SENT",
+            "osascript",
+            "display notification",
+        )
+
+        for path in sorted((ROOT / "bin").iterdir()):
+            if not path.is_file() or path.name in canonical_owners:
+                continue
+            contents = path.read_text(errors="ignore")
+            for marker in forbidden_markers:
+                self.assertNotIn(marker, contents, f"{path.name} duplicates {marker}")
+
     def assert_no_secret_sentinels(
         self,
         fixture: SensitiveAccessFixture,
@@ -558,6 +575,42 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                     ["--account", CANONICAL_ACCOUNT, *args],
                 )
 
+    def test_value_free_hint_routes_stdin_only_command_through_sensitive_gate(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["inject"]
+            result = fixture.run_op(
+                args,
+                credentials=True,
+                env_updates={
+                    "OP_SENSITIVE_VAULT_HINT": "AUTODEV-sensitive",
+                    "OP_SENSITIVE_ITEM_HINT": "template-inject",
+                },
+            )
+
+            self.assert_sensitive_child(
+                fixture,
+                result,
+                ["--account", CANONICAL_ACCOUNT, *args],
+            )
+            self.assertEqual(
+                fixture.notify_calls[0]["argv"][:2],
+                ["AUTODEV-sensitive", "template-inject"],
+            )
+
+    def test_invalid_value_free_hint_blocks_before_auth_notification_and_child(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            result = fixture.run_op(
+                ["inject"],
+                credentials=True,
+                env_updates={"OP_SENSITIVE_VAULT_HINT": "AUTODEV"},
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("invalid OP_SENSITIVE_VAULT_HINT", result.stderr)
+            self.assertEqual(fixture.events, [])
+            self.assertEqual(fixture.notify_calls, [])
+            self.assertEqual(fixture.child_calls, [])
+
     def test_ordinary_reference_keeps_the_inherited_service_account_path(self) -> None:
         with SensitiveAccessFixture() as fixture:
             args = ["read", "op://TS/DATABASE_URL/value"]
@@ -572,6 +625,51 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 [{"argv": args, "env_present": sorted(CREDENTIALS)}],
             )
             self.assert_no_secret_sentinels(fixture, result)
+
+    def test_regular_vault_can_request_canonical_human_without_notification(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["item", "list", "--vault", "TS"]
+            result = fixture.run_op(
+                args,
+                reason=None,
+                credentials=True,
+                env_updates={"OP_USE_CANONICAL_HUMAN_ACCOUNT": "1"},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(fixture.events, ["real"])
+            self.assertEqual(fixture.notify_calls, [])
+            self.assertEqual(fixture.auth_calls, [])
+            self.assertEqual(
+                fixture.child_calls,
+                [
+                    {
+                        "argv": ["--account", CANONICAL_ACCOUNT, *args],
+                        "env_present": [],
+                    }
+                ],
+            )
+
+    def test_regular_vault_canonical_human_request_fails_closed(self) -> None:
+        cases = (
+            ("invalid-flag", "unexpected", 2),
+            ("missing-account-config", "1", 4),
+        )
+        for name, flag, expected_status in cases:
+            with self.subTest(name=name), SensitiveAccessFixture() as fixture:
+                if name == "missing-account-config":
+                    fixture.remove_account_config()
+                result = fixture.run_op(
+                    ["item", "list", "--vault", "TS"],
+                    reason=None,
+                    credentials=True,
+                    env_updates={"OP_USE_CANONICAL_HUMAN_ACCOUNT": flag},
+                )
+
+                self.assertEqual(result.returncode, expected_status)
+                self.assertEqual(fixture.events, [])
+                self.assertEqual(fixture.notify_calls, [])
+                self.assertEqual(fixture.child_calls, [])
 
     def test_missing_reason_blocks_before_notification_auth_and_child(self) -> None:
         with SensitiveAccessFixture() as fixture:

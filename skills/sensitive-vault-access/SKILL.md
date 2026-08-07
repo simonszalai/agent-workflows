@@ -53,6 +53,12 @@ not invoke a notifier, call `osascript`, pre-announce sensitive access, or set
 `OP_SENSITIVE_NOTIFICATION_SENT`; they pass the reason to the canonical shim and let it decide
 whether authentication is actually pending. A project wrapper may validate that a reason exists
 before starting a multi-read operation, but it must not produce the user notification itself.
+For a command such as `op inject` whose references arrive only on stdin, the wrapper may set the
+value-free `OP_SENSITIVE_VAULT_HINT=<name>-sensitive` and `OP_SENSITIVE_ITEM_HINT=<description>`
+for the canonical shim; it must not consume or log the input stream itself.
+Shared tooling that must write a regular vault with the reviewed human account may set
+`OP_USE_CANONICAL_HUMAN_ACCOUNT=1`; the shim resolves the selector centrally without classifying
+that regular-vault operation as sensitive or showing a sensitive-access notification.
 
 Never bypass this contract with `/opt/homebrew/bin/op`, an alternate wrapper, or an `OP_BIN` that
 does not name the canonical shim in the consumer/provider's reviewed root. Never print or log

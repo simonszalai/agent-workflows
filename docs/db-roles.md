@@ -40,7 +40,9 @@ db-provision-roles --project <amaru|ts|workflow-pro|autodev> <staging|prod|all> 
   --reason "<why>" [--dry-run]
 ```
 
-Human terminal (Touch ID). Values never print.
+Human terminal. The canonical `op` shim owns sensitive-account selection and shows a purpose
+notification only when its authentication preflight finds Touch ID is actually pending. Values
+never print.
 
 ## After provision
 
