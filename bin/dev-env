@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# dev-env — resolve one repo dev profile from 1Password and inject it ONLY into
+# the child process env. No .env files by design; values exist in the child env
+# and (optionally) an encrypted 24h cache. Superset of the ts-prefect and amaru
+# dev-envs, driven by the target repo's committed manifest (dev rows).
+#
+# usage:
+#   dev-env [--repo <path>] <profile> [--reason TEXT] [--no-sensitive] [--refresh] -- <command...>
+#   dev-env [--repo <path>] <profile> --keys      # print ENVNAMEs, zero op reads
+#   dev-env [--repo <path>] --profiles            # list dev profiles, zero op reads
+#
+# Sensitive rows (op://*-sensitive/*) resolve individually through the
+# canonical bin/op shim (Touch ID; requires a reason via --reason /
+# SENSITIVE_ACCESS_REASON / OP_ACCESS_REASON, refused from agent shells) or are
+# skipped wholesale with --no-sensitive. Plain rows resolve in ONE batched
+# `op inject` under the project service-account token.
+#
+# Encrypted cache (amaru port): openssl aes-256-cbc -pbkdf2, passphrase = the
+# project SA token on fd 3, ${DEV_ENV_CACHE_DIR:-~/.cache/agent-workflows-devenv}/
+# <project>/<profile>[.nosens].enc (dir 0700, file 0600, tmp+mv), blob header
+# `v1 <sha256-of-rows> <epoch>`, TTL DEV_ENV_CACHE_TTL (default 86400), row-hash
+# invalidation, --refresh bypass. No SA token => cache silently skipped.
+#
+# exit codes: 0 (child's exit code), 1 operational (nothing exported),
+# 2 usage, 3 refusal (missing reason / agent shell).
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
+
+# shellcheck source=../secrets/lib/read.sh
+source "$SECRETS_LIB/read.sh"
+# shellcheck source=../secrets/lib/derive.sh
+source "$SECRETS_LIB/derive.sh"
+# shellcheck source=../secrets/lib/manifest.sh
+source "$SECRETS_LIB/manifest.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  dev-env [--repo <path>] <profile> [--reason TEXT] [--no-sensitive] [--refresh] -- <command...>
+  dev-env [--repo <path>] <profile> --keys
+  dev-env [--repo <path>] --profiles
+EOF
+  exit 2
+}
+
+repo="" profile="" reason="${SENSITIVE_ACCESS_REASON:-${OP_ACCESS_REASON:-}}"
+skip_sensitive=0 refresh=0 mode="run"
+cmd=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="${2:?}"; shift 2 ;;
+    --repo=*) repo="${1#*=}"; shift ;;
+    --reason) reason="${2:?}"; shift 2 ;;
+    --reason=*) reason="${1#*=}"; shift ;;
+    --no-sensitive) skip_sensitive=1; shift ;;
+    --refresh) refresh=1; shift ;;
+    --keys) mode="keys"; shift ;;
+    --profiles) mode="profiles"; shift ;;
+    --) shift; cmd=("$@"); break ;;
+    -h|--help) usage ;;
+    -*) echo "ERROR: unknown flag $1" >&2; exit 2 ;;
+    *)
+      [[ -z "$profile" ]] || { echo "ERROR: unexpected arg $1" >&2; exit 2; }
+      profile="$1"; shift ;;
+  esac
+done
+
+if [[ -z "$repo" ]]; then
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "ERROR: not inside a git repo; pass --repo <path>" >&2; exit 2; }
+fi
+repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "ERROR: repo path does not exist" >&2; exit 2; }
+manifest="$repo/scripts/secrets/manifest"
+[[ -f "$manifest" ]] || { echo "ERROR: no secrets manifest at $manifest" >&2; exit 2; }
+export _MANIFEST_FILE="$manifest"
+
+if [[ "$mode" == "profiles" ]]; then
+  manifest_dests dev
+  exit 0
+fi
+
+[[ -n "$profile" ]] || usage
+rows="$(manifest_rows dev "$profile")" || exit $?
+[[ -n "$rows" ]] || { echo "ERROR: no dev rows for profile '$profile' in $manifest" >&2; exit 2; }
+
+if [[ "$skip_sensitive" == "1" ]]; then
+  rows="$(awk -F'\t' '$4 !~ "^op://[^/]*-sensitive/"' <<< "$rows")"
+  [[ -n "$rows" ]] || { echo "ERROR: profile '$profile' has only sensitive rows; nothing left with --no-sensitive" >&2; exit 2; }
+fi
+
+if [[ "$mode" == "keys" ]]; then
+  # Zero op reads, zero project resolution — inventory only.
+  awk -F'\t' '{ print $3 }' <<< "$rows"
+  exit 0
+fi
+
+[[ ${#cmd[@]} -gt 0 ]] || { echo "ERROR: no command given (append -- <command...>)" >&2; exit 2; }
+
+# Sensitivity precheck BEFORE any read or Touch ID prompt.
+has_sensitive=0
+if grep -q $'\t'"op://[^/]*-sensitive/" <<< "$rows"; then
+  has_sensitive=1
+  if [[ -z "$reason" ]]; then
+    echo "ERROR: profile '$profile' touches *-sensitive items — a reason is required" >&2
+    echo "(--reason TEXT, or SENSITIVE_ACCESS_REASON / OP_ACCESS_REASON; or --no-sensitive to skip those rows)" >&2
+    exit 3
+  fi
+  guard_agent_shell || exit 3
+  SENSITIVE_ACCESS_REASON="$reason"; export SENSITIVE_ACCESS_REASON
+fi
+
+# Project layer: SA token source for plain reads AND the cache passphrase.
+ctx="$("$HERE/project-context" --cwd "$repo")" || exit 2
+project_id="$(printf '%s' "$ctx" | jq -er '.project')" || exit 2
+SECRETS_SA_TOKEN_ENV="$(printf '%s' "$ctx" | jq -er '.service_account.token_env')" || exit 2
+SECRETS_SA_KEYCHAIN_ITEM="$(printf '%s' "$ctx" | jq -r '.service_account.keychain_item // ""')"
+export SECRETS_SA_TOKEN_ENV SECRETS_SA_KEYCHAIN_ITEM
+
+need "$OP_BIN"; need openssl; need jq
+
+# --- encrypted 24h cache (amaru port) ----------------------------------------
+CACHE_DIR="${DEV_ENV_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-workflows-devenv}/$project_id"
+CACHE_TTL="${DEV_ENV_CACHE_TTL:-86400}"
+cache_suffix=""
+[[ "$skip_sensitive" == "1" ]] && cache_suffix=".nosens"
+cache_file="$CACHE_DIR/${profile}${cache_suffix}.enc"
+rows_hash="$(printf %s "$rows" | shasum -a 256 | cut -d' ' -f1)"
+
+cache_decrypt() {
+  [[ -f "$cache_file" ]] || return 1
+  local password
+  password="$(sa_token 2>/dev/null)" || return 1
+  openssl enc -d -aes-256-cbc -pbkdf2 -in "$cache_file" -pass fd:3 3<<<"$password" 2>/dev/null
+}
+
+cache_write() { # blob on stdin; no SA token => silently skipped
+  local password
+  password="$(sa_token 2>/dev/null)" || { cat >/dev/null; return 0; }
+  mkdir -p "$CACHE_DIR" && chmod 700 "$CACHE_DIR"
+  openssl enc -aes-256-cbc -pbkdf2 -out "$cache_file.tmp" -pass fd:3 3<<<"$password" \
+    && mv "$cache_file.tmp" "$cache_file" && chmod 600 "$cache_file" \
+    || rm -f "$cache_file.tmp"
+}
+
+if [[ "$refresh" != "1" ]] && blob="$(cache_decrypt)"; then
+  header="${blob%%$'\n'*}"
+  IFS=' ' read -r _version cached_hash cached_epoch <<< "$header"
+  now="$(date +%s)"
+  if [[ "$cached_hash" == "$rows_hash" && "$cached_epoch" =~ ^[0-9]+$ ]] && [[ $((now - cached_epoch)) -lt "$CACHE_TTL" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      export "${line%%=*}=${line#*=}"
+    done <<< "${blob#*$'\n'}"
+    blob=""
+    exec "${cmd[@]}"
+  fi
+  blob=""
+fi
+
+# --- resolution ----------------------------------------------------------------
+# literals inline; plain op:// rows in ONE batched `op inject` (service-account
+# token); sensitive rows individually through the canonical shim (Touch ID).
+op_inject_plain() { # template on stdin -> resolved on stdout (service account)
+  local tok
+  tok="$(sa_token)" || return $?
+  OP_SERVICE_ACCOUNT_TOKEN="$tok" "$OP_BIN" inject
+}
+
+names=()
+values=()
+transforms=()
+template=""
+while IFS=$'\t' read -r _kind _dest env ref transform; do
+  [[ -n "$env" ]] || continue
+  names+=("$env")
+  transforms+=("$transform")
+  case "$ref" in
+    literal:*)
+      value="$(printf %s "${ref#literal:}" | apply_transform "$transform")" \
+        || { echo "ERROR: derive failed for $env — nothing exported" >&2; exit 1; }
+      values+=("$value"); value=""
+      ;;
+    op://*-sensitive/*)
+      rc=0
+      raw="$(op_read_ref "$ref")" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        echo "ERROR: sensitive resolve failed for $env ($ref) — nothing exported" >&2
+        [[ "$rc" == "3" ]] && exit 3
+        exit 1
+      fi
+      value="$(printf %s "$raw" | apply_transform "$transform")" \
+        || { echo "ERROR: derive failed for $env — nothing exported" >&2; exit 1; }
+      raw=""
+      values+=("$value"); value=""
+      ;;
+    op://*)
+      template="${template}${env}={{ ${ref} }}"$'\n'
+      values+=("")
+      ;;
+    *)
+      echo "ERROR: unknown ref form for $env: $ref" >&2; exit 1
+      ;;
+  esac
+done <<< "$rows"
+
+if [[ -n "$template" ]]; then
+  resolved="$(printf %s "$template" | op_inject_plain)" || {
+    echo "ERROR: batched resolve failed — nothing exported" >&2
+    exit 1
+  }
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    env="${line%%=*}"
+    value="${line#*=}"
+    i=0
+    while [[ $i -lt ${#names[@]} ]]; do
+      if [[ "${names[$i]}" == "$env" && -z "${values[$i]}" ]]; then
+        values[$i]="$(printf %s "$value" | apply_transform "${transforms[$i]}")" \
+          || { echo "ERROR: derive failed for $env — nothing exported" >&2; exit 1; }
+        break
+      fi
+      i=$((i + 1))
+    done
+  done <<< "$resolved"
+  resolved=""
+fi
+
+# Empty value after resolve+transform => nothing exported (a failed read must
+# never hand the child a blank credential).
+i=0
+while [[ $i -lt ${#names[@]} ]]; do
+  [[ -n "${values[$i]}" ]] || { echo "ERROR: empty/unresolved value for ${names[$i]} — nothing exported" >&2; exit 1; }
+  i=$((i + 1))
+done
+
+blob="v1 $rows_hash $(date +%s)"$'\n'
+i=0
+while [[ $i -lt ${#names[@]} ]]; do
+  blob="${blob}${names[$i]}=${values[$i]}"$'\n'
+  i=$((i + 1))
+done
+printf %s "$blob" | cache_write
+blob=""
+
+i=0
+while [[ $i -lt ${#names[@]} ]]; do
+  export "${names[$i]}=${values[$i]}"
+  i=$((i + 1))
+done
+values=()
+exec "${cmd[@]}"

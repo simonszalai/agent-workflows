@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SHELL_FILES = (
     "bin/sync-secrets",
     "bin/rotate-secret",
+    "bin/dev-env",
     "secrets/lib/manifest.sh",
     "secrets/lib/read.sh",
     "secrets/lib/derive.sh",
@@ -96,23 +97,35 @@ for a in "$@"; do
 done
 printf 'OP %s\n' "$*" >> "$FAKE_LOG"
 state="${FAKE_OP_STATE:?}"
+resolve_value() { # op://v/i/f -> synthetic or stored value on stdout
+  local ref="$1" rest v i f file
+  rest="${ref#op://}"; v="${rest%%/*}"; rest="${rest#*/}"; i="${rest%%/*}"; f="${rest#*/}"
+  file="$state/${v}__${i}__${f}"
+  if [[ -f "$file" ]]; then
+    cat "$file"
+  else
+    case "$ref" in
+      *EMPTY_ITEM*) ;;
+      *) printf 'val-%s-%s' "$i" "$f" ;;
+    esac
+  fi
+}
 cmd="${1:-}"
 case "$cmd" in
   read)
     ref=""
     for a in "$@"; do case "$a" in op://*) ref="$a" ;; esac; done
-    rest="${ref#op://}"; v="${rest%%/*}"; rest="${rest#*/}"; i="${rest%%/*}"; f="${rest#*/}"
-    file="$state/${v}__${i}__${f}"
-    if [[ -f "$file" ]]; then
-      cat "$file"
-    else
-      case "$ref" in
-        *EMPTY_ITEM*) ;;
-        *) printf 'val-%s-%s' "$i" "$f" ;;
-      esac
-    fi
+    resolve_value "$ref"
     ;;
-  inject) cat ;;
+  inject)
+    while IFS= read -r line; do
+      if [[ "$line" =~ \{\{\ (op://[^}\ ]*)\ \}\} ]]; then
+        printf '%s=%s\n' "${line%%=*}" "$(resolve_value "${BASH_REMATCH[1]}")"
+      else
+        printf '%s\n' "$line"
+      fi
+    done
+    ;;
   item)
     sub="${2:-}"
     case "$sub" in
