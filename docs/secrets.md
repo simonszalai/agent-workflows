@@ -52,13 +52,61 @@ materialized in the vault.
   Two accepted shapes:
   - legacy flat items: `STAGING_*` prefix vs unprefixed prod
     (`STAGING_POSTGRES_URL_APP` / `PROD_POSTGRES_URL_APP`), single `value`
-    field;
-  - **product-grouped items (target convention for new items):** one item per
-    product+tier named like `Postgres prod` / `Postgres staging`, with one
-    field per app credential (e.g. fields `app`, `owner`, `ro`). This is why
-    REF accepts any field name, not just `value`.
+    field — being retired by the slice-6 regrouping below;
+  - **product-grouped items (THE convention — final decision, slice 6):** one
+    item = one product/subsystem per project; fields = that product's secrets.
+    Refs are `op://{Vault}/{Item}/{field}`, e.g. `op://TS/xAI/api_key`,
+    `op://TS-sensitive/Postgres prod/ts_prefect`. Environment is encoded in
+    ITEM NAMES (`Postgres prod`, `Postgres staging`, `xAI staging`) — one
+    uniform convention. This is why REF accepts any field name, not just
+    `value`.
 - Destination env NAMES stay unprefixed; the manifest row picks the right item
-  per DEST/tier.
+  per DEST/tier. ENVNAMEs never change during regrouping — only REFs.
+- Prod-write and prod-RO credentials never share an SA-readable item: write
+  URLs live in the `*-sensitive` item (`Postgres prod`), RO fields live in the
+  regular-vault sibling item (`Postgres prod RO`).
+
+## Product-grouped item migration (slice 6)
+
+`config/1p-grouping.json` is the committed mapping: every old flat
+`op://` ref across all routed repos + agent-workflows configs →
+`{new_item, new_field, vault}`. Refs whose source item does not exist yet
+(pending provisioning/minting/seeding) carry `pending_source: true` — they are
+mapped so the ref rewrite lands, but copy/verify skip them; the item is minted
+directly at the new grouped ref later.
+
+`bin/migrate-1p-grouping` executes the mapping:
+
+| Mode | Behaviour |
+|---|---|
+| `--plan` (default) | prints the full mapping plan + stats purely from config. Credential-free: zero op calls, agent-safe |
+| `--copy --reason X` | human terminal: for each mapping whose source item exists, read old value → upsert the grouped item field (immutable id) → verify byte-equality by re-read. Skips `pending_source`. Idempotent; NEVER deletes old items |
+| `--verify` | re-reads both sides, hash-compares, prints a table. A full pass (every non-pending mapping OK) records verify state keyed by the mapping content hash |
+| `--apply-refs [--repo <path>]` | rewrites every mapped ref across the configured repos' WORKING TREES (manifests, `config/secret-rotation.json`, `config/project-tools.json`, `config/db-roles.json`, docs, env files). Refuses without a matching `--verify` pass; prints per-repo diff summaries |
+| `--retire-plan` | slice-7 preview: PRINTS the old items safe to delete (verified + zero remaining working-tree refs). Deletion itself is slice 7 and manual |
+
+### Cutover runbook (human at the vault, Touch ID)
+
+```bash
+# 0. review the plan (agent-safe, no credentials)
+bin/migrate-1p-grouping --plan
+
+# 1. copy values into the grouped items (old items untouched)
+bin/migrate-1p-grouping --copy --reason "slice 6: 1P product-grouped regrouping"
+
+# 2. verify byte-equality of every non-pending mapping (records the gate state)
+bin/migrate-1p-grouping --verify
+
+# 3. rewrite refs in every working tree (or one repo at a time with --repo)
+bin/migrate-1p-grouping --apply-refs
+
+# 4. review each repo's diff, one PR per repo; merge; then re-run any
+#    dev-env/sync-secrets --dry-run smoke you want. Old-item deletion is
+#    slice 7: bin/migrate-1p-grouping --retire-plan   (print-only)
+```
+
+Re-running any step converges; nothing in this flow deletes or rotates a
+secret, so a failed step is always safe to repeat.
 
 ## sync-secrets
 
