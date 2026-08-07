@@ -68,7 +68,7 @@ The routing manifest lives in each consuming repo at `scripts/secrets/manifest`
 *Example (vault item edited by hand — push it everywhere it routes):*
 
 ```bash
-sync-secrets --repo /Users/simon/dev/workflow_pro --changed 'op://WORKFLOW_PRO/RESEND_API_KEY/value' --reason 'F0123 rotated Resend key'
+sync-secrets --repo /Users/simon/dev/workflow_pro --changed 'op://WORKFLOW_PRO/Resend/api_key' --reason 'F0123 rotated Resend key'
 ```
 
 *Example (preview a repo's full sweep, safe anywhere):*

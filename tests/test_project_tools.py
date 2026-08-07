@@ -65,55 +65,55 @@ EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS = {
 }
 
 EXPECTED_RENDER_REFS = {
-    "amaru": "op://AMARU/AMARU_RENDER_API_KEY/value",
-    "autodev": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
-    "ts": "op://TS/TS_RENDER_API_KEY/value",
-    "workflow-pro": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
+    "amaru": "op://AMARU/Render/api_key",
+    "autodev": "op://AUTODEV-sensitive/Render/api_key",
+    "ts": "op://TS/Render/api_key",
+    "workflow-pro": "op://WORKFLOW_PRO/Render/api_key",
 }
 
 EXPECTED_AUTODEV_MEMORY_PROFILES = {
     "amaru": {
         "route": "amaru",
-        "token_ref": "op://AMARU/AMARU_AUTODEV_MEMORY_API_TOKEN/value",
+        "token_ref": "op://AMARU/Autodev memory/api_token",
     },
     "autodev": {
         "route": "autodev",
-        "token_ref": "op://AUTODEV/AUTODEV_AUTODEV_MEMORY_API_TOKEN/value",
+        "token_ref": "op://AUTODEV/Autodev memory/api_token",
     },
     "ts": {
         "route": "ts",
-        "token_ref": "op://TS/TS_AUTODEV_MEMORY_API_TOKEN/value",
+        "token_ref": "op://TS/Autodev memory/api_token",
     },
     "workflow-pro": {
         "route": "workflow-pro",
-        "token_ref": "op://WORKFLOW_PRO/WORKFLOW_PRO_AUTODEV_MEMORY_API_TOKEN/value",
+        "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token",
     },
 }
 
 EXPECTED_POSTGRES_REFS = {
     "amaru": {
-        "dev": "op://AMARU/DEV_POSTGRES_URL/value",
-        "staging": "op://AMARU/STAGING_POSTGRES_URL_RO/value",
-        "prod": "op://AMARU/PROD_POSTGRES_URL_RO/value",
+        "dev": "op://AMARU/Postgres dev/canonical",
+        "staging": "op://AMARU/Postgres staging/ro",
+        "prod": "op://AMARU/Postgres prod RO/canonical",
     },
     "autodev": {
-        "prod": "op://AUTODEV/PROD_POSTGRES_URL_RO/value",
+        "prod": "op://AUTODEV/Postgres prod RO/canonical",
     },
     "ts": {
-        "dev": "op://TS/DEV_POSTGRES_URL/value",
-        "staging": "op://TS/STAGING_POSTGRES_URL_RO/value",
-        "prod": "op://TS/PROD_POSTGRES_URL_RO/value",
+        "dev": "op://TS/Postgres dev/canonical",
+        "staging": "op://TS/Postgres staging/ro",
+        "prod": "op://TS/Postgres prod RO/canonical",
     },
     "workflow-pro": {
-        "dev": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value",
-        "staging": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_RO/value",
-        "prod": "op://WORKFLOW_PRO/PROD_POSTGRES_URL_RO/value",
+        "dev": "op://WORKFLOW_PRO/Postgres dev/canonical",
+        "staging": "op://WORKFLOW_PRO/Postgres staging/ro",
+        "prod": "op://WORKFLOW_PRO/Postgres prod RO/canonical",
     },
 }
 
 EXPECTED_RESEND_REFS = {
-    "amaru": "op://AMARU/RESEND_API_KEY/value",
-    "workflow-pro": "op://WORKFLOW_PRO/RESEND_API_KEY/value",
+    "amaru": "op://AMARU/Resend/api_key",
+    "workflow-pro": "op://WORKFLOW_PRO/Resend/api_key",
 }
 
 EXPECTED_RESEND_CANARY_DOMAINS = {
@@ -471,7 +471,7 @@ printf '{"ok":true}\\n'
         )
         self.assertEqual(
             projects["ts"]["slack"],
-            {"token_ref": "op://TS/TS_SLACK_MCP_USER_TOKEN/value"},
+            {"token_ref": "op://TS/Slack/mcp_user_token"},
         )
         for project in projects:
             if project != "ts":
@@ -579,8 +579,8 @@ printf '{"ok":true}\\n'
         self.assertEqual(
             projects["ts"]["tailscale"],
             {
-                "oauth_client_id_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value",
-                "oauth_client_secret_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value",
+                "oauth_client_id_ref": "op://TS/Tailscale/oauth_client_id_mcp",
+                "oauth_client_secret_ref": "op://TS/Tailscale/oauth_client_secret_mcp",
             },
         )
         for project in projects:
