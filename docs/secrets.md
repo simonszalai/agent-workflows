@@ -13,7 +13,7 @@ argv, logs, or disk.
 |---|---|
 | Engine libraries (manifest parser, op reads, transforms, Render API, vault writes) | `secrets/lib/` |
 | Channel writers (github, render, prefect) | `secrets/lib/writers/` |
-| Rotation providers (self_minted, manual, postgres stub) | `secrets/providers/` |
+| Rotation providers (self_minted, manual, postgres, resend, openai, xai, aws_iam) | `secrets/providers/` |
 | Rotation registry | `config/secret-rotation.json` |
 | Per-repo routing manifest | `<repo>/scripts/secrets/manifest` |
 | Entry points | `bin/sync-secrets`, `bin/rotate-secret`, `bin/dev-env` |
@@ -94,14 +94,16 @@ sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]]
   mark them the same way. A `--changed`/`--ref` selection that would push one
   of them exits 2 pointing at the rotation tooling. The match is exact:
   derived per-database credentials such as autodev's `DATABASE_URL_GLOBAL`
-  remain routine pushes.
+  remain routine pushes. `--skip-db-rows` (used by rotate-secret's postgres
+  fan-out, which already activated those rows itself) downgrades the refusal
+  to the same skip-with-note behaviour.
 
 ## rotate-secret
 
 ```bash
 rotate-secret --project <id> --item "<Item title>" --field <field> --reason "<why>" \
               [--dry-run] [--yes] [--accept-brief-outage]
-rotate-secret --ref 'op://Vault/Item/field' --reason "<why>" [...]
+rotate-secret --ref 'op://Vault/Item/field' --reason "<why>" [--resume] [--keep-old] [...]
 printf %s '<new>' | rotate-secret --ref '...' --reason "<why>" --complete
 ```
 
@@ -110,15 +112,61 @@ is exit 2 with the known-entries list — providers are never invented. Vault
 writes address items by immutable id and verify by re-read. After any
 successful mint+vault write, the fan-out runs
 `sync-secrets --repo <r> --changed <ref>` for the owner repo and every
-registered consumer repo.
+registered consumer repo, once per ref in the entry's `sync_refs` (default:
+the entry ref; `[]` disables the fan-out for prefect-only entries; AWS pairs
+list both items). Dual-key providers destroy the predecessor only in a
+`provider_finalize` step that runs AFTER verify + fan-out succeeded.
 
-Exit codes: 0 rotated+vault+sync+verify OK; 2 usage/unknown entry; 3 manual
-playbook printed, nothing changed; 4 provider/verify error (safe state);
-5 sync failed post-mint (idempotent recovery commands printed).
+Exit codes: 0 rotated+vault+sync+verify OK; 2 usage/unknown entry/rotation
+state or lock contention; 3 manual playbook or precondition refusal, nothing
+changed; 4 provider/verify error (safe state); 5 the vault holds the NEW value
+but a post-vault step failed — consumer sync (idempotent recovery commands
+printed) or postgres retirement proof (`--resume`).
 
-Providers: `self_minted` (openssl rand, per-entry `generate` config), `manual`
-(playbook + `--complete` stdin flow), `postgres` (slice-1 stub — amaru bridges
-to `amaru-web/scripts/db/rotate-credentials`; central port lands in slice 3/4).
+### Providers
+
+| provider | behaviour |
+|---|---|
+| `self_minted` | openssl rand, per-entry `generate` config; in-place vault write |
+| `manual` | registry playbook + `--complete` stdin flow |
+| `postgres` | full dual-principal zero-downtime rotator (below) |
+| `resend` | dual: snapshot old key ids by `config.key_name` prefix → create → vault → sync → verify (entry `verify_command` / `config.canary` send) → delete old. No `config.key_name` ⇒ exit 3 |
+| `openai` | dual via the OpenAI Admin API (project service accounts). Needs `config.admin_key_ref` + `config.project_id`, else exit 3 playbook |
+| `xai` | MANUAL by design: no confirmed xAI key-management API shape; console + `--complete` |
+| `aws_iam` | dual access-key PAIR via the aws CLI (`config.iam_user` + `config.profile` or admin key refs; `config.secret_ref` names the secret item). Both items written before any sync; old key Inactive→delete only after verify+fan-out; refuses when the user has an unknown second key |
+
+### Postgres rotation (dual-principal, zero-downtime)
+
+`secrets/providers/postgres-rotate` is the central port of amaru-web's
+`scripts/db/rotate-credentials`, generalized over `config/db-roles.json`
+(project/tier/db_id/roles/apps, cross-instance apps via `instance`, shared
+boxes via `admin_via`) and driven by the registry entry's consumer list
+(dest+env are the activation targets; github dests are fan-out-only).
+
+- One registry entry = one principal. Scope derives from the item title:
+  `{PROD|STAGING}_POSTGRES_URL_{ROOT|OWNER|APP|RO|<APPSLUG>[_RO]}`.
+- Candidate = versioned login `<capability>_login_<versionTag>` granted the
+  stable capability role (`INHERIT FALSE, SET TRUE`); URLs carry
+  `options=-c role=<capability>`. OWNER goes through the Render managed
+  credential API. ROOT and `sql_role` owners (autodev on the shared box)
+  refuse with exit 3 — never create/delete a Render credential there.
+- Pipeline: advisory lock (zero-consumer root, watchdog kills the tree on
+  loss, exit 75 internally) → value-free 0600 state file
+  (`${DB_ROTATION_STATE_DIR:-~/.local/state/agent-workflows/db-rotation}/<project>-<tier>.state`,
+  phases initial→prepared→activated→promoted→retired) → candidate creation +
+  role-safety attestation → snapshot → PUT all → trigger all (exact deploy
+  ids, HTTP 201+`.id` only) → wait all → probe all → canonical promotion by
+  immutable id → ≥120 s drain + Render `openConnections` evidence → exhaustive
+  Render env/group/secret-file inventory → reversible NOLOGIN fence → second
+  drain → retirement. Any incomplete proof keeps the predecessor (exit 5,
+  `--resume`).
+- **Health URLs are a fail-closed registry**: `health_urls` in
+  `config/secret-rotation.json` maps service id → endpoint returning HTTP 200
+  with `{status:"ok", databaseRoleSafe:true}`. An unregistered target service
+  refuses rotation before any mutation.
+- After promotion the normal rotate-secret fan-out runs with
+  `sync-secrets --skip-db-rows` (the rotator already activated the declared
+  Render rows; the fan-out covers github rows and derived consumers).
 
 ## dev-env
 

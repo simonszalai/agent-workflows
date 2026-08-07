@@ -85,3 +85,73 @@ render_trigger_deploy() { # service_id
     | render_curl POST "/services/${sid}/deploys" >/dev/null \
     && echo "  render[$sid] deploy triggered"
 }
+
+render_get_env_value() { # service_id key -> value on stdout (CALLER MUST PIPE)
+  local sid="$1" name="$2"
+  render_get "/services/${sid}/env-vars/${name}" \
+    | jq -re '.value | select(type == "string" and length > 0)'
+}
+
+# Exact-deploy proof: the trigger must return HTTP 201 with a request-correlated
+# deploy id. A bodyless 202 is rejected — waiting on "some deploy" can attest a
+# different change than the one this rotation staged.
+render_trigger_deploy_id() { # service_id -> deploy id on stdout
+  local sid="$1" body_file status body id
+  local key="${RENDER_API_KEY:-}"
+  [[ -n "$key" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
+  body_file="$(mktemp "${TMPDIR:-/tmp}/render-deploy.XXXXXX")" || return $?
+  chmod 600 "$body_file"
+
+  status="$(curl --silent --show-error \
+    --request POST \
+    --url "https://api.render.com/v1/services/${sid}/deploys" \
+    --header "Accept: application/json" \
+    --header "Content-Type: application/json" \
+    --config <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
+    --data-binary '{"deployMode":"deploy_only"}' \
+    --output "$body_file" \
+    --write-out '%{http_code}')" || {
+      rm -f "$body_file"
+      return 1
+    }
+  body="$(cat "$body_file")"
+  rm -f "$body_file"
+
+  case "$status" in
+    201)
+      id="$(printf '%s' "$body" | jq -er '.id | select(type == "string" and length > 0)')" || return 1
+      printf %s "$id"
+      ;;
+    202)
+      echo "ERROR: render[$sid] accepted a deploy without a request-correlated id; exact deploy is unprovable" >&2
+      return 1
+      ;;
+    *)
+      echo "ERROR: render[$sid] deploy trigger returned HTTP $status" >&2
+      return 1
+      ;;
+  esac
+}
+
+render_wait_deploy_live() { # service_id deploy_id — live=0, terminal/unknown=1 (fail closed)
+  local sid="$1" deploy_id="$2" status deadline
+  deadline=$(( $(date +%s) + ${RENDER_DEPLOY_TIMEOUT_SECONDS:-1800} ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    status="$(render_get "/services/${sid}/deploys/${deploy_id}" | jq -er '.status')" || return $?
+    case "$status" in
+      live) return 0 ;;
+      created|queued|build_in_progress|update_in_progress|pre_deploy_in_progress) ;;
+      deactivated|build_failed|update_failed|canceled|pre_deploy_failed)
+        echo "ERROR: render[$sid] deploy $deploy_id reached terminal status $status" >&2
+        return 1
+        ;;
+      *)
+        echo "ERROR: render[$sid] deploy $deploy_id returned unknown status $status" >&2
+        return 1
+        ;;
+    esac
+    sleep "${RENDER_POLL_SECONDS:-10}"
+  done
+  echo "ERROR: render[$sid] deploy $deploy_id did not become live before timeout" >&2
+  return 1
+}
