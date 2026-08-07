@@ -85,6 +85,16 @@ sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]]
   PUT succeeded.
 - Exit codes: 0 ok, 1 operational, 2 usage, 3 refusal (sensitive read from an
   agent shell; `--dry-run` is agent-safe and reads/writes nothing).
+- **DB-credential guard** (render channel): rows whose ENVNAME is exactly
+  `DATABASE_URL`, `MIGRATE_DATABASE_URL`, or `SYSTEM_DATABASE_URL` are owned by
+  the Postgres tooling (`rotate-secret` provider `postgres` /
+  `db-provision-roles`), never by a plain sync. Full sweeps (no `--changed` /
+  writer `--ref`/`--ref-prefix` selection) **skip** those rows with a printed
+  `skipped (db credential — use rotate-secret/db tooling)` line — dry-run plans
+  mark them the same way. A `--changed`/`--ref` selection that would push one
+  of them exits 2 pointing at the rotation tooling. The match is exact:
+  derived per-database credentials such as autodev's `DATABASE_URL_GLOBAL`
+  remain routine pushes.
 
 ## rotate-secret
 
