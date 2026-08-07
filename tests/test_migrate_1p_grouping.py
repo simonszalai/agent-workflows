@@ -301,6 +301,12 @@ class MigrateGroupingTests(unittest.TestCase):
         first_read = next(i for i, l in enumerate(lines) if "read" in l)
         first_write = next(i for i, l in enumerate(lines) if "item create" in l)
         self.assertLess(first_read, first_write)
+        # every create must carry --vault in argv: the audit shim classifies
+        # sensitive operations from argv, and a JSON-only vault routed a
+        # TS-sensitive create to the service account in the 2026-08-07 cutover
+        for l in self.sb.log().splitlines():
+            if "item create" in l:
+                self.assertIn("--vault", l)
 
     def test_copy_requires_reason(self) -> None:
         res = self.sb.run("--copy")
