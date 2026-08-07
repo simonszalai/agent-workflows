@@ -113,7 +113,7 @@ secret, so a failed step is always safe to repeat.
 ```bash
 sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]] \
              [--changed 'op://Vault/Item[/field]'] [--reason TEXT] \
-             [--channel github|render|prefect] [--no-deploy]
+             [--channel github|render|prefect] [--no-deploy] [--include-db]
 ```
 
 - Default repo = the cwd's git toplevel; manifest = `<repo>/scripts/secrets/manifest`
@@ -145,6 +145,15 @@ sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]]
   remain routine pushes. `--skip-db-rows` (used by rotate-secret's postgres
   fan-out, which already activated those rows itself) downgrades the refusal
   to the same skip-with-note behaviour.
+- **`--include-db` (initial cutover only)**: the one-time cutover of a service
+  from a shared vault item to a freshly provisioned per-app item needs exactly
+  one push of those canonical DB rows before the postgres rotator can own them
+  (its health-endpoint requirement isn't met yet). `--include-db` is valid
+  only together with a targeted `--changed` selection AND `--reason` — on a
+  full sweep it exits 2 — and pushes the selected DB rows like normal rows
+  (batch validation, empty-value refusal, deploy-last all still apply). Every
+  subsequent rotation MUST go through `rotate-secret` (provider `postgres`) /
+  `db-provision-roles`, never `--include-db` again.
 
 ## rotate-secret
 

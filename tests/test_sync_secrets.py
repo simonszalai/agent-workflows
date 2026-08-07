@@ -199,6 +199,53 @@ class SyncSecretsTest(unittest.TestCase):
         self.assertIn("db-provision-roles", proc.stderr)
         self.assertEqual(self.sb.log_lines(), [])
 
+    # --- --include-db (initial DB cutover override) ------------------------------
+
+    def test_include_db_without_changed_selection_exits_2_and_writes_nothing(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync("--include-db", "--reason", "t")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--include-db needs a targeted --changed selection", proc.stderr)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_include_db_without_reason_exits_2_and_writes_nothing(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync("--include-db", "--changed", "op://TESTVAULT/PG_APP/value")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--include-db requires --reason", proc.stderr)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_include_db_with_changed_pushes_db_row_and_triggers_deploy(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync(
+            "--changed", "op://TESTVAULT/PG_APP/value",
+            "--include-db", "--reason", "initial cutover srv-alpha",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        # the canonical DB row pushes like a normal row; derived row untouched scope
+        self.assertEqual(self.put_envnames(), {"DATABASE_URL", "DATABASE_URL_GLOBAL"})
+        self.assertTrue(any("CURL POST" in l and "/deploys" in l for l in self.sb.log_lines()))
+        # no secret value ever hit stdout/stderr
+        self.assertNotIn("val-", proc.stdout + proc.stderr)
+
+    def test_include_db_cannot_combine_with_skip_db_rows(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync(
+            "--changed", "op://TESTVAULT/PG_APP/value",
+            "--include-db", "--skip-db-rows", "--reason", "t",
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_render_writer_include_db_without_ref_selection_exits_2(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        env = self.sb.env(
+            _MANIFEST_FILE=str(self.sb.repo / "scripts" / "secrets" / "manifest"),
+        )
+        proc = run([RENDER_WRITER, "--include-db", "--reason", "t"], env)
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(self.sb.log_lines(), [])
+
     # --- refusals ----------------------------------------------------------------
 
     def test_sensitive_read_from_agent_shell_refuses_rc3_with_empty_log(self) -> None:
