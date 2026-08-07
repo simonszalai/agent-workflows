@@ -75,7 +75,6 @@
     { "project": "ts", "group": "Decrypt proxy", "old_ref": "op://TS/STAGING_DECRYPT_PROXY_AUTH_TOKEN/value", "vault": "TS", "new_item": "Decrypt proxy staging", "new_field": "auth_token" },
     { "project": "ts", "group": "Decrypt proxy", "old_ref": "op://TS/STAGING_DECRYPT_PROXY_AUTH_TOKEN_TS_PREFECT/value", "vault": "TS", "new_item": "Decrypt proxy staging", "new_field": "auth_token_ts_prefect" },
     { "project": "ts", "group": "Decrypt proxy", "old_ref": "op://TS/STAGING_PRIVATE_KEY_B64/value", "vault": "TS", "new_item": "Decrypt proxy staging", "new_field": "private_key_b64" },
-    { "project": "ts", "group": "Decrypt proxy", "old_ref": "op://TS/STAGING_PREVIOUS_PRIVATE_KEY_B64/value", "vault": "TS", "new_item": "Decrypt proxy staging", "new_field": "previous_private_key_b64" , "pending_source": true },
     { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_ALERTS_BOT_TOKEN/value", "vault": "TS", "new_item": "Telegram", "new_field": "alerts_bot_token" },
     { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_MAIN_BOT_TOKEN/value", "vault": "TS", "new_item": "Telegram", "new_field": "main_bot_token" },
     { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_MAIN_CHAT_IDS/value", "vault": "TS", "new_item": "Telegram", "new_field": "main_chat_ids" , "pending_source": true },
