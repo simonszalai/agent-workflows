@@ -113,10 +113,12 @@ EXPECTED_POSTGRES_REFS = {
 
 EXPECTED_RESEND_REFS = {
     "amaru": "op://AMARU/RESEND_API_KEY/value",
+    "workflow-pro": "op://WORKFLOW_PRO/RESEND_API_KEY/value",
 }
 
 EXPECTED_RESEND_CANARY_DOMAINS = {
     "amaru": "amaruplatform.com",
+    "workflow-pro": "workflowtech.hu",
 }
 
 
