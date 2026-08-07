@@ -7,6 +7,20 @@ import unittest
 from secrets_common import ROOT, SENSITIVE_MANIFEST, SecretsSandbox, run
 
 SYNC = str(ROOT / "bin" / "sync-secrets")
+RENDER_WRITER = str(ROOT / "secrets" / "lib" / "writers" / "render")
+
+# Canonical DB env names are owned by the postgres tooling, never plain sync.
+DB_GUARD_MANIFEST = "\n".join(
+    [
+        "render\tsrv-alpha\tDATABASE_URL\top://TESTVAULT/PG_APP/value\tself",
+        "render\tsrv-alpha\tMIGRATE_DATABASE_URL\top://TESTVAULT/PG_OWNER/value\tself",
+        "render\tsrv-alpha\tSYSTEM_DATABASE_URL\top://TESTVAULT/PG_OWNER/value\tself",
+        "render\tsrv-alpha\tALPHA_ONE\top://TESTVAULT/ITEM/value\tself",
+        "render\tsrv-beta\tDATABASE_URL_GLOBAL\top://TESTVAULT/PG_APP/value\tdb=mem_global",
+        "github\ttestorg/testrepo\tDATABASE_URL_PROD\top://TESTVAULT/PG_OWNER/value\tself",
+        "",
+    ]
+)
 
 
 class SyncSecretsTest(unittest.TestCase):
@@ -128,6 +142,61 @@ class SyncSecretsTest(unittest.TestCase):
     def test_changed_with_zero_matches_exits_1(self) -> None:
         proc = self.sync("--changed", "op://TESTVAULT/NOSUCH/value", "--reason", "t")
         self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    # --- DB-credential guard ----------------------------------------------------
+
+    def test_full_sweep_skips_db_credential_rows_but_pushes_everything_else(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync("--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        # exact-name rows skipped with the pointer note
+        for env in ("DATABASE_URL", "MIGRATE_DATABASE_URL", "SYSTEM_DATABASE_URL"):
+            self.assertIn(f"{env}  skipped (db credential", proc.stdout)
+        # derived per-database credential and ordinary rows still push
+        self.assertEqual(self.put_envnames(), {"ALPHA_ONE", "DATABASE_URL_GLOBAL"})
+        # github DATABASE_URL_PROD is NOT in the guarded set (exact match only)
+        self.assertTrue(any(l.startswith("GH secret set DATABASE_URL_PROD") for l in self.sb.log_lines()))
+
+    def test_sweep_with_only_db_credential_rows_deploys_nothing(self) -> None:
+        self.sb.write_manifest(
+            "render\tsrv-alpha\tDATABASE_URL\top://TESTVAULT/PG_APP/value\tself\n"
+        )
+        proc = self.sync("--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("skipped (db credential", proc.stdout)
+        self.assertFalse(any("CURL" in l for l in self.sb.log_lines()))
+
+    def test_dry_run_marks_skipped_db_credential_rows_and_reads_nothing(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync("--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("DATABASE_URL  skipped (db credential", proc.stdout)
+        self.assertIn("render[srv-alpha] ALPHA_ONE", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_changed_selecting_a_db_credential_row_exits_2_before_any_write(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync("--changed", "op://TESTVAULT/PG_APP/value", "--reason", "t")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("DB credential", proc.stderr)
+        self.assertIn("rotate-secret", proc.stderr)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_changed_item_prefix_form_selecting_db_credentials_also_exits_2(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        proc = self.sync("--changed", "op://TESTVAULT/PG_OWNER", "--reason", "t")
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_render_writer_ref_selection_of_db_credential_exits_2_directly(self) -> None:
+        self.sb.write_manifest(DB_GUARD_MANIFEST)
+        env = self.sb.env(
+            _MANIFEST_FILE=str(self.sb.repo / "scripts" / "secrets" / "manifest"),
+        )
+        proc = run([RENDER_WRITER, "--ref", "op://TESTVAULT/PG_APP/value"], env)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("db-provision-roles", proc.stderr)
         self.assertEqual(self.sb.log_lines(), [])
 
     # --- refusals ----------------------------------------------------------------
