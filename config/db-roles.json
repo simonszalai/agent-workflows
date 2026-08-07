@@ -28,7 +28,7 @@
     "amaru": {
       "vault": "AMARU",
       "vault_sensitive": "AMARU-sensitive",
-      "render_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
+      "render_key_ref": "op://AMARU/Render/api_key",
       "render_project": "amaru",
       "slug": "amaru",
       "roles": {
@@ -65,7 +65,7 @@
     "ts": {
       "vault": "TS",
       "vault_sensitive": "TS-sensitive",
-      "render_key_ref": "op://TS/TS_RENDER_API_KEY/value",
+      "render_key_ref": "op://TS/Render/api_key",
       "render_project": "ts",
       "slug": "ts",
       "roles": {
@@ -104,7 +104,7 @@
     "workflow-pro": {
       "vault": "WORKFLOW_PRO",
       "vault_sensitive": "WORKFLOW_PRO-sensitive",
-      "render_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
+      "render_key_ref": "op://WORKFLOW_PRO/Render/api_key",
       "render_project": "workflow-pro",
       "slug": "workflow",
       "roles": {
@@ -141,7 +141,7 @@
     "autodev": {
       "vault": "AUTODEV",
       "vault_sensitive": "AUTODEV-sensitive",
-      "render_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
+      "render_key_ref": "op://WORKFLOW_PRO/Render/api_key",
       "render_project": "workflow-pro",
       "slug": "autodev",
       "owner_kind": "sql_role",

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config/project-tools.json"
 SCP_REMOTE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(.+)$")
 CANONICAL_REMOTE = re.compile(r"^([^@:/\s]+)/(.*?/.*)$")
-OP_REF = re.compile(r"^op://[^/\s]+/[^/\s]+/value$")
+OP_REF = re.compile(r"^op://[^/\s]+/[^/\s](?:[^/]*[^/\s])?/[^/\s]+$")
 TOKEN_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_OP_SERVICE_ACCOUNT_TOKEN$")
 KEYCHAIN_ITEM = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -79,7 +79,7 @@ def strings(value: object, label: str, *, nonempty: bool = True) -> tuple[str, .
 
 def non_sensitive_op_ref(value: object, label: str) -> str:
     if not isinstance(value, str) or not OP_REF.fullmatch(value):
-        fail(f"{label} must be a canonical op://.../value ref")
+        fail(f"{label} must be a canonical op://Vault/Item/field ref")
     vault = value.removeprefix("op://").split("/", 1)[0]
     if vault.lower().endswith("-sensitive"):
         fail(f"{label} must not reference a *-sensitive vault")
