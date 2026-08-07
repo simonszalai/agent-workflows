@@ -16,7 +16,7 @@ argv, logs, or disk.
 | Rotation providers (self_minted, manual, postgres stub) | `secrets/providers/` |
 | Rotation registry | `config/secret-rotation.json` |
 | Per-repo routing manifest | `<repo>/scripts/secrets/manifest` |
-| Entry points | `bin/sync-secrets`, `bin/rotate-secret` |
+| Entry points | `bin/sync-secrets`, `bin/rotate-secret`, `bin/dev-env` |
 
 ## Manifest format
 
@@ -109,6 +109,28 @@ playbook printed, nothing changed; 4 provider/verify error (safe state);
 Providers: `self_minted` (openssl rand, per-entry `generate` config), `manual`
 (playbook + `--complete` stdin flow), `postgres` (slice-1 stub — amaru bridges
 to `amaru-web/scripts/db/rotate-credentials`; central port lands in slice 3/4).
+
+## dev-env
+
+```bash
+dev-env [--repo <path>] <profile> [--reason TEXT] [--no-sensitive] [--refresh] -- <command...>
+dev-env [--repo <path>] <profile> --keys      # ENVNAMEs only, zero op reads
+dev-env [--repo <path>] --profiles            # list dev profiles, zero op reads
+```
+
+Resolves one manifest `dev` profile and injects it ONLY into the child process
+env (no `.env` files). Plain rows resolve in one batched `op inject` under the
+project service-account token; sensitive rows resolve individually through the
+canonical shim (Touch ID; reason required via `--reason` /
+`SENSITIVE_ACCESS_REASON` / `OP_ACCESS_REASON`, agent shells refused) or are
+skipped wholesale with `--no-sensitive`. An empty resolved value exports
+nothing (exit 1). The child's exit code is propagated.
+
+Encrypted cache (amaru port): aes-256-cbc/pbkdf2, passphrase = the project SA
+token on fd 3, `${DEV_ENV_CACHE_DIR:-~/.cache/agent-workflows-devenv}/<project>/
+<profile>[.nosens].enc` (dir 0700, file 0600), header `v1 <rows-sha256> <epoch>`,
+TTL `DEV_ENV_CACHE_TTL` (86400), row-hash invalidation, `--refresh` bypass; no
+SA token means the cache is silently skipped.
 
 ## Follow-ups
 
