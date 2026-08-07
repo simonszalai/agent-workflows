@@ -193,13 +193,16 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertFalse((self.sb.state / "TESTVAULT__EXTERNAL_API_KEY__value").exists())
 
-    # --- postgres stub --------------------------------------------------------------
+    # --- postgres (central rotator) ---------------------------------------------
 
-    def test_postgres_stub_exits_4_for_non_amaru_projects(self) -> None:
+    def test_postgres_refuses_project_missing_from_db_roles_config(self) -> None:
+        # 'testproj' is not in config/db-roles.json: the rotator must refuse
+        # (precondition, nothing changed) instead of improvising tier constants.
         proc = self.rotate("--ref", PG_REF, "--reason", "t", "--yes",
                            env=self.env(SECRETS_ALLOW_AGENT="1"))
-        self.assertEqual(proc.returncode, 4)
-        self.assertIn("slice 3/4", proc.stderr)
+        self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
+        self.assertIn("is not in", proc.stderr)
+        self.assertEqual(self.sync_calls(), [])
 
 
 if __name__ == "__main__":

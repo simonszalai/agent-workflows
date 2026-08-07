@@ -25,12 +25,19 @@ SHELL_FILES = (
     "secrets/lib/derive.sh",
     "secrets/lib/render-api.sh",
     "secrets/lib/vault.sh",
+    "secrets/lib/db-url.sh",
+    "secrets/lib/db-rotation.sh",
     "secrets/lib/writers/github",
     "secrets/lib/writers/render",
     "secrets/lib/writers/prefect",
     "secrets/providers/self_minted.sh",
     "secrets/providers/manual.sh",
     "secrets/providers/postgres.sh",
+    "secrets/providers/postgres-rotate",
+    "secrets/providers/resend.sh",
+    "secrets/providers/openai.sh",
+    "secrets/providers/xai.sh",
+    "secrets/providers/aws_iam.sh",
 )
 
 AGENT_MARKERS = (
