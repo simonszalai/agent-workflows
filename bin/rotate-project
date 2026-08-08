@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# rotate-project — one-command full rotation sweep for a project.
+#
+# Runs every config/secret-rotation.json entry belonging to --project through
+# rotate-secret in a safe order, verifying consumer health after each entry:
+#
+#   1. staging postgres entries      (first one runs --keep-old as the canary)
+#   2. SELF_MINTED entries           (fully automatic)
+#   3. provider entries              (automated when the provider handler can
+#                                     mint; otherwise the script prompts you to
+#                                     paste the freshly minted value ONCE — it
+#                                     is read silently and piped to --complete,
+#                                     never argv or history)
+#   4. prod postgres entries         (one at a time, health-gated between)
+#
+# Stops on the first failure; rerunning is safe (rotate-secret is resumable /
+# idempotent per entry). Values never reach stdout or argv.
+#
+# usage:
+#   rotate-project <amaru|ts|workflow-pro|autodev> --reason "<why>"
+#                  [--dry-run] [--tier staging|prod|all] [--skip id[,id...]]
+#                  [--only id[,id...]]
+#
+# exit codes: 0 all entries rotated+verified, 1 a rotation or health check
+#   failed (state printed), 2 usage/config, 3 agent-shell refusal.
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REGISTRY="${ROTATION_REGISTRY:-$HERE/../config/secret-rotation.json}"
+ROTATE="${ROTATE_SECRET:-$HERE/rotate-secret}"
+
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+project="" reason="" dry=0 tier="all" skip="" only=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reason) reason="${2:?}"; shift 2 ;;
+    --reason=*) reason="${1#*=}"; shift ;;
+    --dry-run) dry=1; shift ;;
+    --tier) tier="${2:?}"; shift 2 ;;
+    --tier=*) tier="${1#*=}"; shift ;;
+    --skip) skip="${2:?}"; shift 2 ;;
+    --skip=*) skip="${1#*=}"; shift ;;
+    --only) only="${2:?}"; shift 2 ;;
+    --only=*) only="${1#*=}"; shift ;;
+    -h|--help) usage ;;
+    -*) echo "ERROR: unknown flag $1" >&2; usage ;;
+    *) [[ -z "$project" ]] || usage; project="$1"; shift ;;
+  esac
+done
+[[ -n "$project" ]] || usage
+[[ -n "$reason" || "$dry" -eq 1 ]] || { echo "ERROR: --reason is required for a live sweep." >&2; exit 2; }
+case "$tier" in staging|prod|all) ;; *) echo "ERROR: --tier must be staging|prod|all" >&2; exit 2 ;; esac
+command -v jq >/dev/null || { echo "ERROR: missing dependency: jq" >&2; exit 2; }
+[[ -f "$REGISTRY" ]] || { echo "ERROR: registry not found: $REGISTRY" >&2; exit 2; }
+
+# Entry selection + phase classification. Staging-ness comes from the ref's
+# item name (environment is encoded in item titles across every vault).
+plan_json="$(jq -c --arg p "$project" '
+  [.secrets[] | select(.project == $p)
+   | . + {staging: ((.ref // "") | test("staging"; "i")),
+          phase: (if .provider == "postgres" and ((.ref // "") | test("staging"; "i")) then 1
+                  elif .mode == "SELF_MINTED" then 2
+                  elif .provider != "postgres" then 3
+                  else 4 end)}]
+  | sort_by(.phase)' "$REGISTRY")"
+count="$(jq 'length' <<< "$plan_json")"
+[[ "$count" -gt 0 ]] || { echo "ERROR: no registry entries for project '$project'." >&2; exit 2; }
+
+in_csv() { local needle="$1" csv="$2"; [[ ",$csv," == *",$needle,"* ]]; }
+
+health_gate() { # entry json -> verify every consumer dest registered in health_urls
+  local entry="$1" dest url body ok=1
+  while IFS= read -r dest; do
+    url="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY")"
+    [[ -n "$url" ]] || continue
+    if body="$(curl -sf --max-time 30 "$url")"; then
+      if jq -e 'has("databaseRoleSafe")' <<< "$body" >/dev/null 2>&1 \
+         && ! jq -e '.status == "ok" and .databaseRoleSafe == true' <<< "$body" >/dev/null; then
+        echo "  HEALTH FAIL $dest ($url): $body" >&2; ok=0
+      else
+        echo "  health ok: $dest"
+      fi
+    else
+      echo "  HEALTH FAIL $dest ($url): unreachable/non-200" >&2; ok=0
+    fi
+  done < <(jq -r '.consumers[]?.dest' <<< "$entry" | sort -u)
+  [[ "$ok" -eq 1 ]]
+}
+
+echo "rotate-project $project — $count entries (tier=$tier)"
+first_staging_pg=1
+idx=0 ran=0 skipped=0
+while IFS= read -r entry; do
+  idx=$((idx + 1))
+  id="$(jq -r '.id' <<< "$entry")"
+  ref="$(jq -r '.ref' <<< "$entry")"
+  mode="$(jq -r '.mode' <<< "$entry")"
+  provider="$(jq -r '.provider' <<< "$entry")"
+  staging="$(jq -r '.staging' <<< "$entry")"
+  if [[ -n "$only" ]] && ! in_csv "$id" "$only"; then continue; fi
+  if [[ -n "$skip" ]] && in_csv "$id" "$skip"; then echo "[$idx/$count] skip (--skip): $id"; skipped=$((skipped + 1)); continue; fi
+  if [[ "$tier" == "staging" && "$staging" != "true" ]] || [[ "$tier" == "prod" && "$staging" == "true" ]]; then
+    echo "[$idx/$count] skip (tier): $id"; skipped=$((skipped + 1)); continue
+  fi
+
+  extra=()
+  if [[ "$provider" == "postgres" && "$staging" == "true" && "$first_staging_pg" -eq 1 ]]; then
+    extra+=(--keep-old); first_staging_pg=0
+  fi
+  if [[ "$dry" -eq 1 ]]; then
+    echo "[$idx/$count] would rotate: $id ($mode/$provider${extra[0]:+ ${extra[*]}}) -> $ref"
+    "$ROTATE" --ref "$ref" --reason "dry-run" --dry-run || true
+    continue
+  fi
+
+  echo "[$idx/$count] rotating: $id ($mode/$provider${extra[0]:+ ${extra[*]}})"
+  rc=0
+  "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${extra[0]:+"${extra[@]}"} || rc=$?
+  if [[ "$rc" -eq 3 ]]; then
+    # Manual provider: the playbook was printed above. Collect the freshly
+    # minted value once, silently, and finish through --complete.
+    if [[ ! -t 0 ]]; then
+      echo "ERROR: $id needs a manually minted value but stdin is not a terminal." >&2; exit 1
+    fi
+    printf 'Paste the NEW value for %s (input hidden, Enter to submit): ' "$id"
+    IFS= read -rs new_value; echo
+    [[ -n "$new_value" ]] || { echo "ERROR: empty value — aborting before touching $id." >&2; exit 1; }
+    printf %s "$new_value" | "$ROTATE" --ref "$ref" --reason "$reason [$id]" --complete || { new_value=""; exit 1; }
+    new_value=""
+  elif [[ "$rc" -ne 0 ]]; then
+    echo "ERROR: rotation failed for $id (exit $rc) — stopping. Rerun the same command to resume." >&2
+    exit 1
+  fi
+  if ! health_gate "$entry"; then
+    echo "ERROR: post-rotation health gate failed for $id — stopping." >&2
+    exit 1
+  fi
+  ran=$((ran + 1))
+done < <(jq -c '.[]' <<< "$plan_json")
+
+echo
+if [[ "$dry" -eq 1 ]]; then
+  echo "dry-run complete: $count entries planned."
+else
+  echo "rotate-project $project complete: $ran rotated+verified, $skipped skipped."
+fi
