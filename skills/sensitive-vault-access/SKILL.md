@@ -5,6 +5,20 @@ description: Safely request interactive access to 1Password *-sensitive vaults w
 
 # Sensitive vault access
 
+**Staging and dev never belong here.** Every staging and dev credential — reads *and* writes,
+including the `owner` and `app` database roles — lives in the regular `<PROJECT>` vault and resolves
+silently through the project's service account. Only production **write** credentials are sensitive;
+production read-only is regular too. A staging task that appears to need Touch ID is a
+misconfiguration: report it, do not approve it. See `../tool-postgres/SKILL.md` for the full table.
+
+A regular-vault read that prompts has one of two causes, and neither is fixed by escalating:
+
+- the addressed vault is missing from `projects[].service_account.vaults` in
+  `config/project-tools.json`, or its project's token is absent from the Keychain — `bin/op` fails
+  closed with a specific error naming the fix;
+- the caller passed `--account`, which bypasses the service-account path entirely. Never pass
+  `--account` for a regular-vault read.
+
 Before accessing any `op://*-sensitive/...` reference, classify the operation:
 
 1. **Read-only:** stop before resolving the sensitive reference. Production read-only database

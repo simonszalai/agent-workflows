@@ -12,7 +12,10 @@
       ],
       "service_account": {
         "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-amaru-token"
+        "keychain_item": "op-amaru-token",
+        "vaults": [
+          "AMARU"
+        ]
       },
       "autodev_memory": {
         "route": "amaru",
@@ -52,7 +55,10 @@
       ],
       "service_account": {
         "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-autodev-token"
+        "keychain_item": "op-autodev-token",
+        "vaults": [
+          "AUTODEV"
+        ]
       },
       "autodev_memory": {
         "route": "autodev",
@@ -87,7 +93,10 @@
       ],
       "service_account": {
         "token_env": "TS_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-ts-token"
+        "keychain_item": "op-ts-token",
+        "vaults": [
+          "TS"
+        ]
       },
       "autodev_memory": {
         "route": "ts",
@@ -131,7 +140,10 @@
       ],
       "service_account": {
         "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
-        "keychain_item": "op-workflow-pro-token"
+        "keychain_item": "op-workflow-pro-token",
+        "vaults": [
+          "WORKFLOW_PRO"
+        ]
       },
       "autodev_memory": {
         "route": "workflow-pro",

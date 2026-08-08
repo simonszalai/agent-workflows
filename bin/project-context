@@ -21,6 +21,7 @@ CANONICAL_REMOTE = re.compile(r"^([^@:/\s]+)/(.*?/.*)$")
 OP_REF = re.compile(r"^op://[^/\s]+/[^/\s](?:[^/]*[^/\s])?/[^/\s]+$")
 TOKEN_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_OP_SERVICE_ACCOUNT_TOKEN$")
 KEYCHAIN_ITEM = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+VAULT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
@@ -101,6 +102,7 @@ def load_projects(path: Path) -> dict[str, Project]:
 
     projects: dict[str, Project] = {}
     claimed_remotes: dict[str, str] = {}
+    claimed_vaults: dict[str, str] = {}
     claimed_token_envs: dict[str, str] = {}
     for name, value in raw_projects.items():
         if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
@@ -134,7 +136,26 @@ def load_projects(path: Path) -> dict[str, Project]:
             not isinstance(keychain_item, str) or not KEYCHAIN_ITEM.fullmatch(keychain_item)
         ):
             fail(f"projects.{name}.service_account.keychain_item must be a Keychain service name")
-        unknown = set(service_account) - {"token_env", "keychain_item"}
+        vaults = service_account.get("vaults")
+        if vaults is not None:
+            if not isinstance(vaults, list) or not vaults:
+                fail(f"projects.{name}.service_account.vaults must be a non-empty array")
+            for vault in vaults:
+                if not isinstance(vault, str) or not VAULT_NAME.fullmatch(vault):
+                    fail(
+                        f"projects.{name}.service_account.vaults entries must be 1Password "
+                        f"vault names"
+                    )
+                if vault.endswith("-sensitive"):
+                    fail(
+                        f"projects.{name}.service_account.vaults must not list "
+                        f"{vault}: service accounts never read sensitive vaults"
+                    )
+                if vault in claimed_vaults:
+                    fail(f"vault {vault} belongs to both {claimed_vaults[vault]} and {name}")
+                claimed_vaults[vault] = name
+
+        unknown = set(service_account) - {"token_env", "keychain_item", "vaults"}
         if unknown:
             fail(f"projects.{name}.service_account has unknown keys: {', '.join(sorted(unknown))}")
 
