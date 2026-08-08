@@ -159,6 +159,50 @@ class RotateProjectTest(unittest.TestCase):
         self.assertNotIn("credential NOT rotated", proc.stdout)
         self.assertNotIn("synced only", proc.stdout)
 
+    def test_sweep_reaches_the_deploy_finalization_and_completes(self) -> None:
+        """Deploy finalization only runs when EVERY entry succeeded, so it was
+        never exercised: it called op_vault_read, which lives in vault.sh — a lib
+        finalize_pending_deploys does not source. Every sweep that got that far
+        died on `op_vault_read: command not found` after the values were already
+        saved, leaving the services un-redeployed."""
+        fakebin = self.tmp / "fakebin"
+        fakebin.mkdir(exist_ok=True)
+        curl = fakebin / "curl"
+        curl.write_text(
+            '#!/usr/bin/env bash\n'
+            'url=""; prev=""\n'
+            'for a in "$@"; do [[ "$prev" == "--url" ]] && url="$a"; prev="$a"; done\n'
+            'cat >/dev/null 2>&1\n'
+            'case "$url" in\n'
+            '  *"/deploys"*) printf \'[{"deploy":{"id":"dep-1","status":"live"}}]\' ;;\n'
+            '  *) printf \'{"id":"dep-1","status":"live"}\' ;;\n'
+            'esac\n',
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+
+        env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["PATH"] = f"{fakebin}:{env['PATH']}"
+        # Render key via the env sentinel: render_key_ref_for -> env:RENDER_API_KEY,
+        # which only render_key_resolve understands (op_vault_read would have tried
+        # to read the sentinel as an op:// ref even once it was in scope).
+        env["RENDER_API_KEY"] = "fake-render-key"
+        env["SECRETS_RENDER_KEY_REF"] = "env:RENDER_API_KEY"
+
+        proc = subprocess.run(
+            [BIN, "--repo", str(registry(self.tmp)), "p", "--reason", "x",
+             "--only", "p-vendor2"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("command not found", proc.stderr)
+        self.assertNotIn("could not resolve Render key", proc.stderr)
+        self.assertIn("deploy triggered", proc.stdout)
+        self.assertNotIn("stopped after a failure", proc.stdout)
+
     def test_only_filter_narrows_to_one_entry(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--only", "p-vendor")
         self.assertIn("p-vendor", proc.stdout)

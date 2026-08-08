@@ -436,7 +436,7 @@ finalize_pending_deploys() {
   while IFS= read -r sid; do
     [[ -n "$sid" ]] || continue
     ref="$(render_key_ref_for "$sid")" || { echo "ERROR: no Render key ref for $sid" >&2; return 1; }
-    RENDER_API_KEY="$(op_vault_read "$ref")" || { echo "ERROR: could not resolve Render key for $sid" >&2; return 1; }
+    RENDER_API_KEY="$(render_key_resolve "$ref")" || { echo "ERROR: could not resolve Render key for $sid" >&2; return 1; }
     export RENDER_API_KEY
     render_trigger_deploy "$sid" || { echo "ERROR: deploy trigger failed for $sid" >&2; return 1; }
   done <<< "$sids"
@@ -444,7 +444,7 @@ finalize_pending_deploys() {
   while IFS= read -r sid; do
     [[ -n "$sid" ]] || continue
     ref="$(render_key_ref_for "$sid")" || return 1
-    RENDER_API_KEY="$(op_vault_read "$ref")" || return 1
+    RENDER_API_KEY="$(render_key_resolve "$ref")" || return 1
     export RENDER_API_KEY
     t0=$SECONDS
     deadline=$(( $(date +%s) + 1200 ))
