@@ -13,7 +13,7 @@ is no `/lfg` path.
 | --- | --- |
 | `direct` | Fastest safe ticketed path for clear, low-blast-radius work |
 | `standard` | Default auto path: light plan/review with trigger-based escalation |
-| `heavy` | Full machinery: multi-framing plan, deep build-todos, specialist review |
+| `heavy` | Risk-focused planner/build chain plus targeted specialist review |
 
 Aliases for user flags: `--light` → `direct`, `--deep` → `heavy`. Prefer
 `--intensity direct|standard|heavy` in new invocations.
@@ -33,8 +33,8 @@ intensity_floor: none | standard | heavy
   `/ticket-plan`, or at the start of standalone `/ticket-plan` / `/ticket-build` when those run
   alone.
 - **Escalate only, never silently downgrade** after plan or build starts. If the diff first
-  crosses a floor trigger (schema, auth, migration, …), raise intensity for the remaining
-  phases and record the new reason.
+  crosses a hard floor (auth, secrets, destructive/irreversible migration, …), raise intensity
+  for the remaining phases and record the new reason.
 - User `--intensity` / `--deep` / `--light` wins unless a hard floor is higher.
 
 ## Decision gate (top-to-bottom, first match wins)
@@ -45,16 +45,18 @@ intensity_floor: none | standard | heavy
 | User passed `--intensity standard` | `standard` (still raised by floors below) |
 | User passed `--intensity direct` or `--light` | `direct` (still raised by floors below) |
 | `intensity_floor` is `heavy` | `heavy` |
-| Schema/data migration, auth, secrets, billing, deploy-config, cross-repo contract, destructive data, production incident / data-integrity | `heavy` |
+| Auth, secrets, billing, destructive/irreversible data migration, production incident, or a demonstrated high-blast-radius data-integrity risk | `heavy` |
 | Novel cross-cutting architecture where a wrong choice is expensive to reverse AND material design questions are genuinely open | `heavy` |
 | Multi-component or multi-subsystem work that follows established patterns | `standard` |
+| Additive/reversible schema migration that follows an established repository pattern | `direct` when bounded to one subsystem, otherwise `standard`; add targeted data review, not the full heavy workflow |
 | Bounded change following an existing pattern, or investigated bug fix with clear root cause, confined to one subsystem (roughly ≤5 files) | `direct` |
 | Otherwise | `standard` |
 
 Prompt length alone is never a signal. **Bias down, not up.** Size or file count alone never
 selects `heavy` — only a named safety surface or genuinely open expensive-to-reverse design does.
-"New code" is not "new system": adding a feature that composes existing patterns is `standard`,
-and a pattern-following bounded change is `direct` even when it is user-visible. Expected mix on a
+"New code" is not "new system," and "has a migration" is not "destructive migration": adding a
+feature that composes existing patterns is `standard`, and a pattern-following bounded change is
+`direct` even when it is user-visible or includes an additive migration. Expected mix on a
 mature repo: most tickets `direct`, a substantial minority `standard`, `heavy` rare. When the gate
 is ambiguous between two levels, pick the lower one — escalation triggers mid-run raise it if
 reality disagrees, and that one-way ratchet is cheaper than defaulting the machinery up front.
@@ -68,7 +70,7 @@ soak windows):
 | --- | --- | --- |
 | `direct` | ~20 min | one delivery owner and one orchestrator health gate |
 | `standard` | ~45 min | one delivery owner, one general reviewer, and one optional repair |
-| `heavy` | ~90 min | full machinery, still one generation per phase |
+| `heavy` | ~60 min | one risk-focused plan, one build chain, targeted specialist review |
 
 These are design targets, not mid-run stop gates: they exist so each phase's shape (fanout,
 rounds, subagent depth) is chosen to finish inside them in **one generation per phase**. A run
@@ -96,27 +98,14 @@ high/xhigh effort on a role whose output is deterministic or checklist-shaped.
 `/ticket-flow` runs. They raise it only for a named safety surface. Milestone deploy/verify is
 always full gate machinery and is not an intensity knob.
 
-## Cumulative model-session budget
+## No cumulative model-session stop gate
 
-The cap is per ticket activation and survives compaction, rotation, retry, and user-invoked resume.
-A new conversation does not create a new budget. Persist the exact `ticket-run-budget-v1` JSON in
-the ticket's `run-budget <activation_key>` `learning_report` artifact and chain every later dispatch
-to it with `bin/phase-contract ticket-dispatch`. Every update uses `expected_updated_at` and lands
-before the reserved session starts; only a changed activation key may create a new run.
-
-| Intensity | Delivery sessions | Repair cycles | Normal shape |
-| --- | ---: | ---: | --- |
-| `direct` | 2 max | 1 max | delivery owner; optional repair owner |
-| `standard` | 3 max | 1 max | delivery owner; reviewer; optional repair owner |
-| `heavy` | 12 max | 3 max | explicitly larger plan/build/specialist machinery |
-
-Environment work has a separate conditional bucket because it exists only when the route has an
-actual deploy/verification gate: 6 sessions for `direct`/`standard`, 12 for `heavy`. It includes
-deployment owner, the single deterministic-waiter leaf when Conductor requires one, verifier, and
-an environment-scoped repair owner when needed. A repair owner performs any invalidated redeploy;
-the initial deployment owner is not respawned. No-land and epic-step delivery allocate none.
-Crossing a cap returns `BUDGET_EXHAUSTED`; rotation or resume must not reset either bucket or the
-repair count.
+Do not count delegated sessions across phases or persist a run-budget ledger. Session count is an
+observability signal, not a delivery stop condition: a completed build must never be prevented from
+reaching review, landing, or verification merely because earlier work used several agents or
+rotations. Control cost by selecting the smallest intensity, keeping fanout conditional, and using
+the per-phase turn/elapsed/token/rotation contracts. Bounded repair-loop rules still prevent
+no-progress retries, but there is no ticket- or epic-wide model-session allowance to exhaust.
 
 ## What each level runs
 
@@ -152,12 +141,12 @@ repair count.
 
 | Phase | Behavior |
 | --- | --- |
-| Plan | Heavy path: multi-framing + critic panel; peers when peer-escalation triggers fire. Plan artifact required. |
-| Build todos | Always `/create-build-todos` with deep research |
-| Build | Chains with stricter splits on risk/subsystem boundaries |
-| Tests | As orchestrator mode |
-| Review | Heavy native personas when path gate selects heavy; peers on peer-escalation triggers |
-| Resolve | Up to 3 repair cycles when contested findings remain |
+| Plan | One risk-focused native planner. Add one independent critic only when a named hard safety surface or unresolved expensive-to-reverse decision needs it; peers remain deadlock-only. |
+| Build todos | Planner materializes concise risk/dependency-aware todos; no separate deep-research todo agent. |
+| Build | One coherent builder chain by default; split once only when independent risk/subsystem ownership requires it. Tests stay in-chain. |
+| Tests | Builder-owned focused tests plus the orchestrator health gate; no separate test-writer by default. |
+| Review | One combined code/plan-conformance reviewer plus at most one merged specialist for the named safety surface. Peers remain deadlock-only. |
+| Resolve | Up to 2 whole-batch repair cycles when actionable findings remain; no same-risk re-review. |
 | Health | Pre-review + conditional final gate; no direct-style single-gate shortcut |
 
 ## Mapping to existing light/heavy gates
@@ -166,7 +155,7 @@ repair count.
 | --- | --- | --- | --- |
 | `direct` | compact delivery owner | none (upgrade on risk) | minimal todos in-chain |
 | `standard` | compact delivery owner | one general reviewer | minimal todos in-chain |
-| `heavy` | heavy | heavy when gate says so | `/create-build-todos` (deep) |
+| `heavy` | risk-focused planner (+ conditional critic) | combined reviewer (+ targeted specialist) | concise todos from the planner |
 
 `--solo` still disables conditional peer providers only; it never removes native safety
 personas or the plan-artifact requirement.

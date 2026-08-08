@@ -119,7 +119,7 @@ same way as staging: the outer dispatcher sends one fresh repair subagent that c
 the verifier/evidence-contract surface (re-finalizing the `deployment_guide` contract with the
 recorded revision reason), then re-runs `/ticket-verify production <scope>` **without any product
 redeploy or environment mutation**. The same persisted intensity cap applies: one repair cycle for
-`direct`/`standard`, three for explicit `heavy`. Any row
+`direct`/`standard`, two for explicit `heavy`. Any row
 classified `code_defect`, `environment_capacity`, `unknown`, or any non-empty product-failure
 field disqualifies this path and falls through to §3b.
 

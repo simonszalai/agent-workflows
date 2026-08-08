@@ -56,6 +56,7 @@ test('plan fanout gives every native phase one curated context reference', async
       ticketContextFile: '/tmp/ticket-context.md',
       codebaseResearchFile: '/tmp/research.md',
       framings: [{ key: 'mvp-first', description: 'smallest useful change' }],
+      criticLenses: ['correctness'],
     },
     async (prompt, options) => {
       prompts.push(prompt)
@@ -70,9 +71,40 @@ test('plan fanout gives every native phase one curated context reference', async
   )
 
   assert.equal(result.plan.title, 'Bounded context')
-  assert.ok(prompts.length >= 4)
+  assert.equal(prompts.length, 2)
   for (const prompt of prompts) {
     assert.match(prompt, /Curated ticket-context file: \/tmp\/ticket-context\.md/)
     assert.doesNotMatch(prompt, /Source artifact file|Prior-knowledge file/)
   }
+})
+
+test('plan fanout defaults to one risk-focused planner and no critic panel', async () => {
+  let calls = 0
+  const plan = {
+    title: 'Smallest safe plan',
+    what: 'Follow the existing bounded implementation pattern.',
+    why: 'Avoid unnecessary planning fanout.',
+    how: 'Use one risk-focused planner with the curated context packet.',
+    tradeoffs: 'Trades generic breadth for targeted evidence.',
+    alternatives_considered: [{ name: 'Panel', why_rejected: 'No unresolved hard decision.' }],
+    risks: [{ risk: 'Missed edge case', mitigation: 'Use targeted review and health gates.' }],
+    verification_strategy: 'Run the focused tests and canonical health gate.',
+    side_effects: 'none',
+    elimination: 'none',
+    open_questions: [],
+  }
+  const result = await runPlan(
+    {
+      question: 'Plan a bounded change',
+      repoRoot: '/repo',
+      ticketContextFile: '/tmp/ticket-context.md',
+    },
+    async (_prompt, options) => {
+      calls += 1
+      assert.equal(options.phase, 'Draft')
+      return { framing: 'risk-focused', plan, framing_notes: 'smallest safe path' }
+    },
+  )
+  assert.equal(calls, 1)
+  assert.equal(result.stats.critics_succeeded, 0)
 })

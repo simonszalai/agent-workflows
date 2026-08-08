@@ -424,13 +424,16 @@ create_ticket(
 
 ### Autonomous Workflows
 
-- `/ticket-flow`: Autonomous single-ticket execution — `/ticket-plan` -> `/ticket-build` ->
-  `/ticket-deploy staging`; stops after staging verification by default. With the `prod` argument
+- `/ticket-flow`: Autonomous single-ticket execution — compact delivery for direct/standard,
+  risk-focused `/ticket-plan` -> `/ticket-build` for heavy, then `/ticket-deploy staging`; stops
+  after staging verification by default. With the `prod` argument
   it runs `/ticket-deploy full` instead: production promotion/deploy -> production verification ->
   completed; stops on failures, blockers, or genuine timing waits. Intensity
   (`direct`/`standard`/`heavy`, see `skills/references/execution-intensity.md`) is decided once
-  and always requires a plan MCP artifact
-- `/ticket-build`: Implementation phase — build todos -> build -> review -> resolve -> local health gate
+  and always requires a plan MCP artifact. Routine additive migrations do not select heavy, and
+  cumulative model-session counts never stop a later required phase.
+- `/ticket-build`: Implementation phase — todos + build/tests in one owner chain -> targeted review
+  -> resolve -> local health gate
 - `/ticket-deploy`: Deploy+verify phase — `staging` (deploy + verify staging), `prod`
   (status-aware production leg; direct-production asks confirmation unless tiny/safe), or `full`
   (staging then production, gated on exact staging PASS)

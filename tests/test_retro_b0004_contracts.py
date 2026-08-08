@@ -35,11 +35,6 @@ def reference(path: Path) -> dict[str, str]:
     }
 
 
-def deterministic_run_id(contract_version: str, scope_id: str, activation_key: str) -> str:
-    material = f"{contract_version}:{scope_id}:{activation_key}".encode()
-    return hashlib.sha256(material).hexdigest()
-
-
 def initialize_git_worktree(root: Path) -> tuple[Path, str]:
     repo = root / "repo"
     if not repo.exists():
@@ -471,23 +466,6 @@ class TicketRuntimeContractTest(unittest.TestCase):
             "checkpoint": None,
             "context_receipt": reference(context_path),
             "fanout_budget": self.fanout(),
-            "run_budget": {
-                "contract_version": "ticket-run-budget-v1",
-                "ticket_id": "F1",
-                "run_id": deterministic_run_id(
-                    "ticket-run-budget-v1", "F1", "F1-activation"
-                ),
-                "activation_key": "F1-activation",
-                "intensity": "standard",
-                "budget_scope": "environment",
-                "session_id": "deploy-owner-1",
-                "session_role": "deployment_owner",
-                "max_sessions": 6,
-                "max_repair_cycles": 1,
-                "starts_repair_cycle": False,
-                "repair_cycle_id": None,
-                "prior_receipt": None,
-            },
         }
 
     def test_context_receipt_rejects_repeat_and_append(self) -> None:
@@ -580,7 +558,7 @@ class TicketRuntimeContractTest(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2, rejected.stdout)
             self.assertIn("repeated model polling", rejected.stdout)
 
-    def test_ticket_dispatch_enforces_budget_fanout_and_context(self) -> None:
+    def test_ticket_dispatch_enforces_phase_fanout_and_context(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context_path, _ = self.context_receipt(root)
@@ -589,14 +567,7 @@ class TicketRuntimeContractTest(unittest.TestCase):
             dispatch_path.write_text(json.dumps(dispatch))
             accepted = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
             self.assertEqual(accepted.returncode, 0, accepted.stdout)
-
-            valid_run_id = dispatch["run_budget"]["run_id"]
-            dispatch["run_budget"]["run_id"] = "resume-specific-run-id"
-            dispatch_path.write_text(json.dumps(dispatch))
-            rejected = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
-            self.assertEqual(rejected.returncode, 2, rejected.stdout)
-            self.assertIn("deterministic ticket/activation hash", rejected.stdout)
-            dispatch["run_budget"]["run_id"] = valid_run_id
+            self.assertNotIn("run_budget_receipt", json.loads(accepted.stdout))
 
             dispatch["fork_mode"] = "all"
             dispatch_path.write_text(json.dumps(dispatch))
@@ -652,13 +623,6 @@ class TicketRuntimeContractTest(unittest.TestCase):
                 "review_wave": 0,
                 "verifier": 0,
             })
-            dispatch["run_budget"].update({
-                "intensity": "direct",
-                "budget_scope": "delivery",
-                "session_id": "direct-delivery-1",
-                "session_role": "delivery_owner",
-                "max_sessions": 2,
-            })
             dispatch_path = root / "dispatch.json"
             dispatch_path.write_text(json.dumps(dispatch))
             accepted = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
@@ -680,8 +644,6 @@ class TicketRuntimeContractTest(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2, rejected.stdout)
             self.assertIn("separate investigator requires heavy", rejected.stdout)
 
-            first_receipt = root / "direct-receipt.json"
-            first_receipt.write_text(accepted.stdout)
             dispatch["fanout_budget"].update({
                 "intensity": "standard",
                 "investigation_required": False,
@@ -692,23 +654,11 @@ class TicketRuntimeContractTest(unittest.TestCase):
                 "investigator": 0,
                 "review_wave": 1,
             })
-            dispatch["run_budget"].update({
-                "intensity": "standard",
-                "session_id": "standard-review-1",
-                "session_role": "reviewer",
-                "max_sessions": 3,
-                "intensity_escalation_reason": "delivery owner discovered review need",
-                "prior_receipt": reference(first_receipt),
-            })
             dispatch_path.write_text(json.dumps(dispatch))
             escalated = run_script(
                 "phase-contract", "ticket-dispatch", str(dispatch_path)
             )
             self.assertEqual(escalated.returncode, 0, escalated.stdout)
-            self.assertEqual(
-                json.loads(escalated.stdout)["run_budget_receipt"]["intensity_history"],
-                ["direct", "standard"],
-            )
 
     def test_ticket_dispatch_rejects_rotation_generation_beyond_cumulative_cap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -731,132 +681,38 @@ class TicketRuntimeContractTest(unittest.TestCase):
             self.assertEqual(rejected.returncode, 2)
             self.assertIn("cumulative cap", rejected.stdout)
 
-    def test_ticket_dispatch_chains_run_budget_and_fails_closed_on_exhaustion(self) -> None:
+    def test_ticket_dispatch_has_no_cumulative_model_session_stop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context_path, _ = self.context_receipt(root)
             dispatch = self.dispatch(root, context_path)
-            dispatch.update({
-                "phase_name": "build_review",
-                "first_incomplete_unit": "delivery",
-            })
-            dispatch["budget"].update({
-                "max_turns": 40,
-                "max_checkpoints": 12,
-                "max_elapsed_seconds": 3600,
-            })
-            dispatch["deadline_epoch"] = dispatch["started_at_epoch"] + 3600
-            dispatch["run_budget"].update({
-                "budget_scope": "delivery",
-                "session_id": "delivery-1",
-                "session_role": "delivery_owner",
-                "max_sessions": 3,
-            })
             dispatch_path = root / "dispatch.json"
 
-            def reserve() -> subprocess.CompletedProcess:
+            # A legacy field is ignored and no receipt/counter is emitted. More than the old heavy
+            # ceiling of 12 validations must still leave the next required phase dispatchable.
+            for session_number in range(1, 15):
+                dispatch["run_budget"] = {
+                    "legacy_session_number": session_number,
+                    "max_sessions": 12,
+                }
                 dispatch_path.write_text(json.dumps(dispatch))
-                completed = run_script(
+                accepted = run_script(
                     "phase-contract", "ticket-dispatch", str(dispatch_path)
                 )
-                if completed.returncode == 0:
-                    dispatch["run_budget"]["prior_receipt"] = json.loads(
-                        completed.stdout
-                    )["run_budget_receipt"]
-                return completed
+                self.assertEqual(accepted.returncode, 0, accepted.stdout)
+                self.assertNotIn("run_budget_receipt", json.loads(accepted.stdout))
 
-            first = reserve()
-            self.assertEqual(first.returncode, 0, first.stdout)
-            dispatch["run_budget"].update({
-                "session_id": "review-1",
-                "session_role": "reviewer",
-            })
-            second = reserve()
-            self.assertEqual(second.returncode, 0, second.stdout)
-            dispatch["run_budget"].update({
-                "session_id": "repair-1",
-                "session_role": "repair_owner",
-                "starts_repair_cycle": True,
-                "repair_cycle_id": "repair-cycle-1",
-            })
-            third = reserve()
-            self.assertEqual(third.returncode, 0, third.stdout)
-
-            dispatch["run_budget"].update({
-                "session_id": "review-2",
-                "session_role": "reviewer",
-                "starts_repair_cycle": False,
-                "repair_cycle_id": None,
-            })
-            exhausted = reserve()
-            self.assertEqual(exhausted.returncode, 3, exhausted.stdout)
-            self.assertEqual(json.loads(exhausted.stdout)["status"], "BUDGET_EXHAUSTED")
-
-            dispatch = self.dispatch(root, context_path)
-            dispatch.update({
-                "phase_name": "build_review",
-                "first_incomplete_unit": "delivery",
-            })
-            dispatch["budget"].update({
-                "max_turns": 40,
-                "max_checkpoints": 12,
-                "max_elapsed_seconds": 3600,
-            })
-            dispatch["deadline_epoch"] = dispatch["started_at_epoch"] + 3600
-            dispatch["run_budget"].update({
-                "run_id": deterministic_run_id(
-                    "ticket-run-budget-v1", "F1", "F1-activation-2"
-                ),
-                "activation_key": "F1-activation-2",
-                "budget_scope": "delivery",
-                "session_id": "delivery-a",
-                "session_role": "delivery_owner",
-                "max_sessions": 3,
-            })
-            dispatch["fanout_budget"]["activation_key"] = "F1-activation-2"
-            first = reserve()
-            self.assertEqual(first.returncode, 0, first.stdout)
-            dispatch["run_budget"].update({
-                "session_id": "repair-a",
-                "session_role": "repair_owner",
-                "starts_repair_cycle": True,
-                "repair_cycle_id": "repair-cycle-a",
-            })
-            first_repair = reserve()
-            self.assertEqual(first_repair.returncode, 0, first_repair.stdout)
-            dispatch["run_budget"].update({
-                "session_id": "repair-b",
-                "repair_cycle_id": "repair-cycle-b",
-            })
-            repair_exhausted = reserve()
-            self.assertEqual(repair_exhausted.returncode, 3, repair_exhausted.stdout)
-            self.assertIn("repair-cycle budget exhausted", repair_exhausted.stdout)
-
-    def test_environment_repair_owner_consumes_shared_repair_cycle(self) -> None:
+    def test_same_risk_delta_keeps_one_repair_owner_without_session_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             context_path, _ = self.context_receipt(root)
             dispatch = self.dispatch(root, context_path)
+            dispatch["fanout_budget"] = self.fanout("same_risk_delta")
             dispatch_path = root / "dispatch.json"
             dispatch_path.write_text(json.dumps(dispatch))
-            first = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
-            self.assertEqual(first.returncode, 0, first.stdout)
-
-            dispatch["fanout_budget"] = self.fanout("same_risk_delta")
-            dispatch["run_budget"].update({
-                "session_id": "environment-repair-1",
-                "session_role": "repair_owner",
-                "starts_repair_cycle": True,
-                "repair_cycle_id": "environment-repair-cycle-1",
-                "prior_receipt": json.loads(first.stdout)["run_budget_receipt"],
-            })
-            dispatch_path.write_text(json.dumps(dispatch))
-            repaired = run_script(
-                "phase-contract", "ticket-dispatch", str(dispatch_path)
-            )
-            self.assertEqual(repaired.returncode, 0, repaired.stdout)
-            receipt = json.loads(repaired.stdout)["run_budget_receipt"]
-            self.assertEqual(receipt["repair_cycle_ids"], ["environment-repair-cycle-1"])
+            accepted = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+            self.assertNotIn("run_budget_receipt", json.loads(accepted.stdout))
 
     def test_new_risk_boundary_requires_heavy_specialist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -876,11 +732,6 @@ class TicketRuntimeContractTest(unittest.TestCase):
                 "delivery_owner": 0,
                 "builder_chain": 1,
             })
-            dispatch["run_budget"].update({
-                "intensity": "heavy",
-                "max_sessions": 12,
-                "max_repair_cycles": 3,
-            })
             dispatch_path = root / "dispatch.json"
             dispatch_path.write_text(json.dumps(dispatch))
             rejected = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
@@ -896,129 +747,18 @@ class TicketRuntimeContractTest(unittest.TestCase):
             accepted = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
             self.assertEqual(accepted.returncode, 0, accepted.stdout)
 
-    def test_epic_budget_derives_ceiling_rolls_up_ticket_usage_and_caps_repair(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            epic_budget = {
-                "contract_version": "epic-run-budget-v1",
-                "epic_id": "E1",
-                "run_id": deterministic_run_id(
-                    "epic-run-budget-v1", "E1", "E1-plan-v1"
-                ),
-                "activation_key": "E1-plan-v1",
-                "step_intensities": {"F1": "standard"},
-                "step_activation_keys": {"F1": "F1-activation"},
-                "step_addition_reasons": {"F1": "planned milestone step"},
-                "step_intensity_escalation_reasons": {},
-                "milestone_ids": ["M1", "M2"],
-                "production_authorized": False,
-                "production_authorization_reason": None,
-                "max_sessions": 15,
-                "ticket_run_receipts": [],
-                "reservation": {
-                    "session_id": "milestone-owner-1",
-                    "session_role": "milestone_owner",
-                    "milestone_id": "M1",
-                    "starts_repair_cycle": False,
-                    "repair_cycle_id": None,
-                },
-                "prior_receipt": None,
-            }
-            epic_path = root / "epic-budget.json"
-            epic_path.write_text(json.dumps(epic_budget))
-            first = run_script("phase-contract", "epic-budget", str(epic_path))
-            self.assertEqual(first.returncode, 0, first.stdout)
-            first_receipt = json.loads(first.stdout)["epic_budget_receipt"]
-            self.assertEqual(first_receipt["limits"]["total"], 15)
-
-            context_path, _ = self.context_receipt(root)
-            ticket_dispatch = self.dispatch(root, context_path)
-            ticket_dispatch.update({
-                "phase_name": "build_review",
-                "first_incomplete_unit": "delivery",
-            })
-            ticket_dispatch["budget"].update({
-                "max_turns": 40,
-                "max_checkpoints": 12,
-                "max_elapsed_seconds": 3600,
-            })
-            ticket_dispatch["deadline_epoch"] = (
-                ticket_dispatch["started_at_epoch"] + 3600
-            )
-            ticket_dispatch["run_budget"].update({
-                "budget_scope": "delivery",
-                "session_id": "ticket-delivery-1",
-                "session_role": "delivery_owner",
-                "max_sessions": 3,
-            })
-            ticket_path = root / "ticket-dispatch.json"
-            ticket_path.write_text(json.dumps(ticket_dispatch))
-            ticket = run_script("phase-contract", "ticket-dispatch", str(ticket_path))
-            self.assertEqual(ticket.returncode, 0, ticket.stdout)
-
-            epic_budget.update({
-                "step_addition_reasons": {},
-                "ticket_run_receipts": [json.loads(ticket.stdout)["run_budget_receipt"]],
-                "reservation": None,
-                "prior_receipt": first_receipt,
-            })
-            epic_path.write_text(json.dumps(epic_budget))
-            rolled_up = run_script("phase-contract", "epic-budget", str(epic_path))
-            self.assertEqual(rolled_up.returncode, 0, rolled_up.stdout)
-            rolled_up_receipt = json.loads(rolled_up.stdout)["epic_budget_receipt"]
-            self.assertEqual(rolled_up_receipt["used_sessions"], 2)
-
-            epic_budget.update({
-                "step_intensities": {"F1": "heavy"},
-                "step_intensity_escalation_reasons": {
-                    "F1": "auth boundary discovered"
-                },
-                "max_sessions": 24,
-                "ticket_run_receipts": [],
-                "reservation": {
-                    "session_id": "milestone-verifier-1",
-                    "session_role": "milestone_verifier",
-                    "milestone_id": "M1",
-                    "starts_repair_cycle": False,
-                    "repair_cycle_id": None,
-                },
-                "prior_receipt": rolled_up_receipt,
-            })
-            epic_path.write_text(json.dumps(epic_budget))
-            escalated = run_script("phase-contract", "epic-budget", str(epic_path))
-            self.assertEqual(escalated.returncode, 0, escalated.stdout)
-            escalated_receipt = json.loads(escalated.stdout)["epic_budget_receipt"]
-            self.assertEqual(
-                escalated_receipt["step_intensity_histories"]["F1"],
-                ["standard", "heavy"],
-            )
-
-            epic_budget.update({
-                "step_intensity_escalation_reasons": {},
-                "reservation": {
-                    "session_id": "milestone-repair-1",
-                    "session_role": "milestone_repair_owner",
-                    "milestone_id": "M1",
-                    "starts_repair_cycle": True,
-                    "repair_cycle_id": "M1-repair-1",
-                },
-                "prior_receipt": escalated_receipt,
-            })
-            epic_path.write_text(json.dumps(epic_budget))
-            repair = run_script("phase-contract", "epic-budget", str(epic_path))
-            self.assertEqual(repair.returncode, 0, repair.stdout)
-
-            epic_budget["reservation"].update({
-                "session_id": "milestone-repair-2",
-                "repair_cycle_id": "M1-repair-2",
-            })
-            epic_budget["prior_receipt"] = json.loads(repair.stdout)[
-                "epic_budget_receipt"
-            ]
-            epic_path.write_text(json.dumps(epic_budget))
-            exhausted = run_script("phase-contract", "epic-budget", str(epic_path))
-            self.assertEqual(exhausted.returncode, 3, exhausted.stdout)
-            self.assertIn("repair-cycle budget exhausted", exhausted.stdout)
+    def test_epic_model_session_budget_command_and_docs_are_removed(self) -> None:
+        completed = run_script("phase-contract", "--help")
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertNotIn("epic-budget", completed.stdout)
+        for relative in (
+            "skills/epic-flow/SKILL.md",
+            "skills/milestone-flow/SKILL.md",
+            "skills/ticket-flow/SKILL.md",
+        ):
+            contract = (ROOT / relative).read_text()
+            self.assertNotIn("epic-run-budget-v1", contract)
+            self.assertNotIn("ticket-run-budget-v1", contract)
 
 
 class ValidationReceiptTest(unittest.TestCase):
