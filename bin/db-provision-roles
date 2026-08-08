@@ -122,8 +122,19 @@ with_owner_options() {
 }
 
 vault_upsert() { # vault, grouped item title, field label; value in UPSERT_VALUE
-  local vault="$1" title="$2" field="$3" item_id="" check=""
-  item_id="$(op_vault_mutation "$vault" item get "$title" --vault "$vault" --format json 2>/dev/null | jq -r '.id // empty' || true)"
+  local vault="$1" title="$2" field="$3" item_id="" check="" listing="" matches=""
+  # Fail-closed item lookup: an errored listing must abort, never fall through
+  # to create (a transient auth failure once minted a duplicate grouped item).
+  listing="$(op_vault_mutation "$vault" item list --vault "$vault" --format json)" || {
+    echo "ERROR: vault listing failed for $vault — refusing to guess whether '$title' exists." >&2
+    return 1
+  }
+  matches="$(TITLE="$title" jq -r '[.[] | select(.title == env.TITLE)] | length' <<< "$listing")"
+  if [[ "$matches" -gt 1 ]]; then
+    echo "ERROR: $matches items titled '$title' in $vault — deduplicate before upserting." >&2
+    return 1
+  fi
+  item_id="$(TITLE="$title" jq -r '[.[] | select(.title == env.TITLE)] | first | .id // empty' <<< "$listing")"
   if [[ -n "$item_id" ]]; then
     # Replace the field in place (append when the label is absent); the value
     # travels via env into jq and stdin into op — never argv.
