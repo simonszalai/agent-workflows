@@ -71,9 +71,8 @@ plan_json="$(jq -c --arg p "$project" '
    | . + {staging: ((.ref // "") | test("staging"; "i")),
           auto: (.provider == "postgres" or .mode == "SELF_MINTED" or (.automated // false)),
           phase: (if .provider == "postgres" and ((.ref // "") | test("staging"; "i")) then 1
-                  elif .mode == "SELF_MINTED" then 2
-                  elif .provider != "postgres" then 3
-                  else 4 end)}]
+                  elif .provider != "postgres" then 2
+                  else 3 end)}]
   | sort_by(.phase)' "$REGISTRY")"
 count="$(jq 'length' <<< "$plan_json")"
 [[ "$count" -gt 0 ]] || { echo "ERROR: no registry entries for project '$project'." >&2; exit 2; }
@@ -185,7 +184,7 @@ if [[ "$dry" -eq 1 ]]; then
       mode="$(jq -r '.mode' <<< "$entry")"
       phase="$(jq -r '.phase' <<< "$entry")"
       staging="$(jq -r '.staging' <<< "$entry")"
-      if [[ "$phase" == "1" || "$phase" == "4" ]]; then how="sequential"; else how="parallel · save-only, one deploy per service"; fi
+      if [[ "$phase" == "1" || "$phase" == "3" ]]; then how="sequential"; else how="parallel · save-only, one deploy per service"; fi
       local tierlabel="prod"; [[ "$staging" == "true" ]] && tierlabel="staging"
       local plan=""
       case "$provider" in
@@ -284,9 +283,12 @@ finalize_pending_deploys() {
   source "$HERE/../secrets/lib/read.sh"
   # shellcheck source=../secrets/lib/render-api.sh
   source "$HERE/../secrets/lib/render-api.sh"
-  local sids
+  local sids nsids t0 dt
   sids="$(sort -u "$logdir/pending-dests")"
   : > "$logdir/pending-dests"
+  nsids="$(printf '%s\n' "$sids" | grep -c . || true)"
+  echo
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}all values saved — deploying $nsids service(s), one deploy each${C_OFF}"
   while IFS= read -r sid; do
     [[ -n "$sid" ]] || continue
     ref="$(render_key_ref_for "$sid")" || { echo "ERROR: no Render key ref for $sid" >&2; return 1; }
@@ -294,30 +296,33 @@ finalize_pending_deploys() {
     export RENDER_API_KEY
     render_trigger_deploy "$sid" || { echo "ERROR: deploy trigger failed for $sid" >&2; return 1; }
   done <<< "$sids"
+  echo "${C_DIM}  waiting for every deploy to go live (nothing is done until this passes)…${C_OFF}"
   while IFS= read -r sid; do
     [[ -n "$sid" ]] || continue
     ref="$(render_key_ref_for "$sid")" || return 1
     RENDER_API_KEY="$(op_vault_read "$ref")" || return 1
     export RENDER_API_KEY
+    t0=$SECONDS
     deadline=$(( $(date +%s) + 1200 ))
     while [[ $(date +%s) -lt $deadline ]]; do
       status="$(render_get "/services/${sid}/deploys?limit=1" | jq -r '.[0].deploy.status // .[0].status // empty')" || status=""
       case "$status" in
         live) break ;;
-        build_failed|update_failed|canceled|deactivated) echo "ERROR: deploy for $sid ended $status" >&2; return 1 ;;
+        build_failed|update_failed|canceled|deactivated) echo "${C_ERR}✗ deploy for $sid ended $status${C_OFF}" >&2; return 1 ;;
         *) sleep 15 ;;
       esac
     done
-    [[ "$status" == "live" ]] || { echo "ERROR: deploy for $sid did not go live in time" >&2; return 1; }
+    dt=$((SECONDS - t0))
+    [[ "$status" == "live" ]] || { echo "${C_ERR}✗ deploy for $sid did not go live within 20m${C_OFF}" >&2; return 1; }
     url="$(jq -r --arg d "$sid" '.health_urls[$d] // empty' "$REGISTRY")"
     if [[ -n "$url" ]]; then
       if curl -sf --max-time 30 "$url" >/dev/null; then
-        echo "  ${C_OK}deployed + healthy:${C_OFF} $sid"
+        echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live + healthy ($(fmt_dur "$dt"))${C_OFF}"
       else
-        echo "ERROR: post-deploy health check failed for $sid ($url)" >&2; ok=0
+        echo "${C_ERR}✗ $sid live but health check failed ($url)${C_OFF}" >&2; ok=0
       fi
     else
-      echo "  deployed: $sid ${C_DIM}(no health URL registered)${C_OFF}"
+      echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live ($(fmt_dur "$dt")) — no health URL registered${C_OFF}"
     fi
   done <<< "$sids"
   [[ "$ok" -eq 1 ]]
@@ -330,12 +335,12 @@ first_staging_pg=1 ran=0 failed=0 idx=0
 # Phase batches: postgres entries run strictly sequentially (instance advisory
 # lock); other entries within one phase run concurrently when their consumer
 # dest sets are pairwise disjoint (overlapping services would race deploys).
-for phase in 1 2 3 4; do
+for phase in 1 2 3; do
   phase_json="$(jq -c --argjson ph "$phase" '[.[] | select(.phase == $ph)]' <<< "$run_json")"
   n="$(jq 'length' <<< "$phase_json")"
   [[ "$n" -gt 0 ]] || continue
 
-  if [[ "$phase" -eq 1 || "$phase" -eq 4 ]]; then
+  if [[ "$phase" -eq 1 || "$phase" -eq 3 ]]; then
     # postgres: sequential
     while IFS= read -r entry; do
       idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
@@ -345,6 +350,10 @@ for phase in 1 2 3 4; do
       logf="$logdir/$id.log"; : > "$logf"
       t0=$SECONDS
       rc=0; rotate_one "$entry" "$logf" "$xtra" || rc=$?
+      if [[ "$rc" -ne 0 ]] && grep -q 'rerun with --resume' "$logf"; then
+        echo "  ${C_DIM}unfinished rotation state found — resuming it${C_OFF}"
+        rc=0; rotate_one "$entry" "$logf" "--resume" || rc=$?
+      fi
       dt=$((SECONDS - t0))
       if [[ "$rc" -ne 0 ]]; then
         entry_fail "$id" "$rc" "$dt" "$logf"
