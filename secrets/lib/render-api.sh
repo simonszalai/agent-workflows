@@ -44,13 +44,19 @@ render_curl() { # method path [json-body-on-stdin]
   local method="$1" path="$2"
   local key="${RENDER_API_KEY:-}"
   [[ -n "$key" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
-  curl --silent --show-error --fail-with-body \
+  # 429 means the request was NOT executed, so retrying a mutation is safe.
+  local body
+  body="$(cat)"
+  printf '%s' "$body" | render_retry_429 --silent --show-error --fail-with-body \
     --request "$method" \
     --url "https://api.render.com/v1${path}" \
     --header "Accept: application/json" \
     --header "Content-Type: application/json" \
     --config <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
     --data-binary @-
+  local rc=$?
+  body=""
+  return "$rc"
 }
 
 # Upsert ONE env var on a service from a VALUE ON STDIN. Refuses empty, and
@@ -68,11 +74,28 @@ render_upsert_env_value() { # service_id key  (value piped on stdin)
   return "$rc"
 }
 
+# Rate-limit aware curl: on HTTP 429 back off and retry (Render's API limits
+# are per-minute; a rotation sweep legitimately bursts). Bounded, then fails.
+render_retry_429() { # curl args...
+  local attempt=0 max="${RENDER_429_RETRIES:-5}" out rc
+  while :; do
+    out="$(curl "$@" 2>&1)"; rc=$?
+    if [[ "$rc" -eq 22 && "$out" == *429* && "$attempt" -lt "$max" ]]; then
+      attempt=$((attempt + 1))
+      echo "  render API rate-limited (429) — backing off $((attempt * 15))s (retry $attempt/$max)" >&2
+      sleep $((attempt * 15))
+      continue
+    fi
+    [[ -n "$out" ]] && { if [[ "$rc" -eq 0 ]]; then printf '%s' "$out"; else printf '%s\n' "$out" >&2; fi; }
+    return "$rc"
+  done
+}
+
 render_get() { # path (GET, no request body) — read-only helpers
   local path="$1"
   local key="${RENDER_API_KEY:-}"
   [[ -n "$key" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
-  curl --silent --show-error --fail-with-body \
+  render_retry_429 --silent --show-error --fail-with-body \
     --request GET \
     --url "https://api.render.com/v1${path}" \
     --header "Accept: application/json" \
