@@ -110,7 +110,51 @@ run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" --arg
          else true end))]' <<< "$plan_json")"
 run_count="$(jq 'length' <<< "$run_json")"
 skipped=$((count - run_count))
-echo "rotate-project $project — $run_count of $count entries (tier=$tier scope=$scope, $skipped filtered out)"
+# --- output helpers (concise per-entry status; full logs only on failure) ----
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_RUN=$'\033[36m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
+else
+  C_OK=""; C_ERR=""; C_RUN=""; C_DIM=""; C_BOLD=""; C_OFF=""
+fi
+fmt_dur() { local t="$1"; if [[ "$t" -ge 60 ]]; then printf '%dm%02ds' $((t/60)) $((t%60)); else printf '%ds' "$t"; fi; }
+log_highlights() { # concise facts pulled from a full entry log
+  grep -E '^\s*(vault: updated|vault: created op|db: retired|drain: predecessor|render\[[^]]*\] deploy |minted new|health ok:)' "$1" \
+    | sed -E 's/^ */    /' | sort -u | head -6 || true
+}
+entry_ok() { # id, seconds, logf
+  echo "${C_OK}✓${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2"))${C_OFF}"
+  log_highlights "$3"
+}
+entry_fail() { # id, rc, seconds, logf
+  echo "${C_ERR}✗ ${C_BOLD}$1${C_OFF}${C_ERR} failed (rc=$2, $(fmt_dur "$3"))${C_OFF}"
+  echo "${C_DIM}  ── last log lines ──${C_OFF}"
+  tail -12 "$4" | sed 's/^/  /'
+  echo "${C_DIM}  full log: $4${C_OFF}"
+}
+RESULT_IDS=(); RESULT_STATES=(); RESULT_TIMES=()
+record_result() { RESULT_IDS+=("$1"); RESULT_STATES+=("$2"); RESULT_TIMES+=("$3"); }
+
+summary_and_exit() { # exit code
+  local code="$1" i=0 state mark total=$SECONDS
+  echo
+  echo "${C_BOLD}── rotate-project $project summary ──${C_OFF}"
+  for id in "${RESULT_IDS[@]-}"; do
+    [[ -n "$id" ]] || continue
+    state="${RESULT_STATES[$i]}"
+    if [[ "$state" == "ok" ]]; then mark="${C_OK}✓${C_OFF}"; else mark="${C_ERR}✗${C_OFF}"; fi
+    printf '  %b %-45s %s\n' "$mark" "$id" "$(fmt_dur "${RESULT_TIMES[$i]}")"
+    i=$((i + 1))
+  done
+  if [[ "$code" -eq 0 ]]; then
+    echo "  ${C_OK}${C_BOLD}$ran rotated+verified${C_OFF} ${C_DIM}in $(fmt_dur "$total") ($skipped filtered out)${C_OFF}"
+  else
+    echo "  ${C_ERR}${C_BOLD}stopped after a failure${C_OFF} ${C_DIM}— rerun the same command to resume (completed entries converge instantly)${C_OFF}"
+  fi
+  exit "$code"
+}
+
+
+echo "${C_BOLD}rotate-project $project${C_OFF} — $run_count of $count entries ${C_DIM}(tier=$tier scope=$scope, $skipped filtered out)${C_OFF}"
 if [[ "$scope" == "auto" ]]; then
   manual_left="$(jq -r --arg tier "$tier" '[.[] | select((.auto | not)
     and (if $tier == "staging" then .staging elif $tier == "prod" then (.staging | not) else true end)) | .id] | join(", ")' <<< "$plan_json")"
@@ -166,14 +210,18 @@ for phase in 1 2 3 4; do
         echo "[$idx/$run_count] would rotate (sequential): $id${xtra:+ $xtra} -> $(jq -r '.ref' <<< "$entry")"
         continue
       fi
-      echo "[$idx/$run_count] rotating (sequential): $id${xtra:+ $xtra}"
+      echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id${xtra:+ ${C_DIM}$xtra${C_OFF}} ${C_DIM}(postgres, sequential)${C_OFF}"
       logf="$logdir/$id.log"; : > "$logf"
+      t0=$SECONDS
       rc=0; rotate_one "$entry" "$logf" "$xtra" || rc=$?
-      cat "$logf"
+      dt=$((SECONDS - t0))
       if [[ "$rc" -ne 0 ]]; then
-        echo "ERROR: $id failed (rc=$rc) — stopping. Rerun the same command to resume." >&2
-        exit 1
+        entry_fail "$id" "$rc" "$dt" "$logf"
+        record_result "$id" "failed" "$dt"
+        summary_and_exit 1
       fi
+      entry_ok "$id" "$dt" "$logf"
+      record_result "$id" "ok" "$dt"
       ran=$((ran + 1))
     done < <(jq -c '.[]' <<< "$phase_json")
   else
@@ -198,9 +246,10 @@ for phase in 1 2 3 4; do
         continue
       fi
       pids=() ids=() entries=()
+      batch_t0=$SECONDS
       while IFS= read -r entry; do
         idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
-        echo "[$idx/$run_count] rotating (parallel x$bn): $id"
+        echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id ${C_DIM}(parallel x$bn)${C_OFF}"
         logf="$logdir/$id.log"; : > "$logf"
         rotate_one "$entry" "$logf" "" &
         pids+=($!); ids+=("$id"); entries+=("$entry")
@@ -208,36 +257,45 @@ for phase in 1 2 3 4; do
       i=0
       for pid in "${pids[@]}"; do
         rc=0; wait "$pid" || rc=$?
+        dt=$((SECONDS - batch_t0))
         id="${ids[$i]}"; entry="${entries[$i]}"
-        cat "$logdir/$id.log"
         if [[ "$rc" -eq 3 ]]; then
-          echo "  $id: provider needs a manually minted value — queued for the paste phase."
+          echo "${C_DIM}◻ $id needs a manually minted value — queued for the paste phase${C_OFF}"
           manual_queue+=("$entry")
         elif [[ "$rc" -ne 0 ]]; then
-          echo "ERROR: $id failed (rc=$rc) — see log above." >&2
+          entry_fail "$id" "$rc" "$dt" "$logdir/$id.log"
+          record_result "$id" "failed" "$dt"
           failed=$((failed + 1))
         else
+          entry_ok "$id" "$dt" "$logdir/$id.log"
+          record_result "$id" "ok" "$dt"
           ran=$((ran + 1))
         fi
         i=$((i + 1))
       done
-      [[ "$failed" -eq 0 ]] || { echo "ERROR: stopping after parallel batch failures. Rerun to resume." >&2; exit 1; }
+      [[ "$failed" -eq 0 ]] || summary_and_exit 1
     done
   fi
 
   # Manual-completion queue drains at the end of its phase, one prompt at a time.
   if [[ "${#manual_queue[@]}" -gt 0 && "$dry" -eq 0 ]]; then
     for entry in "${manual_queue[@]}"; do
-      manual_complete "$entry" || exit 1
+      mid="$(jq -r '.id' <<< "$entry")"; t0=$SECONDS
+      if manual_complete "$entry"; then
+        record_result "$mid" "ok" "$((SECONDS - t0))"
+      else
+        record_result "$mid" "failed" "$((SECONDS - t0))"
+        summary_and_exit 1
+      fi
       ran=$((ran + 1))
     done
     manual_queue=()
   fi
 done
 
-echo
 if [[ "$dry" -eq 1 ]]; then
+  echo
   echo "dry-run complete: $run_count entries planned."
-else
-  echo "rotate-project $project complete: $ran rotated+verified, $skipped filtered out."
+  exit 0
 fi
+summary_and_exit 0
