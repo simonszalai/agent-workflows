@@ -155,31 +155,36 @@ case "$cmd" in
         json="$(cat)"
         vault="$(jq -r '.vault.name' <<<"$json")"
         title="$(jq -r '.title' <<<"$json")"
-        field="$(jq -r '.fields[0].label' <<<"$json")"
-        jq -r '.fields[0].value' <<<"$json" | tr -d '\n' > "$state/${vault}__${title}__${field}"
+        while IFS= read -r field; do
+          jq -r --arg f "$field" '.fields[] | select(.label == $f) | .value' <<<"$json" \
+            | tr -d '\n' > "$state/${vault}__${title}__${field}"
+        done < <(jq -r '.fields[].label' <<<"$json")
         printf '{"id":"id-%s"}\n' "$title"
         ;;
       get)
         id="${3:-}"; vault=""; prev=""
         for a in "$@"; do [[ "$prev" == "--vault" ]] && vault="$a"; prev="$a"; done
         title="${id#id-}"
+        found=0; fields='[]'
         for fpath in "$state/${vault}__${title}__"*; do
           [[ -e "$fpath" ]] || continue
+          found=1
           base="$(basename "$fpath")"; field="${base##*__}"
-          jq -n --arg id "$id" --arg title "$title" --arg field "$field" \
-            --rawfile value "$fpath" \
-            '{id:$id,title:$title,fields:[{label:$field,value:$value}]}'
-          exit 0
+          fields="$(jq --arg f "$field" --rawfile v "$fpath" '. + [{label:$f, value:$v}]' <<<"$fields")"
         done
-        echo "fake op: item not found" >&2; exit 1
+        [[ $found -eq 1 ]] || { echo "fake op: item not found" >&2; exit 1; }
+        jq -n --arg id "id-$title" --arg title "$title" --argjson fields "$fields" \
+          '{id:$id,title:$title,fields:$fields}'
         ;;
       edit)
         id="${3:-}"; vault=""; prev=""
         for a in "$@"; do [[ "$prev" == "--vault" ]] && vault="$a"; prev="$a"; done
         title="${id#id-}"
         json="$(cat)"
-        field="$(jq -r '.fields[0].label' <<<"$json")"
-        jq -r '.fields[0].value' <<<"$json" | tr -d '\n' > "$state/${vault}__${title}__${field}"
+        while IFS= read -r field; do
+          jq -r --arg f "$field" '.fields[] | select(.label == $f) | .value' <<<"$json" \
+            | tr -d '\n' > "$state/${vault}__${title}__${field}"
+        done < <(jq -r '.fields[].label' <<<"$json")
         printf '{"id":"%s"}\n' "$id"
         ;;
       delete) : ;;

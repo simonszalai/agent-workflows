@@ -217,8 +217,8 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
     def provision(self, *args: str, env: dict[str, str] | None = None):
         return run([BIN, *args], env if env is not None else self.env())
 
-    def stored(self, vault: str, title: str) -> str:
-        return (self.sb.state / f"{vault}__{title}__value").read_text(encoding="utf-8")
+    def stored(self, vault: str, title: str, field: str = "value") -> str:
+        return (self.sb.state / f"{vault}__{title}__{field}").read_text(encoding="utf-8")
 
     def test_bash_syntax_is_valid(self) -> None:
         proc = subprocess.run(["bash", "-n", BIN], capture_output=True, text=True)
@@ -242,8 +242,8 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("web_app", proc.stdout)
         self.assertIn("web_ro", proc.stdout)
-        self.assertIn("op://ALPHAV-sensitive/PROD_POSTGRES_URL_WEB", proc.stdout)
-        self.assertIn("op://ALPHAV/PROD_POSTGRES_URL_WEB_RO", proc.stdout)
+        self.assertIn("op://ALPHAV-sensitive/Postgres prod/web", proc.stdout)
+        self.assertIn("op://ALPHAV/Postgres prod RO/web", proc.stdout)
         self.assertEqual(self.sb.log_lines(), [])
 
     def test_app_live_run_requires_reason(self) -> None:
@@ -263,8 +263,8 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = self.provision("--project", "alpha", "--app", "web", "prod", "--reason", "t")
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         # app item: internal host, sensitive vault; ro item: external host, regular vault
-        app_url = self.stored("ALPHAV-sensitive", "PROD_POSTGRES_URL_WEB")
-        ro_url = self.stored("ALPHAV", "PROD_POSTGRES_URL_WEB_RO")
+        app_url = self.stored("ALPHAV-sensitive", "Postgres prod", "web")
+        ro_url = self.stored("ALPHAV", "Postgres prod RO", "web")
         self.assertIn("web_app", app_url)
         self.assertIn("@int-host:", app_url)
         self.assertIn("/alpha_db", app_url)
@@ -289,7 +289,7 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("db=mem_shared", log)
         self.assertIn("db=mem_extra", log)
         # shared box stores the EXTERNAL host (matches project-mode autodev items)
-        url = self.stored("SHAREDV-sensitive", "PROD_POSTGRES_URL_MEMSVC")
+        url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc")
         self.assertIn("memsvc_app", url)
         self.assertIn("@ext-host:", url)
         self.assertIn("/mem_shared", url)
@@ -303,7 +303,7 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("db=mem_x", log)
         self.assertNotIn("db=mem_shared", log)
         # item lands in the CONSUMER project's sensitive vault, external host
-        url = self.stored("SHAREDV-sensitive", "PROD_POSTGRES_URL_CROSSAPP")
+        url = self.stored("SHAREDV-sensitive", "Postgres prod", "crossapp")
         self.assertIn("crossapp", url)
         self.assertIn("@ext-host:", url)
         self.assertIn("/mem_x", url)
@@ -312,7 +312,7 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = self.provision("--project", "shared", "--app", "crossapp", "prod", "--dry-run")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("instance=alpha/prod", proc.stdout)
-        self.assertIn("op://SHAREDV-sensitive/PROD_POSTGRES_URL_CROSSAPP", proc.stdout)
+        self.assertIn("op://SHAREDV-sensitive/Postgres prod/crossapp", proc.stdout)
         self.assertEqual(self.sb.log_lines(), [])
 
 
