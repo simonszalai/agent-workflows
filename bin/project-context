@@ -22,6 +22,9 @@ OP_REF = re.compile(r"^op://[^/\s]+/[^/\s](?:[^/]*[^/\s])?/[^/\s]+$")
 TOKEN_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_OP_SERVICE_ACCOUNT_TOKEN$")
 KEYCHAIN_ITEM = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 VAULT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+# The service-account token vault ("OP SA") has a space in its name, so this
+# reference form is deliberately looser than OP_REF.
+SPACED_OP_REF = re.compile(r"^op://[^/]+/[^/]+/[^/]+$")
 PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
@@ -136,6 +139,20 @@ def load_projects(path: Path) -> dict[str, Project]:
             not isinstance(keychain_item, str) or not KEYCHAIN_ITEM.fullmatch(keychain_item)
         ):
             fail(f"projects.{name}.service_account.keychain_item must be a Keychain service name")
+        token_ref = service_account.get("token_ref")
+        if token_ref is not None and (
+            not isinstance(token_ref, str) or not SPACED_OP_REF.fullmatch(token_ref)
+        ):
+            fail(
+                f"projects.{name}.service_account.token_ref must be an "
+                f"op://<vault>/<item>/<field> reference"
+            )
+        if isinstance(token_ref, str) and "-sensitive/" in token_ref:
+            fail(
+                f"projects.{name}.service_account.token_ref must not name a sensitive "
+                f"vault: the service-account token vault is human-account owned"
+            )
+
         vaults = service_account.get("vaults")
         if vaults is not None:
             if not isinstance(vaults, list) or not vaults:
@@ -155,7 +172,7 @@ def load_projects(path: Path) -> dict[str, Project]:
                     fail(f"vault {vault} belongs to both {claimed_vaults[vault]} and {name}")
                 claimed_vaults[vault] = name
 
-        unknown = set(service_account) - {"token_env", "keychain_item", "vaults"}
+        unknown = set(service_account) - {"token_env", "keychain_item", "token_ref", "vaults"}
         if unknown:
             fail(f"projects.{name}.service_account has unknown keys: {', '.join(sorted(unknown))}")
 

@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Sync each project's 1Password service-account token from the canonical
+# "OP SA" vault into the Mac Keychain item that bin/op and bin/op-env read.
+#
+# Run this after rotating a service account in the 1Password console. Reading
+# "OP SA" uses the reviewed human account (the tokens it holds are exactly what
+# the service accounts cannot read), so expect at most one Touch ID prompt for
+# the whole run.
+#
+# Token values never reach argv, a file, the audit log, or this script's output:
+# bin/keychain-put receives them on stdin from a shell builtin, and every report
+# line names only the project, vault, and Keychain item.
+#
+# token_ref points at a 1Password item ID rather than its title: the
+# "Service Account Auth Token: X" titles contain a colon, which op rejects
+# inside a secret reference, and IDs survive a rename.
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REGISTRY="$HERE/../config/project-tools.json"
+OP="$HERE/op"
+KEYCHAIN_PUT="$HERE/keychain-put"
+KEYCHAIN_ACCOUNT="${SA_TOKEN_KEYCHAIN_ACCOUNT:-simon}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  sync-sa-tokens [--project ID] [--dry-run] [--verify-only]
+
+Syncs 1Password service-account tokens into the Mac Keychain for every project
+registered in config/project-tools.json.
+
+  --project ID    sync one project instead of all
+  --dry-run       report what would be synced; reads nothing
+  --verify-only   check the stored token still authenticates; writes nothing
+EOF
+}
+
+fail() {
+  echo "sync-sa-tokens: $*" >&2
+  exit "${2:-2}"
+}
+
+only_project=""
+dry_run=0
+verify_only=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project)
+      [[ $# -ge 2 ]] || fail "--project requires a value"
+      only_project="$2"; shift 2 ;;
+    --project=*)
+      only_project="${1#*=}"; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    --verify-only) verify_only=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown option: $1" ;;
+  esac
+done
+
+(( dry_run && verify_only )) && fail "--dry-run and --verify-only are mutually exclusive"
+
+command -v jq >/dev/null 2>&1 || fail "jq is required" 3
+command -v security >/dev/null 2>&1 || fail "security is required (macOS Keychain)" 3
+[[ -r "$REGISTRY" ]] || fail "missing registry: $REGISTRY" 3
+[[ -x "$OP" ]] || fail "missing 1Password wrapper: $OP" 3
+[[ -x "$KEYCHAIN_PUT" ]] || fail "missing Keychain writer: $KEYCHAIN_PUT" 3
+
+projects="$(
+  jq -r '
+    .projects
+    | to_entries
+    | map(select(.value.service_account.token_ref and .value.service_account.keychain_item))
+    | .[].key
+  ' "$REGISTRY"
+)"
+[[ -n "$projects" ]] || fail "no project in the registry declares service_account.token_ref"
+
+if [[ -n "$only_project" ]]; then
+  grep -qx -- "$only_project" <<<"$projects" ||
+    fail "project '$only_project' has no service_account.token_ref in the registry"
+  projects="$only_project"
+fi
+
+synced=0
+failed=0
+
+if (( dry_run )); then
+  for project in $projects; do
+    printf '%-14s %-24s <- %s\n' "$project" \
+      "$(jq -er --arg p "$project" '.projects[$p].service_account.keychain_item' "$REGISTRY")" \
+      "$(jq -er --arg p "$project" '.projects[$p].service_account.token_ref' "$REGISTRY")"
+  done
+  exit 0
+fi
+
+# One `op` process for every token, not one per token. Outside Conductor the
+# shim's session cache is disabled, so each additional invocation would be
+# another Touch ID prompt. `op inject` resolves the whole template in a single
+# authenticated process, making a full sync cost exactly one prompt.
+resolved=""
+if (( ! verify_only )); then
+  template=""
+  for project in $projects; do
+    template+="$project	$(jq -er --arg p "$project" \
+      '"{{ " + .projects[$p].service_account.token_ref + " }}"' "$REGISTRY")
+"
+  done
+  if ! resolved="$(printf '%s' "$template" |
+       OP_USE_CANONICAL_HUMAN_ACCOUNT=1 "$OP" inject 2>/dev/null)" || [[ -z "$resolved" ]]; then
+    fail "could not resolve service-account tokens from the OP SA vault" 3
+  fi
+fi
+
+while IFS= read -r project; do
+  [[ -n "$project" ]] || continue
+  keychain_item="$(jq -er --arg p "$project" \
+    '.projects[$p].service_account.keychain_item' "$REGISTRY")"
+  vault="$(jq -er --arg p "$project" \
+    '.projects[$p].service_account.vaults[0]' "$REGISTRY")"
+
+  token=""
+  if (( verify_only )); then
+    token="$(security find-generic-password -s "$keychain_item" -a "$KEYCHAIN_ACCOUNT" -w 2>/dev/null || true)"
+    if [[ -z "$token" ]]; then
+      printf '%-14s MISSING   no Keychain item %s\n' "$project" "$keychain_item"
+      failed=$((failed + 1))
+      continue
+    fi
+  else
+    # Pull this project's line out of the already-resolved template. No value
+    # is ever echoed; the substitution happens inside the shell.
+    token=""
+    while IFS=$'\t' read -r line_project line_token; do
+      if [[ "$line_project" == "$project" ]]; then
+        token="$line_token"
+        break
+      fi
+    done <<<"$resolved"
+
+    if [[ -z "$token" || "$token" == *"{{"* ]]; then
+      printf '%-14s FAILED    no token resolved for %s\n' "$project" "$keychain_item"
+      failed=$((failed + 1))
+      continue
+    fi
+
+    # keychain-put takes the value on stdin, so the token never appears in argv
+    # where ps could read it. printf is a shell builtin, so it forks nothing.
+    if ! printf '%s' "$token" |
+         "$KEYCHAIN_PUT" "$keychain_item" "$KEYCHAIN_ACCOUNT" >/dev/null 2>&1; then
+      printf '%-14s FAILED    could not write Keychain item %s\n' "$project" "$keychain_item"
+      token=""
+      failed=$((failed + 1))
+      continue
+    fi
+
+    stored="$(security find-generic-password -s "$keychain_item" -a "$KEYCHAIN_ACCOUNT" -w 2>/dev/null || true)"
+    if [[ "$stored" != "$token" ]]; then
+      stored=""
+      token=""
+      printf '%-14s FAILED    Keychain item %s did not store the value\n' "$project" "$keychain_item"
+      failed=$((failed + 1))
+      continue
+    fi
+    stored=""
+  fi
+
+  # Prove the token actually authenticates against the vault it serves, so a
+  # stale or mismatched rotation is caught here rather than by a later prompt.
+  if OP_SERVICE_ACCOUNT_TOKEN="$token" "$OP" vault get "$vault" >/dev/null 2>&1; then
+    printf '%-14s OK        %s -> vault %s\n' "$project" "$keychain_item" "$vault"
+    synced=$((synced + 1))
+  else
+    printf '%-14s FAILED    %s does not authenticate against vault %s\n' \
+      "$project" "$keychain_item" "$vault"
+    failed=$((failed + 1))
+  fi
+  token=""
+done <<<"$projects"
+
+resolved=""
+
+echo
+if (( failed )); then
+  echo "sync-sa-tokens: $synced ok, $failed failed" >&2
+  exit 1
+fi
+echo "sync-sa-tokens: $synced ok"

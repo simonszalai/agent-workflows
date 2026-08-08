@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Store a generic-password Keychain item, reading the value from stdin.
+
+`security add-generic-password` cannot do this safely: `-w`/`-X` place the
+secret in argv where any local process can read it via ps, and its interactive
+prompt truncates at 128 bytes — shorter than a 1Password service-account token.
+This calls the Keychain API directly, so the value only ever exists in this
+process's memory.
+
+usage: keychain-put <service> <account>   # value on stdin
+"""
+
+from __future__ import annotations
+
+import ctypes
+import ctypes.util
+import sys
+
+
+def load_security_framework() -> ctypes.CDLL:
+    path = ctypes.util.find_library("Security")
+    if not path:
+        raise SystemExit("keychain-put: Security framework not found")
+    framework = ctypes.CDLL(path, use_errno=True)
+
+    framework.SecKeychainFindGenericPassword.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    framework.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+
+    framework.SecKeychainAddGenericPassword.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    framework.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+
+    framework.SecKeychainItemModifyAttributesAndData.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+    ]
+    framework.SecKeychainItemModifyAttributesAndData.restype = ctypes.c_int32
+
+    framework.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    framework.SecKeychainItemFreeContent.restype = ctypes.c_int32
+
+    framework.CFRelease.argtypes = [ctypes.c_void_p]
+    framework.CFRelease.restype = None
+    return framework
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        print("usage: keychain-put <service> <account>", file=sys.stderr)
+        return 2
+    service = argv[1].encode("utf-8")
+    account = argv[2].encode("utf-8")
+    secret = sys.stdin.buffer.read()
+    if not secret:
+        print("keychain-put: refusing to store an empty value", file=sys.stderr)
+        return 2
+
+    framework = load_security_framework()
+    existing_length = ctypes.c_uint32(0)
+    existing_data = ctypes.c_void_p()
+    item = ctypes.c_void_p()
+
+    status = framework.SecKeychainFindGenericPassword(
+        None,
+        len(service),
+        service,
+        len(account),
+        account,
+        ctypes.byref(existing_length),
+        ctypes.byref(existing_data),
+        ctypes.byref(item),
+    )
+
+    if status == 0:
+        # Do not leave the previous secret sitting in this process's memory.
+        framework.SecKeychainItemFreeContent(None, existing_data)
+        status = framework.SecKeychainItemModifyAttributesAndData(
+            item, None, len(secret), secret
+        )
+        framework.CFRelease(item)
+        action = "updated"
+    else:
+        status = framework.SecKeychainAddGenericPassword(
+            None, len(service), service, len(account), account, len(secret), secret, None
+        )
+        action = "created"
+
+    if status != 0:
+        print(f"keychain-put: Keychain error {status} for {argv[1]}", file=sys.stderr)
+        return 1
+    print(action)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

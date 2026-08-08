@@ -13,6 +13,7 @@
       "service_account": {
         "token_env": "AMARU_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-amaru-token",
+        "token_ref": "op://OP SA/j3nzwa3qi3xkbjpoyj3i6cdp64/credential",
         "vaults": [
           "AMARU"
         ]
@@ -56,6 +57,7 @@
       "service_account": {
         "token_env": "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-autodev-token",
+        "token_ref": "op://OP SA/guvq7or3ibagshd6hmily5oo6u/credential",
         "vaults": [
           "AUTODEV"
         ]
@@ -94,6 +96,7 @@
       "service_account": {
         "token_env": "TS_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-ts-token",
+        "token_ref": "op://OP SA/ntotyjj6l2yukkd3xts5swtmhy/credential",
         "vaults": [
           "TS"
         ]
@@ -141,6 +144,7 @@
       "service_account": {
         "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-workflow-pro-token",
+        "token_ref": "op://OP SA/754s5xoosamdvseo6wd2z26pta/credential",
         "vaults": [
           "WORKFLOW_PRO"
         ]
