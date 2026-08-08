@@ -16,14 +16,18 @@
 # Stops on the first failure; rerunning is safe (rotate-secret is resumable /
 # idempotent per entry). Values never reach stdout or argv.
 #
-# By default only entries that rotate WITHOUT manual intervention run
-# (postgres, self-minted, and providers whose registry entry declares
-# "automated": true). --manual runs ONLY the manual-intervention entries
-# (AWS/Resend-style mint-at-provider flows); --all runs both.
+# Two entry actions:
+#   ROTATE — postgres and self-minted entries mint/stage a NEW credential
+#            automatically (nothing to do by hand).
+#   SYNC   — provider-minted entries (AWS, Resend, ...) push whatever value the
+#            1Password item currently holds to every consumer. To rotate one,
+#            update the item in 1Password first, then run the sweep (or filter
+#            to just that entry with --only).
+# Every run covers all selected entries; --only/--skip/--tier narrow the run.
 #
 # usage:
 #   rotate-project <amaru|ts|workflow-pro|autodev> --reason "<why>"
-#                  [--dry-run] [--tier staging|prod|all] [--manual | --all]
+#                  [--dry-run] [--tier staging|prod|all]
 #                  [--skip id[,id...]] [--only id[,id...]]
 #
 # exit codes: 0 all entries rotated+verified, 1 a rotation or health check
@@ -37,14 +41,12 @@ ROTATE="${ROTATE_SECRET:-$HERE/rotate-secret}"
 
 usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-project="" reason="" dry=0 tier="all" skip="" only="" scope="auto"
+project="" reason="" dry=0 tier="all" skip="" only=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reason) reason="${2:?}"; shift 2 ;;
     --reason=*) reason="${1#*=}"; shift ;;
     --dry-run) dry=1; shift ;;
-    --manual) scope="manual"; shift ;;
-    --all) scope="all"; shift ;;
     --tier) tier="${2:?}"; shift 2 ;;
     --tier=*) tier="${1#*=}"; shift ;;
     --skip) skip="${2:?}"; shift 2 ;;
@@ -98,13 +100,10 @@ health_gate() { # entry json -> verify every consumer dest registered in health_
 }
 
 # Filter the plan down to what this invocation actually runs.
-run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" --arg scope "$scope" '
+run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
   def incsv($csv): ($csv | split(",")) as $l | . as $x | ($l | index($x)) != null;
   [.[] | select(($only == "" or (.id | incsv($only)))
     and (($skip == "") or ((.id | incsv($skip)) | not))
-    and (if $scope == "auto" then .auto
-         elif $scope == "manual" then (.auto | not)
-         else true end)
     and (if $tier == "staging" then .staging
          elif $tier == "prod" then (.staging | not)
          else true end))]' <<< "$plan_json")"
@@ -154,12 +153,7 @@ summary_and_exit() { # exit code
 }
 
 
-echo "${C_BOLD}rotate-project $project${C_OFF} — $run_count of $count entries ${C_DIM}(tier=$tier scope=$scope, $skipped filtered out)${C_OFF}"
-if [[ "$scope" == "auto" ]]; then
-  manual_left="$(jq -r --arg tier "$tier" '[.[] | select((.auto | not)
-    and (if $tier == "staging" then .staging elif $tier == "prod" then (.staging | not) else true end)) | .id] | join(", ")' <<< "$plan_json")"
-  [[ -z "$manual_left" ]] || echo "manual-intervention entries NOT included (run with --manual): $manual_left"
-fi
+echo "${C_BOLD}rotate-project $project${C_OFF} — $run_count of $count entries ${C_DIM}(tier=$tier, $skipped filtered out)${C_OFF}"
 
 # --- dry-run: render the full plan (credential-free) and exit ----------------
 finalize_canary() {
@@ -203,7 +197,7 @@ if [[ "$dry" -eq 1 ]]; then
             plan="stage new versioned DB login → deploy → health-gate → drain + retire predecessor"
           fi ;;
         self_minted) plan="mint $(jq -r '(.generate.format // "hex") + "/" + ((.generate.bytes // 32)|tostring)' <<< "$entry") automatically → sync consumers → deploy once per service" ;;
-        *) plan="you mint at the provider dashboard, paste once → sync consumers → deploy once per service" ;;
+        *) plan="SYNC the item's current 1Password value → consumers → one deploy per service (update the item in 1Password first to rotate it)" ;;
       esac
       echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${tierlabel} · ${how}${C_OFF}"
       echo "    ${C_DIM}plan${C_OFF}  $plan"
@@ -224,19 +218,38 @@ if [[ "$dry" -eq 1 ]]; then
     done < <(jq -c '.[]' <<< "$entries")
   }
   auto_json="$(jq -c '[.[] | select(.auto)]' <<< "$run_json")"
-  manual_json="$(jq -c '[.[] | select(.auto | not)]' <<< "$run_json")"
-  render_plan_section "AUTOMATIC — runs hands-off" "$C_OK" "$auto_json"
-  render_plan_section "MANUAL — prompts for a provider-minted value" "$C_ERR" "$manual_json"
+  sync_json="$(jq -c '[.[] | select(.auto | not)]' <<< "$run_json")"
+  render_plan_section "ROTATE — new credentials minted automatically" "$C_OK" "$auto_json"
+  render_plan_section "SYNC — pushes the current 1Password value to consumers" "$C_RUN" "$sync_json"
   echo
   echo "${C_DIM}dry-run: nothing was read from 1Password or written anywhere.${C_OFF}"
   exit 0
 fi
 
 
+SYNC="${SYNC_SECRETS:-$HERE/sync-secrets}"
+
+sync_one() { # entry json, log file: push the CURRENT vault value to consumers
+  local entry="$1" logf="$2" ref rc=0 r
+  ref="$(jq -r '.ref' <<< "$entry")"
+  while IFS= read -r r; do
+    [[ -n "$r" ]] || continue
+    "$SYNC" --repo "$r" --changed "$ref" --reason "$reason [$(jq -r '.id' <<< "$entry")]" --no-deploy >> "$logf" 2>&1 || rc=$?
+  done < <(jq -r '[.consumers[]?.repo] | unique | .[]' <<< "$entry")
+  if [[ "$rc" -eq 0 ]]; then
+    jq -r '.consumers[]?.dest' <<< "$entry" >> "$logdir/pending-dests"
+  fi
+  return "$rc"
+}
+
 rotate_one() { # entry json, log file, extra flag or "", batched(0|1); returns rotate rc
   local entry="$1" logf="$2" xtra="$3" batched="${4:-0}" id ref rc=0
   id="$(jq -r '.id' <<< "$entry")"
   ref="$(jq -r '.ref' <<< "$entry")"
+  if [[ "$(jq -r '.auto' <<< "$entry")" != "true" ]]; then
+    sync_one "$entry" "$logf"
+    return $?
+  fi
   if [[ "$batched" -eq 1 ]]; then
     # Save-only: values are written everywhere but Render deploys are deferred;
     # the orchestrator deploys each touched service once per phase.
@@ -301,25 +314,9 @@ finalize_pending_deploys() {
   [[ "$ok" -eq 1 ]]
 }
 
-manual_complete() { # entry json (provider printed its playbook already)
-  local entry="$1" id ref new_value
-  id="$(jq -r '.id' <<< "$entry")"
-  ref="$(jq -r '.ref' <<< "$entry")"
-  if ! { : < /dev/tty; } 2>/dev/null; then
-    echo "ERROR: $id needs a manually minted value but there is no controlling terminal." >&2; return 1
-  fi
-  printf 'Paste the NEW value for %s (input hidden, Enter to submit): ' "$id" > /dev/tty
-  IFS= read -rs new_value < /dev/tty; echo > /dev/tty
-  [[ -n "$new_value" ]] || { echo "ERROR: empty value — aborting before touching $id." >&2; return 1; }
-  printf %s "$new_value" | "$ROTATE" --ref "$ref" --reason "$reason [$id]" --complete || { new_value=""; return 1; }
-  new_value=""
-  health_gate "$entry"
-}
-
 logdir="$(mktemp -d)"
 trap 'rm -rf "$logdir"' EXIT
 first_staging_pg=1 ran=0 failed=0 idx=0
-manual_queue=()
 
 # Phase batches: postgres entries run strictly sequentially (instance advisory
 # lock); other entries within one phase run concurrently when their consumer
@@ -371,10 +368,7 @@ for phase in 1 2 3 4; do
         rc=0; wait "$pid" || rc=$?
         dt=$((SECONDS - batch_t0))
         id="${ids[$i]}"; entry="${entries[$i]}"
-        if [[ "$rc" -eq 3 ]]; then
-          echo "${C_DIM}◻ $id needs a manually minted value — queued for the paste phase${C_OFF}"
-          manual_queue+=("$entry")
-        elif [[ "$rc" -ne 0 ]]; then
+        if [[ "$rc" -ne 0 ]]; then
           entry_fail "$id" "$rc" "$dt" "$logdir/$id.log"
           record_result "$id" "failed" "$dt"
           failed=$((failed + 1))
@@ -392,20 +386,6 @@ for phase in 1 2 3 4; do
     fi
   fi
 
-  # Manual-completion queue drains at the end of its phase, one prompt at a time.
-  if [[ "${#manual_queue[@]}" -gt 0 && "$dry" -eq 0 ]]; then
-    for entry in "${manual_queue[@]}"; do
-      mid="$(jq -r '.id' <<< "$entry")"; t0=$SECONDS
-      if manual_complete "$entry"; then
-        record_result "$mid" "ok" "$((SECONDS - t0))"
-      else
-        record_result "$mid" "failed" "$((SECONDS - t0))"
-        summary_and_exit 1
-      fi
-      ran=$((ran + 1))
-    done
-    manual_queue=()
-  fi
 done
 
 finalize_canary || summary_and_exit 1
