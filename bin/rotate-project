@@ -321,12 +321,12 @@ if [[ "$dry" -eq 1 ]]; then
       pf_checked=$((pf_checked+1))
     done < <(printf '%s
 ' "$needed" | sed 's|^op://||; s|/[^/]*$||' | sort -u)
+    echo
     if [[ "$pf_fail" -eq 1 ]]; then
-      echo
-      echo "${C_ERR}dry-run FAILED preflight: the sweep would stop on the missing refs above.${C_OFF}" >&2
+      echo "${C_ERR}${C_BOLD}✗ PREFLIGHT FAIL${C_OFF}${C_ERR} — a live sweep would stop on the missing refs above.${C_OFF}" >&2
       exit 1
     fi
-    echo "${C_DIM}preflight: $pf_checked item(s) verified by field name; $pf_unchecked Touch-ID item(s) unchecked. No values were read.${C_OFF}"
+    echo "${C_OK}${C_BOLD}✓ PREFLIGHT PASS${C_OFF} ${C_DIM}— $pf_checked item(s) verified by field name; $pf_unchecked Touch-ID item(s) unchecked (verified at run time). No values were read.${C_OFF}"
   fi
   echo "${C_DIM}dry-run: nothing was written anywhere; no secret values were read.${C_OFF}"
   exit 0
