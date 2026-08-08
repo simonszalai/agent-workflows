@@ -58,7 +58,17 @@ vault_item_id() { # ref -> immutable item id; 1=confirmed absent, 2=unproven/dup
   esac
 }
 
-vault_create_value() { # ref  (value in $VAULT_VALUE env)
+vault_create_value() { # ref  (value in $VAULT_VALUE env); serialized per vault
+  local vault_lock rc=0
+  local REF_VAULT REF_TITLE REF_FIELD
+  ref_parts "$1" || return 2
+  vault_lock="$(vault_item_lock_acquire "$REF_VAULT")" || return 1
+  vault_create_value_locked "$1" || rc=$?
+  vault_item_lock_release "$vault_lock"
+  return "$rc"
+}
+
+vault_create_value_locked() { # ref  (value in $VAULT_VALUE env)
   local ref="$1" rc check=""
   local REF_VAULT REF_TITLE REF_FIELD
   ref_parts "$ref" || return 2
@@ -83,14 +93,16 @@ vault_create_value() { # ref  (value in $VAULT_VALUE env)
   echo "  vault: created $ref"
 }
 
-# Per-item mutex for read-modify-write edits. 1Password item edits replace the
-# whole field array, so two concurrent editors of one grouped item can clobber
-# each other's fields even when 409 retries re-read (read → peer writes → our
-# write lands with the peer's stale field). mkdir is the portable atomic lock.
-vault_item_lock_acquire() { # vault item_id -> echoes lock dir
+# Per-VAULT mutex for read-modify-write edits. Observed live: 1Password
+# returns 409 Conflict for concurrent edits of DIFFERENT items in the same
+# vault (server-side vault versioning), so item-level serialization is not
+# enough — all writes into one vault are sequential. Edits take ~2-3s, so a
+# full parallel batch serializes into a few tens of seconds at worst; reads
+# and Render syncs stay fully parallel. mkdir is the portable atomic lock.
+vault_item_lock_acquire() { # vault [ignored] -> echoes lock dir
   local lockroot="${VAULT_LOCK_DIR:-$HOME/.local/state/agent-workflows/vault-locks}" key lockdir waited=0
   mkdir -p "$lockroot"
-  key="$(printf '%s/%s' "$1" "$2" | shasum -a 256 | cut -c1-16)"
+  key="$(printf '%s' "$1" | shasum -a 256 | cut -c1-16)"
   lockdir="$lockroot/$key.lock"
   until mkdir "$lockdir" 2>/dev/null; do
     waited=$((waited + 1))
