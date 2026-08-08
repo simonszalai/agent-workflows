@@ -157,10 +157,10 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   round counter and cumulative run-budget receipt. Production failures retain their
   environment-specific safety boundary. A fresh conversation reuses that receipt; it never resets
   model-session or repair capacity.
-- For a Hermes-origin ticket, consume only server-returned pickup/approval truth. The restricted
-  principal cannot self-approve or set execution statuses; an admin approval pair authorizes the
-  current live plan, and any later Hermes edit clears it. Do not add a client-side origin filter or
-  carry a cached approval past an edit.
+- Treat ticket origin as immutable audit provenance only. Never branch delivery, pickup, status
+  transitions, or blocker metadata on origin or on null execution-approval fields. Consume
+  `next_ticket` eligibility as canonical server truth; `approve_execution=true` is an explicit
+  admin-only audit action, not an implementation prerequisite.
 
 ### 1. Gather context
 

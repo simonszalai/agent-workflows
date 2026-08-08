@@ -131,15 +131,18 @@ There is no `approved` ticket status. Approval is the decision to leave `planned
 work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
 are retired; use `in_progress` for any ticket-related flow that has started.
 
-### Hermes-origin approval and pickup
+### Origin and execution-approval audit state
 
-Hermes-origin tickets use the same statuses but have an additional server-owned execution gate.
-The restricted principal may create and plan its own ticket, but it cannot set execution statuses
-or approve execution. An admin approves the current live plan with `approve_execution=true`; the
-server stamps both `execution_approved_at` and `execution_approved_by`.
+Ticket `origin` is immutable audit provenance, not an ownership, authorization, execution, or
+pickup boundary. A project-scoped principal with ticket write capability may create tickets in any
+canonical lifecycle status and move tickets across lifecycle statuses inside its project scope.
+Workflow skills must never infer an execution gate from an origin value.
 
-Any later Hermes-owned ticket edit clears both approval fields atomically. The ticket must then be
-reapproved before pickup. `next_ticket` enforces this server-side: it returns a Hermes-origin
-`planned` ticket only when its current plan has the intact admin approval pair and the caller's
-project/repo scope matches. Workflow skills must not approximate this with a client-side origin
-filter, status rewrite, tag, or cached approval.
+`approve_execution=true` remains an explicit connected-admin action that stamps
+`execution_approved_at` and `execution_approved_by` for audit purposes. The approval pair is not a
+prerequisite for pickup or for leaving `planned`. Changes to approved source or plan material may
+clear the pair, but null fields do not block implementation.
+
+`next_ticket` is the canonical pickup contract. It selects unblocked `planned` or `backlog` tickets
+by lifecycle state, repo scope, and ordering; it does not filter by origin or execution approval.
+Skills and clients must not add a second origin/approval filter, status rewrite, tag, or blocker.

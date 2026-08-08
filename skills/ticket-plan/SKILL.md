@@ -45,10 +45,10 @@ writes the same mandatory plan artifact before editing, without creating a separ
 session. Standalone `/ticket-plan` remains valid at every intensity for plan-only work and review
 feedback.
 
-For a Hermes-origin ticket, planning may create or update the plan and leave the ticket `planned`,
-but the restricted principal cannot self-approve or move it into an execution status. Admin
-approval is a separate server-side action on the current live plan. Any later Hermes edit clears
-that approval pair and requires reapproval; do not implement a client-side origin or pickup filter.
+Ticket origin is immutable audit provenance, not an execution or pickup boundary. Planning and
+delivery must not branch on origin or on null execution-approval fields. `next_ticket` eligibility
+is the canonical server result; `approve_execution=true` is an explicit admin-only audit action,
+not a prerequisite for leaving `planned` or starting implementation.
 
 This is the **only** planning skill — there is no separate manual plan command. Methodology
 standards (audits, checklists, synthesis guidelines) live in

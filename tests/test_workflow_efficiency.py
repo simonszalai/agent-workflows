@@ -276,6 +276,28 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertNotIn("Knowledge retrieval gate for the wave", milestone)
         self.assertNotIn('fork_turns: "all"', ticket_flow)
 
+    def test_ticket_workflows_treat_origin_as_audit_only(self) -> None:
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        ticket_plan = (ROOT / "skills/ticket-plan/SKILL.md").read_text()
+        lifecycle = (ROOT / "skills/references/ticket-lifecycle.md").read_text()
+
+        self.assertIn("immutable audit provenance only", ticket_flow)
+        self.assertIn("Never branch delivery", ticket_flow)
+        self.assertIn("immutable audit provenance, not an execution or pickup boundary", ticket_plan)
+        self.assertIn("not a prerequisite", ticket_plan)
+        self.assertIn("immutable audit provenance, not an ownership", lifecycle)
+        self.assertIn("does not filter by origin or execution approval", lifecycle)
+
+        combined = "\n".join((ticket_flow, ticket_plan, lifecycle))
+        for retired_contract in (
+            "Hermes-origin approval and pickup",
+            "Hermes-origin tickets use the same statuses but have an additional",
+            "cannot self-approve or set execution statuses",
+            "reapproved before pickup",
+            "returns a Hermes-origin",
+        ):
+            self.assertNotIn(retired_contract, combined)
+
     def test_active_workflow_docs_never_enable_all_history_dispatch(self) -> None:
         assignment = re.compile(r"fork_turns\s*(?:=|:)\s*[\"']?all\b", re.IGNORECASE)
         violations = []
