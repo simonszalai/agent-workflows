@@ -130,25 +130,20 @@ vault_replace_value() { # ref  (value in $VAULT_VALUE env)
   # return 409 Conflict for an edit based on a stale item version. Each retry
   # re-reads the item fresh, so a conflicting write is replayed on top of the
   # winner instead of failing the whole rotation.
+  # Single attempt by design: the orchestrator wave-partitions same-item
+  # entries and the per-item lock serializes any remaining local concurrency,
+  # so a 409 here means an EXTERNAL editor raced us — fail loudly and let the
+  # human rerun rather than silently replaying writes.
   local vault_lock
   vault_lock="$(vault_item_lock_acquire "$REF_VAULT" "$item_id")" || return 1
-  local edit_attempt edit_ok=0
-  for edit_attempt in 1 2 3 4; do
-    if op_vault_mutation "$REF_VAULT" item get "$item_id" --vault "$REF_VAULT" --format json \
-      | REF_FIELD="$REF_FIELD" jq -e '
-          if ([.fields[]? | select(.label == env.REF_FIELD)] | length) == 1
-          then .fields |= map(if .label == env.REF_FIELD then .value = env.VAULT_VALUE else . end)
-          else error("item must contain exactly one matching field") end' \
-      | op_vault_mutation "$REF_VAULT" item edit "$item_id" --vault "$REF_VAULT" >/dev/null; then
-      edit_ok=1
-      break
-    fi
-    echo "  vault: edit conflict/failed for $ref (attempt $edit_attempt) — retrying with a fresh read" >&2
-    sleep "$edit_attempt"
-  done
-  if [[ "$edit_ok" -ne 1 ]]; then
+  if ! op_vault_mutation "$REF_VAULT" item get "$item_id" --vault "$REF_VAULT" --format json \
+    | REF_FIELD="$REF_FIELD" jq -e '
+        if ([.fields[]? | select(.label == env.REF_FIELD)] | length) == 1
+        then .fields |= map(if .label == env.REF_FIELD then .value = env.VAULT_VALUE else . end)
+        else error("item must contain exactly one matching field") end' \
+    | op_vault_mutation "$REF_VAULT" item edit "$item_id" --vault "$REF_VAULT" >/dev/null; then
     vault_item_lock_release "$vault_lock"
-    echo "ERROR: vault item edit failed after retries ($ref)." >&2
+    echo "ERROR: vault item edit failed for $ref (a concurrent external edit? rerun to converge)." >&2
     return 1
   fi
   check="$(op_vault_read "$ref")" || { vault_item_lock_release "$vault_lock"; return 1; }
