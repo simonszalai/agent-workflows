@@ -349,15 +349,19 @@ Ticket reads must request the smallest sufficient context:
 - `detail="light", include_events=false` returns ticket metadata plus artifact manifests without
   artifact bodies. Use it for routing, existence checks, status checks, and prerequisite gates.
 - `detail="full", artifact_types=[...], include_events=false` returns content only for the named
-  artifact types. This is the normal workflow read.
+  artifact types. Standalone tools may use this bounded read when no delegated ticket-delivery
+  context owner exists.
 - Full unfiltered artifacts and event history are reserved for audits and retrospectives that
   genuinely need them.
 - Cache a ticket response for the workflow run and reuse its artifact IDs and `context_version`.
   Do not call `get_ticket` again unless a relevant artifact changed outside the current workflow.
-- Use `detail="compact"` for `search_tickets` and `get_similar_tickets`, then selectively load
-  only the artifacts needed from the few tickets that survive relevance screening.
-- The orchestrator owns shared ticket retrieval. Delegated agents receive a bounded packet or
-  `.context/<workflow>/<run-id>/` file reference; they do not independently reload the same ticket.
+- In ticket investigation, planning, and build flows, the main orchestrator reads only the light
+  manifest. A fresh no-history context curator owns every current artifact body plus applicable
+  memory/similar-ticket retrieval and returns one <=8 KiB phase packet. See
+  `skills/references/delegated-ticket-context.md`.
+- The curator uses `detail="compact"` for `search_tickets` and `get_similar_tickets`, expands only
+  applicable results, and records provenance. The parent and downstream agents receive the packet
+  path/hash and must not replay those reads.
 
 ### Artifact Types
 

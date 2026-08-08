@@ -2,22 +2,14 @@
 name: ticket-plan
 description: Autonomous planning for backlog tickets. Researches, investigates, creates plan artifact, sets status to planned. Re-run on a planned ticket to incorporate and resolve the user's dashboard review comments.
 max_turns: 100
-memory:
-  tags:
-    - architecture
-    - tradeoff
-    - constraint
-    - $tech_tags
-  types:
-    - architecture
-    - pattern
-    - preference
 ---
 
 # Auto-Plan Command
 
 Follow `../references/execution-economy.md`; economy never permits unresolved material plan risk
 to be hidden or a required critic/safety gate to be skipped.
+Follow `../references/delegated-ticket-context.md`; bulk ticket and memory hydration must not run in
+the planning orchestrator's context.
 
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
@@ -138,7 +130,7 @@ Determine whether the input is an existing ticket ID or something that needs a t
 ```
 ticket = mcp__autodev-memory__get_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
-  detail="full", artifact_types=["source", "investigation", "plan", "deployment_guide"],
+  detail="light",
   include_events=false
 )
 ```
@@ -214,66 +206,32 @@ mcp__autodev-memory__update_ticket(
 - `direct`/`standard` (light path): do **not** spawn a separate researcher — the single inline
   `planner` researches the codebase itself as part of planning. A separate researcher on the
   light path duplicates that work and roughly doubles planning wall-clock for no added coverage.
-- Search for similar past tickets via `get_similar_tickets` (Phase 4 owns the exact calls)
+- Let the Phase 4 curator search similar past tickets; do not run the call in this orchestrator
 
 **For bugs (B-prefix):**
-- Read the investigation artifact if one exists; otherwise run `/investigate` internally to find
-  root causes (spawn `hypothesis-evaluator` if needed) and create the investigation artifact
+- Use manifest metadata to determine whether an investigation exists; otherwise run `/investigate`
+  internally to find root causes (spawn `hypothesis-evaluator` if needed) and create the
+  investigation artifact
 - Use root causes from the investigation to inform solution design
 
 ### Phase 4: Gather Prior Knowledge
 
-The heavy-path workflow spawns generic subagents — they receive NO knowledge-menu injection and
-do NOT load the `autodev-search` skill, unlike the inline `planner` agent used on the light
-path, which searches the memory system and past tickets itself. So gather prior knowledge here
-in the skill and pass it into whichever path runs. For both paths, pass the same prior-knowledge
-blob to the native planner and any conditionally escalated peers so they reason from the same
-known gotchas and past decisions.
+After Phase 3 has persisted any required investigation, reuse `/investigate`'s curator packet when
+its `context_version`, planning phase, and task fingerprint match. Otherwise dispatch exactly one
+context curator with
+`fork_turns: "none"`. Claude uses `context-curator` on `sonnet` (only contradictory safety-critical
+artifacts justify `opus`); Codex uses a read-only child on `gpt-5.6-luna`. The curator owns:
 
-**Light path (`direct`/`standard`) — exactly two calls:**
+- every current artifact body, including the new investigation;
+- one consolidated memory search across the ticket area, technologies, and risk boundaries;
+- compact similar completed tickets and similar staging/production failures, avoiding survivorship
+  bias; and
+- selection of only the facts that can change the plan.
 
-```
-# Related memories (gotchas, patterns, architecture)
-memories = mcp__autodev-memory__search(
-  project=PROJECT,
-  queries=[{ "keywords": [<feature/bug area>], "text": "<what is being planned>" },
-           { "keywords": [<technology>],       "text": "<technology> gotchas pitfalls" }],
-  limit=8
-)
-
-# Similar past work — proven approaches, tradeoffs, risks that materialized
-similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=ID, repo=REPO, status="completed",
-  detail="compact"
-)
-```
-
-**Heavy path — the two calls above plus the deeper sweep:**
-
-```
-ticket_hits = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<keywords>",
-  detail="compact"
-)
-
-# Similar past FAILURES — completed-only priors are survivorship-biased. Tickets that
-# failed verification are exactly the ones where plan/build/review confidently produced
-# something reality rejected; their verification_evidence artifacts carry the lesson.
-failed_staging = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_staging_failed",
-  detail="compact"
-)
-failed_prod = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=ID, repo=REPO, status="verify_prod_failed",
-  detail="compact"
-)
-```
-
-Render the hits into a compact markdown blob (omit a section if it is empty), pass it to the
-native planner and any conditionally escalated peer prompt, and pass it as
-the shared prior-knowledge file on the heavy path. Every delegated planner reads that same file so
-the plan reuses proven approaches and avoids documented gotchas. Omit the file when nothing
-relevant turns up — never fabricate entries.
+The planning orchestrator receives only the curator envelope and <=8 KiB packet. Validate its
+receipt, then pass the same packet path/hash to the native planner and any conditionally escalated
+peers. Do not replay artifact, memory, entry-expansion, or similar-ticket calls in this session.
+When no applicable prior knowledge exists, the packet says so; never fabricate entries.
 
 ```markdown
 ## Related memories
@@ -327,17 +285,16 @@ review. Announce peers separately: `peers: no trigger` or `peers: escalated for 
 ### Phase 6: Plan, critique, and conditionally converge
 
 All delegated planners/critics use `fork_turns: "none"` and bounded self-contained packets per
-`../references/execution-economy.md`. Reuse the source, research, prior-knowledge, and diff files
+`../references/execution-economy.md`. Reuse the curated ticket-context, research, and diff files
 from the run-local cache rather than embedding or rediscovering them for every call.
 
 Before dispatch, write the stable inputs once under `.context/plan/<run-id>/`:
 
-- `source.md` — selected `source` artifact body;
+- `ticket-context.md` — the curator's <=8 KiB packet, copied byte-for-byte;
 - `research.md` — codebase research or investigation findings;
-- `prior-knowledge.md` — compact rendered memory and past-ticket shortlist, when non-empty.
 
-Pass only `sourceArtifactFile`, `codebaseResearchFile`, and `priorKnowledgeFile` paths to
-`plan-fanout`. Do not pass their contents in workflow arguments or repeat them in each agent prompt.
+Pass only `ticketContextFile` and `codebaseResearchFile` paths to `plan-fanout`. Do not pass their
+contents in workflow arguments or repeat them in each agent prompt.
 
 #### Light path
 
@@ -496,8 +453,8 @@ Capture, from the architecture:
   scheduler/worker/service deploy is needed; whether any secret/credential block or env var
   must be provisioned; whether code reaches runtime via git-pull or a service build. Name the
   project's *real* deploy primitives — discover them from the project `CLAUDE.md`/`AGENTS.md`
-  and a memory search (`{"keywords": ["deploy", "migration"], "text": "deployment steps order"}`),
-  never generic placeholders. Mark anything not yet known as `TBD — finalize at build`.
+  and the curated packet's deployment/migration knowledge, never generic placeholders. Mark
+  anything not yet known as `TBD — finalize at build`.
   If the work needs a database migration, also name the **migration lane**: schema-first
   backward-compatible PR off current `main` with immediate `main→staging` sync, full
   `staging→main` parity merge, or "no migration". Do not plan ordinary selective cherry-pick

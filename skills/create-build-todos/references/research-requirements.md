@@ -3,18 +3,11 @@
 **This is the core of build planning.** Before writing any build todo, you MUST thoroughly
 research each of these areas:
 
-## 1. Memory Service Search (REQUIRED)
+## 1. Curated Memory Context (REQUIRED)
 
-Search the memory service for relevant knowledge:
-
-```
-mcp__autodev-memory__search(queries=[
-  {"keywords": ["<technology>", "<area>"], "text": "<feature area> gotchas pitfalls"},
-  {"keywords": ["<technology>", "<area>"], "text": "<area> standards patterns"}
-])
-```
-
-Also review bounded injected context in the system/task prompt when present.
+Read the context-curator packet supplied by the orchestrator. It is the single retrieval owner's
+filtered result from every current ticket artifact, consolidated memory queries, expanded applicable
+entries, and similar completed/failed tickets. Do not repeat broad MCP searches in build planning.
 
 **Document in each build todo:**
 
@@ -78,34 +71,12 @@ Check project rules:
 - Document which rules affect this step
 - Note specific requirements (e.g., "no Any types", "use TEXT not VARCHAR")
 
-## 5. Patch & Solution Search (REQUIRED)
+## 5. Patch & Solution Selection (REQUIRED)
 
-For each build step, search for patches, fixes, and past solutions that apply:
-
-```
-mcp__autodev-memory__search(queries=[
-  {"keywords": ["<technology>", "<area>"],
-   "text": "<area> patch fix solution workaround"},
-  {"keywords": ["<technology>", "<area>"],
-   "text": "<area> implementation patterns"},
-  {"keywords": ["<technology>", "<area>"],
-   "text": "<technology/area> gotchas pitfalls"}
-], project="<project>", limit=5)
-```
-
-Also search past tickets for similar work:
-
-```
-mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<step area keywords>",
-  detail="compact"
-)
-```
-
-Read the full content of every relevant result. Titles alone are not enough to
-know whether a patch applies.
-
-See the `autodev-search` skill for full MCP tool reference.
+For each build step, select the applicable patches, fixes, past solutions, and review lessons from
+the curator packet. The curator expanded the selected memory bodies, so titles alone were not used
+to decide applicability. If the packet lacks one exact fact newly exposed by code research, return a
+targeted context-refresh request instead of running a second broad search.
 
 **Document in each build todo:**
 

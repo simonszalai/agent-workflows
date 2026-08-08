@@ -16,21 +16,12 @@ what to investigate.
 Read skills/tool-postgres/SKILL.md or skills/tool-render/SKILL.md only when your assigned focus
 needs that surface.
 
-## Memory Bootstrap (Do First)
+## Curated Memory Bootstrap (Do First)
 
-Before investigating, search the knowledge base for known issues related to your
-investigation topic:
-
-```
-mcp__autodev-memory__search(
-  queries=[{"keywords": ["<error-keyword>", "<area>"], "text": "<problem description from task>"}],
-  project="<project from task prompt>",
-  limit=5
-)
-```
-
-Past investigations, known gotchas about query patterns, and infrastructure-specific issues
-are documented in the memory system. Check before investigating from scratch.
+Before investigating a ticket, read the context-curator packet for past investigations, known query
+gotchas, and infrastructure-specific issues. Do not repeat ticket or memory retrieval. If evidence
+introduces one uncovered topic, return `needs_context_refresh` with the exact missing fact. A
+standalone ticketless investigation without a curator packet may run one bounded search.
 
 ## Environment Selection (CRITICAL)
 

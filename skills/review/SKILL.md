@@ -7,6 +7,7 @@ description: Review implementation with light native or escalated safety coverag
 
 Follow `../references/execution-economy.md`; economy never suppresses a safety-critical reviewer,
 test, finding, or fail-loud gate.
+Ticket hydration follows `../references/delegated-ticket-context.md`.
 
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
@@ -326,11 +327,11 @@ polling.
 1. **Gather context manifest-first:**
    - Load the ticket once with `detail="light"` and `include_events=false`.
    - Cache its `context_version` and exact source/plan/build_todo/review_todo artifact IDs.
-   - Load only required bodies individually with
-     `mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=ARTIFACT_ID)`.
-   - Reload the light manifest only when a relevant artifact changed outside the workflow. Pass
-     immutable packet paths and hashes to children rather than letting them reload ticket context.
-   - Read plan artifact for intended approach
+   - Reuse the caller's review-phase context-curator packet when its version and task fingerprint
+     match; otherwise dispatch one no-history curator and validate its receipt. Do not load artifact
+     bodies or search memory in this orchestrator.
+   - Pass the immutable packet path/hash to children rather than letting them reload ticket context.
+   - Read intended approach from the curated plan facts
    - Run `git diff --name-only` to identify changed files
    - Read build_todo artifact completion notes — collect every **Deviations** entry; the
      deviations, the plan's what/how/elimination/assumptions, and the raw source deliverable
@@ -460,16 +461,12 @@ polling.
    | Headless | Auto-apply fix (single pass), store as resolved | Store as pending | Store as pending | Include in output |
 
 7. **Store P1/P2 findings in memory service** (persists beyond session):
-   For each P1/P2 finding, first search for duplicates, then store via MCP:
+   For each P1/P2 finding, check duplicate candidates in the curator packet, then store via MCP. If
+   the finding introduces a topic the packet did not cover, request one targeted curator refresh
+   before mutation:
 
    ```
-   # 1. Check for duplicates
-   mcp__autodev-memory__search(
-     queries=["<finding keywords>"],
-     project="<from <!-- mem:project=X --> in CLAUDE.md>"
-   )
-
-   # 2. If no duplicate, store the finding
+   # If no duplicate, store the finding
    mcp__autodev-memory__create_entry(
      project="<from <!-- mem:project=X --> in CLAUDE.md>",
      title="Review: [finding summary]",
@@ -505,18 +502,10 @@ separate pre-existing → normalize routing → partition → sort → coverage 
 `workflows/review-synthesize.js`. The heavy path invokes it only after `review-collect` and every
 external peer have returned raw envelopes; the light path runs an inlined subset in this skill.
 
-**Memory-assisted confidence upgrade (skill-side, both paths):** the workflow has no MCP access,
-so it cannot consult memory. For each `low_confidence` finding, search the memory service:
-
-```
-mcp__autodev-memory__search(
-  queries=[
-    {"keywords": ["<finding area>"], "text": "<issue description>"},
-    {"keywords": ["<technology>"], "text": "<issue type> gotcha pitfall"}
-  ],
-  project=PROJECT
-)
-```
+**Memory-assisted confidence upgrade (skill-side, both paths):** the workflow has no MCP access.
+For each `low_confidence` finding, check applicable review patterns in the curated packet. If the
+specific issue was outside the curator's original risk queries, request one targeted curator refresh
+instead of searching in the review orchestrator.
 
 If memory confirms the pattern (past incident, known gotcha), raise the finding's confidence,
 clear `low_confidence`, and add the memory entry to its evidence. The finding was already in

@@ -10,10 +10,11 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
 1. **Resolve scope** — ticket/issue/conversation input, project, repo, branch, target.
    Decide and record `intensity` / `intensity_reason` / `intensity_floor` per
    `execution-intensity.md` once before planning.
-2. **Gather context once** — epic packet plus bug triage. Reuse a proven investigation. The compact
-   delivery owner performs bounded diagnosis and code/memory lookup in-session; spawn a separate
-   investigator only when an absent/unproven root cause forces the heavy path. Heavy knowledge
-   retrieval otherwise belongs to `/ticket-plan`.
+2. **Gather context once** — after any required bug investigation is persisted, dispatch one fresh
+   no-history context curator per `delegated-ticket-context.md`. It reads every current ticket
+   artifact and all applicable memories/past-ticket evidence outside the parent, then returns one
+   <=8 KiB phase packet. The parent and downstream owners do not repeat those MCP reads. Epic packet
+   handling remains a separate bounded reference.
 3. **Compact delivery (`direct` / `standard`)** — dispatch exactly one no-history delivery owner.
    Before editing it persists the short **plan MCP artifact (mandatory at every intensity,
    including `direct`)** and minimal `build_todo` artifacts. It then implements the whole bounded

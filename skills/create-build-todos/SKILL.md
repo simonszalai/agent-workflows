@@ -2,15 +2,6 @@
 name: create-build-todos
 description: Create detailed implementation steps from an approved plan. Spawns build-planner agent to create build_todos/.
 max_turns: 75
-memory:
-  tags:
-    - migration
-    - implementation-pattern
-    - $tech_tags
-  types:
-    - gotcha
-    - pattern
-    - solution
 ---
 
 # Create Build Todos
@@ -18,6 +9,9 @@ memory:
 Create detailed implementation steps (`build_todos/`) from an approved `plan.md`. This command
 performs **deep research** into the codebase, memory service, and git history to ensure all
 existing patterns and rules are discovered and followed.
+
+Follow `../references/delegated-ticket-context.md`. Artifact and memory hydration belongs to the
+isolated context curator, not this orchestrator or the build-planner.
 
 ## Usage
 
@@ -46,10 +40,7 @@ manifest = mcp__autodev-memory__get_ticket(
 # 2. Check plan artifact exists in the manifest
 # If missing: STOP - run /ticket-plan first
 
-# 3. Load exactly the required bodies by manifest artifact_id
-source = mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=SOURCE_ID)
-plan = mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=PLAN_ID)
-# Load investigation/deployment_guide only when their manifest rows exist and are relevant.
+# 3. Do not load artifact bodies here. The context curator owns them after prerequisites pass.
 ```
 
 **If any prerequisite fails:**
@@ -70,16 +61,20 @@ plan = mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=PLAN_ID)
    - Same ID resolution as `/ticket-plan`
    - Error if the plan artifact doesn't exist
 
-2. **Read context** from exact `get_artifact` responses:
-   - Plan artifact - The approved architecture plan
-   - Source artifact - Original problem/feature description
-   - Investigation artifact - Production findings (if exists)
-   - Cache and reuse the manifest `context_version` and artifact IDs for the entire run. Reload
-     the light manifest only when an artifact changed outside this workflow; pass immutable packet
-     paths to children instead of making them repeat MCP reads.
+2. **Curate context outside the main thread:**
+   - Reuse a caller-supplied curator packet when its `context_version`, build-planning phase, and
+     task fingerprint match; otherwise spawn exactly one fresh `fork_turns: "none"` context curator
+     after the light-manifest prerequisite check.
+   - Claude uses the `context-curator` agent on `sonnet` (use `opus` only for materially
+     contradictory safety-critical artifacts). Codex uses a read-only child on `gpt-5.6-luna`.
+   - The curator reads every current source/plan/investigation/deployment-guide and other artifact,
+     runs one consolidated applicable-memory and similar-ticket sweep, then writes one <=8 KiB
+     build-planning packet and receipt.
+   - Validate the receipt. This orchestrator reads only the packet and never repeats the curator's
+     artifact or memory calls.
 
-3. **Spawn build-planner agent** for deep research:
-   - Agent searches memory service exhaustively
+3. **Spawn build-planner agent** for deep code and history research:
+   - Agent consumes the immutable curated packet; it does not search autodev-memory again
    - Agent searches codebase for all relevant patterns
    - Agent analyzes git history for context
    - The agent researches directly. It may delegate at most one `researcher` subagent, and only
@@ -164,23 +159,15 @@ builder succeeds is the per-step research below — a deepened step is not the p
 greater length. **A step is deep enough when the builder can implement it without doing its own
 research.** If the builder would have to figure out how something works, deepen further.
 
-**Batch the memory searches.** Run ONE consolidated memory search up front covering every step's
-area. Per-step searches are only for a **step-specific unknown** the consolidated search did not
-cover — an unusual library, a one-off migration mechanism:
-
-```
-mcp__autodev-memory__search(queries=[
-  {"keywords": ["<step-specific-unknown>", "<technology>"],
-   "text": "<the specific unknown> patch fix solution gotcha"}
-])
-```
-
-Read the full content of every relevant result; titles alone are not enough. Document what you
-find in the step's "Known Patches & Solutions" subsection (see template).
+**Use the curated memory evidence.** The context curator already ran one consolidated search across
+every step area and expanded all selected results before filtering. The build-planner consumes that
+packet and must not repeat broad MCP retrieval. If a step exposes a named, genuinely new unknown,
+request one targeted curator refresh; never load artifacts or search memory in this orchestrator.
+Document applicable packet findings in the step's "Known Patches & Solutions" subsection.
 
 **Then, per step:**
 
-a. Check the consolidated memory results for patches, solutions, and gotchas in this step's area.
+a. Check the curated packet for patches, solutions, and gotchas in this step's area.
 b. Read the actual files that will be modified — current state, imports, patterns, constraints.
 c. Find the closest existing implementation to follow: grep for similar code, read it, document
    the pattern with `file:line` refs.
@@ -241,7 +228,7 @@ The build-planner agent performs thorough research. See
 
 | Area            | What It Searches                               | Why                                        |
 | --------------- | ---------------------------------------------- | ------------------------------------------ |
-| Knowledge base  | All references, gotchas, solutions             | Avoid known pitfalls, follow standards     |
+| Knowledge base  | Curator-selected references, gotchas, solutions | Avoid known pitfalls, follow standards     |
 | Codebase        | Similar code, patterns, conventions            | Match existing style and approaches        |
 | Git history     | Related commits, past issues, contributor info | Understand context and avoid past mistakes |
 | Past work items | Similar build_todos, review findings           | Reuse patterns, avoid past review issues   |

@@ -2,7 +2,6 @@
 name: resolve-review
 description: Resolve review findings based on decisions. Spawns builder agent to implement fixes from review_todo artifacts, captures learnings.
 skills:
-  - autodev-search
   - compound
 ---
 
@@ -11,6 +10,7 @@ skills:
 Spawn a `builder` agent to work through review findings and implement accepted fixes.
 Routes findings by autofix classification — safe fixes are applied automatically, gated
 fixes use the caller's approval scope, and genuinely undecided manual findings are handed off.
+Ticket hydration follows `../references/delegated-ticket-context.md`.
 
 ## Usage
 
@@ -71,8 +71,12 @@ builder queue.
 
 ## Process
 
-1. **Load ticket** via `get_ticket(detail="full", artifact_types=["review_todo"],
-   include_events=false)` — identify pending review_todo artifacts
+1. **Load ticket manifest-first.** Use `get_ticket(detail="light", include_events=false)` to
+   identify
+   pending review_todo rows. Reuse the caller's matching resolve-phase context-curator packet only
+   when its version and task fingerprint match;
+   otherwise dispatch one no-history curator and validate its receipt. Read finding bodies only from
+   the curated packet, never through broad parent-thread artifact retrieval.
 
 2. **Partition findings by autofix_class:**
 

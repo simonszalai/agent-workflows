@@ -93,14 +93,8 @@ new API integrations, changes to alert/notification logic
 ### For Features
 
 1. **Read the source artifact** - Understand requirements and scope
-2. **Search memory service** - Find relevant gotchas, patterns, and past solutions:
-   ```
-   mcp__autodev-memory__search(queries=[
-     {"keywords": ["<feature-area>"], "text": "<feature area> architecture patterns"},
-     {"keywords": ["<technology>"], "text": "<technology> gotchas pitfalls"}
-   ])
-   ```
-   Also review bounded injected context when present; it is representative, not exhaustive.
+2. **Read curated knowledge** - Use the context-curator packet's applicable gotchas, patterns,
+   past solutions, and provenance. Do not repeat artifact or memory retrieval in the planner.
 3. **First-principles analysis** - State fundamental goal, classify constraints, eliminate
    fake ones
 4. **Research codebase** - Spawn `researcher` to find patterns, integration points
@@ -115,13 +109,7 @@ new API integrations, changes to alert/notification logic
 ### For Bugs
 
 1. **Read source + investigation artifacts** - Understand problem and root causes
-2. **Search memory service** - Find related past fixes and gotchas:
-   ```
-   mcp__autodev-memory__search(queries=[
-     {"keywords": ["<bug-area>"], "text": "<bug area> root cause fix"},
-     {"keywords": ["<technology>"], "text": "<technology> gotchas"}
-   ])
-   ```
+2. **Read curated knowledge** - Use related past fixes and gotchas from the context-curator packet.
 3. **Verify investigation complete** - If missing root causes, run `/investigate` first
 4. **First-principles analysis** - Is the root cause in code that should exist? Could we
    eliminate rather than fix?

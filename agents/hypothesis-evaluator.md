@@ -16,21 +16,11 @@ bug root causes.
 Read skills/tool-postgres/SKILL.md or skills/tool-render/SKILL.md only when your assigned focus
 needs that surface.
 
-## Memory Bootstrap (Do First)
+## Curated Memory Bootstrap (Do First)
 
-Before designing verification tests, search the knowledge base for known patterns related
-to the hypotheses you're evaluating:
-
-```
-mcp__autodev-memory__search(
-  queries=[{"keywords": ["<hypothesis-topic>"], "text": "<hypothesis description>"}],
-  project="<project from task prompt>",
-  limit=5
-)
-```
-
-Past diagnoses and solutions in the memory system may confirm or refute hypotheses without
-needing fresh investigation.
+Before designing verification tests, read the supplied context-curator packet for past diagnoses
+and solutions. Do not repeat ticket or memory retrieval. If one hypothesis introduces an uncovered
+topic, return `needs_context_refresh` with the exact missing fact.
 
 ## Your Role
 

@@ -8,6 +8,7 @@ skills:
 # Write Tests Command
 
 Write tests that catch real bugs and protect important behavior. Not coverage theater.
+Ticketed runs follow `../references/delegated-ticket-context.md`.
 
 ## Usage
 
@@ -19,7 +20,7 @@ Write tests that catch real bugs and protect important behavior. Not coverage th
 
 ## Process
 
-### 1. Load Testing Strategy and Search Memory
+### 1. Load Testing Strategy and Curated Knowledge
 
 Read `references/strategy.md` for:
 - What to test vs what to skip (priority matrix)
@@ -33,16 +34,12 @@ Also check the project's AGENTS.md for:
 - Demo accounts for e2e
 - Project-specific test conventions
 
-**Search memory service** for testing gotchas relevant to the code being tested:
+For a ticketed run, read testing gotchas and patterns from the supplied context-curator packet. Do
+not repeat artifact or memory retrieval in the ticket-build orchestrator. If the diff exposes a new
+testing-specific risk not represented in the packet, request one targeted curator refresh.
 
-```
-mcp__autodev-memory__search(queries=[
-  {"keywords": ["test", "<technology>"], "text": "<area> testing gotchas pitfalls"},
-  {"keywords": ["test", "<area>"], "text": "<area> test patterns assertions"}
-])
-```
-
-Also review bounded injected context for relevant testing entries when present.
+For a standalone ticketless invocation, use one bounded consolidated memory search because no
+ticket context owner exists.
 
 ### 2. Analyze What Changed
 
@@ -181,11 +178,8 @@ If any tests failed during step 5 and you fixed them, store the failure pattern 
 future test-writing avoids the same pitfall:
 
 ```
-# 1. Search for duplicates
-mcp__autodev-memory__search(
-  queries=["<failure pattern keywords>"],
-  project="<from <!-- mem:project=X --> in CLAUDE.md>"
-)
+# 1. Ticketed: use duplicate candidates from the curator packet or request one targeted refresh.
+#    Ticketless: run one bounded duplicate search.
 
 # 2. If no duplicate, store the pattern
 mcp__autodev-memory__create_entry(
