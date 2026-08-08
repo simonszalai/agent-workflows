@@ -77,6 +77,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         economy = (ROOT / "skills/references/execution-economy.md").read_text()
         intensity = (ROOT / "skills/references/execution-intensity.md").read_text()
         write_tests = (ROOT / "skills/write-tests/SKILL.md").read_text()
+        resolve_review = (ROOT / "skills/resolve-review/SKILL.md").read_text()
         review = (ROOT / "skills/review/SKILL.md").read_text()
         resolve = (ROOT / "skills/resolve-review/SKILL.md").read_text()
         builder = (ROOT / "agents/builder.md").read_text()
@@ -761,15 +762,15 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         ticket_verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
 
         self.assertIn('detail="light", include_events=false', conventions)
-        self.assertIn("sourceArtifactFile", auto_plan)
+        self.assertIn("ticketContextFile", auto_plan)
         self.assertIn("codebaseResearchFile", auto_plan)
-        self.assertIn("priorKnowledgeFile", auto_plan)
-        self.assertIn("sourceArtifactFile", fanout)
+        self.assertNotIn("priorKnowledgeFile", auto_plan)
+        self.assertIn("ticketContextFile", fanout)
         self.assertIn("codebaseResearchFile", fanout)
-        self.assertIn("priorKnowledgeFile", fanout)
-        self.assertNotIn("${sourceArtifact}", fanout)
+        self.assertNotIn("priorKnowledgeFile", fanout)
+        self.assertNotIn("sourceArtifactFile", fanout)
+        self.assertNotIn("${ticketContext}", fanout)
         self.assertNotIn("${codebaseResearch}", fanout)
-        self.assertNotIn("${priorKnowledge}", fanout)
         self.assertIn('detail="light", include_events=false', ticket_verify)
         self.assertIn("context_version", ticket_verify)
         self.assertIn("verify-scope-dispatch.md", ticket_verify)
@@ -785,6 +786,49 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             "verify-failure-capture.md",
         ):
             self.assertTrue((ROOT / "skills/references" / name).is_file())
+
+    def test_ticket_artifact_and_memory_hydration_is_delegated_off_parent(self) -> None:
+        reference = (ROOT / "skills/references/delegated-ticket-context.md").read_text()
+        curator = (ROOT / "agents/context-curator.md").read_text()
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        ticket_plan = (ROOT / "skills/ticket-plan/SKILL.md").read_text()
+        ticket_build = (ROOT / "skills/ticket-build/SKILL.md").read_text()
+        create_todos = (ROOT / "skills/create-build-todos/SKILL.md").read_text()
+        investigate = (ROOT / "skills/investigate/SKILL.md").read_text()
+        build = (ROOT / "skills/build/SKILL.md").read_text()
+        review = (ROOT / "skills/review/SKILL.md").read_text()
+        write_tests = (ROOT / "skills/write-tests/SKILL.md").read_text()
+        plan_methodology = (ROOT / "skills/ticket-plan/references/plan-methodology.md").read_text()
+        planner = (ROOT / "agents/planner.md").read_text()
+        build_planner = (ROOT / "agents/build-planner.md").read_text()
+
+        for contract in (ticket_flow, ticket_plan, ticket_build, create_todos, investigate,
+                         build, review, resolve_review):
+            self.assertIn("delegated-ticket-context.md", contract)
+            self.assertRegex(contract.lower(), r"context[- ]curator")
+
+        self.assertIn('model: sonnet', curator)
+        self.assertIn('fork_turns: "none"', reference)
+        self.assertIn('gpt-5.6-luna', reference)
+        self.assertIn('at most 8,192 bytes', curator)
+        self.assertIn('every current, non-superseded artifact row', curator)
+        self.assertRegex(curator, r'all applicable candidates from search plus scoped inventory')
+        self.assertIn('do not mutate tickets', curator.lower())
+        self.assertIn('packet_status: overflow', curator)
+        self.assertIn('task_fingerprint', curator)
+        self.assertIn('untrusted data', curator)
+        self.assertIn('version match alone is insufficient', reference.lower())
+        self.assertIn('must not replay `get_artifact`', reference)
+        self.assertIn('after the investigation artifact is', reference)
+
+        self.assertNotIn('mcp__autodev-memory__get_artifact', create_todos)
+        self.assertNotIn('mcp__autodev-memory__get_artifact', build)
+        self.assertNotIn('mcp__autodev-memory__get_artifact', review)
+        self.assertNotIn('detail="full"', resolve_review)
+        self.assertNotIn('mcp__autodev-memory__search(', write_tests)
+        self.assertNotIn('mcp__autodev-memory__search(', plan_methodology)
+        self.assertNotIn('mcp__autodev-memory__get_similar_tickets', planner)
+        self.assertNotIn('mcp__autodev-memory__search_tickets', build_planner)
 
     def test_verification_canaries_require_mechanical_work_bounds(self) -> None:
         verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
@@ -1996,8 +2040,9 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             contract = (ROOT / path).read_text()
             self.assertIn('detail="light"', contract, path)
             self.assertIn("context_version", contract, path)
-            self.assertIn("get_artifact", contract, path)
-            self.assertIn("immutable packet", contract, path)
+            self.assertIn("delegated-ticket-context.md", contract, path)
+            self.assertIn("context-curator", contract, path)
+            self.assertNotIn("mcp__autodev-memory__get_artifact", contract, path)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

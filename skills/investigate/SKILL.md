@@ -9,6 +9,8 @@ Spawn investigator agents to diagnose bugs and incidents. Focused on finding **r
 of problems, not designing solutions.
 
 Follow `../references/execution-economy.md`; economy never permits an unconfirmed root cause.
+Follow `../references/delegated-ticket-context.md`; bulk ticket and memory hydration must stay in a
+fresh context-curator child.
 
 Before any conditional external peer call, create its bounded memory packet (once per provider):
 
@@ -65,11 +67,11 @@ mcp__autodev-memory__get_ticket(
 )
 ```
 
-- Cache the light manifest and its `context_version`. Fetch the exact `source` artifact by its
-  manifest ID with `mcp__autodev-memory__get_artifact`. Fetch `investigation` or
-  `verification_evidence` only when its exact manifest row is needed. Record artifact IDs and
-  SHA-256 hashes; never reload the ticket broadly in a child.
-- Read the source artifact for context
+- Cache the light manifest and its `context_version`; do not fetch artifact bodies in this parent.
+  Dispatch one no-history context curator to produce the bounded investigation-input packet and
+  runtime receipt. The curator reads every current artifact and applicable memory/past-ticket
+  evidence outside the main thread.
+- Read only the curator packet for source and prior-investigation context
 - If status is `backlog`, update to `in_progress`:
   ```
   mcp__autodev-memory__update_ticket(
@@ -156,13 +158,9 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
      was passed? what state was expected vs actual?
    - Check deployment correlation: did failures start after a recent commit?
      If so, **suspect the new code first** before blaming external services
-   - Search autodev-memory for similar past incidents:
-     ```
-     mcp__autodev-memory__search(
-       queries=[{"keywords": ["<error area>"], "text": "<error message>"}],
-       project=PROJECT
-     )
-     ```
+   - Read similar incidents and applicable gotchas from the curator packet. If the reproduced error
+     exposes a genuinely new search term, request one targeted curator refresh instead of searching
+     in the main thread.
 
 3. **Decide the execution path and provider escalation:**
 
@@ -200,9 +198,9 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
 4. **Run the selected investigation:**
 
-   Before every native, Workflow, or provider investigation spawn, create a self-contained packet
-   of at most 16 KiB and a runtime ticket-context receipt proving the one light manifest read,
-   exact artifact reads, packet path, and immutable hashes. Create a
+   Before every native, Workflow, or provider investigation spawn, validate the context curator's
+   self-contained packet (at most 8 KiB) and runtime ticket-context receipt proving the one light
+   manifest read, exact artifact reads, packet path, and immutable hashes. Create a
    `contract_profile: "bounded-owner"` envelope with `phase_name: "investigation"`,
    `fork_mode: "none"`, `owner_role: "investigator"`, `dispatch_depth: 0`,
    `redispatch_allowed: false`, `context_strategy: "light_manifest_exact_artifacts"`, current head
@@ -330,6 +328,15 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 
 9. **Capture knowledge** - Store non-obvious findings in memory service
 
+9a. **Curate the handoff after investigation** — after the investigation artifact and any
+    knowledge
+    mutation are persisted, dispatch one fresh `fork_turns: "none"` context curator against the new
+    `context_version`. Claude uses `context-curator` on `sonnet`; Codex uses `gpt-5.6-luna`. It
+    pulls
+    every current artifact plus all applicable memories and returns only the <=8 KiB next-phase
+    packet. The main thread must not replay those MCP reads. A calling `/ticket-plan` or
+    `/ticket-flow` reuses this packet instead of spawning a duplicate curator for the same version.
+
 10. **Report to the user** — end with a short summary: a 1–3 sentence statement of the
     problem (and confirmed root cause), followed by **one or more proposed fixes**. See
     the Output section for the required shape. Keep it concise — the detail lives in the
@@ -351,11 +358,8 @@ mcp__autodev-memory__create_artifact(
 After writing the investigation artifact, persist non-obvious findings:
 
 ```
-# 1. Search for duplicates first
-mcp__autodev-memory__search(
-  queries=["<root cause keywords>"],
-  project=PROJECT
-)
+# 1. Check duplicate candidates already selected into the curator packet. If the root cause exposed
+# a new topic not covered by that packet, run one targeted context-curator refresh first.
 
 # 2. If no duplicate, store the finding
 mcp__autodev-memory__create_entry(

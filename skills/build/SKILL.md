@@ -10,6 +10,7 @@ Execute a plan by spawning a `builder` agent to work through build_todos.
 
 Follow `../references/execution-economy.md`. For any multi-repo or linked-workspace context, read
 `../references/conductor-multi-repo.md`.
+Ticket hydration follows `../references/delegated-ticket-context.md`.
 
 ## Usage
 
@@ -83,8 +84,7 @@ manifest = mcp__autodev-memory__get_ticket(
   project=PROJECT, ticket_id=ID, repo=REPO,
   detail="light", include_events=false
 )
-# Cache context_version and the plan/build_todo artifact IDs, then load each required body with:
-mcp__autodev-memory__get_artifact(project=PROJECT, artifact_id=ARTIFACT_ID)
+# Cache context_version and verify the plan/build_todo rows exist. Do not load bodies here.
 ```
 
 No plan artifact → STOP, run `/ticket-plan [id]`. No build_todo artifacts → STOP, run
@@ -95,9 +95,11 @@ uses `/go-fable` and does not invoke `/build`.
 
 Everything else is identical for ticketed runs: coherent sequential chains, dependency order,
 granular per-todo checkpoints, bounded chain-local self-repair (≤2 retries), and
-**orchestrator-owned validation**. Reuse the cached manifest `context_version` and artifact IDs
-until this workflow mutates a relevant artifact. Children receive **immutable packet** paths plus
-hashes; they never reload the ticket.
+**orchestrator-owned validation**. Reuse a caller-supplied context-curator packet when its
+`context_version`, implementation phase, and task fingerprint match; otherwise dispatch one
+no-history curator and validate its receipt.
+The build orchestrator reads only that packet, not raw artifact or memory results. Children receive
+**immutable packet** paths plus hashes; they never reload the ticket.
 
 ## Process
 
@@ -111,7 +113,7 @@ hashes; they never reload the ticket.
    ```
 
 2. **Process user feedback:**
-   - Read plan artifact from `get_ticket` response — check Open Questions and Additional Notes
+   - Read the curated packet's plan facts — check Open Questions and Additional Notes
    - If answers or notes require changes to build_todos:
      - Update affected build_todo artifacts via `update_artifact`
      - Add/remove/modify steps as indicated
@@ -120,7 +122,7 @@ hashes; they never reload the ticket.
 3. **Validate build_todos against plan:**
    - Verify build_todo artifacts align with plan artifact decisions
    - If build_todos contradict plan, update via `update_artifact` to resolve
-   - Check memory service for relevant gotchas and patterns
+   - Check the curated packet for relevant gotchas and patterns
 
 4. **Build loop — coherent sequential builder chains:**
 

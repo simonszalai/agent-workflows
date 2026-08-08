@@ -53,6 +53,7 @@ Read before acting:
 - `../references/landing-policy.md`
 - `../references/environment-topology.md`
 - `../references/execution-phases.md`
+- `../references/delegated-ticket-context.md`
 - `../references/epic-lifecycle.md` when the ticket is an epic step
 - `../references/conductor-multi-repo.md` when the ticket is an epic step, cross-repo
   contract provider/consumer, or the repo is a linked Conductor directory
@@ -123,9 +124,10 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   Conductor directory for that repo after checking its git remote; otherwise stop and report the
   missing repo workspace. Do not implement a ticket for one repo inside another repo.
 - If input is a ticket ID, load it once via
-  `get_ticket(detail="light", include_events=false)`, cache `context_version` plus exact artifact
-  IDs, and fetch only the required source/investigation/plan bodies by artifact ID. A refresh must
-  send the cached version and is valid only when a new `context_version` is returned.
+  `get_ticket(detail="light", include_events=false)` for identity/lifecycle only and cache
+  `context_version` plus the artifact manifest. Do not fetch artifact bodies in this parent.
+  Hydration belongs to the context curator below. A lifecycle refresh must send the cached version
+  and is valid only when a new `context_version` is returned.
 - If input is an issue/conversation, search existing tickets first; create a new ticket only
   when no matching non-terminal ticket exists.
 - Detect epic-step context from explicit epic membership, `related`, `tags.related_epic`, or
@@ -166,35 +168,23 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
 
 ### 1. Gather context
 
-**Single retrieval owner.** When §2 will invoke `/ticket-plan` (the heavy path), ticket-flow
-must **not** run its own codebase research or memory/similar-ticket searches here — `/ticket-plan`
-Phases 3-4 own knowledge retrieval (memory search across risk boundaries, codebase research,
-similar-ticket search) and are the single source of truth for it. Duplicating those searches in
-§1 wastes tokens and risks divergent context. `/ticket-plan` returns a **prior-knowledge blob**
-(the applicable rules/patterns it retrieved); carry that blob forward into `/ticket-build` so
-builders and reviewers inherit the same knowledge without re-searching.
+**Single retrieval owner.** Follow `delegated-ticket-context.md`. The ticket-flow parent must not
+load artifact bodies or run memory, entry-expansion, or similar-ticket searches. It dispatches one
+fresh no-history context curator after resolution. For a bug without a confirmed investigation,
+run the bounded diagnosis or `/investigate` first, then reuse `/investigate`'s curator packet when
+its `context_version`, next phase, and task fingerprint match; otherwise dispatch once after
+persistence. This is the only bulk MCP retrieval pass for that phase/version.
 
-§1 keeps only the context work that `/ticket-plan` does not do:
+The curator reads every current ticket artifact and all applicable memories/past-ticket evidence in
+its isolated session, then returns one <=8 KiB phase packet and runtime receipt. The parent reads
+only that packet. For epic steps, the curator packet is combined with the separately bounded active
+milestone packet reference; never copy epic history into either packet.
 
-- Bug: reuse a proven root cause from the investigation artifact. On the compact path, the single
-  delivery owner performs bounded diagnosis in-session. Dispatch a separate investigator only when
-  the absent/unproven cause itself forces `heavy`; production incidents use hypothesis evaluation.
-  This triage feeds the plan and is not duplicated as plan research.
-- Epic step: include the parent epic plan, milestone acceptance criteria, blockers, contracts,
-  and the repo/path/branch mapping from `conductor-multi-repo.md` in the context passed to
-  planning/build agents.
-
-If a ticket takes the compact path, the single delivery owner performs that bounded lookup inside
-its session. The parent must not pre-run the same codebase/memory search. The owner searches the
-ticket's actual risk boundaries, not only similar-ticket titles, and includes its compact results
-in the durable delivery receipt.
-
-Maintain one runtime context receipt for the ticket. It records the light manifest read(s), direct
-artifact IDs/hashes, bounded excerpts/packet hashes passed to children, and canonical artifact
-updates. Validate it with
+Validate the curator receipt with
 `bin/workflow-ticket-context-check receipt <receipt.json>` before each phase dispatch. Repeated
 same-version reads fail. Plan and deployment-guide updates are bounded replacements; their older
-revisions remain in MCP artifact history, not appended to the current body.
+revisions remain in MCP artifact history, not appended to the current body. If an exact fact is
+missing, request one targeted curator refresh; do not replay raw MCP reads in this parent.
 
 ### 2. Select compact or heavy delivery
 
@@ -202,7 +192,8 @@ revisions remain in MCP artifact history, not appended to the current body.
 fresh `fork_turns: "none"` `delivery_owner` with the immutable source/epic packet, existing plan
 when resuming, intensity fields, artifact schemas, and allowed write scope. In that one session it:
 
-1. performs only the bounded code/memory lookup needed for the change;
+1. reads the curated ticket-context packet and performs only the bounded code lookup needed for the
+   change; it does not repeat the packet's artifact or memory retrieval;
 2. persists a short plan MCP artifact and `summary_bullets` **before its first edit** (or verifies
    and follows the existing plan on resume);
 3. creates minimal MCP `build_todo` artifacts mechanically from that plan;
@@ -215,7 +206,7 @@ If the owner proves the work crosses a safety floor or needs an unresolved archi
 it stops before the risky edit and returns `needs_heavy`; persist the checkpoint and enter the
 heavy path instead of adding roles to the compact path.
 
-**`heavy`:** run `/ticket-plan <ID>`, persist its plan/prior-knowledge checkpoint, then start
+**`heavy`:** run `/ticket-plan <ID>`, persist its plan/curated-context checkpoint, then start
 `/ticket-build <ID>` in a fresh no-history session. Heavy planning owns its critic and any explicit
 peer escalation. A history fork is allowed only when a self-contained packet is genuinely
 impossible: record the reason and use the smallest explicit numeric count, never all history.

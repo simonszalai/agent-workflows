@@ -23,10 +23,10 @@
 //      evidence-backed truth, explicit blockers, or recorded YAGNI/preference rejections.
 //
 // Returns the synthesized plan object only. MCP persistence stays in the skill — the
-// workflow never touches MCP. Related autodev memories + past tickets are gathered by the
-// skill writes stable inputs once under .context/plan/<run-id>/ and passes their paths. Agents
-// read those files on demand instead of repeating large source/research/knowledge blobs in every
-// prompt. This keeps each delegated context bounded while preserving shared evidence.
+// workflow never touches MCP. A no-history context curator gathers ticket artifacts, applicable
+// autodev memories, and past-ticket evidence into one stable <=8 KiB file. The skill passes that
+// path plus bounded code research. Agents read the files on demand instead of repeating large
+// source/research/knowledge blobs in every prompt.
 
 export const meta = {
   name: 'plan-fanout',
@@ -254,9 +254,7 @@ function contextFilePrompt(label, file, instruction) {
   return file ? `${label}: ${file}\nRead this file from the repository root. ${instruction}` : ''
 }
 
-function draftPrompt(
-  framing, question, sourceArtifactFile, codebaseResearchFile, repoRoot, priorKnowledgeFile
-) {
+function draftPrompt(framing, question, ticketContextFile, codebaseResearchFile, repoRoot) {
   return [
     `You are drafting a high-level architecture plan using the "${framing.key}" framing.`,
     `Framing: ${framing.description}`,
@@ -267,15 +265,12 @@ function draftPrompt(
     question,
     ``,
     contextFilePrompt(
-      'Source artifact file', sourceArtifactFile, 'Treat it as the ticket description.'
+      'Curated ticket-context file', ticketContextFile,
+      'Treat its requirements, approved decisions, investigation facts, and applicable prior knowledge as one provenance-linked input.'
     ),
     contextFilePrompt(
       'Codebase research file', codebaseResearchFile,
       'Use it as a starting point; do not redo it wholesale. Independently verify the 2-3 claims your plan most depends on.'
-    ),
-    contextFilePrompt(
-      'Prior-knowledge file', priorKnowledgeFile,
-      'Reuse proven approaches and avoid documented gotchas.'
     ),
     ``,
     `Read the codebase as needed (Read, Bash, Grep) to understand existing patterns. Then`,
@@ -300,7 +295,7 @@ function draftPrompt(
   ].filter(Boolean).join('\n')
 }
 
-function synthesizePrompt(question, drafts, repoRoot, priorKnowledgeFile) {
+function synthesizePrompt(question, drafts, repoRoot, ticketContextFile) {
   return [
     `You are synthesizing ${drafts.length} parallel plan drafts into a single plan.`,
     ``,
@@ -315,8 +310,8 @@ function synthesizePrompt(question, drafts, repoRoot, priorKnowledgeFile) {
     question,
     ``,
     contextFilePrompt(
-      'Prior-knowledge file', priorKnowledgeFile,
-      'Keep the merged plan consistent with proven approaches and clear of documented gotchas.'
+      'Curated ticket-context file', ticketContextFile,
+      'Keep the merged plan consistent with ticket intent, confirmed evidence, proven approaches, and documented gotchas.'
     ),
     `Drafts:`,
     drafts.map((d, i) => d ? `\n--- DRAFT ${i + 1} (framing: ${d.framing}) ---\n${JSON.stringify(d.plan, null, 2)}\nFraming notes: ${d.framing_notes}\n` : `\n--- DRAFT ${i + 1}: FAILED ---\n`).join(''),
@@ -333,7 +328,7 @@ function synthesizePrompt(question, drafts, repoRoot, priorKnowledgeFile) {
   ].join('\n')
 }
 
-function criticPrompt(lens, plan, question, codebaseResearchFile, repoRoot, priorKnowledgeFile) {
+function criticPrompt(lens, plan, question, codebaseResearchFile, repoRoot, ticketContextFile) {
   const lensInstructions = {
     completeness: [
       `Your lens is COMPLETENESS. Identify what's missing.`,
@@ -398,8 +393,8 @@ function criticPrompt(lens, plan, question, codebaseResearchFile, repoRoot, prio
       'Codebase research file', codebaseResearchFile, 'Use it as evidence context.'
     ),
     contextFilePrompt(
-      'Prior-knowledge file', priorKnowledgeFile,
-      'Flag contradictions with documented gotchas or proven approaches.'
+      'Curated ticket-context file', ticketContextFile,
+      'Flag contradictions with ticket intent, confirmed evidence, documented gotchas, or proven approaches.'
     ),
     ``,
     `Return per criticOutputSchema:`,
@@ -424,7 +419,7 @@ function criticPrompt(lens, plan, question, codebaseResearchFile, repoRoot, prio
   ].filter(Boolean).join('\n')
 }
 
-function revisePrompt(plan, critiques, question, repoRoot, priorKnowledgeFile) {
+function revisePrompt(plan, critiques, question, repoRoot, ticketContextFile) {
   return [
     `You are revising a plan based on critic findings. This is the SINGLE revision pass —`,
     `there is no second round, so make it count. Do NOT chase every finding; resolve`,
@@ -442,7 +437,7 @@ function revisePrompt(plan, critiques, question, repoRoot, priorKnowledgeFile) {
     critiques.map(c => c ? `\n--- ${c.lens.toUpperCase()} CRITIC ---\nOverall: ${c.overall_assessment}\nFindings:\n${JSON.stringify(c.findings, null, 2)}\n` : '\n--- CRITIC FAILED ---\n').join(''),
     ``,
     contextFilePrompt(
-      'Prior-knowledge file', priorKnowledgeFile,
+      'Curated ticket-context file', ticketContextFile,
       'The revision must not reintroduce a documented gotcha.'
     ),
     `Revision rules:`,
@@ -472,7 +467,7 @@ function revisePrompt(plan, critiques, question, repoRoot, priorKnowledgeFile) {
 
 function disagreementAuditPrompt(
   round, plan, allDrafts, critiques, question, codebaseResearchFile, repoRoot,
-  priorKnowledgeFile, priorAudits, revisionLog
+  ticketContextFile, priorAudits, revisionLog
 ) {
   const providerDrafts = allDrafts.filter(d => d.provider_key)
   // Payload trim: only round 1 sees the full draft plans. Later rounds audit the current plan
@@ -531,7 +526,7 @@ function disagreementAuditPrompt(
       ? contextFilePrompt('Codebase research file', codebaseResearchFile, 'Use it as evidence context.')
       : '',
     contextFilePrompt(
-      'Prior-knowledge file', priorKnowledgeFile,
+      'Curated ticket-context file', ticketContextFile,
       'Respect documented gotchas and past decisions.'
     ),
     ``,
@@ -553,7 +548,7 @@ function disagreementAuditPrompt(
   ].filter(Boolean).join('\n')
 }
 
-function convergenceRevisePrompt(plan, audit, question, repoRoot, priorKnowledgeFile) {
+function convergenceRevisePrompt(plan, audit, question, repoRoot, ticketContextFile) {
   const actionable = (audit.disagreements || []).filter(d =>
     d.severity === 'must-resolve' &&
     (d.status === 'material_unresolved' || d.status === 'open_question')
@@ -574,7 +569,7 @@ function convergenceRevisePrompt(plan, audit, question, repoRoot, priorKnowledge
     `Actionable disagreements from audit:`,
     JSON.stringify(actionable, null, 2),
     ``,
-    contextFilePrompt('Prior-knowledge file', priorKnowledgeFile, 'Respect it during convergence.'),
+    contextFilePrompt('Curated ticket-context file', ticketContextFile, 'Respect it during convergence.'),
     `Revision rules:`,
     `1. If evidence settles a disagreement, update the plan to the settled answer. Evidence`,
     `   means an actual observation (command + output) — either pasted by the audit or made`,
@@ -608,9 +603,8 @@ if (!input || typeof input !== 'object') {
 
 const {
   question,
-  sourceArtifactFile = null,
+  ticketContextFile = null,
   codebaseResearchFile = null,
-  priorKnowledgeFile = null,
   providerDrafts = [],
   framings = DEFAULT_FRAMINGS,
   repoRoot,
@@ -622,6 +616,9 @@ if (!question || typeof question !== 'string') {
 }
 if (!repoRoot || typeof repoRoot !== 'string') {
   throw new Error('plan-fanout: args.repoRoot is required')
+}
+if (!ticketContextFile || typeof ticketContextFile !== 'string') {
+  throw new Error('plan-fanout: args.ticketContextFile is required')
 }
 if (!Array.isArray(framings) || framings.length === 0) {
   throw new Error('plan-fanout: args.framings must have at least 1 entry')
@@ -635,7 +632,7 @@ phase('Draft')
 const draftResults = await parallel(
   framings.map(f => () => agent(
     draftPrompt(
-      f, question, sourceArtifactFile, codebaseResearchFile, repoRoot, priorKnowledgeFile
+      f, question, ticketContextFile, codebaseResearchFile, repoRoot
     ),
     // Drafting is mechanical divergence — sonnet at medium effort is enough; synthesis is
     // where the judgment happens.
@@ -662,7 +659,7 @@ if (allDrafts.length === 1) {
   synthesized = allDrafts[0]
 } else {
   synthesized = await agent(
-    synthesizePrompt(question, allDrafts, repoRoot, priorKnowledgeFile),
+    synthesizePrompt(question, allDrafts, repoRoot, ticketContextFile),
     // stay on opus — fable is not available on the subscription plan after 2026-07-07
     { label: 'synthesize', phase: 'Synthesize', model: 'opus', schema: draftOutputSchema }
   )
@@ -677,7 +674,7 @@ phase('Critique')
 const critiqueResults = await parallel(
   ['completeness', 'correctness', 'yagni'].map(lens => () => agent(
     criticPrompt(
-      lens, synthesized.plan, question, codebaseResearchFile, repoRoot, priorKnowledgeFile
+      lens, synthesized.plan, question, codebaseResearchFile, repoRoot, ticketContextFile
     ),
     // Completeness and YAGNI are checklist-style lenses — sonnet at medium effort. The
     // correctness critic reads the codebase to verify claims, so it keeps the default model.
@@ -708,7 +705,7 @@ if (validCritiques.length === 0 || totalFindings === 0) {
   }
 } else {
   final = await agent(
-    revisePrompt(synthesized.plan, validCritiques, question, repoRoot, priorKnowledgeFile),
+    revisePrompt(synthesized.plan, validCritiques, question, repoRoot, ticketContextFile),
     // stay on opus — fable is not available on the subscription plan after 2026-07-07
     { label: 'revise', phase: 'Revise', model: 'opus', schema: revisedOutputSchema }
   )
@@ -732,7 +729,7 @@ if (validProviderDrafts.length > 0) {
     const audit = await agent(
       disagreementAuditPrompt(
         round, final.plan, allDrafts, validCritiques, question, codebaseResearchFile, repoRoot,
-        priorKnowledgeFile, auditHistory, final.revision_log
+        ticketContextFile, auditHistory, final.revision_log
       ),
       // stay on opus — fable is not available on the subscription plan after 2026-07-07
       { label: `disagreement-audit:${round}`, phase: 'Converge', model: 'opus', schema: disagreementAuditSchema }
@@ -768,7 +765,7 @@ if (validProviderDrafts.length > 0) {
     }
     const revised = await agent(
       convergenceRevisePrompt(
-        final.plan, { ...audit, disagreements: actionable }, question, repoRoot, priorKnowledgeFile
+        final.plan, { ...audit, disagreements: actionable }, question, repoRoot, ticketContextFile
       ),
       // stay on opus — fable is not available on the subscription plan after 2026-07-07
       { label: `convergence-revise:${round}`, phase: 'Converge', model: 'opus', schema: revisedOutputSchema }

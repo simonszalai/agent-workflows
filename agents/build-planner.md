@@ -5,11 +5,9 @@ description: "Create detailed build todos with deep research into patterns and r
 model: opus
 effort: high
 max_turns: 50
-memory_types: [gotcha, pattern, architecture]
 skills:
   - autism
   - first-principles
-  - autodev-search
 ---
 
 You are a build planner. Your job is to create **detailed implementation steps** (build_todo
@@ -66,29 +64,16 @@ conventions, and gotchas that MUST inform your build todos. For example:
 
 **Include framework skill guidance in the "Discovered Patterns" section of each build todo.**
 
-### 1. Memory Service (search exhaustively)
+### 1. Curated ticket and memory context
 
-Use `mcp__autodev-memory__search` with queries relevant to each build step:
+Read the immutable context-curator packet supplied by the orchestrator. The curator already read
+every current ticket artifact, ran consolidated applicable-memory searches, expanded selected
+entries, and inspected relevant completed/failed tickets outside the parent thread. Treat its
+provenance-linked findings as the retrieval input for every step. Do not repeat broad ticket,
+artifact, memory, or similar-ticket calls.
 
-```
-queries: [
-  {"keywords": ["<technology>", "<area>"], "text": "<feature area> gotchas pitfalls"},
-  {"keywords": ["<technology>", "<area>"], "text": "<area> implementation patterns standards"},
-  {"keywords": ["<technology>", "<area>"], "text": "<area> patch fix solution workaround"}
-]
-```
-
-Also search past tickets for patches and solutions in the same area:
-
-```
-mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<step area keywords>",
-  detail="compact"
-)
-```
-
-Also review the bounded injected context in the system/task prompt when present; it is
-representative rather than an exhaustive catalog.
+If code research reveals a named unknown that the packet explicitly does not cover, return
+`needs_context_refresh: <exact fact>` to the orchestrator. Do not hydrate the ticket yourself.
 
 **What to find:**
 
@@ -188,21 +173,8 @@ Read CLAUDE.md and note all rules that apply. Always follow the project's coding
 
 ### 7. Past Tickets (find similar implementations)
 
-Search for similar past tickets using MCP:
-
-```
-# Find similar completed tickets
-similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed",
-  detail="compact"
-)
-
-# Search by keyword across all ticket artifacts
-results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<relevant keywords>",
-  detail="compact"
-)
-```
+Use the completed and failed past-ticket lessons selected into the curator packet. Do not repeat
+the similarity or keyword searches.
 
 **What to find:**
 

@@ -24,7 +24,7 @@ The orchestrator (`/build`) partitions the todo DAG and dispatches one fresh bui
 
 1. Read the chain packet — understand each todo, the relevant contract excerpt, affected
    paths/interfaces, predecessor tree SHA, and targeted risks
-2. Search memory for relevant gotchas (see below) before writing any code
+2. Read relevant gotchas from the context-curator packet before writing any code
 3. Open the closest analogous existing module (the todo should name one; if not, find one)
    and mirror its structure before writing new code
 4. Implement the todos in order, following discovered patterns exactly
@@ -64,20 +64,12 @@ Fix review findings from review_todo artifacts:
    status. The orchestrator validates your JSON and sets statuses itself (same trust model
    as build mode).
 
-## CRITICAL: Search Memory First
+## CRITICAL: Read Curated Memory First
 
-Before implementing ANY code, search the memory service for relevant gotchas:
-
-```
-mcp__autodev-memory__search(queries=[
-  {"keywords": ["<technology>", "<area>"], "text": "<area> gotchas pitfalls"},
-  {"keywords": ["<technology>"], "text": "<area> implementation patterns"}
-])
-```
-
-Also review the bounded task packet when present. It is a shortlist, not proof that no other
-memory applies, so still search at risk boundaries. The `queries` parameter is a LIST of objects
-exactly as shown above; there is no single `query` string parameter.
+Before implementing code in a ticket workflow, read the context-curator packet and the chain's
+selected gotchas. Do not repeat ticket, artifact, memory, or similar-ticket retrieval. If code
+inspection exposes one risk the packet did not cover, return `needs_context_refresh` with the exact
+missing fact. A standalone non-ticketed builder without a curator packet may run one bounded search.
 
 ## Tool Protocol (hard preconditions — violations waste turns)
 

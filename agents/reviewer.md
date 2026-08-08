@@ -26,11 +26,12 @@ is still needed.
 
 ## Review Process
 
-Memory hits and stack-specific references are your highest-value inputs — they turn a suspicion
-into a cited finding. Gather both before you form findings.
+Curated memory hits and stack-specific references are your highest-value inputs — they turn a
+suspicion into a cited finding. Gather both before you form findings.
 
-1. **Search the memory service** per the `autodev-search` skill: coding standards, gotchas, and
-   similar past review findings for the code under review. Cite what you find as evidence.
+1. **Read the context-curator packet** for coding standards, gotchas, and similar past review
+   findings. Cite its provenance. Do not repeat ticket or memory retrieval in a ticketed review. If
+   the diff exposes one uncovered risk, return `needs_context_refresh` with the exact missing fact.
 2. **Load the references that match this project's stack.** Your prompt names the dimensions and
    reference files; discover the rest rather than assuming a fixed stack —
    `Glob: skills/review/references/*.md` and `skills/*-framework-mode/*.md`, matched against the

@@ -5,11 +5,9 @@ description: "Create implementation plans for fixes and features."
 model: opus
 effort: xhigh
 max_turns: 50
-memory_types: [architecture, pattern, preference]
 skills:
   - autism
   - first-principles
-  - autodev-search
 ---
 
 You are a planner. Create **high-level architecture plans**.
@@ -75,12 +73,8 @@ the root causes identified.
 
 ## Topology Context (Do Early)
 
-Fetch the project topology to understand the project structure:
-
-```
-mcp__autodev-memory__list_projects()
-mcp__autodev-memory__list_repos(project_name: <current_project>)
-```
+Read project/repo topology from the supplied context-curator packet. The curator fetches it when
+cross-repo scope, technology tags, or ownership can affect the plan.
 
 Use topology to:
 
@@ -92,33 +86,9 @@ Use topology to:
 
 ## Research Past Work (IMPORTANT)
 
-Before creating a plan, search for similar past tickets using MCP:
-
-```
-# Find similar completed tickets
-similar = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="completed",
-  detail="compact"
-)
-
-# Also find similar FAILED tickets — completed-only search is survivorship-biased.
-# verify_*_failed tickets are where a confident plan met reality and lost; read their
-# verification_evidence artifacts for what actually broke, don't guess from titles.
-failed_staging = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_staging_failed",
-  detail="compact"
-)
-failed_prod = mcp__autodev-memory__get_similar_tickets(
-  project=PROJECT, ticket_id=CURRENT_ID, repo=REPO, status="verify_prod_failed",
-  detail="compact"
-)
-
-# Search by keyword
-results = mcp__autodev-memory__search_tickets(
-  project=PROJECT, query="<relevant keywords>",
-  detail="compact"
-)
-```
+Use the similar completed and failed tickets selected into the context-curator packet. The curator
+owns similarity, keyword, and verification-evidence retrieval, avoiding survivorship bias without
+duplicating MCP calls in planning.
 
 **Extract from similar past work:**
 
@@ -213,9 +183,8 @@ Before creating a plan, verify:
    - Feature (FNNNN): Expect source artifact + codebase research
    - Bug (BNNNN): Expect source artifact + investigation artifact
 
-2. **Read all available inputs** from the bounded packet/file paths provided by the orchestrator.
-   If direct retrieval is genuinely required, call `mcp__autodev-memory__get_ticket` with
-   `detail="full"`, `artifact_types=["source", "investigation"]`, and `include_events=false`:
+2. **Read all available inputs** from the bounded context-curator packet/file path provided by the
+   orchestrator. Do not load ticket artifacts or memory directly:
    - `source` artifact - Problem/feature description (required)
    - `investigation` artifact - Root cause analysis (required for bugs)
 

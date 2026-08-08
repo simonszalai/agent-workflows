@@ -34,11 +34,18 @@ to `/ticket-deploy`. Intensity (`direct` / `standard` / `heavy`) follows
 ## Process
 
 Follow `../references/execution-phases.md`, `../references/execution-economy.md`, and
-`../references/execution-intensity.md`.
+`../references/execution-intensity.md`. Ticket hydration follows
+`../references/delegated-ticket-context.md`.
 
-1. **Load context once.** `get_ticket(detail="full", artifact_types=["source", "plan"],
-   include_events=false)`; cache the response. Carry forward the planner's prior-knowledge blob
-   into the build and review packets so builders and reviewers inherit the same knowledge without
+1. **Load context once, outside the main thread.** Read one light manifest for lifecycle and plan
+   presence. Reuse a caller-supplied curator packet only when its `context_version`, build phase,
+   and task fingerprint match; otherwise dispatch one fresh no-history context curator. Claude uses
+   `context-curator` on `sonnet`; Codex
+   uses `gpt-5.6-luna`. The curator reads all current artifact bodies and applicable
+   memory/past-ticket evidence and returns one <=8 KiB build packet. Validate its receipt. The build
+   orchestrator must not replay artifact, memory, entry-expansion, or similar-ticket calls. Carry
+   the
+   packet path/hash into build and review so children inherit the same knowledge without
    re-searching. Resolve intensity from the parent packet or standalone flags/gate; epic membership
    alone has no floor. Record `intensity` / `intensity_reason` / `intensity_floor` on every child
    packet.
@@ -96,6 +103,9 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    not change the tree. Never skip health entirely.
 5. **Review and resolve.** `direct` has no independent review. `standard` dispatches exactly one
    native general reviewer; `heavy` invokes `/review` and conditionally adds specialists/peers.
+   Before review dispatch, refresh the light manifest. If build/checkpoint updates advanced
+   `context_version`, run one review-phase context curator and pass its packet path/hash; do not
+   hydrate changed artifacts in this orchestrator.
    Reviewers inspect the diff and evidence only. Add accepted same-risk findings to the one ordinary
    repair batch; do not re-review its result. A new safety boundary escalates to heavy review before
    repair. Stop for unresolved design decisions.

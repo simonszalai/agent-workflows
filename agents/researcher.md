@@ -73,11 +73,12 @@ patterns and conventions that inform your research.
 
 ## What to Look For
 
-**Memory service (check first):**
+**Curated memory context (check first):**
 
-- Known gotchas matching the problem (via `mcp__autodev-memory__search`)
-- Past solutions for similar issues
-- Bounded parent/task packet when present (representative, not exhaustive)
+- In a ticket workflow, use the context-curator packet's known gotchas and past solutions; do not
+  repeat ticket or memory retrieval
+- If code research exposes one uncovered risk, return `needs_context_refresh` with the exact fact
+- In a standalone non-ticketed research run, use one bounded memory search
 
 **Code patterns:**
 
