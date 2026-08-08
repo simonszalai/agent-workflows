@@ -66,6 +66,28 @@ test('review-collect returns raw native envelopes without synthesis', async () =
   assert.deepEqual(result.stats, { attempted: 2, succeeded: 2, failed: 0 })
 })
 
+test('review-collect rejects more than the combined core plus one merged specialist', async () => {
+  await assert.rejects(
+    runWorkflow(
+      './review-collect.js',
+      {
+        reviewers: [
+          { key: 'combined-core', focus: 'code and plan', references: [] },
+          { key: 'merged-specialist', focus: 'named hard risk', references: [] },
+          { key: 'redundant-third', focus: 'overlapping review', references: [] },
+        ],
+        intent: 'Review the change.',
+        files: [],
+        diffSummary: 'no-op',
+        diffPath: '.context/review/diff.patch',
+        mode: 'report-only',
+      },
+      async () => ({}),
+    ),
+    /at most one merged specialist/,
+  )
+})
+
 test('review-synthesize boosts duplicate findings across native and peer envelopes', async () => {
   const result = await runWorkflow(
     './review-synthesize.js',

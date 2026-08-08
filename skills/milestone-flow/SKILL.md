@@ -136,8 +136,9 @@ For each step ticket that is **not already `merged`**, run `/ticket-flow <ID> --
 it tells `/ticket-flow` it is delegated, so it lands only and does **not** hand back into
 `/milestone-flow`. The dispatch carries the active shared-packet artifact id/version/hash rather
 than copied parent context, plus `intensity_floor: none`. Epic membership is sequencing, not risk;
-raise to `heavy` only when the step plan/source names schema, auth, secrets, billing,
-deploy-config, or cross-repo contracts per
+raise to `heavy` only when the step plan/source names auth, secrets, billing, destructive or
+irreversible migration, high-blast-radius deploy configuration, or an expensive-to-reverse
+cross-repo contract per
 `../references/execution-intensity.md`. Each non-skipped ticket-flow must:
 
 - load the parent epic plan and milestone contract;
@@ -150,12 +151,6 @@ deploy-config, or cross-repo contracts per
 - set the step ticket to `merged` after a successful epic-step landing;
 - never run staging/production verification and never advance the milestone gate itself. Its
   `fanout_budget.environment_verification_required` is `false`.
-
-After a step returns, import its latest `ticket-run-budget-v1` receipt into the durable epic
-`epic-run-budget-v1` artifact with `bin/phase-contract epic-budget`; use `reservation: null` only for
-this advancing roll-up. Persist the emitted receipt with `expected_updated_at` before dispatching
-anything else. This makes the child's internal delivery/review/repair sessions visible to the
-run-wide ledger without duplicating them.
 
 **Per-step audit gate (before §5).** After each wave, confirm via `get_ticket(detail="light",
 artifact_types=["plan", "build_todo", "review_todo"], include_events=false)` that every landed
@@ -216,7 +211,7 @@ Treat deployment as incomplete until the deployment mechanics are verified by `/
 staging deploy fails on a documented bounded prerequisite, classify it with
 `staging-autonomy.md`, execute `staging_safe` directly or route `owner_repair`, and retry the
 invalidated deploy phase. Run the deterministic waiter for `external_wait`. Emit `BLOCKED` only for
-`human_required`/`agent_incapable`; exhausted repair capacity is `STOPPED`/`FAILED`. Never run
+`human_required`/`agent_incapable`; a reached repair limit is `STOPPED`/`FAILED`. Never run
 behavior verification against stale code.
 
 ### 7. Verify the milestone staging gate
@@ -226,9 +221,6 @@ Immediately after a successful deploy, run the explicit epic/milestone verifier:
 ```text
 /ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote --produce-evidence
 ```
-
-Before its fresh verifier session starts, reserve `session_role: "milestone_verifier"` and the
-current milestone id through `bin/phase-contract epic-budget`, then persist the emitted receipt.
 
 The verifier must write all required evidence destinations before the gate can advance:
 
@@ -267,8 +259,8 @@ re-run/fix the evidence write rather than marking the milestone complete.
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
   Use one fresh no-history repair owner and persist the failure class, contract delta, attempted
   fix, and round across rotations. Permit one automatic repair/redeploy/reverify cycle per
-  milestone run. A failed re-verification returns `BUDGET_EXHAUSTED`; it does not create a second
-  fix ticket or a fresh allowance.
+  milestone run. A failed re-verification persists `repair_limit_reached` with the exact evidence;
+  it does not create a second fix ticket.
   Stop earlier only for `human_required` or `agent_incapable`. A live external operation stays in
   the `external_wait` lane.
 - `BLOCKED`: consume the verifier's staging-autonomy repair packet instead of returning it to the
@@ -278,8 +270,8 @@ re-run/fix the evidence write rather than marking the milestone complete.
   deploy ownership used above. Safe operational actions do not require a fix ticket and do not
   consume the one product-code repair cycle; they have their own contract cap of three distinct
   actions. Wait on `external_wait`. Emit `BLOCKED` only for `human_required`/`agent_incapable`;
-  two no-progress actions or exhaustion are `STOPPED`/`FAILED`. A final `BLOCKED` result is invalid
-  while a repairable or waitable packet remains within either budget.
+  two no-progress actions or a reached repair limit are `STOPPED`/`FAILED`. A final `BLOCKED`
+  result is invalid while a repairable or waitable packet remains within its bounded loop.
 
 Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
 milestone it was asked to execute.
@@ -302,25 +294,10 @@ with `max_packet_bytes: 16384` and these default hard per-generation budgets:
 This table is the required fixed context/token budget. An observable first compaction is an
 immediate `rotate_required` boundary.
 
-The packet references one durable epic `learning_report` titled `run-budget <activation_key>` whose
-metadata kind is `epic_run_budget`; the exact JSON body is the cumulative model-session receipt.
-Before the first wave, classify each step and derive the ceiling mechanically:
-
-```text
-delivery ceiling = 2 * direct_steps + 3 * standard_steps + 12 * heavy_steps
-milestone overhead = 6 * milestone_count
-production overhead = 3 when explicitly authorized, otherwise 0
-epic ceiling = delivery ceiling + milestone overhead + production overhead
-```
-
-The milestone overhead covers its owner, wait-if-needed, verifier, and the same roles around the one
-permitted repair gate. Before a milestone waiter leaf, verifier, or repair owner starts, call
-`bin/phase-contract epic-budget` with the corresponding `milestone_waiter`,
-`milestone_verifier`, or `milestone_repair_owner` reservation and persist the emitted artifact body
-using `expected_updated_at`. The repair reservation starts the milestone's single repair-cycle id.
-Newly attached fix tickets add their classified delivery allowance once with a named reason;
-retries, rotations, and resumed conversations add nothing. Exhaustion is terminal
-`BUDGET_EXHAUSTED`, never a reason to mint a new packet/run id.
+There is no epic-wide model-session receipt or reservation step. A milestone owner persists
+per-step completions, external-operation identity, verifier evidence, and the bounded repair-round
+counter, but it never stops solely because earlier work used several sessions. Per-phase generation
+limits and no-progress repair limits remain the loop controls.
 
 An execution wave with more than eight safe step checkpoints must be split into generations. On a
 valid `rotate_required`, persist every returned per-step completion before dispatching a fresh

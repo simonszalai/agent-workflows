@@ -124,28 +124,25 @@ rg -N '(prompts/|contracts/|\.(md|json|yaml|toml)$)' \
 
 ### Step 2: Select Reviewers
 
-**Heavy-path core reviewers** (spawn together when the path gate selects heavy review):
+**Heavy-path core reviewer** (spawn when the path gate selects heavy review):
 
 | Agent    | Model    | Review References                                                                    | Focus                                |
 | -------- | -------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
 <!-- stay on opus — fable is not available on the subscription plan after 2026-07-07 -->
-| reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md, references/simplicity.md, references/patterns.md, plus references/python-standards.md or typescript-standards.md per language | Code quality, YAGNI, architecture, security, performance |
-| reviewer | `sonnet` | (context injected — see Plan-Conformance Reviewer below)                              | Plan/scope conformance, deviations   |
+| reviewer | `opus`  | references/architecture.md, references/security.md, references/performance.md, references/simplicity.md, references/patterns.md, plus the language standard and plan/source/deviation context | Correctness, plan/scope conformance, YAGNI, architecture, security, performance |
 
-The heavy core is exactly **two** reviewers: one combined code reviewer and the plan-conformance
-reviewer. Code quality and architecture/security review the same diff with overlapping judgment;
-splitting them bought a third rollout and synthesis load, not extra findings.
+The heavy core is exactly **one combined reviewer**. Code quality and plan-conformance inspect the
+same diff; splitting them bought another rollout and synthesis load without enough independent
+coverage to justify it.
 
 **Small heavy-diff model downgrade:** when a safety/domain trigger selects the heavy path but the
-total diff is < 50 LOC (added + removed via `git diff --shortstat`), run the combined code
-reviewer on `sonnet` (the plan-conformance reviewer is already `sonnet`). Routine small diffs use
+total diff is < 50 LOC (added + removed via `git diff --shortstat`), run the combined reviewer on
+`sonnet`. Routine small diffs use
 the single-reviewer light path in Process step 5 instead.
 
-**Plan-conformance reviewer (heavy path).** The code-focused reviewers deliberately see only
-the diff — fresh eyes, no plan anchoring. This reviewer exists to close the gap that leaves:
-it is the ONE agent that reviews the implementation *against the contract*. Its prompt gets
-context the others don't (pass it via `extraContext` on the heavy path, or inline on the
-light path):
+**Plan-conformance context (heavy path).** The combined reviewer reviews the implementation
+*against the contract*. Its prompt gets this context via `extraContext` (or inline on the light
+path):
 
 - the **source artifact's deliverable list** (raw, not a summary — a summary written by the
   build orchestrator inherits the build's blind spots);
@@ -170,11 +167,12 @@ code). Classify them `gated_auto` when the approved plan determines the implemen
 deviations are p1/p2 per impact. Findings flow
 through the same schema, dedup, gate, and partitions as every other reviewer.
 
-**Conditional reviewers** (spawn based on diff analysis — agent judgment, not keyword matching).
-Spawn only reviewers whose condition is actually present in the diff, and when several conditions
-fire, **merge overlapping conditions into one reviewer** carrying the union of their references
-(e.g., model changes + a polling writer = one `opus` data reviewer with all four references), so
-a normal heavy review runs at most one or two conditional reviewers:
+**Conditional specialist** (spawn based on diff analysis — agent judgment, not keyword matching).
+Heavy review may add **at most one specialist**. Merge every firing condition and project persona
+into that one reviewer's focus/references (for example, model changes + a polling writer becomes
+one data specialist). On standard review, a routine additive migration enriches the single general
+reviewer's packet with the data/migration references instead of selecting heavy or spawning a
+second reviewer.
 
 | Condition                        | Agent    | Model  | Review References                                                  | Select when diff touches...                |
 | -------------------------------- | -------- | ------ | ------------------------------------------------------------------ | ------------------------------------------ |
@@ -187,13 +185,15 @@ a normal heavy review runs at most one or two conditional reviewers:
 ```bash
 rg -N '(models/|atlas|migrations/)' .context/review/files.txt | head -n 200
 ```
-If ANY model or migration files appear, spawn the data reviewer. Do NOT rely on build_todos
-or plan.md to determine this — check the actual diff. Missing migrations are a p1 finding.
+If ANY model or migration files appear, data-integrity/migration coverage is mandatory. On the
+light path, add those references and checks to the single general reviewer. On the heavy path,
+merge them into the one optional specialist. Do NOT rely on build_todos or plan.md to determine
+this — check the actual diff. Missing migrations are a p1 finding.
 
 **CRITICAL: polling/storage amplification rule.** If the diff adds or changes a repeated
 writer (poller, observer, scheduler, queue consumer, webhook, scraper, supervisor flow, or
-Prefect deployment) that persists data, spawn the data/performance reviewer even if no model
-file changed. The reviewer must check:
+Prefect deployment) that persists data, include data/performance coverage even if no model file
+changed (in the light general reviewer or the one merged heavy specialist). The reviewer must check:
 
 - whether unchanged source data creates new durable rows on every run;
 - whether "lossless" is being used to justify duplicate per-poll payload/item storage;
@@ -213,8 +213,8 @@ claim without a negative postcondition, is a p1 completeness finding.
 
 **CRITICAL: external cache temporal-finality rule.** If the diff reads from or writes to a
 provider-backed cache, market/reference data table, prompt-context price table, evaluation
-label, or ground-truth outcome table, spawn the data-integrity reviewer even if no model file
-changed. The reviewer must check:
+label, or ground-truth outcome table, include data-integrity coverage even if no model file changed
+(in the light general reviewer or the one merged heavy specialist). The reviewer must check:
 
 - every cached value is classified as `live`, `provisional`, or `final`;
 - all writers and readers of the cache/table are listed, especially prompt/live context
@@ -237,15 +237,14 @@ shared cache for a different semantic lifecycle, is a p1 data-integrity finding.
 ls .claude/agents/*-reviewer.md 2>/dev/null
 ```
 
-For each `*-reviewer.md` found in the project's `.claude/agents/`, spawn it as an
-additional reviewer. These are project-specific personas with domain heuristics
-(e.g., `pipeline-reviewer.md`, `prefect-ops-reviewer.md`).
+For each applicable `*-reviewer.md` found in the project's `.claude/agents/`, merge its relevant
+heuristics into the one conditional specialist. Do not spawn one agent per persona.
 
 **Activation rules for persona reviewers:**
-- Read each persona's activation conditions (in its frontmatter or body)
-- Only spawn if the diff touches files relevant to that persona
-- When uncertain whether a persona is relevant: spawn it only if the diff touches that persona's
-  safety surface; otherwise skip it and record the skipped persona under coverage residual risks
+- Read each persona's activation conditions (in its frontmatter or body).
+- Include it only if the diff touches files relevant to that persona.
+- When uncertain, include it only for its named safety surface; otherwise record the skipped
+  persona under coverage residual risks.
 
 ### Step 3: Announce the Review Team
 
@@ -254,10 +253,8 @@ For light review, announce the single general reviewer. For example, a heavy rev
 
 ```
 Review team:
-- code (heavy core: quality, architecture, security, performance) [opus]
-- plan-conformance (heavy core) [sonnet]
-- data-integrity — model/schema/Atlas/migration files changed [opus]
-- pipeline-reviewer — DAG node declarations modified [project persona]
+- combined core (correctness, plan conformance, architecture, security, performance) [opus]
+- merged specialist — data integrity + pipeline heuristics [opus]
 ```
 
 This is progress reporting, not a blocking confirmation.
@@ -306,13 +303,13 @@ ownership and fail-loud behavior still apply.
 
 Autonomous callers run one review wave by default. Every additional role/wave cites the recorded
 escalation trigger in the ticket phase's mechanically validated `fanout_budget`; reviewer
-availability or curiosity is not a trigger. A second (maximum third on heavy scope) wave is allowed
-only when an independent peer materially disagreed, not merely to re-confirm fixes.
+availability or curiosity is not a trigger. At most one additional wave is allowed, only when an
+independent peer materially disagreed, never merely to re-confirm fixes.
 
 A same-risk follow-up revision uses one repair owner and reuses the prior review disposition; it
 does not dispatch a reviewer solely to re-confirm the fix. The parent still runs final-tree health.
 If the delta first crosses security, auth, runtime-protocol, migration, destructive-data, or
-browser-patch risk, reset to the full/heavy path and retain the matching specialist coverage. Never
+browser-patch risk, reset to targeted heavy review and retain the matching specialist coverage. Never
 label a new boundary "delta" to save fanout.
 
 Reviewers never rerun validation; they review the bounded diff and recorded orchestrator evidence
@@ -335,7 +332,7 @@ polling.
    - Run `git diff --name-only` to identify changed files
    - Read build_todo artifact completion notes — collect every **Deviations** entry; the
      deviations, the plan's what/how/elimination/assumptions, and the raw source deliverable
-     list are the input package for the plan-conformance reviewer (Step 2)
+     list are the input package for the combined reviewer (Step 2)
 
 2. **Check existing review_todo artifacts:**
    - Count existing review_todo artifacts from `get_ticket` response
@@ -353,9 +350,10 @@ polling.
    | --- | --- |
    | User passed `--deep` | Heavy |
    | User passed `--light` and no safety-critical surface is present | Light |
-   | Safety-critical surface or project persona requirement | Heavy |
-   | Data/migration, polling-storage, or external-cache conditional reviewer fires | Heavy |
-   | ≥10 files or ≥500 changed LOC | Heavy |
+   | Hard safety surface (auth, secrets, destructive/irreversible migration/data, billing) | Heavy |
+   | Project persona identifies a concrete high-blast-radius risk | Heavy |
+   | Routine additive/reversible migration or other established-pattern data change | Light, with data references in the general reviewer packet |
+   | ≥10 files or ≥500 changed LOC without a hard safety surface | Light; note the width in the packet |
    | Otherwise | Light |
 
    Size alone rarely selects heavy: a mechanically wide but pattern-uniform diff (rename,
@@ -383,7 +381,7 @@ polling.
 
 5a. **Heavy path:**
 
-   Run native `review-collect` with only the specialized personas selected by the diff, then one
+   Run native `review-collect` with the combined core reviewer and at most one merged specialist, then one
    `review-synthesize` pass. If Workflow is unavailable, execute the
    same bounded algorithm inline. Add peer reviewer envelopes only when the escalation gate fires;
    otherwise `raw` contains native envelopes only. Finish every required collection call before
@@ -637,7 +635,7 @@ Review complete
 
 ## Scope Completeness Check (CRITICAL)
 
-This check is the **charter of the always-on plan-conformance reviewer** (see Step 2). It is
+This check is part of the **charter of the combined reviewer** (see Step 2). It is
 part of the reviewer fan-out — not an optional post-pass — so it runs on every review by
 construction. The method:
 

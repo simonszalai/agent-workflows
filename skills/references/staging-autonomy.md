@@ -103,7 +103,7 @@ If a harness/provider hard limit expires while the same operation remains health
 persist the wait receipt and return `NEEDS_MORE_TIME` with the exact continuation command or
 automatic continuation hook. Schedule the automatic continuation when the harness supports it;
 require user invocation only when no continuation mechanism exists. Never relabel a progressing
-wait as `BLOCKED`, `FAIL`, no-progress, or budget exhaustion. If evidence instead shows the
+wait as `BLOCKED`, `FAIL`, no-progress, or a reached repair/action limit. If evidence instead shows the
 operation cannot advance without an action,
 reclassify that action as `staging_safe`, `owner_repair`, `human_required`, or `agent_incapable`.
 

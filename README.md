@@ -10,7 +10,7 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 - **Commands** - Legacy Claude command wrappers kept only where still needed
 - **Workflows** - Claude Code dynamic workflow scripts (`plan-fanout`, `review-collect`,
   `review-synthesize`, etc.) for
-  heavy-path fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
+  bounded risk-focused fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
   equivalent logic inline on Codex/Grok
 - **bin/** - Shared executables including the CLI service wrappers (`render-cli`, `resend-cli`,
   `psql-cli`, `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter),

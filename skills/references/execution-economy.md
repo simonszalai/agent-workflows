@@ -149,14 +149,12 @@ records:
 
 Active `/ticket-flow` phases use the stricter
 `bin/phase-contract ticket-dispatch <envelope.json>` profile. It requires the runtime context
-receipt, conditional fanout budget, and chained `ticket-run-budget-v1` receipt. It mechanically
-enforces ticket phase ceilings, cumulative delivery/environment model-session caps, repair-cycle
-caps, repair-owner-only same-risk deltas, and full specialist reset at a new risk boundary. Each
-valid dispatch emits the next cumulative receipt. Persist that exact JSON in the ticket's
-`run-budget <activation_key>` `learning_report` artifact with an optimistic
-`expected_updated_at` update before starting the session; pass the artifact body inline on the next
-dispatch. Rotation, retry, provider failure, compaction, and user-invoked resume never reset it. An
-over-budget dispatch returns `BUDGET_EXHAUSTED` and is terminal for that activation.
+receipt and conditional fanout budget. It mechanically enforces ticket phase ceilings,
+repair-owner-only same-risk deltas, and targeted specialist reset at a new hard risk boundary.
+It deliberately does **not** count cumulative model sessions or emit a run-budget receipt: a
+completed build cannot be denied review or verification because earlier phases used several
+agents. Cost control lives in intensity selection, conditional fanout, and per-phase generation
+limits.
 
 The phase packet repeats those limits and requires the owner to count its turns and safe checkpoint
 advances. Harness `max_turns` and subprocess timeouts remain hard outer caps; set the packet budget
@@ -288,13 +286,14 @@ when the receipt/report fails. This is enforcement, never an instruction for the
   whole changed surface directly without a subagent, then give all remaining findings
   to one repair chain. The repair builder still does not validate. Only after the entire batch is
   repaired may the orchestrator rerun the canonical gate once on the changed tree. `direct` and
-  `standard` have one changed-tree whole-batch repair-and-rerun cycle; explicit `heavy` has three.
+  `standard` have one changed-tree whole-batch repair-and-rerun cycle; explicit `heavy` has two.
   A deterministic-only batch needs no repair owner, but its gate rerun consumes the same cycle.
-  Record every failure-driven rerun and return `BUDGET_EXHAUSTED` when the selected cap is spent.
+  Record every failure-driven rerun and persist `repair_limit_reached` with the exact unresolved
+  evidence when the selected cap is spent.
   Focused diagnostics used to isolate a gate failure are also orchestrator-owned and keyed by
   `(tree SHA, exact command)`.
 - Execute reusable gates through a run-local registry:
-  `bin/validation-receipt --owner orchestrator --max-repair-runs <1-or-3> --registry <run-dir> --
+  `bin/validation-receipt --owner orchestrator --max-repair-runs <1-or-2> --registry <run-dir> --
   <exact command>`. It persists the receipt under a
   key derived from the exact working-tree SHA and canonical working-directory + argv command. An
   exact-tree, exact-command PASS is returned without execution; any tree or command change

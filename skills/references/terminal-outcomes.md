@@ -42,7 +42,8 @@ After the operation reaches a terminal result, inspect the scope once more:
 8. **Staging blocker legitimacy:** when the outer workflow is a mutation-capable staging owner,
    load `staging-autonomy.md` before emitting `BLOCKED`. The closeout must prove every remaining
    precondition is `human_required` or `agent_incapable`. Continue `staging_safe`/`owner_repair`;
-   wait on `external_wait`; report no-progress or budget exhaustion as `STOPPED`/`FAILED`. Do not
+   wait on `external_wait`; report no-progress or a reached repair/action limit as
+   `STOPPED`/`FAILED`. Do not
    print a Next command that hands the agent's own executable or waitable work to the user.
 9. **Passive wait legitimacy (all environments):** when no action is missing and a live external
    operation has a healthy producer plus explicit terminal predicates, run its deterministic waiter

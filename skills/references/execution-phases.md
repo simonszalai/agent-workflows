@@ -22,10 +22,12 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    change, writes focused tests, may run focused tests, and checkpoints each todo. It does not run
    the canonical health gate. There is no separate planner, researcher, build-planner, `/build`
    chain, or `/write-tests` agent.
-4. **Heavy delivery** — `/ticket-plan` owns research, planning, and the critic loop; then
-   `/create-build-todos`, `/build`, and `/write-tests` run as separate bounded roles. Builders and
-   test writers do not run validation, typecheck, lint, builds, schema pulls/migrations, browser
-   verification, or health commands. A builder that finds the plan wrong returns `needs_replan`.
+4. **Heavy delivery** — `/ticket-plan` owns one risk-focused plan and an optional single critic;
+   the planner outlines concise risk/dependency-aware todos. One coherent `/build` chain
+   materializes those todos, implements them, and writes focused tests in-chain. Split once only
+   for independent risk/subsystem ownership. Builders do not run validation, typecheck, lint,
+   builds, schema pulls/migrations, browser verification, or the canonical health gate. A builder
+   that finds the plan wrong returns `needs_replan`.
 5. **Parent health gate** — after implementation and tests, the main orchestrator runs the canonical
    full health command once and records the PASS by `(tree SHA, exact command)`.
 6. **Review** — `direct` has no independent review. `standard` dispatches exactly one native general
@@ -36,7 +38,7 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    complete batch. `direct`/`standard` consume one repair-owner reservation total. Run maintained
    deterministic autofixes first in the current orchestrator session; dispatch a fresh repair owner
    only for remaining non-mechanical work. The repair owner does not validate. Do not re-review a
-   same-risk repair. A new risk boundary uses the heavy review path. `heavy` may use up to three
+   same-risk repair. A new hard risk boundary uses targeted heavy review. `heavy` may use up to two
    repair cycles.
 
    **Autonomous decision-ownership rule.** Severity and decision ownership are independent:
@@ -67,8 +69,8 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
    decisions and surface any genuinely undecided `manual` findings for a human.
 8. **Final local verification** — if a repair changed the tree since the first PASS, the main
    orchestrator runs the canonical full health command exactly once on the new tree. If unchanged,
-   reuse the prior PASS. Exhaustion returns `BUDGET_EXHAUSTED`; it never rotates into a fresh repair
-   allowance.
+   reuse the prior PASS. A reached repair-loop limit persists `repair_limit_reached` with the exact
+   unresolved evidence; it never rotates into a fresh repair round.
 9. **Deploy/land if policy allows** — for standalone ticket-flow, invoke `/auto-deploy` for
     the chosen target (`staging` for complex/risky/uncertain work, `production` only for tiny
     safe work). Epic-step landing remains parent-owned by the milestone/epic orchestrator.

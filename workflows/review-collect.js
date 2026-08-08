@@ -1,4 +1,4 @@
-// review-collect — native reviewer collection for the heavyweight /review path.
+// review-collect — native reviewer collection for the risk-focused /review path.
 //
 // This workflow returns raw reviewer envelopes only. It MUST run concurrently with external
 // provider dispatch. After every native and peer envelope has arrived, the orchestrator invokes
@@ -112,6 +112,9 @@ if (!input || typeof input !== 'object') {
 const { reviewers, intent, files, diffSummary, diffPath, mode, carried = [] } = input
 if (!Array.isArray(reviewers) || reviewers.length === 0) {
   throw new Error('review-collect: args.reviewers must be a non-empty native reviewer array.')
+}
+if (reviewers.length > 2) {
+  throw new Error('review-collect: heavy review permits one combined core reviewer and at most one merged specialist.')
 }
 if (!Array.isArray(files)) {
   throw new Error('review-collect: args.files must be an array.')

@@ -5,7 +5,7 @@ description: >-
   or full — and orchestrates the existing owners: auto-deploy (deploy mechanics), ticket-verify
   (evidence), ticket-promote (production landing + deploy). Self-heals routine CI failures and
   autonomously repairs staging verification failures through fresh bounded owners, while stopping
-  on exhausted repair budgets, unsafe evidence triggers, genuine timing waits, or human decisions.
+  on a proven no-progress repair limit, unsafe evidence triggers, genuine timing waits, or human decisions.
 max_turns: 30
 ---
 
@@ -50,21 +50,17 @@ Read and follow:
 - `../references/ci-self-heal.md`
 - the called skills' own boundaries
 
-Consume the ticket's persisted intensity and `ticket-run-budget-v1` receipt. If an older ticket has
-neither, classify it once from the current plan/diff and create the receipt before the first model
-dispatch. Never default an unclassified ticket to `heavy` merely to obtain the larger repair cap.
-The durable receipt is the exact ticket `learning_report` whose title is
-`run-budget <activation_key>` and metadata `kind` is `ticket_run_budget`; load/update only that
-artifact with optimistic concurrency. A local scratch copy is not resume state.
+Consume the ticket's persisted intensity. If an older ticket has none, classify it once from the
+current plan/diff. Never default an unclassified ticket to `heavy` merely to obtain another repair
+round. There is no ticket-wide model-session ledger or reservation artifact.
 
 ### Fresh deployment-owner boundary
 
 **Already-fresh callers skip the dispatch.** When the invoking agent is itself a fresh
 `fork_turns: "none"` agent dispatched for this ticket's deploy phase with a bounded checkpoint
 packet (the normal `/ticket-flow` §3→§4 hand-off), it **is** the deployment owner: it declares
-`mode: deployment_owner`, verifies that its session id is the latest persisted `deployment_owner`
-environment reservation for the active receipt, records that in its envelope, and continues with
-the process below. A missing/mismatched reservation is a hard stop, not permission to self-allocate.
+`mode: deployment_owner`, validates its bounded-owner envelope, and continues with the process
+below.
 Spawning a second owner from an agent that is already fresh and bounded doubles the rollouts and
 the wait for zero isolation gain. The dispatcher path below exists for long-lived callers —
 interactive sessions and orchestrators still carrying prior-phase history.
@@ -84,17 +80,11 @@ remote mutation itself:
 4. Create a `contract_profile: "bounded-owner"` envelope with `phase_name: "deployment"`,
    `fork_mode: "none"`, `owner_role: "deployment_owner"`, `dispatch_depth: 0`,
    `redispatch_allowed: false`, and
-   `context_strategy: "light_manifest_exact_artifacts"`. Include `run_budget` with
-   `budget_scope: "environment"`, `session_role: "deployment_owner"`, and the exact persisted prior
-   receipt inline. Validate it before dispatch:
+   `context_strategy: "light_manifest_exact_artifacts"`. Validate it before dispatch:
 
    ```text
    bin/phase-contract owner-dispatch <absolute-envelope-path>
    ```
-
-   `owner-dispatch` emits the next `run_budget_receipt`. Update the durable receipt artifact using
-   `expected_updated_at` before dispatch; on a compare-and-set conflict, do not spawn from the stale
-   reservation.
 
 5. Dispatch exactly one fresh owner and block once for its terminal result:
 
@@ -112,17 +102,11 @@ An invocation already marked `mode: deployment_owner` must verify the validated 
 continue with the process below. It must never dispatch another deployment owner. This marker and
 the envelope's `redispatch_allowed: false` are the recursion guard.
 
-`owner-dispatch` is also the deployment owner's environment-budget reservation; it is not a
-substitute for later reservations. Before a fresh deterministic-waiter or verifier session, validate
-a `ticket-dispatch` envelope for `phase_name: "deploy_verify"`, the corresponding
-`session_role`, and the same inline prior receipt, then persist its emitted receipt with
-`expected_updated_at` before spawn. Before any repair owner, reserve
-`session_role: "repair_owner"` and `starts_repair_cycle: true`: code changes consume `delivery`,
-while verifier/evidence/capacity repairs consume `environment`. The original deployment owner
-is not respawned: the bounded repair owner also performs any invalidated health/deploy mechanics,
-then returns before a fresh waiter/verifier grades it. Those wait/verifier sessions consume the
-environment bucket in order. A failed launch after persistence still consumes its reservation. No
-role, rotation, retry, resumed invocation, or owner boundary bypasses this sequence.
+Before a fresh deterministic-waiter or verifier session, validate a `ticket-dispatch` envelope for
+`phase_name: "deploy_verify"`. The original deployment owner is not respawned: a bounded repair
+owner performs any invalidated health/deploy mechanics, then returns before a fresh waiter/verifier
+grades it. Persist each phase checkpoint before dispatch, but do not count model sessions or make
+their count a delivery stop condition.
 
 All CI and Prefect waits must use one bounded waiter process. In Conductor, dispatch only the wait
 to one fresh leaf with `fork_turns: "none"`, then block once for its terminal result. Never poll a
@@ -243,8 +227,9 @@ Handle the verdict as follows:
 Track staging revision sequence by activation key + evidence-contract version. After two staging
 revisions for the same pair, enter stabilization mode: persist the latest failure class and exact
 contract delta before any third code mutation. Same-risk follow-ups use one repair owner and no
-re-review; a newly crossed security, auth, runtime-protocol, migration, destructive-data, or
-browser-patch boundary resets to the full/heavy review path with its specialist coverage. Rotation
+re-review; a newly crossed security, auth, runtime-protocol, destructive/irreversible migration,
+destructive-data, or browser-patch boundary resets to targeted heavy review with its specialist
+coverage. A routine additive migration adds data review without selecting full heavy delivery. Rotation
 continues these gates from the immutable checkpoint; it never skips them.
 
 #### Staging repair/redeploy/reverify loop
@@ -256,11 +241,10 @@ deployment owner.
 1. Persist `repair_round`, activation key, evidence-contract version, failed evidence artifact,
    investigation artifact, failure class, exact failing rows, and prior attempted fix. The initial
    verification is round 0. The repair counter is shared with local build/review repair: permit
-   **one total repair round** for `direct`/`standard` and three only for explicit `heavy`, so zero
+   **one total repair round** for `direct`/`standard` and two only for explicit `heavy`, so zero
    remain here if an ordinary local repair already consumed it. Each environment repair is followed
-   by one new verification attempt. Persist the counter and chained
-   `ticket-run-budget-v1` receipt across rotations and resumed invocations; neither a new agent nor a
-   new `/ticket-flow` turn resets it.
+   by one new verification attempt. Persist the repair counter across rotations and resumed
+   invocations; neither a new agent nor a new `/ticket-flow` turn resets it.
 2. For every agent-resolvable `FAIL` or `owner_repair` BLOCKED, dispatch exactly one fresh
    `fork_turns: "none"` repair subagent with the bounded failure packet. Route by class:
    `code_defect` through the normal repair owner, canonical local health gate, commit/push, and
@@ -278,18 +262,18 @@ deployment owner.
    lane allows at most three distinct actions per top-level run. It does not count against the
    product-code repair round. Do not dispatch another model merely to run a known bounded command.
 3. Re-run every lifecycle stage invalidated by the repair. Product/config changes reuse the prior
-   review disposition when same-risk, or run full heavy review only after a new boundary; they still
+   review disposition when same-risk, or run targeted heavy review only after a new boundary; they still
    require a final-tree health PASS, commit/push, and staging redeploy before verification. Verifier
    or evidence-only repairs reuse the activated product revision only when identity proves it is
    still current. Then invoke `/ticket-verify staging <ID> --no-promote --produce-evidence` once.
-4. On another failure, persist the delta. Continue only when the selected intensity still has both
-   a repair cycle and model-session capacity. Otherwise return `BUDGET_EXHAUSTED`; context rotation
-   and a fresh user turn do not add capacity.
+4. On another failure, persist the delta. Continue only while the selected intensity still has a
+   repair round and the last round made concrete progress. Otherwise persist
+   `repair_limit_reached` with the exact evidence. Model-session count is irrelevant.
 5. Stop successfully on exact `PASS`. Emit `BLOCKED` only for `human_required` or
-   `agent_incapable`. Wait on `external_wait`; report budget exhaustion/no-progress as
+   `agent_incapable`. Wait on `external_wait`; report a reached repair/action limit or no-progress as
    `STOPPED`/`FAILED`. Before emitting `BLOCKED`, validate that no `staging_safe`, `owner_repair`,
    or `external_wait` packet remains and include the staging-autonomy receipts. Report every
-   attempted delta when the cap is exhausted.
+   attempted delta when the repair limit is reached.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 
@@ -373,8 +357,8 @@ investigation classifies every failed row; route on that classification:
   surface — re-finalize the `deployment_guide` contract with the recorded revision reason — then
   re-run `/ticket-verify production <ID>` against the already-live revision. No product code,
   redeploy, or environment mutation is permitted in this loop; a repair that would need any of
-  those disqualifies the path. The selected intensity's persisted repair/session caps apply
-  (production verification failures share the same `repair_round` and run-budget receipt).
+  those disqualifies the path. The selected intensity's persisted repair-round cap applies
+  (production verification failures share the same `repair_round`).
 - **Anything else** — any `code_defect`, `environment_capacity`, `external_observation`,
   `unknown`, mixed classification, or non-empty product-failure field: stop at the production
   safety boundary with the persisted remediation route.

@@ -54,7 +54,7 @@ standards (audits, checklists, synthesis guidelines) live in
 /ticket-plan #123                     # Find or create ticket from GitHub issue
 /ticket-plan                          # Create ticket from conversation context
 /ticket-plan F0009 additional context # Ticket with extra context
-/ticket-plan F0009 --deep             # Force intensity heavy (plan-fanout workflow)
+/ticket-plan F0009 --deep             # Force risk-focused heavy planning
 /ticket-plan F0009 --light            # Force intensity direct (one-planner light path)
 /ticket-plan F0009 --intensity standard
 /ticket-plan F0009 --solo             # Disable conditional peer-provider escalation
@@ -93,8 +93,8 @@ standards (audits, checklists, synthesis guidelines) live in
 
 **Does NOT contain:**
 
-- Specific files to modify or line-by-line implementation details (those come later via
-  `/create-build-todos`)
+- Specific files to modify or line-by-line implementation details (the delivery/builder owner
+  materializes those from the approved plan)
 - Invented implementation code. Plans contain **no invented code**; code snippets are allowed
   only as citations of existing canonical patterns with file:line references.
 
@@ -201,11 +201,11 @@ mcp__autodev-memory__update_ticket(
 ### Phase 3: Research / Investigate
 
 **For features (F-prefix):**
-- `heavy` intensity: spawn `researcher` to analyze codebase patterns and integration points
-  (the fanout's generic subagents cannot research for themselves).
-- `direct`/`standard` (light path): do **not** spawn a separate researcher — the single inline
-  `planner` researches the codebase itself as part of planning. A separate researcher on the
-  light path duplicates that work and roughly doubles planning wall-clock for no added coverage.
+- At every intensity, the single native planner performs the bounded code lookup needed to verify
+  existing patterns and integration points. Do **not** spawn a generic separate researcher merely
+  because intensity is `heavy`; that duplicates the planner and delays the plan. A targeted
+  researcher is allowed only when the planner names a specific missing fact that cannot be settled
+  with a bounded lookup.
 - Let the Phase 4 curator search similar past tickets; do not run the call in this orchestrator
 
 **For bugs (B-prefix):**
@@ -257,7 +257,7 @@ reference (user flags, floors, safety surfaces). Map:
 | --- | --- |
 | `direct` | Light — one native inline planner; no critic panel |
 | `standard` | Light — one native inline planner; no critic panel |
-| `heavy` | Heavy — multi-framing + completeness/correctness/YAGNI critics |
+| `heavy` | Risk-focused — one native planner; at most one conditional critic |
 
 Peer providers are an independent escalation used only for an explicit user request or an
 unsettled material disagreement/uncertainty on a safety-critical surface. Prompt length alone is
@@ -271,17 +271,17 @@ Announce: `Intensity: {direct|standard|heavy} ({reason}; floor=...); Plan path: 
 Escalate peer providers only when at least one trigger is recorded:
 
 1. the user explicitly requested cross-provider planning or independent opinions; or
-2. the work affects a safety-critical surface (security, auth, billing, destructive/schema
+2. the work affects a safety-critical surface (security, auth, billing, destructive/irreversible
    migration, or a cross-repo compatibility contract with material blast radius) **and** native
-   research/critics leave a material disagreement or factual/architectural uncertainty that
+   planner/critic leaves a material disagreement or factual/architectural uncertainty that
    repository evidence does not settle.
 
-A safety surface alone is not a peer trigger — the heavy native critic panel already covers it.
+A safety surface alone is not a peer trigger — targeted native review covers it.
 Peers exist to break genuine deadlocks, not to re-confirm native agreement; each peer roughly
 doubles planning wall-clock, so a peer call without a recorded deadlock is waste.
 
-`--solo` disables peers, but not the heavy native critic panel or any project-required safety
-review. Announce peers separately: `peers: no trigger` or `peers: escalated for schema safety`.
+`--solo` disables peers, but not a triggered native critic or any project-required safety review.
+Announce peers separately: `peers: no trigger` or `peers: escalated for destructive migration`.
 
 ### Phase 6: Plan, critique, and conditionally converge
 
@@ -292,10 +292,12 @@ from the run-local cache rather than embedding or rediscovering them for every c
 Before dispatch, write the stable inputs once under `.context/plan/<run-id>/`:
 
 - `ticket-context.md` — the curator's relevance-filtered packet, copied byte-for-byte;
-- `research.md` — codebase research or investigation findings;
+- `research.md` — bounded planner lookup or investigation findings, when present;
 
-Pass only `ticketContextFile` and `codebaseResearchFile` paths to `plan-fanout`. Do not pass their
-contents in workflow arguments or repeat them in each agent prompt.
+When the conditional critic is needed, let `plan-fanout` own the one planner plus that critic: pass
+only `ticketContextFile`, `codebaseResearchFile`, and the single selected `criticLenses` value. Do
+not first spawn a separate planner, pass file contents in workflow arguments, or repeat them in
+each agent prompt.
 
 #### Light path
 
@@ -311,10 +313,16 @@ surfaces a peer-escalation trigger. Zero-fill heavy-only/provider-only stats.
 
 #### Heavy path
 
-Run `plan-fanout` with bounded native MVP-first and risk-first framings plus the three native critic
-lenses. If Workflow is unavailable, execute the equivalent native loop inline. Stop when all
-must-address findings are incorporated/rejected with evidence or a user decision is required.
-Do not add peer providers merely because the path is heavy.
+Run exactly one native risk-focused planner. Without a critic trigger, run it inline. With a critic
+trigger, `plan-fanout` supplies that one planner and the one critic; it is not a second planning
+pass. The planner must choose the smallest established-pattern solution, make
+rollback/reversibility explicit, and materialize concise risk/dependency-aware build todo outlines
+in the plan. Add exactly one critic only when a named hard safety surface or an unresolved
+expensive-to-reverse decision needs independent challenge; choose the single most relevant lens
+(`correctness`, `completeness`, or `yagni`). Run one revision pass only if that critic returns
+actionable findings. If Workflow is unavailable, execute the same bounded loop inline.
+Do not add multi-framing, a generic researcher, a critic panel, or peer providers merely because
+the path is heavy.
 
 #### Conditional peer-provider convergence
 
@@ -327,8 +335,7 @@ Every adapter call passes the explicit root rollout identifier through
 `--orchestrator-thread-id <orchestrator_thread_id>`.
 
 Merge usable peer envelopes with the native plan and audit material disagreements. Run at most one
-convergence round; spend a second (heavy only) solely on a still-blocking disagreement about a
-named safety surface — never to polish agreed wording. Resolve each disagreement by
+convergence round, never to polish agreed wording. Resolve each disagreement by
 code/artifact evidence, make it an explicit blocking `open_questions` item, or reject it as a
 preference/YAGNI issue with rationale. Do not simulate failed peers. For safety-critical triggers,
 peer unavailability is explicit residual risk and the plan may not claim independent agreement.
@@ -444,7 +451,7 @@ existing one:
 
 Write a DRAFT deployment guide as a separate `deployment_guide` artifact. The plan knows the
 architecture, so it can already commit the *shape* of deploy and verification even though exact
-commands/revisions come later at build time. This draft is the seed that `/create-build-todos`
+commands/revisions come later at build time. This draft is the seed that the delivery/builder owner
 finalizes and `/ticket-verify` grades against — do not skip it.
 
 Capture, from the architecture:
@@ -515,8 +522,8 @@ confirms the resting status).
 
 ## Agent Selection
 
-**For features:** Spawn `researcher` only on the heavy path; the light-path planner researches
-inline.
+**For features:** The planner researches inline at every intensity. Spawn a targeted researcher
+only for a specifically named missing fact.
 
 **For bugs:** Use investigation artifact findings; spawn additional agents only if needed.
 
@@ -525,10 +532,10 @@ searches past tickets automatically as part of its research phase.
 
 | Need                     | Agent                | When Used                                        |
 | ------------------------ | -------------------- | ------------------------------------------------ |
-| Codebase patterns        | `researcher`         | Heavy-path features only                         |
+| Codebase patterns        | native planner       | Bounded lookup at every intensity                 |
 | Past work learnings      | (built into planner) | Automatic via research (references/past-work.md) |
 | Production state (bugs)  | Investigator agents  | If investigation incomplete                      |
-| Additional code context  | `researcher`         | If planner requests                              |
+| Additional code context  | `researcher`         | Only for one specifically named missing fact     |
 | Peer provider planning   | `external-planner`   | Explicit risk/uncertainty/disagreement trigger   |
 
 ## Output
@@ -588,8 +595,8 @@ mcp__autodev-memory__update_ticket(
 
 | Command              | Relationship                                         |
 | -------------------- | ---------------------------------------------------- |
-| `/create-build-todos`| Next step after user approves the plan               |
+| `/create-build-todos`| Optional standalone deepening tool; not a default heavy subphase |
 | `/ticket-flow`       | Calls ticket-plan as part of end-to-end execution      |
 | `/investigate`       | Called internally for bug tickets                    |
-| `/research`          | Called internally for feature tickets                |
+| `/research`          | Used only for a specifically named missing fact       |
 | `/epic-plan`         | Epic-level analogue; step tickets still use ticket-plan |

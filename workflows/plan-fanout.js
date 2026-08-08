@@ -1,4 +1,4 @@
-// plan-fanout — heavyweight orchestrator for /ticket-plan when the work is substantial.
+// plan-fanout — bounded risk-focused orchestrator for /ticket-plan.
 //
 // Plans contain both subjective tradeoffs and factual/architectural claims. The tradeoffs
 // need panel-with-counterweight; the factual claims need cross-provider disagreement
@@ -6,21 +6,12 @@
 // disagreements are iterated until evidence resolves them, they become explicit blockers, or
 // they are deliberately rejected as preference/YAGNI.
 //
-// Phase shape:
-//   1. Draft (parallel): N diverse plan drafts from different framings (MVP-first,
-//      risk-first, integration-first). Diversity beats sequential refinement here.
-//   2. Add peer-provider drafts gathered by the skill via external-agent --task plan.
-//   3. Synthesize: one opus agent picks the best base and grafts strong elements from
-//      the others.
-//   4. Critique (parallel): 3 critics with DIFFERENT (and partially-opposing) lenses:
-//        - completeness — what's missing?
-//        - correctness — what assumptions won't hold?
-//        - YAGNI — what's over-engineered? (essential counterweight to completeness)
-//   5. Revise: one opus agent incorporates must-address findings AND explicitly resolves
-//      completeness-vs-YAGNI conflicts. Records what was rejected and why.
-//   6. Disagreement convergence: up to 3 bounded rounds. Audit provider assumptions,
-//      disagreements, risks, and open questions against the current plan; revise only toward
-//      evidence-backed truth, explicit blockers, or recorded YAGNI/preference rejections.
+// Default phase shape:
+//   1. One risk-focused draft.
+//   2. Optionally one named critic when the caller records a hard safety surface or unresolved
+//      expensive-to-reverse decision.
+//   3. One revision only when that critic returns actionable findings.
+//   4. At most one cross-provider convergence round, and only for caller-supplied peer drafts.
 //
 // Returns the synthesized plan object only. MCP persistence stays in the skill — the
 // workflow never touches MCP. A no-history context curator gathers ticket artifacts, applicable
@@ -30,13 +21,12 @@
 
 export const meta = {
   name: 'plan-fanout',
-  description: 'Cross-provider plan synthesis with diverse drafts, critics, and bounded disagreement convergence.',
+  description: 'Risk-focused plan drafting with a conditional critic and one bounded disagreement pass.',
   phases: [
-    { title: 'Draft', detail: 'N diverse plans in parallel (different framings)' },
-    { title: 'Synthesize', detail: 'pick best base, graft strongest elements' },
-    { title: 'Critique', detail: 'parallel critics: completeness, correctness, YAGNI' },
-    { title: 'Revise', detail: 'incorporate must-address; resolve completeness vs YAGNI explicitly' },
-    { title: 'Converge', detail: 'iterate material disagreements until resolved or explicit blockers' },
+    { title: 'Draft', detail: 'one risk-focused plan' },
+    { title: 'Critique', detail: 'optional single named safety/decision critic' },
+    { title: 'Revise', detail: 'one pass only when actionable findings exist' },
+    { title: 'Converge', detail: 'one pass only for an explicit peer deadlock' },
   ],
 }
 
@@ -203,12 +193,8 @@ const disagreementAuditSchema = {
 
 const DEFAULT_FRAMINGS = [
   {
-    key: 'mvp-first',
-    description: 'The smallest, simplest thing that delivers the core value. Aggressively cut scope. Prefer reusing existing code over building new abstractions. Prefer one obvious path over flexibility.',
-  },
-  {
-    key: 'risk-first',
-    description: 'Identify what is most likely to go wrong — technical risks, integration risks, data risks, rollback risks — and design the plan around eliminating or containing them. Optimize for safety of the change, not minimal effort.',
+    key: 'risk-focused',
+    description: 'Choose the smallest established-pattern solution that delivers the requirement while explicitly containing the named hard risk. Prefer reuse and reversibility over generic flexibility.',
   },
 ]
 
@@ -607,6 +593,7 @@ const {
   codebaseResearchFile = null,
   providerDrafts = [],
   framings = DEFAULT_FRAMINGS,
+  criticLenses = [],
   repoRoot,
   mode = 'interactive',
 } = input
@@ -622,6 +609,10 @@ if (!ticketContextFile || typeof ticketContextFile !== 'string') {
 }
 if (!Array.isArray(framings) || framings.length === 0) {
   throw new Error('plan-fanout: args.framings must have at least 1 entry')
+}
+if (!Array.isArray(criticLenses) || criticLenses.length > 1 ||
+    criticLenses.some(lens => !['completeness', 'correctness', 'yagni'].includes(lens))) {
+  throw new Error('plan-fanout: args.criticLenses must contain at most one supported lens')
 }
 // One framing is a legitimate call for a narrow question: synthesis is skipped and the single
 // draft carries through. Diversity is worth paying for when the solution space is genuinely
@@ -650,14 +641,14 @@ if (validDrafts.length === 0 && validProviderDrafts.length === 0) {
 }
 const allDrafts = [...validDrafts, ...validProviderDrafts]
 
-// Phase 2: synthesize
-phase('Synthesize')
+// Phase 2: synthesize only when explicit peer drafts created multiple candidates.
 let synthesized = null
 if (allDrafts.length === 1) {
   // Only one draft survived — skip synthesis, use it as-is.
   log('Only one draft survived; skipping synthesis')
   synthesized = allDrafts[0]
 } else {
+  phase('Synthesize')
   synthesized = await agent(
     synthesizePrompt(question, allDrafts, repoRoot, ticketContextFile),
     // stay on opus — fable is not available on the subscription plan after 2026-07-07
@@ -669,21 +660,22 @@ if (allDrafts.length === 1) {
   }
 }
 
-// Phase 3: parallel critics
-phase('Critique')
-const critiqueResults = await parallel(
-  ['completeness', 'correctness', 'yagni'].map(lens => () => agent(
-    criticPrompt(
-      lens, synthesized.plan, question, codebaseResearchFile, repoRoot, ticketContextFile
-    ),
-    // Completeness and YAGNI are checklist-style lenses — sonnet at medium effort. The
-    // correctness critic reads the codebase to verify claims, so it keeps the default model.
-    {
-      label: `critic:${lens}`, phase: 'Critique', schema: criticOutputSchema,
-      ...(lens === 'correctness' ? {} : { model: 'sonnet', effort: 'medium' }),
-    }
-  ))
-)
+// Phase 3: one caller-selected critic, only when a concrete trigger exists.
+let critiqueResults = []
+if (criticLenses.length > 0) {
+  phase('Critique')
+  critiqueResults = await parallel(
+    criticLenses.map(lens => () => agent(
+      criticPrompt(
+        lens, synthesized.plan, question, codebaseResearchFile, repoRoot, ticketContextFile
+      ),
+      {
+        label: `critic:${lens}`, phase: 'Critique', schema: criticOutputSchema,
+        ...(lens === 'correctness' ? {} : { model: 'sonnet', effort: 'medium' }),
+      }
+    ))
+  )
+}
 const validCritiques = critiqueResults.filter(c => c && Array.isArray(c.findings))
 let totalFindings = 0, mustAddressCount = 0
 for (const c of validCritiques) {
@@ -691,10 +683,9 @@ for (const c of validCritiques) {
   totalFindings += filtered.length
   mustAddressCount += filtered.filter(f => f.severity === 'must-address').length
 }
-log(`Critique: ${validCritiques.length}/3 critics; ${totalFindings} findings (${mustAddressCount} must-address)`)
+log(`Critique: ${validCritiques.length}/${criticLenses.length} critics; ${totalFindings} findings (${mustAddressCount} must-address)`)
 
-// Phase 4: revise (bounded, no loop)
-phase('Revise')
+// Phase 4: revise only when the conditional critic found something actionable.
 let final = null
 if (validCritiques.length === 0 || totalFindings === 0) {
   // Nothing to revise against — ship the synthesized plan as-is.
@@ -704,6 +695,7 @@ if (validCritiques.length === 0 || totalFindings === 0) {
     revision_log: { incorporated: [], rejected: [], tension_resolutions: [] },
   }
 } else {
+  phase('Revise')
   final = await agent(
     revisePrompt(synthesized.plan, validCritiques, question, repoRoot, ticketContextFile),
     // stay on opus — fable is not available on the subscription plan after 2026-07-07
@@ -718,14 +710,14 @@ if (validCritiques.length === 0 || totalFindings === 0) {
   }
 }
 
-// Phase 5: bounded cross-provider disagreement convergence
-phase('Converge')
+// Phase 5: one cross-provider disagreement pass, only for explicit peer drafts.
 const disagreementLog = []
 const auditHistory = []
 let finalRoundDisagreements = []
 let disagreementRounds = 0
 if (validProviderDrafts.length > 0) {
-  for (let round = 1; round <= 3; round += 1) {
+  phase('Converge')
+  for (let round = 1; round <= 1; round += 1) {
     const audit = await agent(
       disagreementAuditPrompt(
         round, final.plan, allDrafts, validCritiques, question, codebaseResearchFile, repoRoot,
