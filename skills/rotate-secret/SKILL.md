@@ -6,7 +6,7 @@ description: Rotate a registered secret through the central agent-workflows engi
 # Rotate a secret / sync secrets
 
 Central engine: `bin/rotate-secret`, `bin/sync-secrets`, registry
-`config/secret-rotation.json`, docs in `docs/secrets.md`.
+each project's `secrets.yaml` (rotation section), docs in `docs/secrets.md`.
 
 ## Decision procedure (fail closed)
 
@@ -62,7 +62,7 @@ Entry `verify` fields describe the behavioural check to run after redeploy.
 
 ## sync-secrets (per-repo push)
 
-The routing manifest lives in each consuming repo at `scripts/secrets/manifest`
+Routes live in the project config at `<primary-repo>/secrets.yaml`
 (`KIND<TAB>DEST<TAB>ENVNAME<TAB>REF<TAB>TRANSFORM`); the engine lives centrally.
 
 *Example (vault item edited by hand — push it everywhere it routes):*

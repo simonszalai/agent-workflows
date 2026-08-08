@@ -222,3 +222,44 @@ config_json() {
   _config_cache || return $?
   printf '%s\n' "$_CONFIG_DOC"
 }
+
+# config_registry — synthesize the legacy registry JSON shape from the project
+# config, with each rotation entry's consumers[] DERIVED from the routes that
+# share its ref (render + github kinds — the activation/fan-out surface the
+# providers consume) and a routes[] array carrying every kind for display.
+# Written once per process to a temp file; prints the path. This keeps the
+# provider contract stable while making consumer drift impossible.
+config_registry() {
+  _config_cache || return $?
+  if [[ -z "${_CONFIG_REGISTRY_FILE:-}" ]]; then
+    _CONFIG_REGISTRY_FILE="$(mktemp "${TMPDIR:-/tmp}/secrets-registry.XXXXXX")" || return 1
+    jq '
+      . as $doc
+      | {
+          schema_version: 1,
+          health_urls: ($doc.health // {}),
+          secrets: [
+            ($doc.rotation // {}) | to_entries[] | .key as $id | .value as $e
+            | ($doc.routes | map(select(.ref as $rr
+                | ($rr == $e.ref) or (($e.sync_refs // []) | index($rr) != null)))) as $matched
+            | $e + {
+                id: $id,
+                # An entry may pin a different project scope (shared-instance
+                # DB roles); default is the config project.
+                project: ($e.project // $doc.project),
+                # Activation/fan-out surface: render+github routes, minus any
+                # dest the entry explicitly excludes (exclude_dests declares
+                # "this service consumes the value but must never be an
+                # activation target" — e.g. the Prefect server retains the
+                # canonical migration-capable DB credential).
+                consumers: [ $matched[] | select(.kind == "render" or .kind == "github")
+                             | select(.dest as $d | (($e.exclude_dests // []) | index($d)) | not)
+                             | {repo: .repo, dest: .dest, env: .env} ],
+                routes: $matched
+              }
+          ]
+        }' <<< "$_CONFIG_DOC" > "$_CONFIG_REGISTRY_FILE" || return 1
+    export _CONFIG_REGISTRY_FILE
+  fi
+  printf '%s\n' "$_CONFIG_REGISTRY_FILE"
+}

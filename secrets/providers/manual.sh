@@ -16,7 +16,7 @@ provider_playbook() {
   if [[ -n "$playbook" ]]; then
     printf '%s\n' "$playbook"
   else
-    echo "(registry entry has no playbook text — add one to config/secret-rotation.json)"
+    echo "(rotation entry has no playbook text — add one to the project secrets.yaml)"
   fi
   cat <<EOF
 

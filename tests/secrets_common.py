@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+
+import yaml
 import tempfile
 import textwrap
 from pathlib import Path
@@ -20,7 +22,7 @@ SHELL_FILES = (
     "bin/sync-secrets",
     "bin/rotate-secret",
     "bin/dev-env",
-    "secrets/lib/manifest.sh",
+    "secrets/lib/config.sh",
     "secrets/lib/read.sh",
     "secrets/lib/derive.sh",
     "secrets/lib/render-api.sh",
@@ -248,7 +250,8 @@ class SecretsSandbox:
 
         self.fakebin.mkdir()
         self.state.mkdir()
-        (self.repo / "scripts" / "secrets").mkdir(parents=True)
+        self.repo.mkdir(parents=True)
+        self._rotation: dict = {}
         self.write_manifest(MANIFEST)
         self.config_path.write_text(PROJECT_TOOLS, encoding="utf-8")
 
@@ -273,9 +276,32 @@ class SecretsSandbox:
     def close(self) -> None:
         self._tmp.cleanup()
 
-    def write_manifest(self, content: str) -> None:
-        (self.repo / "scripts" / "secrets" / "manifest").write_text(
-            content, encoding="utf-8"
+    def write_manifest(self, content: str, rotation: dict | None = None) -> None:
+        """Write the sandbox project secrets.yaml from TSV-style route rows.
+
+        Rows convert field-for-field so malformed TSV becomes an equivalently
+        malformed config the strict validator must reject (missing keys, bad
+        kinds/transforms, duplicates)."""
+        if rotation is not None:
+            self._rotation = rotation
+        keys = ("kind", "dest", "env", "ref", "transform")
+        routes = []
+        for line in content.splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            fields = line.split("\t")
+            row = {"repo": "repo"}
+            row.update({k: v for k, v in zip(keys, fields)})
+            routes.append(row)
+        doc = {
+            "project": "testproj",
+            "repos": ["repo"],
+            "health": {},
+            "rotation": self._rotation,
+            "routes": routes,
+        }
+        (self.repo / "secrets.yaml").write_text(
+            yaml.safe_dump(doc, sort_keys=False), encoding="utf-8"
         )
 
     def env(self, *, sa_token: bool = True, **extra: str) -> dict[str, str]:
@@ -293,6 +319,12 @@ class SecretsSandbox:
             "SECRETS_RENDER_KEY_REF",
             "SECRETS_LIB",
             "_MANIFEST_FILE",
+            "_SECRETS_CONFIG",
+            "_CONFIG_ROWS",
+            "_CONFIG_DOC",
+            "_CONFIG_FILE",
+            "_CONFIG_REGISTRY_FILE",
+            "SECRET_ROTATION_CONFIG",
         ):
             env.pop(name, None)
         env.update(

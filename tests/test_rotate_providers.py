@@ -152,113 +152,90 @@ class RotateProvidersTest(unittest.TestCase):
         self.db_roles_path = self.sb.root / "db-roles.json"
         self.db_roles_path.write_text(json.dumps(DB_ROLES), encoding="utf-8")
         self.state_dir = self.sb.root / "db-rotation-state"
-        self.registry_path = self.sb.root / "secret-rotation.json"
-        self.registry_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "secrets": [
-                        {
-                            "id": "pg-app",
-                            "project": "testproj",
-                            "ref": PG_APP_REF,
-                            "provider": "postgres",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [
-                                {"repo": str(self.sb.repo), "dest": "srv-target", "env": "DATABASE_URL"}
-                            ],
-                        },
-                        {
-                            "id": "pg-app-no-consumers",
-                            "project": "testproj",
-                            "ref": PG_APP_REF.replace("_APP", "_RO"),
-                            "provider": "postgres",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "sync_refs": [],
-                            "consumers": [],
-                        },
-                        {
-                            "id": "pg-owner-sqlrole",
-                            "project": "sqlproj",
-                            "ref": PG_OWNER_SQLROLE_REF,
-                            "provider": "postgres",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [],
-                        },
-                        {
-                            "id": "test-resend",
-                            "project": "testproj",
-                            "ref": RESEND_REF,
-                            "provider": "resend",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "config": {"key_name": "testkey"},
-                            "consumers": [
-                                {"repo": str(self.sb.repo), "dest": "srv-alpha", "env": "RESEND_API_KEY"}
-                            ],
-                        },
-                        {
-                            "id": "test-resend-unconfigured",
-                            "project": "testproj",
-                            "ref": RESEND_REF,
-                            "provider": "resend",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [],
-                        },
-                        {
-                            "id": "test-aws",
-                            "project": "testproj",
-                            "ref": AWS_ID_REF,
-                            "provider": "aws_iam",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "sync_refs": [AWS_ID_REF, AWS_SECRET_REF],
-                            "config": {
-                                "iam_user": "test-iam-user",
-                                "secret_ref": AWS_SECRET_REF,
-                                "profile": "test-admin",
-                            },
-                            "consumers": [
-                                {"repo": str(self.sb.repo), "dest": "srv-alpha", "env": "AWS_ACCESS_KEY_ID"},
-                                {"repo": str(self.sb.repo), "dest": "srv-alpha", "env": "AWS_SECRET_ACCESS_KEY"},
-                            ],
-                        },
-                        {
-                            "id": "test-openai-unconfigured",
-                            "project": "testproj",
-                            "ref": OPENAI_REF,
-                            "provider": "openai",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [],
-                        },
-                        {
-                            "id": "test-xai",
-                            "project": "testproj",
-                            "ref": XAI_REF,
-                            "provider": "xai",
-                            "mode": "MANUAL",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [],
-                        },
-                    ],
-                    "health_urls": {
-                        "$comment": "srv-target is deliberately ABSENT: the fail-closed test needs it"
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
+        self.rotation = {
+            "pg-app": {
+                "ref": PG_APP_REF,
+                "provider": "postgres",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+            },
+            "pg-app-no-consumers": {
+                "ref": PG_APP_REF.replace("_APP", "_RO"),
+                "provider": "postgres",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+                "sync_refs": [],
+            },
+            "pg-owner-sqlrole": {
+                "ref": PG_OWNER_SQLROLE_REF,
+                "project": "sqlproj",
+                "provider": "postgres",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+            },
+            "test-resend": {
+                "ref": RESEND_REF,
+                "provider": "resend",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+                "config": {"key_name": "testkey"},
+            },
+            "test-resend-unconfigured": {
+                "ref": RESEND_REF,
+                "provider": "resend",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+            },
+            "test-aws": {
+                "ref": AWS_ID_REF,
+                "provider": "aws_iam",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+                "sync_refs": [AWS_ID_REF, AWS_SECRET_REF],
+                "config": {
+                    "iam_user": "test-iam-user",
+                    "secret_ref": AWS_SECRET_REF,
+                    "profile": "test-admin",
+                },
+            },
+            "test-openai-unconfigured": {
+                "ref": OPENAI_REF,
+                "provider": "openai",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+            },
+            "test-xai": {
+                "ref": XAI_REF,
+                "provider": "xai",
+                "mode": "MANUAL",
+                "owner_repo": "repo",
+            },
+        }
+        self.write_config()
+
+    def write_config(self) -> None:
+        # Every rotation ref must have a route (fail-closed validator). Routes
+        # that must NOT be activation targets are dev-kind (consumers derive
+        # from render+github only). srv-target's health URL is deliberately
+        # ABSENT from health: the fail-closed test needs it.
+        pg_ro_ref = PG_APP_REF.replace("_APP", "_RO")
+        routes = "\n".join([
+            f"render\tsrv-target\tDATABASE_URL\t{PG_APP_REF}\tself",
+            f"dev\tprofile\tDATABASE_URL_RO\t{pg_ro_ref}\tself",
+            f"dev\tprofile\tOWNER_URL\t{PG_OWNER_SQLROLE_REF}\tself",
+            f"render\tsrv-alpha\tRESEND_API_KEY\t{RESEND_REF}\tself",
+            f"render\tsrv-alpha\tAWS_ACCESS_KEY_ID\t{AWS_ID_REF}\tself",
+            f"render\tsrv-alpha\tAWS_SECRET_ACCESS_KEY\t{AWS_SECRET_REF}\tself",
+            f"dev\tprofile\tOPENAI_API_KEY\t{OPENAI_REF}\tself",
+            f"dev\tprofile\tXAI_API_KEY\t{XAI_REF}\tself",
+            "",
+        ])
+        self.sb.write_manifest(routes, rotation=self.rotation)
 
     def env(self, **extra: str) -> dict[str, str]:
         # First registry lookup key doubles as duplicate guard: the two resend
         # entries share a ref, so tests select by --project/--item or unique refs.
         return self.sb.env(
-            SECRET_ROTATION_CONFIG=str(self.registry_path),
             DB_ROLES_CONFIG=str(self.db_roles_path),
             DB_ROTATION_STATE_DIR=str(self.state_dir),
             SYNC_SECRETS_BIN=str(self.sb.fakebin / "sync-secrets-fake"),
@@ -268,7 +245,8 @@ class RotateProvidersTest(unittest.TestCase):
     def rotate(self, *args: str, env: dict[str, str] | None = None, stdin: str = ""):
         # stdin defaults to empty (never inherited) so fake curl/aws drains
         # can't block on the test runner's stdin.
-        return run([ROTATE, *args], env if env is not None else self.env(), stdin=stdin)
+        return run([ROTATE, "--repo", str(self.sb.repo), *args],
+                   env if env is not None else self.env(), stdin=stdin)
 
     def log(self) -> list[str]:
         return self.sb.log_lines()
@@ -338,9 +316,8 @@ class RotateProvidersTest(unittest.TestCase):
 
     def test_resend_dual_flow_via_unique_entry(self) -> None:
         # Drop the unconfigured duplicate so the ref resolves uniquely.
-        registry = json.loads(self.registry_path.read_text(encoding="utf-8"))
-        registry["secrets"] = [s for s in registry["secrets"] if s["id"] != "test-resend-unconfigured"]
-        self.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        del self.rotation["test-resend-unconfigured"]
+        self.write_config()
         self.seed_item(RESEND_REF, "resend-token-OLD")
 
         proc = self.rotate("--ref", RESEND_REF, "--reason", "t", "--yes")
@@ -370,12 +347,9 @@ class RotateProvidersTest(unittest.TestCase):
         self.assertNotIn("api-keys/new-key-1", "\n".join(log))
 
     def test_resend_never_deletes_old_key_when_verify_fails(self) -> None:
-        registry = json.loads(self.registry_path.read_text(encoding="utf-8"))
-        registry["secrets"] = [s for s in registry["secrets"] if s["id"] != "test-resend-unconfigured"]
-        for s in registry["secrets"]:
-            if s["id"] == "test-resend":
-                s["verify_command"] = "exit 1"
-        self.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        del self.rotation["test-resend-unconfigured"]
+        self.rotation["test-resend"]["verify_command"] = "exit 1"
+        self.write_config()
         self.seed_item(RESEND_REF, "resend-token-OLD")
 
         proc = self.rotate("--ref", RESEND_REF, "--reason", "t", "--yes")
@@ -385,9 +359,8 @@ class RotateProvidersTest(unittest.TestCase):
         self.assertEqual(len([l for l in self.log() if l.startswith("SYNC ")]), 0)
 
     def test_resend_without_key_name_exits_3_and_changes_nothing(self) -> None:
-        registry = json.loads(self.registry_path.read_text(encoding="utf-8"))
-        registry["secrets"] = [s for s in registry["secrets"] if s["id"] != "test-resend"]
-        self.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        del self.rotation["test-resend"]
+        self.write_config()
         proc = self.rotate("--ref", RESEND_REF, "--reason", "t", "--yes")
         self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
         self.assertIn("config.key_name", proc.stdout)
@@ -439,11 +412,8 @@ class RotateProvidersTest(unittest.TestCase):
         self.assertEqual(self.stored_value(AWS_ID_REF), AWS_OLD_ID)
 
     def test_aws_never_deletes_old_key_when_verify_fails(self) -> None:
-        registry = json.loads(self.registry_path.read_text(encoding="utf-8"))
-        for s in registry["secrets"]:
-            if s["id"] == "test-aws":
-                s["verify_command"] = "exit 1"
-        self.registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        self.rotation["test-aws"]["verify_command"] = "exit 1"
+        self.write_config()
         self.seed_item(AWS_ID_REF, AWS_OLD_ID)
         self.seed_item(AWS_SECRET_REF, "aws-secret-OLD")
         proc = self.rotate("--ref", AWS_ID_REF, "--reason", "t", "--yes",

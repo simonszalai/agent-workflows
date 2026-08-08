@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # rotate-project — one-command full rotation sweep for a project.
 #
-# Runs every config/secret-rotation.json entry belonging to --project through
+# Runs every rotation entry of the project secrets.yaml through
 # rotate-secret in a safe order, verifying consumer health after each entry:
 #
 #   1. staging postgres entries      (first one runs --keep-old as the canary)
@@ -36,14 +36,19 @@ case "$-" in *x*) set +x ;; esac
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REGISTRY="${ROTATION_REGISTRY:-$HERE/../config/secret-rotation.json}"
+SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
 ROTATE="${ROTATE_SECRET:-$HERE/rotate-secret}"
+
+# shellcheck source=../secrets/lib/config.sh
+source "$SECRETS_LIB/config.sh"
 
 usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-project="" reason="" dry=0 tier="all" skip="" only=""
+repo="" project="" reason="" dry=0 tier="all" skip="" only=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --repo) repo="${2:?}"; shift 2 ;;
+    --repo=*) repo="${1#*=}"; shift ;;
     --reason) reason="${2:?}"; shift 2 ;;
     --reason=*) reason="${1#*=}"; shift ;;
     --dry-run) dry=1; shift ;;
@@ -62,7 +67,21 @@ done
 [[ -n "$reason" || "$dry" -eq 1 ]] || { echo "ERROR: --reason is required for a live sweep." >&2; exit 2; }
 case "$tier" in staging|prod|all) ;; *) echo "ERROR: --tier must be staging|prod|all" >&2; exit 2 ;; esac
 command -v jq >/dev/null || { echo "ERROR: missing dependency: jq" >&2; exit 2; }
-[[ -f "$REGISTRY" ]] || { echo "ERROR: registry not found: $REGISTRY" >&2; exit 2; }
+# Project config discovery: run from any repo of the project (or --repo). The
+# synthesized registry derives every entry's consumers from the routes.
+if [[ -z "$repo" ]]; then
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "ERROR: not inside a git repo; pass --repo <path>" >&2; exit 2; }
+fi
+repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "ERROR: repo path does not exist" >&2; exit 2; }
+export _SECRETS_CONFIG="$repo"
+REGISTRY="$(config_registry)" || exit 2
+export SECRET_ROTATION_CONFIG="$REGISTRY"
+config_project="$(jq -r '.secrets[0].project // empty' "$REGISTRY")"
+if [[ -n "$config_project" && "$project" != "$config_project" ]]; then
+  echo "ERROR: project '$project' requested but $repo belongs to project '$config_project'" >&2
+  exit 2
+fi
 
 # Entry selection + phase classification. Staging-ness comes from the ref's
 # item name (environment is encoded in item titles across every vault).
@@ -199,27 +218,26 @@ if [[ "$dry" -eq 1 ]]; then
         *) plan="SYNC the item's current 1Password value → consumers → one deploy per service (update the item in 1Password first to rotate it)" ;;
       esac
       echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${tierlabel} · ${how}${C_OFF}"
+      local disabled
+      disabled="$(jq -r '.disabled_reason // ""' <<< "$entry")"
+      if [[ -n "$disabled" ]]; then
+        echo "    ${C_ERR}DISABLED${C_OFF} ${C_DIM}$disabled${C_OFF}"
+      fi
       echo "    ${C_DIM}plan${C_OFF}  $plan"
-      local src entry_ref row_ref
-      entry_ref="$(jq -r '.ref' <<< "$entry")"
-      while IFS=$'\t' read -r dest env repo; do
+      # Every map row comes from the routes that share the entry's ref(s) —
+      # derived, never restated, so it can neither under- nor over-report.
+      local kind src
+      while IFS=$'\t' read -r kind dest env src; do
         [[ -n "$dest" ]] || continue
-        # The authoritative source for a consumer row is its manifest ref
-        # (multi-field entries map different fields to different env vars).
-        row_ref=""
-        if [[ -f "$repo/scripts/secrets/manifest" ]]; then
-          row_ref="$(awk -F'\t' -v d="$dest" -v e="$env" '$1=="render" && $2==d && $3==e {print $4; exit}' "$repo/scripts/secrets/manifest")"
-        fi
-        src="${row_ref:-$entry_ref}"
-        if [[ "$dest" == srv-* ]]; then
-          host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E 's#https?://##; s#/.*##')"
-          label="render:${host:-$dest}"
-        else
-          label="github:$dest"
-        fi
+        case "$kind" in
+          render)
+            host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E 's#https?://##; s#/.*##')"
+            label="render:${host:-$dest}" ;;
+          *) label="$kind:$dest" ;;
+        esac
         printf '    %bmap%b   %b%s%b  %b→%b  %s  %b%s%b\n' \
           "$C_DIM" "$C_OFF" "$C_RUN" "$src" "$C_OFF" "$C_DIM" "$C_OFF" "$label" "$C_BOLD" "$env" "$C_OFF"
-      done < <(jq -r '.consumers[]? | [.dest, .env, .repo] | @tsv' <<< "$entry")
+      done < <(jq -r '.routes[]? | [.kind, .dest, .env, .ref] | @tsv' <<< "$entry")
       echo
     done < <(jq -c '.[]' <<< "$entries")
   }
@@ -241,11 +259,11 @@ sync_one() { # entry json, log file: push the CURRENT vault value(s) to consumer
     [[ -n "$r" ]] || continue
     while IFS= read -r ref; do
       [[ -n "$ref" ]] || continue
-      "$SYNC" --repo "$r" --changed "$ref" --reason "$reason [$(jq -r '.id' <<< "$entry")]" --no-deploy >> "$logf" 2>&1 || rc=$?
+      "$SYNC" --repo "$repo" --changed "$ref" --reason "$reason [$(jq -r '.id' <<< "$entry")]" --no-deploy >> "$logf" 2>&1 || rc=$?
     done < <(jq -r '(.sync_refs // [.ref]) | .[]' <<< "$entry")
-  done < <(jq -r '[.consumers[]?.repo] | unique | .[]' <<< "$entry")
+  done < <(printf 'x\n')
   if [[ "$rc" -eq 0 ]]; then
-    jq -r '.consumers[]?.dest' <<< "$entry" >> "$logdir/pending-dests"
+    jq -r '.consumers[]?.dest | select(test("^(srv|crn)-"))' <<< "$entry" >> "$logdir/pending-dests"
   fi
   return "$rc"
 }
@@ -261,12 +279,12 @@ rotate_one() { # entry json, log file, extra flag or "", batched(0|1); returns r
   if [[ "$batched" -eq 1 ]]; then
     # Save-only: values are written everywhere but Render deploys are deferred;
     # the orchestrator deploys each touched service once per phase.
-    ROTATE_NO_DEPLOY=1 "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
+    ROTATE_NO_DEPLOY=1 "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
     if [[ "$rc" -eq 0 ]]; then
-      jq -r '.consumers[]?.dest' <<< "$entry" >> "$logdir/pending-dests"
+      jq -r '.consumers[]?.dest | select(test("^(srv|crn)-"))' <<< "$entry" >> "$logdir/pending-dests"
     fi
   else
-    "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
+    "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
     if [[ "$rc" -eq 0 ]]; then
       health_gate "$entry" >> "$logf" 2>&1 || rc=99
     fi
