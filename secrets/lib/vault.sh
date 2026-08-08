@@ -73,7 +73,7 @@ vault_create_value() { # ref  (value in $VAULT_VALUE env)
   jq -n --arg vault "$REF_VAULT" --arg title "$REF_TITLE" --arg field "$REF_FIELD" \
     '{title:$title, vault:{name:$vault}, category:"SECURE_NOTE",
       fields:[{label:$field, type:"CONCEALED", value:env.VAULT_VALUE}]}' \
-    | op_vault_mutation "$REF_VAULT" item create --format json - >/dev/null
+    | op_vault_mutation "$REF_VAULT" item create --vault "$REF_VAULT" --format json - >/dev/null
   # A lost response can be ambiguous. Prove there is exactly one resulting item
   # and that ref resolution returns the intended value.
   vault_item_id "$ref" >/dev/null || return 2

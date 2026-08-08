@@ -16,10 +16,10 @@
       },
       "autodev_memory": {
         "route": "amaru",
-        "token_ref": "op://AMARU/AMARU_AUTODEV_MEMORY_API_TOKEN/value"
+        "token_ref": "op://AMARU/Autodev memory/api_token"
       },
       "render": {
-        "api_key_ref": "op://AMARU/AMARU_RENDER_API_KEY/value",
+        "api_key_ref": "op://AMARU/Render/api_key",
         "workspace": {
           "discover_service_names": [
             "amaru-web",
@@ -30,18 +30,18 @@
       "postgres": {
         "tiers": {
           "dev": {
-            "dsn_ref": "op://AMARU/DEV_POSTGRES_URL/value"
+            "dsn_ref": "op://AMARU/Postgres dev/canonical"
           },
           "staging": {
-            "dsn_ref": "op://AMARU/STAGING_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://AMARU/Postgres staging/ro"
           },
           "prod": {
-            "dsn_ref": "op://AMARU/PROD_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://AMARU/Postgres prod RO/canonical"
           }
         }
       },
       "resend": {
-        "api_key_ref": "op://AMARU/RESEND_API_KEY/value",
+        "api_key_ref": "op://AMARU/Resend/api_key",
         "canary_domain": "amaruplatform.com"
       }
     },
@@ -56,10 +56,10 @@
       },
       "autodev_memory": {
         "route": "autodev",
-        "token_ref": "op://AUTODEV/AUTODEV_AUTODEV_MEMORY_API_TOKEN/value"
+        "token_ref": "op://AUTODEV/Autodev memory/api_token"
       },
       "render": {
-        "api_key_ref": "op://AUTODEV-sensitive/AUTODEV_RENDER_API_KEY/value",
+        "api_key_ref": "op://AUTODEV-sensitive/Render/api_key",
         "workspace": {
           "discover_service_names": [
             "autodev-dashboard",
@@ -70,7 +70,7 @@
       "postgres": {
         "tiers": {
           "prod": {
-            "dsn_ref": "op://AUTODEV/PROD_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://AUTODEV/Postgres prod RO/canonical"
           }
         }
       }
@@ -91,33 +91,33 @@
       },
       "autodev_memory": {
         "route": "ts",
-        "token_ref": "op://TS/TS_AUTODEV_MEMORY_API_TOKEN/value"
+        "token_ref": "op://TS/Autodev memory/api_token"
       },
       "render": {
-        "api_key_ref": "op://TS/TS_RENDER_API_KEY/value",
+        "api_key_ref": "op://TS/Render/api_key",
         "workspace": {
           "id": "tea-ct11rp0gph6c73bf2kf0"
         }
       },
       "tailscale": {
-        "oauth_client_id_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_ID_MCP/value",
-        "oauth_client_secret_ref": "op://TS/TAILSCALE_OAUTH_CLIENT_SECRET_MCP/value"
+        "oauth_client_id_ref": "op://TS/Tailscale/oauth_client_id_mcp",
+        "oauth_client_secret_ref": "op://TS/Tailscale/oauth_client_secret_mcp"
       },
       "postgres": {
         "tiers": {
           "dev": {
-            "dsn_ref": "op://TS/DEV_POSTGRES_URL/value"
+            "dsn_ref": "op://TS/Postgres dev/canonical"
           },
           "staging": {
-            "dsn_ref": "op://TS/STAGING_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://TS/Postgres staging/ro"
           },
           "prod": {
-            "dsn_ref": "op://TS/PROD_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://TS/Postgres prod RO/canonical"
           }
         }
       },
       "slack": {
-        "token_ref": "op://TS/TS_SLACK_MCP_USER_TOKEN/value"
+        "token_ref": "op://TS/Slack/mcp_user_token"
       }
     },
     "workflow-pro": {
@@ -135,10 +135,10 @@
       },
       "autodev_memory": {
         "route": "workflow-pro",
-        "token_ref": "op://WORKFLOW_PRO/WORKFLOW_PRO_AUTODEV_MEMORY_API_TOKEN/value"
+        "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token"
       },
       "render": {
-        "api_key_ref": "op://WORKFLOW_PRO/WORKFLOW_RENDER_API_KEY/value",
+        "api_key_ref": "op://WORKFLOW_PRO/Render/api_key",
         "workspace": {
           "discover_service_names": [
             "gmail-rfq-sync",
@@ -150,18 +150,18 @@
       "postgres": {
         "tiers": {
           "dev": {
-            "dsn_ref": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value"
+            "dsn_ref": "op://WORKFLOW_PRO/Postgres dev/canonical"
           },
           "staging": {
-            "dsn_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://WORKFLOW_PRO/Postgres staging/ro"
           },
           "prod": {
-            "dsn_ref": "op://WORKFLOW_PRO/PROD_POSTGRES_URL_RO/value"
+            "dsn_ref": "op://WORKFLOW_PRO/Postgres prod RO/canonical"
           }
         }
       },
       "resend": {
-        "api_key_ref": "op://WORKFLOW_PRO/RESEND_API_KEY/value",
+        "api_key_ref": "op://WORKFLOW_PRO/Resend/api_key",
         "canary_domain": "workflowtech.hu"
       }
     }
