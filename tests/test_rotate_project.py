@@ -53,7 +53,7 @@ class RotateProjectTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
 
     def test_dry_run_orders_phases_and_flags_canary(self) -> None:
-        proc = run(self.tmp, "exit 0", "p", "--dry-run")
+        proc = run(self.tmp, "exit 0", "p", "--dry-run", "--all")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         lines = [l for l in proc.stdout.splitlines() if "would rotate" in l]
         ids = [l.split("): ")[1].split(" ")[0] for l in lines]
@@ -75,7 +75,7 @@ class RotateProjectTest(unittest.TestCase):
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, body))
         env["LOG"] = str(env_log)
         proc = subprocess.run(
-            [BIN, "p", "--reason", "sweep test", "--skip", "p-db-prod"],
+            [BIN, "p", "--reason", "sweep test", "--all", "--skip", "p-db-prod"],
             capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
         )
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
@@ -85,9 +85,20 @@ class RotateProjectTest(unittest.TestCase):
         self.assertIn("p-vendor failed", proc.stderr)
 
     def test_manual_provider_requires_tty(self) -> None:
-        proc = run(self.tmp, "exit 3", "p", "--reason", "x", "--only", "p-vendor")
+        proc = run(self.tmp, "exit 3", "p", "--reason", "x", "--manual", "--only", "p-vendor")
         self.assertEqual(proc.returncode, 1)
         self.assertIn("no controlling terminal", proc.stderr)
+
+    def test_default_scope_excludes_manual_providers(self) -> None:
+        proc = run(self.tmp, "exit 0", "p", "--dry-run")
+        self.assertNotIn("would rotate (parallel x1): p-vendor", proc.stdout)
+        self.assertIn("NOT included (run with --manual): p-vendor", proc.stdout)
+
+    def test_manual_scope_runs_only_manual_providers(self) -> None:
+        proc = run(self.tmp, "exit 0", "p", "--dry-run", "--manual")
+        lines = [l for l in proc.stdout.splitlines() if "would rotate" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("p-vendor", lines[0])
 
     def test_tier_staging_skips_prod_entries(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--tier", "staging")

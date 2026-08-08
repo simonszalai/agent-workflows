@@ -16,10 +16,15 @@
 # Stops on the first failure; rerunning is safe (rotate-secret is resumable /
 # idempotent per entry). Values never reach stdout or argv.
 #
+# By default only entries that rotate WITHOUT manual intervention run
+# (postgres, self-minted, and providers whose registry entry declares
+# "automated": true). --manual runs ONLY the manual-intervention entries
+# (AWS/Resend-style mint-at-provider flows); --all runs both.
+#
 # usage:
 #   rotate-project <amaru|ts|workflow-pro|autodev> --reason "<why>"
-#                  [--dry-run] [--tier staging|prod|all] [--skip id[,id...]]
-#                  [--only id[,id...]]
+#                  [--dry-run] [--tier staging|prod|all] [--manual | --all]
+#                  [--skip id[,id...]] [--only id[,id...]]
 #
 # exit codes: 0 all entries rotated+verified, 1 a rotation or health check
 #   failed (state printed), 2 usage/config, 3 agent-shell refusal.
@@ -32,12 +37,14 @@ ROTATE="${ROTATE_SECRET:-$HERE/rotate-secret}"
 
 usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-project="" reason="" dry=0 tier="all" skip="" only=""
+project="" reason="" dry=0 tier="all" skip="" only="" scope="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --reason) reason="${2:?}"; shift 2 ;;
     --reason=*) reason="${1#*=}"; shift ;;
     --dry-run) dry=1; shift ;;
+    --manual) scope="manual"; shift ;;
+    --all) scope="all"; shift ;;
     --tier) tier="${2:?}"; shift 2 ;;
     --tier=*) tier="${1#*=}"; shift ;;
     --skip) skip="${2:?}"; shift 2 ;;
@@ -60,6 +67,7 @@ command -v jq >/dev/null || { echo "ERROR: missing dependency: jq" >&2; exit 2; 
 plan_json="$(jq -c --arg p "$project" '
   [.secrets[] | select(.project == $p)
    | . + {staging: ((.ref // "") | test("staging"; "i")),
+          auto: (.provider == "postgres" or .mode == "SELF_MINTED" or (.automated // false)),
           phase: (if .provider == "postgres" and ((.ref // "") | test("staging"; "i")) then 1
                   elif .mode == "SELF_MINTED" then 2
                   elif .provider != "postgres" then 3
@@ -90,16 +98,24 @@ health_gate() { # entry json -> verify every consumer dest registered in health_
 }
 
 # Filter the plan down to what this invocation actually runs.
-run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
+run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" --arg scope "$scope" '
   def incsv($csv): ($csv | split(",")) as $l | . as $x | ($l | index($x)) != null;
   [.[] | select(($only == "" or (.id | incsv($only)))
     and (($skip == "") or ((.id | incsv($skip)) | not))
+    and (if $scope == "auto" then .auto
+         elif $scope == "manual" then (.auto | not)
+         else true end)
     and (if $tier == "staging" then .staging
          elif $tier == "prod" then (.staging | not)
          else true end))]' <<< "$plan_json")"
 run_count="$(jq 'length' <<< "$run_json")"
 skipped=$((count - run_count))
-echo "rotate-project $project — $run_count of $count entries (tier=$tier, $skipped filtered out)"
+echo "rotate-project $project — $run_count of $count entries (tier=$tier scope=$scope, $skipped filtered out)"
+if [[ "$scope" == "auto" ]]; then
+  manual_left="$(jq -r --arg tier "$tier" '[.[] | select((.auto | not)
+    and (if $tier == "staging" then .staging elif $tier == "prod" then (.staging | not) else true end)) | .id] | join(", ")' <<< "$plan_json")"
+  [[ -z "$manual_left" ]] || echo "manual-intervention entries NOT included (run with --manual): $manual_left"
+fi
 
 rotate_one() { # entry json, extra flag or ""; logs to $2-named file, returns rotate rc
   local entry="$1" logf="$2" xtra="$3" id ref rc=0
