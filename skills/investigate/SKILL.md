@@ -68,7 +68,7 @@ mcp__autodev-memory__get_ticket(
 ```
 
 - Cache the light manifest and its `context_version`; do not fetch artifact bodies in this parent.
-  Dispatch one no-history context curator to produce the bounded investigation-input packet and
+  Dispatch one no-history context curator to produce the relevance-filtered investigation-input packet and
   runtime receipt. The curator reads every current artifact and applicable memory/past-ticket
   evidence outside the main thread.
 - Read only the curator packet for source and prior-investigation context
@@ -199,14 +199,17 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
 4. **Run the selected investigation:**
 
    Before every native, Workflow, or provider investigation spawn, validate the context curator's
-   self-contained packet (at most 8 KiB) and runtime ticket-context receipt proving the one light
+   self-contained relevance-filtered packet with no fixed byte ceiling and runtime ticket-context
+   receipt proving the one light
    manifest read, exact artifact reads, packet path, and immutable hashes. Create a
    `contract_profile: "bounded-owner"` envelope with `phase_name: "investigation"`,
    `fork_mode: "none"`, `owner_role: "investigator"`, `dispatch_depth: 0`,
    `redispatch_allowed: false`, `context_strategy: "light_manifest_exact_artifacts"`, current head
    and tree SHA, target environment, dependencies, and evidence/prediction gates. Run
    `bin/phase-contract owner-dispatch <absolute-envelope-path>` before the spawn. An invalid
-   envelope is a hard stop. An investigator packet is owner mode and cannot recursively dispatch
+   envelope is a hard stop. Set `max_packet_bytes` to at least the packet's measured byte length;
+   this validates the immutable file but does not impose a relevance cutoff. An investigator packet
+   is owner mode and cannot recursively dispatch
    another investigator.
 
    **Light:** spawn exactly ONE relevant native agent from the dispatch table with
@@ -333,7 +336,8 @@ recommending a fix**. Premature fixes based on symptoms cause regressions.
     mutation are persisted, dispatch one fresh `fork_turns: "none"` context curator against the new
     `context_version`. Claude uses `context-curator` on `sonnet`; Codex uses `gpt-5.6-luna`. It
     pulls
-    every current artifact plus all applicable memories and returns only the <=8 KiB next-phase
+    every current artifact plus all applicable memories and returns only the relevance-filtered
+    next-phase packet, as long as needed but never a raw corpus dump. The
     packet. The main thread must not replay those MCP reads. A calling `/ticket-plan` or
     `/ticket-flow` reuses this packet instead of spawning a duplicate curator for the same version.
 

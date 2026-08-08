@@ -42,7 +42,8 @@ Follow `../references/execution-phases.md`, `../references/execution-economy.md`
    and task fingerprint match; otherwise dispatch one fresh no-history context curator. Claude uses
    `context-curator` on `sonnet`; Codex
    uses `gpt-5.6-luna`. The curator reads all current artifact bodies and applicable
-   memory/past-ticket evidence and returns one <=8 KiB build packet. Validate its receipt. The build
+   memory/past-ticket evidence and returns one relevance-filtered build packet with no fixed byte
+   ceiling. Validate its receipt. The build
    orchestrator must not replay artifact, memory, entry-expansion, or similar-ticket calls. Carry
    the
    packet path/hash into build and review so children inherit the same knowledge without

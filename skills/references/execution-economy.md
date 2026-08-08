@@ -157,6 +157,12 @@ below them so the owner has room to checkpoint and return. A host without token 
 compaction event is not allowed an unbounded phase: finite turns/checkpoints, elapsed time, and
 packet bytes are the mechanical backstop.
 
+A receipt-validated curator packet from `delegated-ticket-context.md` is the exception to the fixed
+packet-byte ceiling. Set `max_packet_bytes` to at least that immutable file's measured size so the
+reference remains mechanically validated. Its size is controlled by the curator's decision-bearing
+relevance test, deduplication, and exclusions rather than an arbitrary byte cutoff; ordinary phase
+and checkpoint packets retain their configured byte ceilings.
+
 Every phase owner returns exactly one JSON result. Capture it once, without reinterpretation, and
 run `bin/phase-contract result <result.json> --dispatch <envelope.json>` before accepting it:
 

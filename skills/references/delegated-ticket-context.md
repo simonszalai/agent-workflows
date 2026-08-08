@@ -2,7 +2,7 @@
 
 Bulk autodev-memory reads belong in a fresh context-curator child, never in the ticket-flow parent.
 The parent may resolve identity and lifecycle from one light manifest. Artifact bodies, relevant
-memories, and similar-ticket evidence are read only by the curator. The parent receives one bounded,
+memories, and similar-ticket evidence are read only by the curator. The parent receives one relevant,
 phase-specific packet plus its receipt.
 
 ## Dispatch
@@ -29,9 +29,11 @@ If investigation changes later, discard the old packet and curate once from the 
 
 ## Main-thread boundary
 
-The parent reads only the curator's fixed return envelope and the resulting packet, capped at 8,192
-bytes. It must not replay `get_artifact`, memory search, entry expansion, or similar-ticket calls to
-verify the curator. Validate the receipt instead:
+The parent reads only the curator's fixed return envelope and the resulting packet. The packet has no
+fixed byte ceiling: it is as long as necessary to retain all decision-bearing context, while excluding
+raw source prose, duplicates, unrelated history, generic memories, and other facts whose omission
+cannot change the phase outcome. It must not replay `get_artifact`, memory search, entry expansion,
+or similar-ticket calls to verify the curator. Validate the receipt instead:
 
 ```bash
 bin/workflow-ticket-context-check receipt <absolute-context-receipt.json>
@@ -43,9 +45,9 @@ it; route that request through one targeted curator refresh. Never fall back to 
 artifact in the parent.
 
 Reuse requires an exact match on `context_version`, phase, and the curator's task fingerprint over
-objective, risks, and diff inputs. A version match alone is insufficient. `packet_status: overflow`
-is a fail-closed result: dispatch one narrower phase curator, never truncate the packet or hydrate
-raw bodies in the parent.
+objective, risks, and diff inputs. A version match alone is insufficient. Never truncate the packet
+to satisfy an arbitrary byte target. If the packet contains irrelevant material, refresh it with a
+stricter relevance pass rather than moving raw hydration into the parent.
 
 ## Relevance and completeness
 

@@ -357,7 +357,8 @@ Ticket reads must request the smallest sufficient context:
   Do not call `get_ticket` again unless a relevant artifact changed outside the current workflow.
 - In ticket investigation, planning, and build flows, the main orchestrator reads only the light
   manifest. A fresh no-history context curator owns every current artifact body plus applicable
-  memory/similar-ticket retrieval and returns one <=8 KiB phase packet. See
+  memory/similar-ticket retrieval and returns one relevance-filtered phase packet with no fixed
+  byte ceiling. See
   `skills/references/delegated-ticket-context.md`.
 - The curator uses `detail="compact"` for `search_tickets` and `get_similar_tickets`, expands only
   applicable results, and records provenance. The parent and downstream agents receive the packet
