@@ -13,7 +13,8 @@ plan/build/review machinery runs — not lifecycle ownership. Ticketless ultra-l
 2. **Gather context once** — after any required bug investigation is persisted, dispatch one fresh
    no-history context curator per `delegated-ticket-context.md`. It reads every current ticket
    artifact and all applicable memories/past-ticket evidence outside the parent, then returns one
-   <=8 KiB phase packet. The parent and downstream owners do not repeat those MCP reads. Epic packet
+   relevance-filtered phase packet with no fixed byte ceiling. The parent and downstream owners do
+   not repeat those MCP reads. Epic packet
    handling remains a separate bounded reference.
 3. **Compact delivery (`direct` / `standard`)** — dispatch exactly one no-history delivery owner.
    Before editing it persists the short **plan MCP artifact (mandatory at every intensity,

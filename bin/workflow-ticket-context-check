@@ -121,9 +121,7 @@ def validate_runtime_receipt(path: Path) -> dict:
         if artifact_id in artifact_hashes:
             raise ContractError(f"{field}.artifact_id is duplicated")
         artifact_hashes[artifact_id] = require_hash(read.get("sha256"), f"{field}.sha256")
-        excerpt_bytes = require_int(read.get("excerpt_bytes"), f"{field}.excerpt_bytes")
-        if excerpt_bytes > 32768:
-            raise ContractError(f"{field}.excerpt_bytes exceeds 32768")
+        require_int(read.get("excerpt_bytes"), f"{field}.excerpt_bytes")
 
     child_packets = receipt.get("child_packets")
     if not isinstance(child_packets, list) or not child_packets:
@@ -140,14 +138,10 @@ def validate_runtime_receipt(path: Path) -> dict:
         packet_path = Path(require_string(packet.get("path"), f"{field}.path"))
         if not packet_path.is_absolute() or not packet_path.is_file():
             raise ContractError(f"{field}.path must name an existing absolute file")
-        if packet_path.stat().st_size > 16384:
-            raise ContractError(f"{field}.path exceeds 16384 bytes")
         expected = require_hash(packet.get("sha256"), f"{field}.sha256")
         if hashlib.sha256(packet_path.read_bytes()).hexdigest() != expected:
             raise ContractError(f"{field}.sha256 mismatch")
-        excerpt_bytes = require_int(packet.get("excerpt_bytes"), f"{field}.excerpt_bytes")
-        if excerpt_bytes > 8192:
-            raise ContractError(f"{field}.excerpt_bytes exceeds 8192")
+        require_int(packet.get("excerpt_bytes"), f"{field}.excerpt_bytes")
         refs = packet.get("artifact_refs")
         if not isinstance(refs, list) or not refs:
             raise ContractError(f"{field}.artifact_refs must be a non-empty array")

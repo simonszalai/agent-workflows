@@ -1,7 +1,7 @@
 ---
 name: context-curator
 description: >-
-  Read ticket artifacts and memory in an isolated session, then return one bounded phase-specific
+  Read ticket artifacts and memory in an isolated session, then return one relevant phase-specific
   context packet.
 model: sonnet
 effort: medium
@@ -39,12 +39,13 @@ resolved secrets, credentials, tokens, private keys, or sensitive personal data 
    investigation defines cause; newer explicit decisions override older brainstorming; verification
    evidence describes observed reality. Preserve conflicts and unknowns instead of silently
    choosing.
-5. Write one phase-specific packet under `.context/ticket-context/<ticket-id>/`. The packet must be
-   at most 8,192 bytes and contain only facts that can change the current phase's decisions or work.
-   Never copy whole artifact or memory bodies. Key it by `context_version`, phase, and a SHA-256 of
-   the objective/risk/diff inputs. If decision-bearing facts cannot fit after deduplication, return
-   `packet_status: overflow`; never silently truncate. The parent must request a narrower phase
-   packet.
+5. Write one phase-specific packet under `.context/ticket-context/<ticket-id>/`. There is no fixed
+   byte limit: make it as long as necessary to preserve every decision-bearing fact, but no longer.
+   Include a fact only when omitting it could change the current phase's decision, implementation,
+   verification, or risk handling. Deduplicate repeated facts and exclude source prose, unrelated
+   history, generic memories, and superseded material unless the supersession itself creates a
+   relevant conflict. Never copy whole artifact or memory bodies merely for completeness. Key the
+   packet by `context_version`, phase, and a SHA-256 of the objective/risk/diff inputs.
 6. Write the runtime context receipt required by `bin/workflow-ticket-context-check receipt`. Record
    the supplied or directly read light manifest version, every exact artifact ID/hash read, the
    packet path/hash, and the artifact IDs/hashes represented in the packet.
@@ -74,11 +75,11 @@ Return only:
 ```text
 context_packet: <absolute path>
 context_receipt: <absolute path>
-packet_status: ready | overflow
+packet_status: ready
 context_version: <version>
 task_fingerprint: <sha256>
 packet_sha256: <sha256>
-packet_bytes: <integer <= 8192>
+packet_bytes: <integer>
 artifact_reads: <count>
 memory_hits_selected: <count>
 conflicts_or_unknowns: <count>

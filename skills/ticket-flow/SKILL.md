@@ -176,7 +176,8 @@ its `context_version`, next phase, and task fingerprint match; otherwise dispatc
 persistence. This is the only bulk MCP retrieval pass for that phase/version.
 
 The curator reads every current ticket artifact and all applicable memories/past-ticket evidence in
-its isolated session, then returns one <=8 KiB phase packet and runtime receipt. The parent reads
+its isolated session, then returns one relevance-filtered phase packet with no fixed byte ceiling and
+a runtime receipt. The parent reads
 only that packet. For epic steps, the curator packet is combined with the separately bounded active
 milestone packet reference; never copy epic history into either packet.
 
@@ -384,8 +385,9 @@ Accept the phase result only after
 `bin/phase-contract result <result.json> --dispatch <envelope.json>` passes. The ticket-dispatch
 profile mechanically rejects all-history forks, unconditional investigator/verifier roles, excess
 fanout without triggers, repeated same-version context receipts, missing delta/full-review
-transitions, run-budget exhaustion, and these hard per-generation ceilings
-(`max_packet_bytes: 16384`):
+transitions, run-budget exhaustion, and these hard per-generation ceilings. Ordinary operational
+phase packets use `max_packet_bytes: 16384`; a receipt-validated curated context packet may exceed
+that value and sets `max_packet_bytes` to its measured size:
 
 | Phase | Max turns | Max checkpoints | Max elapsed | Max tokens when exposed | Max rotations |
 |---|---:|---:|---:|---:|---:|
@@ -393,8 +395,9 @@ transitions, run-budget exhaustion, and these hard per-generation ceilings
 | `build_review` | 40 | 12 | 60 min | 90,000 | 2 |
 | `deploy_verify` | 20 | 8 | 45 min | 60,000 | 3 |
 
-This table is the required fixed context/token budget. An observable first compaction is an
-immediate `rotate_required` boundary. **Budgets are cumulative, not renewable:** rotation
+This table is the required fixed context/token budget for turns, checkpoints, elapsed time, and
+tokens, not an arbitrary byte ceiling on relevance-filtered curator context. An observable first
+compaction is an immediate `rotate_required` boundary. **Budgets are cumulative, not renewable:** rotation
 continues a phase from its checkpoint, it does not grant a fresh full budget indefinitely. The
 `Max rotations` column is the hard per-phase generation cap, mechanically enforced by
 `bin/phase-contract ticket-dispatch` (a dispatch whose `rotation_generation` exceeds it is

@@ -514,6 +514,49 @@ class TicketRuntimeContractTest(unittest.TestCase):
             self.assertEqual(appended.returncode, 2)
             self.assertIn("must equal replace", appended.stdout)
 
+    def test_curated_context_packet_has_no_fixed_byte_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context_path, receipt = self.context_receipt(root)
+            packet_path = Path(receipt["child_packets"][0]["path"])
+            packet_path.write_text("decision-bearing context\n" * 2000)
+            receipt["artifact_reads"] = [
+                {
+                    "artifact_id": f"artifact-{index}",
+                    "sha256": "a" * 64,
+                    "excerpt_bytes": packet_path.stat().st_size,
+                }
+                for index in range(1, 601)
+            ]
+            receipt["child_packets"][0].update({
+                **reference(packet_path),
+                "excerpt_bytes": packet_path.stat().st_size,
+            })
+            context_path.write_text(json.dumps(receipt))
+
+            accepted_receipt = run_script(
+                "workflow-ticket-context-check", "receipt", str(context_path)
+            )
+            self.assertEqual(accepted_receipt.returncode, 0, accepted_receipt.stdout)
+
+            dispatch = self.dispatch(root, context_path)
+            dispatch["packet"] = reference(packet_path)
+            dispatch["budget"]["max_packet_bytes"] = packet_path.stat().st_size
+            dispatch_path = root / "large-context-dispatch.json"
+            dispatch_path.write_text(json.dumps(dispatch))
+            accepted_dispatch = run_script(
+                "phase-contract", "ticket-dispatch", str(dispatch_path)
+            )
+            self.assertEqual(accepted_dispatch.returncode, 0, accepted_dispatch.stdout)
+
+            operational_packet = root / "large-operational-packet.md"
+            operational_packet.write_bytes(b"x" * packet_path.stat().st_size)
+            dispatch["packet"] = reference(operational_packet)
+            dispatch_path.write_text(json.dumps(dispatch))
+            rejected = run_script("phase-contract", "ticket-dispatch", str(dispatch_path))
+            self.assertEqual(rejected.returncode, 2, rejected.stdout)
+            self.assertIn("non-curator packet", rejected.stdout)
+
     def test_r1_runtime_policy_rejects_repeated_prefect_status_reads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             receipt_path = Path(directory) / "policy.json"

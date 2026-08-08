@@ -68,8 +68,8 @@ manifest = mcp__autodev-memory__get_ticket(
    - Claude uses the `context-curator` agent on `sonnet` (use `opus` only for materially
      contradictory safety-critical artifacts). Codex uses a read-only child on `gpt-5.6-luna`.
    - The curator reads every current source/plan/investigation/deployment-guide and other artifact,
-     runs one consolidated applicable-memory and similar-ticket sweep, then writes one <=8 KiB
-     build-planning packet and receipt.
+     runs one consolidated applicable-memory and similar-ticket sweep, then writes one
+     relevance-filtered build-planning packet with no fixed byte ceiling plus its receipt.
    - Validate the receipt. This orchestrator reads only the packet and never repeats the curator's
      artifact or memory calls.
 

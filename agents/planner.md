@@ -183,8 +183,8 @@ Before creating a plan, verify:
    - Feature (FNNNN): Expect source artifact + codebase research
    - Bug (BNNNN): Expect source artifact + investigation artifact
 
-2. **Read all available inputs** from the bounded context-curator packet/file path provided by the
-   orchestrator. Do not load ticket artifacts or memory directly:
+2. **Read all available inputs** from the relevance-filtered context-curator packet/file path
+   provided by the orchestrator. Do not load ticket artifacts or memory directly:
    - `source` artifact - Problem/feature description (required)
    - `investigation` artifact - Root cause analysis (required for bugs)
 

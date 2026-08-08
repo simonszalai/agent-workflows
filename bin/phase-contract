@@ -1182,9 +1182,7 @@ def validate_ticket_fanout(value: object) -> dict:
 
 
 def validate_context_receipt(reference: object) -> dict:
-    value = validate_file_reference(
-        reference, "context_receipt", max_bytes=65536
-    )
+    value = validate_file_reference(reference, "context_receipt")
     checker = Path(__file__).with_name("workflow-ticket-context-check")
     result = subprocess.run(
         [str(checker), "receipt", value["path"]],
@@ -1386,10 +1384,17 @@ def validate_dispatch(
                 f"ticket-flow {phase_name} budget.max_tokens exceeds "
                 f"{ceiling['max_tokens']}"
             )
-        if max_packet_bytes > 16384:
-            raise ContractError("ticket-flow budget.max_packet_bytes exceeds 16384")
         fanout_budget = validate_ticket_fanout(dispatch.get("fanout_budget"))
         context_receipt = validate_context_receipt(dispatch.get("context_receipt"))
+        packet_is_curated_context = any(
+            child.get("path") == packet_reference["path"]
+            and child.get("sha256") == packet_reference["sha256"]
+            for child in context_receipt["child_packets"]
+        )
+        if max_packet_bytes > 16384 and not packet_is_curated_context:
+            raise ContractError(
+                "ticket-flow budget.max_packet_bytes exceeds 16384 for a non-curator packet"
+            )
         run_budget_receipt = validate_ticket_run_budget(
             dispatch.get("run_budget"), ticket_id=context_receipt["scope"]
         )
@@ -1429,8 +1434,6 @@ def validate_dispatch(
                 f"bounded-owner {phase_name} budget.max_tokens exceeds "
                 f"{ceiling['max_tokens']}"
             )
-        if max_packet_bytes > 16384:
-            raise ContractError("bounded-owner budget.max_packet_bytes exceeds 16384")
         context_receipt = validate_context_receipt(dispatch.get("context_receipt"))
         if not any(
             child.get("path") == packet_reference["path"]

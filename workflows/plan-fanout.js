@@ -24,7 +24,7 @@
 //
 // Returns the synthesized plan object only. MCP persistence stays in the skill — the
 // workflow never touches MCP. A no-history context curator gathers ticket artifacts, applicable
-// autodev memories, and past-ticket evidence into one stable <=8 KiB file. The skill passes that
+// autodev memories, and past-ticket evidence into one stable relevance-filtered file. The skill passes that
 // path plus bounded code research. Agents read the files on demand instead of repeating large
 // source/research/knowledge blobs in every prompt.
 

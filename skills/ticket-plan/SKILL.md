@@ -228,7 +228,8 @@ artifacts justify `opus`); Codex uses a read-only child on `gpt-5.6-luna`. The c
   bias; and
 - selection of only the facts that can change the plan.
 
-The planning orchestrator receives only the curator envelope and <=8 KiB packet. Validate its
+The planning orchestrator receives only the curator envelope and relevance-filtered packet, which has
+no fixed byte ceiling. Validate its
 receipt, then pass the same packet path/hash to the native planner and any conditionally escalated
 peers. Do not replay artifact, memory, entry-expansion, or similar-ticket calls in this session.
 When no applicable prior knowledge exists, the packet says so; never fabricate entries.
@@ -290,7 +291,7 @@ from the run-local cache rather than embedding or rediscovering them for every c
 
 Before dispatch, write the stable inputs once under `.context/plan/<run-id>/`:
 
-- `ticket-context.md` — the curator's <=8 KiB packet, copied byte-for-byte;
+- `ticket-context.md` — the curator's relevance-filtered packet, copied byte-for-byte;
 - `research.md` — codebase research or investigation findings;
 
 Pass only `ticketContextFile` and `codebaseResearchFile` paths to `plan-fanout`. Do not pass their

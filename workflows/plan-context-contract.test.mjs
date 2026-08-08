@@ -43,7 +43,7 @@ test('plan fanout gives every native phase one curated context reference', async
     how: 'Pass one file path to every planning phase.',
     tradeoffs: 'Adds one cheap curator child to reduce parent context.',
     alternatives_considered: [{ name: 'Raw reads', why_rejected: 'Pollutes parent context.' }],
-    risks: [{ risk: 'Relevant facts omitted', mitigation: 'Fail closed on packet overflow.' }],
+    risks: [{ risk: 'Relevant facts omitted', mitigation: 'Retain every decision-bearing fact.' }],
     verification_strategy: 'Assert every prompt references only the curated packet.',
     side_effects: 'none',
     elimination: 'Separate source and prior-knowledge prompt files.',
