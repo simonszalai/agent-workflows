@@ -69,6 +69,16 @@
           "table_owner": "amaru_staging",
           "database": "amaru_staging"
         }
+      },
+      "admin_refs": {
+        "prod": {
+          "root": "op://AMARU-sensitive/Postgres prod/root",
+          "owner": "op://AMARU-sensitive/Postgres prod/owner"
+        },
+        "staging": {
+          "root": "op://AMARU/Postgres staging/root",
+          "owner": "op://AMARU/Postgres staging/owner"
+        }
       }
     },
     "ts": {
@@ -174,6 +184,16 @@
           "db_id": "dpg-d86qe11kh4rs73evj8ng-a",
           "table_owner": "workflow_staging_user",
           "database": "workflow_staging"
+        }
+      },
+      "admin_refs": {
+        "prod": {
+          "root": "op://WORKFLOW_PRO-sensitive/Postgres prod/root",
+          "owner": "op://WORKFLOW_PRO-sensitive/Postgres prod/owner"
+        },
+        "staging": {
+          "root": "op://WORKFLOW_PRO/Postgres staging/root",
+          "owner": "op://WORKFLOW_PRO/Postgres staging/owner"
         }
       }
     },

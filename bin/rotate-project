@@ -219,6 +219,11 @@ finalize_canary() {
   local logf="$logdir/canary-finalize.log"; : > "$logf"
   if "$ROTATE" --ref "$CANARY_REF" --reason "$reason [canary finalize]" --yes --resume >> "$logf" 2>&1; then
     echo "${C_OK}✓${C_OFF} canary predecessor retired"
+  elif grep -q "no resumable .* rotation state" "$logf"; then
+    # A mid-sweep resume of the canary entry already ran the full retirement
+    # (resume does not re-apply --keep-old), so there is nothing left to
+    # finalize — that is completion, not failure.
+    echo "${C_OK}✓${C_OFF} canary already finalized ${C_DIM}(predecessor was retired during the sweep)${C_OFF}"
   else
     echo "${C_ERR}✗ canary finalize failed — predecessor login remains valid (safe).${C_OFF}"
     tail -8 "$logf" | sed 's/^/  /'
