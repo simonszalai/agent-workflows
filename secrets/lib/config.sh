@@ -9,6 +9,13 @@
 #   rotation: {<id>: {...}, ...}     rotation policy, keyed on the op:// ref
 #   routes:   [{repo, kind, dest, env, ref, transform}, ...]
 #
+# A rotation entry may declare `sync_repos: [../<other-primary-repo>]` when a
+# SECOND project routes the same op:// ref (e.g. the TS read-only production DB
+# credential that autodev's schema-drift gate also consumes). The fan-out then
+# runs sync-secrets against those repos too, so no destination is left holding a
+# retired value. Validation is fail-closed: each named repo must exist, belong
+# to a different project, and actually route one of the entry's refs.
+#
 # A repo that is not its project's primary repo carries a one-line POINTER
 # instead, so the engine can be invoked from any repo in the project:
 #
@@ -139,13 +146,72 @@ for i, r in enumerate(routes, 1):
 # consumes — the drift this layout exists to make impossible.
 rotation = doc.get("rotation") or {}
 refs = {r.get("ref") for r in routes if isinstance(r, dict)}
+
+
+def _sibling_doc(rel):
+    """Load another project's config named relative to this file, following one
+    `extends:` pointer exactly as config_path does. Returns (doc, error)."""
+    target = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(path)), rel))
+    if os.path.isdir(target):
+        target = os.path.join(target, os.path.basename(path))
+    if not os.path.isfile(target):
+        return None, f"{target} does not exist"
+    try:
+        sib = yaml.safe_load(open(target)) or {}
+    except Exception as exc:
+        return None, f"{target}: cannot parse YAML: {exc}"
+    if not isinstance(sib, dict):
+        return None, f"{target}: top level must be a mapping"
+    ext = sib.get("extends")
+    if ext:
+        target = os.path.normpath(os.path.join(os.path.dirname(target), ext))
+        if not os.path.isfile(target):
+            return None, f"{target} does not exist"
+        try:
+            sib = yaml.safe_load(open(target)) or {}
+        except Exception as exc:
+            return None, f"{target}: cannot parse YAML: {exc}"
+        if sib.get("extends"):
+            return None, f"{target} is itself a pointer"
+    return sib, None
+
+
 for rid, entry in (rotation.items() if isinstance(rotation, dict) else []):
     if not isinstance(entry, dict) or not entry.get("ref"):
         bad.append(f"rotation '{rid}': missing ref")
-    elif entry["ref"] not in refs:
+        continue
+    if entry["ref"] not in refs:
         bad.append(f"rotation '{rid}': ref {entry['ref']} has no route — it would rotate nothing")
-    if isinstance(entry, dict) and entry.get("hook") not in (None, "activate", "full"):
+    if entry.get("hook") not in (None, "activate", "full"):
         bad.append(f"rotation '{rid}': hook must be 'activate' or 'full', got {entry['hook']!r}")
+
+    # sync_repos: this credential is consumed by ANOTHER project's routes too.
+    # Without it the fan-out only reaches the owning project and the other
+    # project's destinations silently keep the retired value.
+    sync_repos = entry.get("sync_repos")
+    if sync_repos is None:
+        continue
+    if not isinstance(sync_repos, list) or not all(isinstance(x, str) and x for x in sync_repos):
+        bad.append(f"rotation '{rid}': sync_repos must be a list of non-empty strings")
+        continue
+    fanout = set(entry.get("sync_refs") or [entry["ref"]])
+    for rel in sync_repos:
+        sib, err = _sibling_doc(rel)
+        if err:
+            bad.append(f"rotation '{rid}': sync_repos entry {rel!r}: {err}")
+            continue
+        if sib.get("project") == doc.get("project"):
+            bad.append(
+                f"rotation '{rid}': sync_repos entry {rel!r} is the same project "
+                f"({doc.get('project')!r}) — its routes are already covered"
+            )
+            continue
+        sib_refs = {r.get("ref") for r in (sib.get("routes") or []) if isinstance(r, dict)}
+        if not (fanout & sib_refs):
+            bad.append(
+                f"rotation '{rid}': sync_repos entry {rel!r} routes none of "
+                f"{sorted(fanout)} — remove it or fix the ref"
+            )
 
 if bad:
     for b in bad:
@@ -211,6 +277,24 @@ config_rows_full() {
 # config_dests KIND — unique DEST values for a kind (validated).
 config_dests() {
   config_rows "$1" | awk -F'\t' '{ print $2 }' | sort -u
+}
+
+# config_sync_repos REL... — resolve a rotation entry's sync_repos values (paths
+# relative to THIS project's config file, same convention as `extends:`) to
+# absolute repo roots, one per line. Validation already proved they exist and
+# route the entry's refs; this is the path arithmetic the fan-out needs.
+config_sync_repos() {
+  _config_cache || return $?
+  local base rel abs
+  base="$(cd "$(dirname "$_CONFIG_FILE")" && pwd)" || return 1
+  for rel in "$@"; do
+    [[ -n "$rel" ]] || continue
+    abs="$(cd "$base/$rel" 2>/dev/null && pwd)" || {
+      # A pointer file was named directly rather than its directory.
+      abs="$(cd "$(dirname "$base/$rel")" 2>/dev/null && pwd)" || return 1
+    }
+    printf '%s\n' "$abs"
+  done
 }
 
 # config_health DEST — probe URL for a dest; empty when unregistered.

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import unittest
 
+import yaml
+
 from secrets_common import ROOT, SecretsSandbox, run
 
 ROTATE = str(ROOT / "bin" / "rotate-secret")
@@ -336,6 +338,78 @@ class ExcludeDestsDerivationTest(unittest.TestCase):
         self.assertEqual(dests, ["srv-app"])
         route_dests = [r["dest"] for r in entry["routes"]]
         self.assertIn("srv-server", route_dests)
+
+
+class CrossProjectFanOutTest(unittest.TestCase):
+    """A credential routed by a SECOND project must have that project's manifest
+    swept too. Before sync_repos the fan-out only ever reached the owning
+    project, so the other project's destinations silently kept the retired
+    value (the TS read-only prod DB credential that autodev's schema-drift gate
+    consumes was exactly this)."""
+
+    REF = "op://TESTVAULT/SHARED_TOKEN/value"
+
+    def setUp(self) -> None:
+        self.sb = SecretsSandbox()
+        self.addCleanup(self.sb.close)
+        # A sibling project alongside the sandbox repo, routing the same ref.
+        self.other = self.sb.root / "otherrepo"
+        self.other.mkdir()
+        (self.other / "secrets.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "project": "otherproj",
+                    "repos": ["otherrepo"],
+                    "health": {},
+                    "rotation": {},
+                    "routes": [{
+                        "repo": "otherrepo", "kind": "github", "dest": "otherorg/otherrepo",
+                        "env": "SHARED_TOKEN", "ref": self.REF, "transform": "self",
+                    }],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        self.sb.write_manifest(
+            f"render\tsrv-a\tSHARED_TOKEN\t{self.REF}\tself\n",
+            rotation={
+                "shared": {
+                    "ref": self.REF,
+                    "provider": "self_minted",
+                    "mode": "SELF_MINTED",
+                    "generate": {"format": "hex", "bytes": 16},
+                    "owner_repo": "repo",
+                    "sync_repos": ["../otherrepo"],
+                }
+            },
+        )
+
+    def env(self, **extra: str) -> dict[str, str]:
+        return self.sb.env(SYNC_SECRETS_BIN=str(self.sb.fakebin / "sync-secrets-fake"), **extra)
+
+    def rotate(self, *args: str, **kw: str):
+        return run([ROTATE, "--repo", str(self.sb.repo), *args], self.env(**kw))
+
+    def test_dry_run_lists_both_legs_and_the_cross_project_consumer(self) -> None:
+        proc = self.rotate("--ref", self.REF, "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(f"sync-secrets --repo {self.sb.repo} --changed {self.REF}", proc.stdout)
+        self.assertIn(f"sync-secrets --repo {self.other} --changed {self.REF}", proc.stdout)
+        self.assertIn("cross-project consumer:", proc.stdout)
+        self.assertIn("otherorg/otherrepo", proc.stdout)
+
+    def test_live_rotation_syncs_the_other_project_too(self) -> None:
+        proc = self.rotate("--ref", self.REF, "--reason", "rotate shared", "--yes")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        calls = [l for l in self.sb.log_lines() if l.startswith("SYNC ")]
+        repos = sorted(l.split("--repo ")[1].split(" ")[0] for l in calls)
+        self.assertEqual(repos, sorted([str(self.sb.repo), str(self.other)]))
+
+    def test_failed_cross_project_leg_names_that_repo_in_the_recovery(self) -> None:
+        proc = self.rotate("--ref", self.REF, "--reason", "t", "--yes", FAKE_SYNC_EXIT="1")
+        self.assertEqual(proc.returncode, 5)
+        self.assertIn(f"sync-secrets --repo {self.other} --changed {self.REF}", proc.stderr)
 
 
 if __name__ == "__main__":

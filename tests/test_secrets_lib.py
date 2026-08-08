@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 import unittest
 
+import yaml
+
 from secrets_common import ROOT, SHELL_FILES, SecretsSandbox, run
 
 LIB = ROOT / "secrets" / "lib"
@@ -79,6 +81,65 @@ class ManifestValidationTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("duplicate route", proc.stderr)
+
+    # --- sync_repos (cross-project fan-out) -----------------------------------
+
+    def _with_sync_repos(self, value, sibling: dict | None = None) -> subprocess.CompletedProcess[str]:
+        """Write a one-route/one-rotation config declaring sync_repos=value, plus
+        an optional sibling project config at <root>/other/secrets.yaml."""
+        ref = "op://V/I/value"
+        if sibling is not None:
+            other = self.sb.root / "other"
+            other.mkdir(exist_ok=True)
+            (other / "secrets.yaml").write_text(
+                yaml.safe_dump(sibling, sort_keys=False), encoding="utf-8"
+            )
+        self.sb.write_manifest(
+            f"render\tsrv-x\tE\t{ref}\tself\n",
+            rotation={"e1": {
+                "ref": ref, "provider": "self_minted", "mode": "SELF_MINTED",
+                "owner_repo": "repo", "sync_repos": value,
+            }},
+        )
+        return bash_lib("config_validate", self.sb.env(), config=str(self.config))
+
+    def _sibling(self, project: str, ref: str) -> dict:
+        return {
+            "project": project, "repos": ["other"], "health": {}, "routes": [
+                {"repo": "other", "kind": "github", "dest": "o/o",
+                 "env": "E", "ref": ref, "transform": "self"}
+            ],
+        }
+
+    def test_sync_repos_accepts_a_sibling_project_routing_the_same_ref(self) -> None:
+        proc = self._with_sync_repos(
+            ["../other"], self._sibling("otherproj", "op://V/I/value")
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_sync_repos_rejects_a_nonexistent_repo(self) -> None:
+        proc = self._with_sync_repos(["../nope"])
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("does not exist", proc.stderr)
+
+    def test_sync_repos_rejects_the_same_project(self) -> None:
+        proc = self._with_sync_repos(
+            ["../other"], self._sibling("testproj", "op://V/I/value")
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("is the same project", proc.stderr)
+
+    def test_sync_repos_rejects_a_sibling_that_does_not_route_the_ref(self) -> None:
+        proc = self._with_sync_repos(
+            ["../other"], self._sibling("otherproj", "op://V/UNRELATED/value")
+        )
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("routes none of", proc.stderr)
+
+    def test_sync_repos_rejects_a_bare_string(self) -> None:
+        proc = self._with_sync_repos("../other", self._sibling("otherproj", "op://V/I/value"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("must be a list of non-empty strings", proc.stderr)
 
     def test_missing_manifest_file_returns_2(self) -> None:
         proc = bash_lib(

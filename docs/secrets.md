@@ -182,6 +182,29 @@ the entry ref; `[]` disables the fan-out for prefect-only entries; AWS pairs
 list both items). Dual-key providers destroy the predecessor only in a
 `provider_finalize` step that runs AFTER verify + fan-out succeeded.
 
+**Cross-project consumers.** A rotation entry's routes — and therefore its
+fan-out — are scoped to the project that owns it, so a credential a SECOND
+project also routes needs `sync_repos` or that project's destinations keep the
+retired value:
+
+```yaml
+  ts-postgres-prod-ro-canonical:
+    ref: op://TS/Postgres prod RO/canonical
+    sync_repos:
+    - ../autodev-memory        # autodev routes this into SCHEMA_DRIFT_DATABASE_URL_RO
+```
+
+Paths are relative to the declaring project's `secrets.yaml`, the same
+convention as `extends:`. Validation is fail-closed: each named repo must
+exist, resolve to a config (following one pointer hop), belong to a *different*
+project, and actually route one of the entry's fan-out refs. `--dry-run` lists
+the extra sync legs and the cross-project consumer rows.
+
+Nothing detects an *undeclared* cross-project consumer automatically — no
+component enumerates every project's config — so when adding a route whose ref
+lives in another project's vault namespace, check whether that project already
+registers it and add `sync_repos` there.
+
 Exit codes: 0 rotated+vault+sync+verify OK; 2 usage/unknown entry/rotation
 state or lock contention; 3 manual playbook or precondition refusal, nothing
 changed; 4 provider/verify error (safe state); 5 the vault holds the NEW value
