@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # db-provision-roles — multi-project four-role Postgres + 1Password provisioner
 #
-# Canonical secret names (vault scopes the project; no project prefix on items):
-#   {PROD|STAGING}_POSTGRES_URL_{ROOT|OWNER|APP|RO}
+# Canonical destinations are the slice-6 GROUPED items (vault scopes the
+# project; environment encoded in item titles; one field per credential):
+#   prod root/owner/app + per-app slugs → <PROJECT>-sensitive "Postgres prod"
+#   prod RO (canonical + per-app slugs) → <PROJECT> "Postgres prod RO"
+#   all staging (root/owner/app/ro/slugs/<slug>_ro) → <PROJECT> "Postgres staging"
 #
-# Vault routing (Amaru policy):
-#   prod ROOT/OWNER/APP → <PROJECT>-sensitive  (Touch ID)
-#   prod RO + all staging → <PROJECT>          (service-account readable)
+# Vault routing (Amaru policy): prod write URLs → -sensitive (Touch ID);
+# prod RO + all staging → regular vault (service-account readable).
 #
 # Postgres logins always include the project slug:
 #   {slug}_owner  {slug}_app  {slug}_ro
@@ -22,9 +24,9 @@
 #
 # Per-app principals (slice 3a): --app <app-slug> provisions ONE application's
 # login(s) from projects[].apps in the config — plain slug-prefixed LOGIN roles
-# with the same grant sets the project's {slug}_app/{slug}_ro get. Items keep
-# the flat naming {PROD|STAGING}_POSTGRES_URL_{APPSLUG_UPPER}[_RO] (grouped
-# items come in slice 6). Cross-instance apps (instance:{project,tier_map})
+# with the same grant sets the project's {slug}_app/{slug}_ro get. URLs land
+# as per-app fields on the grouped tier items (see canonical destinations
+# above). Cross-instance apps (instance:{project,tier_map})
 # create the role on the OWNING project's box via its owner credential and
 # write the item into the CONSUMER project's vault.
 #
@@ -119,16 +121,29 @@ with_owner_options() {
   fi
 }
 
-vault_upsert() {
-  local vault="$1" title="$2"
-  if op_vault_mutation "$vault" item get --vault "$vault" "$title" >/dev/null 2>&1; then
-    op_vault_mutation "$vault" item delete --vault "$vault" "$title" >/dev/null
+vault_upsert() { # vault, grouped item title, field label; value in UPSERT_VALUE
+  local vault="$1" title="$2" field="$3" item_id="" check=""
+  item_id="$(op_vault_mutation "$vault" item get "$title" --vault "$vault" --format json 2>/dev/null | jq -r '.id // empty' || true)"
+  if [[ -n "$item_id" ]]; then
+    # Replace the field in place (append when the label is absent); the value
+    # travels via env into jq and stdin into op — never argv.
+    op_vault_mutation "$vault" item get "$item_id" --vault "$vault" --format json \
+      | FIELD_LABEL="$field" jq '
+          if ([.fields[]? | select(.label == env.FIELD_LABEL)] | length) > 0
+          then (.fields[] | select(.label == env.FIELD_LABEL) | .value) = env.UPSERT_VALUE
+          else .fields += [{label: env.FIELD_LABEL, type: "CONCEALED", value: env.UPSERT_VALUE}] end' \
+      | op_vault_mutation "$vault" item edit "$item_id" --vault "$vault" >/dev/null
+  else
+    jq -n --arg vault "$vault" --arg title "$title" --arg field "$field" \
+      '{title:$title, vault:{name:$vault}, category:"SECURE_NOTE",
+        fields:[{label:$field, type:"CONCEALED", value:env.UPSERT_VALUE}]}' \
+      | op_vault_mutation "$vault" item create --vault "$vault" --format json - >/dev/null
   fi
-  jq -n --arg vault "$vault" --arg title "$title" \
-    '{title:$title, vault:{name:$vault}, category:"SECURE_NOTE",
-      fields:[{label:"value", type:"CONCEALED", value:env.UPSERT_VALUE}]}' \
-    | op_vault_mutation "$vault" item create --vault "$vault" --format json - >/dev/null
-  echo "  vault: upserted op://$vault/$title/value"
+  check="$(op_vault_mutation "$vault" item get "$title" --vault "$vault" --format json \
+    | FIELD_LABEL="$field" jq -r '[.fields[]? | select(.label == env.FIELD_LABEL) | .value] | first // empty')"
+  [[ "$check" == "$UPSERT_VALUE" ]] || { check=""; echo "ERROR: upsert did not verify: op://$vault/$title/$field" >&2; return 1; }
+  check=""
+  echo "  vault: upserted op://$vault/$title/$field"
 }
 
 vault_read_optional() {
@@ -502,12 +517,20 @@ provision_app_tier() {
   ro_role="$(jq -r ".projects[\"$PROJECT\"].apps[\"$APP\"].roles.ro // \"\"" "$CONFIG")"
   [[ -n "$app_role$ro_role" ]] || { echo "ERROR: app $APP declares no roles" >&2; return 2; }
 
-  # Flat item naming (slice 6 owns grouped items): APPSLUG_UPPER from item_prefix.
-  local item_prefix appupper P app_vault
+  # Grouped item naming (slice 6 layout): per-app fields on the tier's Postgres
+  # item. Prod write URLs live on "<sens>/Postgres prod/<slug>", prod RO on
+  # "<vault>/Postgres prod RO/<slug>"; staging keeps everything on
+  # "<vault>/Postgres staging" as <slug> / <slug>_ro fields.
+  local item_prefix app_field P app_vault app_item ro_vault ro_item ro_field
   item_prefix="$(cfg_get ".projects[\"$PROJECT\"].apps[\"$APP\"].item_prefix")"
-  appupper="${item_prefix%_}"
-  if [[ "$tier" == prod ]]; then P="PROD_"; app_vault="$VAULT_SENS"; else P="STAGING_"; app_vault="$VAULT"; fi
-  local app_item="${P}POSTGRES_URL_${appupper}" ro_item="${P}POSTGRES_URL_${appupper}_RO"
+  app_field="$(printf %s "${item_prefix%_}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$tier" == prod ]]; then
+    P="PROD_"; app_vault="$VAULT_SENS"; app_item="Postgres prod"
+    ro_vault="$VAULT"; ro_item="Postgres prod RO"; ro_field="$app_field"
+  else
+    P="STAGING_"; app_vault="$VAULT"; app_item="Postgres staging"
+    ro_vault="$VAULT"; ro_item="Postgres staging"; ro_field="${app_field}_ro"
+  fi
 
   echo "== $PROJECT / app $APP / $tier =="
   echo "  instance=$own_project/$own_tier db_id=$own_db_id databases=${dbs[*]} owner_kind=$own_owner_kind"
@@ -516,11 +539,11 @@ provision_app_tier() {
     echo "  would connect as admin via $own_project owner path ($own_owner_cred, kind=$own_owner_kind)"
     [[ -n "$app_role" ]] && {
       echo "  would create/rotate LOGIN $app_role ({slug}_app grant set on: ${dbs[*]})"
-      echo "  would upsert op://$app_vault/$app_item"
+      echo "  would upsert op://$app_vault/$app_item/$app_field"
     }
     [[ -n "$ro_role" ]] && {
       echo "  would create/rotate LOGIN $ro_role ({slug}_ro grant set on: ${dbs[*]})"
-      echo "  would upsert op://$VAULT/$ro_item"
+      echo "  would upsert op://$ro_vault/$ro_item/$ro_field"
     }
     return 0
   fi
@@ -588,7 +611,7 @@ provision_app_tier() {
     app_url_stored="$(compose_url_db "$app_base" "$app_role" "$app_pw" "$primary_db")"
     app_url_ext="$(compose_url_db "$EXT_URL" "$app_role" "$app_pw" "$primary_db")"
     run_psql_url "$app_url_ext" -q -t -A -v ON_ERROR_STOP=1 -c "SELECT current_user" >/dev/null
-    UPSERT_VALUE="$app_url_stored" vault_upsert "$app_vault" "$app_item"
+    UPSERT_VALUE="$app_url_stored" vault_upsert "$app_vault" "$app_item" "$app_field"
   fi
   if [[ -n "$ro_role" ]]; then
     provision_one_login "$ro_role" ro
@@ -600,7 +623,7 @@ provision_app_tier() {
       return 3
     fi
     echo "  verified $ro_role (cannot write)"
-    UPSERT_VALUE="$ro_url_ext" vault_upsert "$VAULT" "$ro_item"
+    UPSERT_VALUE="$ro_url_ext" vault_upsert "$ro_vault" "$ro_item" "$ro_field"
   fi
   echo "  done $tier (app $APP)"
 }
@@ -616,12 +639,17 @@ provision_tier() {
   table_owner="$(cfg_get ".projects[\"$PROJECT\"].tiers[\"$tier\"].table_owner")"
   database="$(cfg_get ".projects[\"$PROJECT\"].tiers[\"$tier\"].database")"
 
+  local grp_item ro_vault_t ro_item_t ro_field_t
   if [[ "$tier" == prod ]]; then
     P="PROD_"
     write_vault="$VAULT_SENS"
+    grp_item="Postgres prod"
+    ro_vault_t="$VAULT"; ro_item_t="Postgres prod RO"; ro_field_t="canonical"
   else
     P="STAGING_"
     write_vault="$VAULT"   # staging writes in regular vault
+    grp_item="Postgres staging"
+    ro_vault_t="$VAULT"; ro_item_t="Postgres staging"; ro_field_t="ro"
   fi
 
   echo "== $PROJECT / $tier =="
@@ -631,8 +659,8 @@ provision_tier() {
     cat <<PLAN
   would ensure owner login=$OWNER_CRED (kind=$OWNER_KIND)
   would rotate/create $APP_ROLE + $RO_ROLE on $database
-  would upsert op://$write_vault/${P}POSTGRES_URL_ROOT|OWNER|APP
-  would upsert op://$VAULT/${P}POSTGRES_URL_RO
+  would upsert op://$write_vault/$grp_item/root|owner|app
+  would upsert op://$ro_vault_t/$ro_item_t/$ro_field_t
 PLAN
     return 0
   fi
@@ -685,12 +713,12 @@ PLAN
       render_create_owner "$db_id"
       # Save ROOT if we still have the pre-flip URL
       if [[ -n "$root_ext" ]]; then
-        UPSERT_VALUE="$root_ext" vault_upsert "$write_vault" "${P}POSTGRES_URL_ROOT"
+        UPSERT_VALUE="$root_ext" vault_upsert "$write_vault" "$grp_item" root
       fi
     else
       # Owner already default — try keep existing ROOT vault item; else warn
       local existing_root=""
-      existing_root="$(vault_read_optional "op://$write_vault/${P}POSTGRES_URL_ROOT/value" 2>/dev/null || true)"
+      existing_root="$(vault_read_optional "op://$write_vault/$grp_item/root" 2>/dev/null || true)"
       if [[ -z "$existing_root" ]]; then
         # try unsuffixed legacy
         existing_root="$(vault_read_optional "op://$write_vault/${P}POSTGRES_URL/value" 2>/dev/null || true)"
@@ -705,7 +733,7 @@ PLAN
         parse_url "$existing_root"
         # Only keep as ROOT if username is NOT the owner credential
         if [[ "$U_USER" != "$OWNER_CRED" ]]; then
-          UPSERT_VALUE="$existing_root" vault_upsert "$write_vault" "${P}POSTGRES_URL_ROOT"
+          UPSERT_VALUE="$existing_root" vault_upsert "$write_vault" "$grp_item" root
         else
           echo "  WARN: no distinct ROOT URL found (only owner). Seed ROOT manually from TablePlus/provider default." >&2
         fi
@@ -763,12 +791,12 @@ PLAN
 
   # For sql_role owner, also store external owner URL without SET ROLE
   if [[ "$OWNER_KIND" == "sql_role" ]]; then
-    UPSERT_VALUE="$owner_ext" vault_upsert "$write_vault" "${P}POSTGRES_URL_OWNER"
+    UPSERT_VALUE="$owner_ext" vault_upsert "$write_vault" "$grp_item" owner
   else
-    UPSERT_VALUE="$owner_int" vault_upsert "$write_vault" "${P}POSTGRES_URL_OWNER"
+    UPSERT_VALUE="$owner_int" vault_upsert "$write_vault" "$grp_item" owner
   fi
-  UPSERT_VALUE="$app_int" vault_upsert "$write_vault" "${P}POSTGRES_URL_APP"
-  UPSERT_VALUE="$ro_ext" vault_upsert "$VAULT" "${P}POSTGRES_URL_RO"
+  UPSERT_VALUE="$app_int" vault_upsert "$write_vault" "$grp_item" app
+  UPSERT_VALUE="$ro_ext" vault_upsert "$ro_vault_t" "$ro_item_t" "$ro_field_t"
   echo "  done $tier"
 }
 
