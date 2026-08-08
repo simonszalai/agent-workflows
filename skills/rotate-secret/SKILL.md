@@ -77,6 +77,11 @@ sync-secrets --repo /Users/simon/dev/workflow_pro --changed 'op://WORKFLOW_PRO/R
 sync-secrets --repo /Users/simon/dev/amaru-web --dry-run
 ```
 
+- A rotation entry may declare `sync_repos: [../<other-primary-repo>]` when a
+  **second project** routes the same ref (paths relative to the declaring
+  `secrets.yaml`). The rotation fan-out then sweeps that project too; without it
+  only the owning project is swept and the other project's destinations keep the
+  retired value. `--dry-run` prints the extra legs and cross-project consumers.
 - Default sweep = `github` + `render`. **Prefect is explicit only**
   (`--channel prefect`; prod tier prompts for confirmation) and is excluded
   from `--changed` fan-out.
