@@ -108,7 +108,7 @@ health_gate() { # entry json -> verify every consumer dest registered in health_
   local entry="$1" dest url body ok=1
   while IFS= read -r dest; do
     url="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY")"
-    [[ -n "$url" ]] || continue
+    [[ -n "$url" && "$url" != "deploy-only" ]] || continue
     if body="$(curl -sf --max-time 30 "$url")"; then
       if jq -e 'has("databaseRoleSafe")' <<< "$body" >/dev/null 2>&1 \
          && ! jq -e '.status == "ok" and .databaseRoleSafe == true' <<< "$body" >/dev/null; then
@@ -285,7 +285,7 @@ if [[ "$dry" -eq 1 ]]; then
         [[ -n "$dest" ]] || continue
         case "$kind" in
           render)
-            host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E 's#https?://##; s#/.*##')"
+            host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E '/^deploy-only$/d; s#https?://##; s#/.*##')"
             label="render:${host:-$dest}" ;;
           *) label="$kind:$dest" ;;
         esac
@@ -465,6 +465,7 @@ finalize_pending_deploys() {
     dt=$((SECONDS - t0))
     [[ "$status" == "live" ]] || { echo "${C_ERR}✗ deploy for $sid did not go live within 20m${C_OFF}" >&2; return 1; }
     url="$(jq -r --arg d "$sid" '.health_urls[$d] // empty' "$REGISTRY")"
+    [[ "$url" == "deploy-only" ]] && url=""   # TCP-only service: live IS the gate
     if [[ -n "$url" ]]; then
       if curl -sf --max-time 30 "$url" >/dev/null; then
         echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live + healthy ($(fmt_dur "$dt"))${C_OFF}"
