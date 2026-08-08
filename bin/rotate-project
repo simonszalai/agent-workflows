@@ -162,6 +162,22 @@ if [[ "$scope" == "auto" ]]; then
 fi
 
 # --- dry-run: render the full plan (credential-free) and exit ----------------
+finalize_canary() {
+  # A --keep-old canary leaves one predecessor login valid as the sweep's
+  # rollback window. Once every entry succeeded there is nothing to roll back
+  # to, so retire it (idempotent: no state file -> immediate no-op).
+  [[ -n "${CANARY_REF:-}" ]] || return 0
+  echo "${C_RUN}⟳${C_OFF} finalizing canary ${C_DIM}(retiring the kept predecessor login)${C_OFF}"
+  local logf="$logdir/canary-finalize.log"; : > "$logf"
+  if "$ROTATE" --ref "$CANARY_REF" --reason "$reason [canary finalize]" --yes --resume >> "$logf" 2>&1; then
+    echo "${C_OK}✓${C_OFF} canary predecessor retired"
+  else
+    echo "${C_ERR}✗ canary finalize failed — predecessor login remains valid (safe).${C_OFF}"
+    tail -8 "$logf" | sed 's/^/  /'
+    return 1
+  fi
+}
+
 if [[ "$dry" -eq 1 ]]; then
   render_plan_section() { # title, color, entries json
     local title="$1" color="$2" entries="$3" n entry id provider mode phase staging how ref dest env repo label host
@@ -175,32 +191,36 @@ if [[ "$dry" -eq 1 ]]; then
       mode="$(jq -r '.mode' <<< "$entry")"
       phase="$(jq -r '.phase' <<< "$entry")"
       staging="$(jq -r '.staging' <<< "$entry")"
-      if [[ "$phase" == "1" || "$phase" == "4" ]]; then how="sequential"; else how="parallel, save-only + one deploy per service"; fi
+      if [[ "$phase" == "1" || "$phase" == "4" ]]; then how="sequential"; else how="parallel · save-only, one deploy per service"; fi
       local tierlabel="prod"; [[ "$staging" == "true" ]] && tierlabel="staging"
-      echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${mode} · ${tierlabel} · ${how}${C_OFF}"
-      echo "    ${C_RUN}$(jq -r '.ref' <<< "$entry")${C_OFF}"
-      while IFS=$'\t' read -r dest env repo; do
-        [[ -n "$dest" ]] || continue
-        if [[ "$dest" == srv-* ]]; then
-          host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E 's#https?://##; s#/.*##')"
-          label="render ${host:-$dest}"
-          [[ -n "$host" ]] && label="$label ${C_DIM}($dest)${C_OFF}"
-        else
-          label="github $dest"
-        fi
-        printf '      %b→%b %b  %b%s%b\n' "$C_DIM" "$C_OFF" "$label" "$C_BOLD" "$env" "$C_OFF"
-      done < <(jq -r '.consumers[]? | [.dest, .env, .repo] | @tsv' <<< "$entry")
+      local plan=""
       case "$provider" in
         postgres)
           if [[ "$phase" == "1" && "${dry_canary_flagged:-0}" -eq 0 ]]; then
             dry_canary_flagged=1
-            echo "      ${C_DIM}→ new versioned DB login staged, deployed, health-gated (canary: --keep-old, predecessor stays valid)${C_OFF}"
+            plan="stage new versioned DB login → deploy → health-gate; keep predecessor as rollback (canary), auto-retired after the sweep succeeds"
           else
-            echo "      ${C_DIM}→ new versioned DB login staged, deployed, health-gated, predecessor drained + retired${C_OFF}"
+            plan="stage new versioned DB login → deploy → health-gate → drain + retire predecessor"
           fi ;;
-        self_minted) echo "      ${C_DIM}→ new value minted automatically ($(jq -r '.generate.format + "/" + (.generate.bytes|tostring)' <<< "$entry" 2>/dev/null || echo hex))${C_OFF}" ;;
-        *) echo "      ${C_DIM}→ mint the new value at the provider, paste once when prompted${C_OFF}" ;;
+        self_minted) plan="mint $(jq -r '(.generate.format // "hex") + "/" + ((.generate.bytes // 32)|tostring)' <<< "$entry") automatically → sync consumers → deploy once per service" ;;
+        *) plan="you mint at the provider dashboard, paste once → sync consumers → deploy once per service" ;;
       esac
+      echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${tierlabel} · ${how}${C_OFF}"
+      echo "    ${C_DIM}plan${C_OFF}  $plan"
+      local src
+      src="$(jq -r '.ref' <<< "$entry")"
+      while IFS=$'\t' read -r dest env repo; do
+        [[ -n "$dest" ]] || continue
+        if [[ "$dest" == srv-* ]]; then
+          host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E 's#https?://##; s#/.*##')"
+          label="render:${host:-$dest}"
+        else
+          label="github:$dest"
+        fi
+        printf '    %bmap%b   %b%s%b  %b→%b  %s  %b%s%b\n' \
+          "$C_DIM" "$C_OFF" "$C_RUN" "$src" "$C_OFF" "$C_DIM" "$C_OFF" "$label" "$C_BOLD" "$env" "$C_OFF"
+      done < <(jq -r '.consumers[]? | [.dest, .env, .repo] | @tsv' <<< "$entry")
+      echo
     done < <(jq -c '.[]' <<< "$entries")
   }
   auto_json="$(jq -c '[.[] | select(.auto)]' <<< "$run_json")"
@@ -314,7 +334,7 @@ for phase in 1 2 3 4; do
     while IFS= read -r entry; do
       idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
       xtra=""
-      if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then xtra="--keep-old"; first_staging_pg=0; fi
+      if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then xtra="--keep-old"; first_staging_pg=0; CANARY_REF="$(jq -r '.ref' <<< "$entry")"; fi
       echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id${xtra:+ ${C_DIM}$xtra${C_OFF}} ${C_DIM}(postgres, sequential)${C_OFF}"
       logf="$logdir/$id.log"; : > "$logf"
       t0=$SECONDS
@@ -388,4 +408,5 @@ for phase in 1 2 3 4; do
   fi
 done
 
+finalize_canary || summary_and_exit 1
 summary_and_exit 0
