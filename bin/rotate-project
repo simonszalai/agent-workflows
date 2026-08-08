@@ -411,6 +411,8 @@ finalize_pending_deploys() {
   [[ -s "$logdir/pending-dests" ]] || return 0
   # shellcheck source=../secrets/lib/read.sh
   source "$HERE/../secrets/lib/read.sh"
+  # shellcheck source=../secrets/lib/vault.sh
+  source "$HERE/../secrets/lib/vault.sh"   # op_vault_read (Render API key)
   # shellcheck source=../secrets/lib/render-api.sh
   source "$HERE/../secrets/lib/render-api.sh"
   # Deploy triggering needs the project's Render key + SA token, exactly like
