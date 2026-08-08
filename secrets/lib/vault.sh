@@ -83,6 +83,29 @@ vault_create_value() { # ref  (value in $VAULT_VALUE env)
   echo "  vault: created $ref"
 }
 
+# Per-item mutex for read-modify-write edits. 1Password item edits replace the
+# whole field array, so two concurrent editors of one grouped item can clobber
+# each other's fields even when 409 retries re-read (read → peer writes → our
+# write lands with the peer's stale field). mkdir is the portable atomic lock.
+vault_item_lock_acquire() { # vault item_id -> echoes lock dir
+  local lockroot="${VAULT_LOCK_DIR:-$HOME/.local/state/agent-workflows/vault-locks}" key lockdir waited=0
+  mkdir -p "$lockroot"
+  key="$(printf '%s/%s' "$1" "$2" | shasum -a 256 | cut -c1-16)"
+  lockdir="$lockroot/$key.lock"
+  until mkdir "$lockdir" 2>/dev/null; do
+    waited=$((waited + 1))
+    [[ "$waited" -le "${VAULT_LOCK_TIMEOUT_SECONDS:-180}" ]] || {
+      echo "ERROR: timed out waiting for the vault item lock ($1; holder pid $(cat "$lockdir/pid" 2>/dev/null || echo unknown))." >&2
+      return 1
+    }
+    sleep 1
+  done
+  printf '%s' "$$" > "$lockdir/pid"
+  printf '%s' "$lockdir"
+}
+
+vault_item_lock_release() { rm -f "$1/pid" 2>/dev/null; rmdir "$1" 2>/dev/null || true; }
+
 vault_replace_value() { # ref  (value in $VAULT_VALUE env)
   local ref="$1" item_id existing="" check=""
   local REF_VAULT REF_TITLE REF_FIELD
@@ -107,6 +130,8 @@ vault_replace_value() { # ref  (value in $VAULT_VALUE env)
   # return 409 Conflict for an edit based on a stale item version. Each retry
   # re-reads the item fresh, so a conflicting write is replayed on top of the
   # winner instead of failing the whole rotation.
+  local vault_lock
+  vault_lock="$(vault_item_lock_acquire "$REF_VAULT" "$item_id")" || return 1
   local edit_attempt edit_ok=0
   for edit_attempt in 1 2 3 4; do
     if op_vault_mutation "$REF_VAULT" item get "$item_id" --vault "$REF_VAULT" --format json \
@@ -121,8 +146,13 @@ vault_replace_value() { # ref  (value in $VAULT_VALUE env)
     echo "  vault: edit conflict/failed for $ref (attempt $edit_attempt) — retrying with a fresh read" >&2
     sleep "$edit_attempt"
   done
-  [[ "$edit_ok" -eq 1 ]] || { echo "ERROR: vault item edit failed after retries ($ref)." >&2; return 1; }
-  check="$(op_vault_read "$ref")" || return $?
+  if [[ "$edit_ok" -ne 1 ]]; then
+    vault_item_lock_release "$vault_lock"
+    echo "ERROR: vault item edit failed after retries ($ref)." >&2
+    return 1
+  fi
+  check="$(op_vault_read "$ref")" || { vault_item_lock_release "$vault_lock"; return 1; }
+  vault_item_lock_release "$vault_lock"
   [[ "$check" == "$VAULT_VALUE" ]] || { echo "ERROR: vault item replacement did not verify ($ref)." >&2; return 1; }
   [[ "$(vault_item_id "$ref")" == "$item_id" ]] || { echo "ERROR: vault item identity changed during replacement ($ref)." >&2; return 1; }
   check=""
