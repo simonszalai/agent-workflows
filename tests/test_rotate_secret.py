@@ -205,6 +205,102 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(self.sync_calls(), [])
 
 
+class RotateHookTest(unittest.TestCase):
+    """Optional repo hook: declared-but-missing refuses; post-sync runs after
+    fan-out; hook: full delegates the whole rotation and skips the provider."""
+
+    def setUp(self) -> None:
+        self.sb = SecretsSandbox()
+        self.addCleanup(self.sb.close)
+        self.hook_log = self.sb.root / "hook.log"
+        routes = "\n".join([
+            f"render\tsrv-a\tHMAC\t{SELF_MINTED_REF}\tself",
+            f"prefect\tstaging\tHMAC\t{SELF_MINTED_REF}\tself",
+            "",
+        ])
+        self.rotation = {
+            "test-hmac": {
+                "ref": SELF_MINTED_REF,
+                "provider": "self_minted",
+                "mode": "SELF_MINTED",
+                "generate": {"format": "hex", "bytes": 16},
+                "owner_repo": "repo",
+            },
+        }
+        self.sb.write_manifest(routes, rotation=self.rotation)
+
+    def write_hook(self) -> None:
+        hook_dir = self.sb.repo / "scripts" / "secrets"
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        hook = hook_dir / "rotate-hook"
+        hook.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "HOOK $1 $ROTATE_ID" >> "{self.hook_log}"\n'
+            'exit 0\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+    def env(self, **extra: str) -> dict[str, str]:
+        return self.sb.env(
+            SYNC_SECRETS_BIN=str(self.sb.fakebin / "sync-secrets-fake"),
+            **extra,
+        )
+
+    def rotate(self, *args: str):
+        return run([ROTATE, "--repo", str(self.sb.repo), *args], self.env())
+
+    def hook_calls(self) -> list[str]:
+        if not self.hook_log.exists():
+            return []
+        return self.hook_log.read_text(encoding="utf-8").splitlines()
+
+    def test_declared_hook_missing_refuses_before_any_action(self) -> None:
+        self.rotation["test-hmac"]["hook"] = "activate"
+        self.sb.write_manifest(
+            f"render\tsrv-a\tHMAC\t{SELF_MINTED_REF}\tself\n",
+            rotation=self.rotation,
+        )
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t", "--yes")
+        self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
+        self.assertIn("REFUSED", proc.stderr)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_post_sync_hook_runs_after_fanout(self) -> None:
+        self.write_hook()
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t", "--yes")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertEqual(self.hook_calls(), ["HOOK post-sync test-hmac"])
+
+    def test_hook_full_delegates_and_skips_the_provider(self) -> None:
+        self.write_hook()
+        self.rotation["test-hmac"]["hook"] = "full"
+        self.sb.write_manifest(
+            f"render\tsrv-a\tHMAC\t{SELF_MINTED_REF}\tself\n"
+            f"prefect\tstaging\tHMAC\t{SELF_MINTED_REF}\tself\n",
+            rotation=self.rotation,
+        )
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t", "--yes")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        # hook owned the rotation; the self_minted provider never wrote the vault
+        self.assertIn("HOOK rotate test-hmac", self.hook_calls())
+        self.assertNotIn("OP item edit", "\n".join(self.sb.log_lines()))
+        # fan-out still ran
+        self.assertTrue(any(l.startswith("SYNC ") for l in self.sb.log_lines()))
+
+    def test_dry_run_prints_hook_plan_and_mutates_nothing(self) -> None:
+        self.write_hook()
+        self.rotation["test-hmac"]["hook"] = "full"
+        self.sb.write_manifest(
+            f"render\tsrv-a\tHMAC\t{SELF_MINTED_REF}\tself\n",
+            rotation=self.rotation,
+        )
+        proc = self.rotate("--ref", SELF_MINTED_REF, "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("hook: scripts/secrets/rotate-hook (full)", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
+
+
 class ExcludeDestsDerivationTest(unittest.TestCase):
     """The Prefect-server topology invariant, now enforced structurally:
     exclude_dests removes a route from the ACTIVATION surface (consumers)
