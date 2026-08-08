@@ -229,12 +229,14 @@ fi
 
 SYNC="${SYNC_SECRETS:-$HERE/sync-secrets}"
 
-sync_one() { # entry json, log file: push the CURRENT vault value to consumers
+sync_one() { # entry json, log file: push the CURRENT vault value(s) to consumers
   local entry="$1" logf="$2" ref rc=0 r
-  ref="$(jq -r '.ref' <<< "$entry")"
   while IFS= read -r r; do
     [[ -n "$r" ]] || continue
-    "$SYNC" --repo "$r" --changed "$ref" --reason "$reason [$(jq -r '.id' <<< "$entry")]" --no-deploy >> "$logf" 2>&1 || rc=$?
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      "$SYNC" --repo "$r" --changed "$ref" --reason "$reason [$(jq -r '.id' <<< "$entry")]" --no-deploy >> "$logf" 2>&1 || rc=$?
+    done < <(jq -r '(.sync_refs // [.ref]) | .[]' <<< "$entry")
   done < <(jq -r '[.consumers[]?.repo] | unique | .[]' <<< "$entry")
   if [[ "$rc" -eq 0 ]]; then
     jq -r '.consumers[]?.dest' <<< "$entry" >> "$logdir/pending-dests"
