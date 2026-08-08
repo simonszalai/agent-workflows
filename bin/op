@@ -451,6 +451,29 @@ if [[ "$canonical_human_requested" == "1" && "$has_explicit_account" != "1" &&
   echo "ERROR: invalid human account selector configuration." >&2
   exit 4
 fi
+
+# Human-account requests against REGULAR vaults (OP_USE_CANONICAL_HUMAN_ACCOUNT=1
+# — the rotation tooling's vault writes: item get/edit/list, op read) previously
+# went straight to the real op with --account and NO signin preflight and NO
+# lock. The desktop app then raised Touch ID per invocation whenever its session
+# was not live, so a single rotation cost one fingerprint per op process. This is
+# the same one-authentication-shared-by-all guarantee the sensitive path gets,
+# minus the notification: a regular-vault write is deliberately NOT classified as
+# sensitive access and must never produce the sensitive-access notification.
+if [[ -z "$sensitive_vault" && "$canonical_human_requested" == "1" ]]; then
+  preflight_account="$explicit_account"
+  [[ "$has_explicit_account" == "1" ]] || preflight_account="$HUMAN_ACCOUNT"
+  if [[ "$preflight_account" =~ [^[:space:]] ]]; then
+    if acquire_auth_lock "$preflight_account"; then
+      "$REAL_OP" signin --account "$preflight_account" >/dev/null 2>&1
+      release_auth_lock
+    else
+      printf '%s pid=%s parent=%s<-%s status=NOTE auth-lock-timeout account=canonical-human\n' \
+        "$(date '+%F %T')" "$$" "$parent" "$gparent" >> "$LOG" 2>/dev/null
+      "$REAL_OP" signin --account "$preflight_account" >/dev/null 2>&1
+    fi
+  fi
+fi
 if [[ -n "$sensitive_vault" && "$top_level_command" == "read" && -n "${CONDUCTOR_SESSION_ID:-}" ]]; then
   cacheable_sensitive_read=1
   cache_key="$(printf '%s\0' "$@" | shasum -a 256 | awk '{print $1}')"

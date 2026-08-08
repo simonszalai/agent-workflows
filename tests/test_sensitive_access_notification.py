@@ -751,9 +751,17 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(fixture.events, ["real"])
+            # The contract for a regular-vault canonical-human request is "no
+            # sensitive classification, no notification". It DOES take the
+            # shared idempotent signin preflight: without one, the desktop app
+            # raised Touch ID per invocation and a single rotation cost one
+            # fingerprint per op process.
             self.assertEqual(fixture.notify_calls, [])
-            self.assertEqual(fixture.auth_calls, [])
+            self.assertEqual(fixture.events, ["auth", "real"])
+            self.assertEqual(
+                fixture.auth_calls,
+                [{"argv": ["signin", "--account", CANONICAL_ACCOUNT], "env_present": []}],
+            )
             self.assertEqual(
                 fixture.child_calls,
                 [
@@ -1446,6 +1454,37 @@ class SharedAuthenticationLockTest(unittest.TestCase):
             lock_root = fixture.state_dir / "op-auth-locks"
             leftovers = list(lock_root.glob("*.lock")) if lock_root.exists() else []
             self.assertEqual(leftovers, [], "authentication lock was not released")
+
+    def test_concurrent_canonical_human_regular_vault_calls_authenticate_once(self) -> None:
+        """The rotation tooling's regular-vault writes (item get/edit/list, read)
+        run as the canonical human account. That path had no signin preflight at
+        all, so the desktop app prompted per invocation. It must now share one
+        authentication — and still never show the sensitive notification."""
+        with SensitiveAccessFixture() as fixture:
+            fixture.real_op.write_text(SESSION_AWARE_REAL_OP)
+            fixture.real_op.chmod(0o755)
+            env = fixture.env(
+                reason=None,
+                credentials=True,
+                FAKE_SESSION_FILE=str(fixture.root / "op-session"),
+                OP_USE_CANONICAL_HUMAN_ACCOUNT="1",
+            )
+            procs = [
+                subprocess.Popen(
+                    [str(fixture.op), "item", "list", "--vault", "TS", "--format", "json"],
+                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                for _ in range(self.CONCURRENCY)
+            ]
+            codes = [p.wait(timeout=60) for p in procs]
+            self.assertEqual(codes, [0] * self.CONCURRENCY)
+            # Exactly one process paid the authentication delay; the rest found
+            # the session already established.
+            session = fixture.root / "op-session"
+            self.assertTrue(session.exists(), "no signin preflight ran on this path at all")
+            self.assertEqual(session.read_text().count("authenticated"), 1)
+            self.assertEqual(fixture.notify_calls, [])
+            self.assertEqual(len(fixture.child_calls), self.CONCURRENCY)
 
     def test_lock_timeout_degrades_to_unlocked_authentication(self) -> None:
         """A wait that cannot be satisfied must never block a legitimate
