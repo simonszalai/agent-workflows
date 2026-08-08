@@ -207,6 +207,53 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(self.sync_calls(), [])
 
 
+class VaultEditConflictRetryTest(unittest.TestCase):
+    """1Password returns 409 Conflict for concurrent item edits (parallel
+    rotation entries; grouped items with several rotated fields). The vault
+    replace must retry with a fresh read instead of failing the rotation."""
+
+    def setUp(self) -> None:
+        self.sb = SecretsSandbox()
+        self.addCleanup(self.sb.close)
+        self.sb.write_manifest(
+            f"render\tsrv-a\tHMAC\t{SELF_MINTED_REF}\tself\n",
+            rotation={
+                "test-hmac": {
+                    "ref": SELF_MINTED_REF,
+                    "provider": "self_minted",
+                    "mode": "SELF_MINTED",
+                    "generate": {"format": "hex", "bytes": 16},
+                    "owner_repo": "repo",
+                },
+            },
+        )
+
+    def rotate(self, conflicts: str):
+        env = self.sb.env(
+            SYNC_SECRETS_BIN=str(self.sb.fakebin / "sync-secrets-fake"),
+            FAKE_OP_EDIT_CONFLICTS=conflicts,
+        )
+        return run([ROTATE, "--repo", str(self.sb.repo), "--ref", SELF_MINTED_REF,
+                    "--reason", "t", "--yes"], env)
+
+    def test_two_conflicts_then_success(self) -> None:
+        # seed so the replace (edit) path runs rather than create
+        rest = SELF_MINTED_REF.removeprefix("op://")
+        vault, item, field = rest.split("/")
+        (self.sb.state / f"{vault}__{item}__{field}").write_text("old", encoding="utf-8")
+        proc = self.rotate("2")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("retrying with a fresh read", proc.stderr)
+
+    def test_persistent_conflict_still_fails_safely(self) -> None:
+        rest = SELF_MINTED_REF.removeprefix("op://")
+        vault, item, field = rest.split("/")
+        (self.sb.state / f"{vault}__{item}__{field}").write_text("old", encoding="utf-8")
+        proc = self.rotate("99")
+        self.assertEqual(proc.returncode, 4, proc.stderr + proc.stdout)
+        self.assertIn("failed after retries", proc.stderr)
+
+
 class RotateHookTest(unittest.TestCase):
     """Optional repo hook: declared-but-missing refuses; post-sync runs after
     fan-out; hook: full delegates the whole rotation and skips the provider."""
