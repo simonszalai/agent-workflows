@@ -56,9 +56,11 @@ class RotateProjectTest(unittest.TestCase):
         proc = run(self.tmp, "exit 0", "p", "--dry-run")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         lines = [l for l in proc.stdout.splitlines() if "would rotate" in l]
-        ids = [l.split("would rotate: ")[1].split(" ")[0] for l in lines]
+        ids = [l.split("): ")[1].split(" ")[0] for l in lines]
         self.assertEqual(ids, ["p-db-staging", "p-token", "p-vendor", "p-db-prod"])
         self.assertIn("--keep-old", lines[0])
+        self.assertIn("(sequential)", lines[0])
+        self.assertIn("(parallel", lines[1])
         self.assertNotIn("--keep-old", lines[3])
         self.assertNotIn("other", proc.stdout)
 
@@ -80,7 +82,7 @@ class RotateProjectTest(unittest.TestCase):
         calls = env_log.read_text(encoding="utf-8")
         self.assertIn("sweep test [p-db-staging]", calls)
         self.assertIn("--keep-old", calls)
-        self.assertIn("rotation failed for p-vendor", proc.stderr)
+        self.assertIn("p-vendor failed", proc.stderr)
 
     def test_manual_provider_requires_tty(self) -> None:
         proc = run(self.tmp, "exit 3", "p", "--reason", "x", "--only", "p-vendor")
