@@ -118,17 +118,21 @@ while IFS= read -r entry; do
   echo "[$idx/$count] rotating: $id ($mode/$provider${extra[0]:+ ${extra[*]}})"
   rc=0
   "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${extra[0]:+"${extra[@]}"} || rc=$?
-  if [[ "$rc" -eq 3 ]]; then
+  if [[ "$rc" -eq 3 && "$provider" != "postgres" ]]; then
     # Manual provider: the playbook was printed above. Collect the freshly
-    # minted value once, silently, and finish through --complete.
-    if [[ ! -t 0 ]]; then
-      echo "ERROR: $id needs a manually minted value but stdin is not a terminal." >&2; exit 1
+    # minted value once, silently, and finish through --complete. stdin feeds
+    # the plan loop, so the human paste comes from the controlling terminal.
+    if ! { : < /dev/tty; } 2>/dev/null; then
+      echo "ERROR: $id needs a manually minted value but there is no controlling terminal." >&2; exit 1
     fi
-    printf 'Paste the NEW value for %s (input hidden, Enter to submit): ' "$id"
-    IFS= read -rs new_value; echo
+    printf 'Paste the NEW value for %s (input hidden, Enter to submit): ' "$id" > /dev/tty
+    IFS= read -rs new_value < /dev/tty; echo > /dev/tty
     [[ -n "$new_value" ]] || { echo "ERROR: empty value — aborting before touching $id." >&2; exit 1; }
     printf %s "$new_value" | "$ROTATE" --ref "$ref" --reason "$reason [$id]" --complete || { new_value=""; exit 1; }
     new_value=""
+  elif [[ "$rc" -eq 3 ]]; then
+    echo "ERROR: $id was refused by its provider (details above) — stopping." >&2
+    exit 1
   elif [[ "$rc" -ne 0 ]]; then
     echo "ERROR: rotation failed for $id (exit $rc) — stopping. Rerun the same command to resume." >&2
     exit 1

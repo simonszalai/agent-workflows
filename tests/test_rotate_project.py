@@ -85,7 +85,7 @@ class RotateProjectTest(unittest.TestCase):
     def test_manual_provider_requires_tty(self) -> None:
         proc = run(self.tmp, "exit 3", "p", "--reason", "x", "--only", "p-vendor")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("stdin is not a terminal", proc.stderr)
+        self.assertIn("no controlling terminal", proc.stderr)
 
     def test_tier_staging_skips_prod_entries(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--tier", "staging")
