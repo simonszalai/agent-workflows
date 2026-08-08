@@ -203,6 +203,64 @@ class RotateProjectTest(unittest.TestCase):
         self.assertIn("deploy triggered", proc.stdout)
         self.assertNotIn("stopped after a failure", proc.stdout)
 
+    def test_deploy_finalization_carries_a_reason_for_the_sensitive_render_key(self) -> None:
+        """The Render API key lives in <PROJECT>-sensitive, and this orchestrator
+        resolves it ITSELF — the child rotate-secret/sync-secrets processes that
+        export their own reason are not involved. With no reason in the
+        environment the shim refuses (exit 3) after every value is already saved,
+        so the sweep dies with the deploys untriggered.
+
+        Unlike the sentinel path, this drives the real op read."""
+        fakebin = self.tmp / "fakebin2"
+        fakebin.mkdir(exist_ok=True)
+        curl = fakebin / "curl"
+        curl.write_text(
+            '#!/usr/bin/env bash\n'
+            'url=""; prev=""\n'
+            'for a in "$@"; do [[ "$prev" == "--url" ]] && url="$a"; prev="$a"; done\n'
+            'cat >/dev/null 2>&1\n'
+            'case "$url" in\n'
+            '  *"/deploys"*) printf \'[{"deploy":{"id":"dep-1","status":"live"}}]\' ;;\n'
+            '  *) printf \'{"id":"dep-1","status":"live"}\' ;;\n'
+            'esac\n',
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        # Stands in for the canonical shim's sensitive gate.
+        fake_op = self.tmp / "fake-op"
+        fake_op.write_text(
+            '#!/usr/bin/env bash\n'
+            'for a in "$@"; do case "$a" in op://*-sensitive/*)\n'
+            '  if [[ -z "${SENSITIVE_ACCESS_REASON:-}${OP_ACCESS_REASON:-}" ]]; then\n'
+            '    echo "ERROR: sensitive vault access requires a reason." >&2; exit 3\n'
+            '  fi ;; esac; done\n'
+            'printf fake-render-key\n',
+            encoding="utf-8",
+        )
+        fake_op.chmod(0o755)
+
+        env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["PATH"] = f"{fakebin}:{env['PATH']}"
+        env["OP_BIN"] = str(fake_op)
+        env["SECRETS_RENDER_KEY_REF"] = "op://P-sensitive/Render/api_key"
+        env["SECRETS_ALLOW_AGENT"] = "1"  # the guard is not what's under test
+        env.pop("RENDER_API_KEY", None)
+        env.pop("SENSITIVE_ACCESS_REASON", None)
+        env.pop("OP_ACCESS_REASON", None)
+
+        proc = subprocess.run(
+            [BIN, "--repo", str(registry(self.tmp)), "p", "--reason", "sweep repair",
+             "--only", "p-vendor2"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("requires a reason", proc.stderr)
+        self.assertNotIn("could not resolve Render key", proc.stderr)
+        self.assertIn("deploy triggered", proc.stdout)
+
     def test_only_filter_narrows_to_one_entry(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--only", "p-vendor")
         self.assertIn("p-vendor", proc.stdout)

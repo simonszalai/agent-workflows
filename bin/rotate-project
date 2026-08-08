@@ -65,6 +65,12 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$project" ]] || usage
 [[ -n "$reason" || "$dry" -eq 1 ]] || { echo "ERROR: --reason is required for a live sweep." >&2; exit 2; }
+# Child rotate-secret / sync-secrets processes each export their own reason, but
+# this orchestrator ALSO resolves sensitive refs directly — the Render API key
+# for deploy finalization lives in <PROJECT>-sensitive. Without the reason in the
+# environment, the shim refuses (exit 3) after every value has already been
+# saved, so the sweep dies with the deploys untriggered.
+[[ -n "$reason" ]] && export SENSITIVE_ACCESS_REASON="$reason"
 case "$tier" in staging|prod|all) ;; *) echo "ERROR: --tier must be staging|prod|all" >&2; exit 2 ;; esac
 command -v jq >/dev/null || { echo "ERROR: missing dependency: jq" >&2; exit 2; }
 # Project config discovery: run from any repo of the project (or --repo). The
