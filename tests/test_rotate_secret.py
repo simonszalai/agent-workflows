@@ -207,10 +207,11 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(self.sync_calls(), [])
 
 
-class VaultEditConflictRetryTest(unittest.TestCase):
-    """1Password returns 409 Conflict for concurrent item edits (parallel
-    rotation entries; grouped items with several rotated fields). The vault
-    replace must retry with a fresh read instead of failing the rotation."""
+class VaultEditConflictTest(unittest.TestCase):
+    """1Password returns 409 Conflict for concurrent item edits. Same-item
+    concurrency is prevented upstream (orchestrator wave partitioning + the
+    per-item lock), so a conflict means an EXTERNAL editor raced the rotation:
+    the vault replace fails loudly on the first conflict, item untouched."""
 
     def setUp(self) -> None:
         self.sb = SecretsSandbox()
@@ -236,22 +237,24 @@ class VaultEditConflictRetryTest(unittest.TestCase):
         return run([ROTATE, "--repo", str(self.sb.repo), "--ref", SELF_MINTED_REF,
                     "--reason", "t", "--yes"], env)
 
-    def test_two_conflicts_then_success(self) -> None:
+    def test_conflict_fails_loudly_first_time_without_retrying(self) -> None:
         # seed so the replace (edit) path runs rather than create
         rest = SELF_MINTED_REF.removeprefix("op://")
         vault, item, field = rest.split("/")
         (self.sb.state / f"{vault}__{item}__{field}").write_text("old", encoding="utf-8")
-        proc = self.rotate("2")
-        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
-        self.assertIn("retrying with a fresh read", proc.stderr)
+        proc = self.rotate("1")
+        self.assertEqual(proc.returncode, 4, proc.stderr + proc.stdout)
+        self.assertIn("concurrent external edit", proc.stderr)
+        self.assertNotIn("retrying", proc.stderr)
+        self.assertEqual(
+            (self.sb.state / f"{vault}__{item}__{field}").read_text(encoding="utf-8"), "old")
 
-    def test_persistent_conflict_still_fails_safely(self) -> None:
+    def test_no_conflict_replaces_once(self) -> None:
         rest = SELF_MINTED_REF.removeprefix("op://")
         vault, item, field = rest.split("/")
         (self.sb.state / f"{vault}__{item}__{field}").write_text("old", encoding="utf-8")
-        proc = self.rotate("99")
-        self.assertEqual(proc.returncode, 4, proc.stderr + proc.stdout)
-        self.assertIn("failed after retries", proc.stderr)
+        proc = self.rotate("0")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
 
 
 class RotateHookTest(unittest.TestCase):
