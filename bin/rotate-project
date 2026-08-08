@@ -192,7 +192,7 @@ finalize_canary() {
 
 if [[ "$dry" -eq 1 ]]; then
   render_plan_section() { # title, color, entries json
-    local title="$1" color="$2" entries="$3" n entry id provider mode phase staging how ref dest env repo label host
+    local title="$1" color="$2" entries="$3" n entry id provider mode phase staging how ref dest env label host
     n="$(jq 'length' <<< "$entries")"
     [[ "$n" -gt 0 ]] || return 0
     echo
@@ -223,7 +223,25 @@ if [[ "$dry" -eq 1 ]]; then
       if [[ -n "$disabled" ]]; then
         echo "    ${C_ERR}DISABLED${C_OFF} ${C_DIM}$disabled${C_OFF}"
       fi
+      local hookm
+      hookm="$(jq -r '.hook // ""' <<< "$entry")"
+      [[ "$hookm" == "full" ]] && plan="repo hook owns the rotation (see hook line) → engine fan-out re-syncs consumers"
       echo "    ${C_DIM}plan${C_OFF}  $plan"
+      if [[ -n "$hookm" ]]; then
+        if [[ -x "$repo/scripts/secrets/rotate-hook" ]]; then
+          if [[ "$hookm" == "full" ]]; then
+            echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}rotation delegated to scripts/secrets/rotate-hook (repo-specific)${C_OFF}"
+          else
+            echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}repo-specific activation via scripts/secrets/rotate-hook (runs inside the rotation window)${C_OFF}"
+          fi
+          ROTATE_ENTRY_JSON="$entry" "$repo/scripts/secrets/rotate-hook" plan 2>/dev/null | sed "s/^/    ${C_DIM}      /;s/\$/${C_OFF}/" || true
+        else
+          echo "    ${C_ERR}hook MISSING${C_OFF} ${C_DIM}entry declares hook: $hookm but $repo/scripts/secrets/rotate-hook is absent — rotate-secret will refuse${C_OFF}"
+        fi
+      elif [[ -x "$repo/scripts/secrets/rotate-hook" && "$provider" != "postgres" ]] \
+           && jq -e '[.routes[]? | select(.kind=="prefect")] | length > 0' <<< "$entry" >/dev/null; then
+        echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}post-sync: repo hook saves the Prefect block tier(s) after the fan-out${C_OFF}"
+      fi
       # Every map row comes from the routes that share the entry's ref(s) —
       # derived, never restated, so it can neither under- nor over-report.
       local kind src

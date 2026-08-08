@@ -144,6 +144,8 @@ for rid, entry in (rotation.items() if isinstance(rotation, dict) else []):
         bad.append(f"rotation '{rid}': missing ref")
     elif entry["ref"] not in refs:
         bad.append(f"rotation '{rid}': ref {entry['ref']} has no route — it would rotate nothing")
+    if isinstance(entry, dict) and entry.get("hook") not in (None, "activate", "full"):
+        bad.append(f"rotation '{rid}': hook must be 'activate' or 'full', got {entry['hook']!r}")
 
 if bad:
     for b in bad:
