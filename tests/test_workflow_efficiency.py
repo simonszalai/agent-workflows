@@ -1292,6 +1292,44 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         self.assertIn("stops after the staging verify leg", ticket_flow)
         self.assertTrue(os.access(ROOT / "bin/wait-prefect-flow", os.X_OK))
 
+    def test_mutation_owners_self_repair_bounded_staging_prerequisites(self) -> None:
+        autonomy = (ROOT / "skills/references/staging-autonomy.md").read_text()
+        verify = (ROOT / "skills/ticket-verify/SKILL.md").read_text()
+        deploy = (ROOT / "skills/ticket-deploy/SKILL.md").read_text()
+        ticket_flow = (ROOT / "skills/ticket-flow/SKILL.md").read_text()
+        milestone = (ROOT / "skills/milestone-flow/SKILL.md").read_text()
+        epic = (ROOT / "skills/epic-flow/SKILL.md").read_text()
+        auto_deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
+        outcomes = (ROOT / "skills/references/terminal-outcomes.md").read_text()
+        normalized_deploy = " ".join(deploy.split())
+        normalized_ticket_flow = " ".join(ticket_flow.split())
+
+        for classification in (
+            "staging_safe",
+            "owner_repair",
+            "human_required",
+            "external_wait",
+        ):
+            self.assertIn(classification, autonomy)
+        self.assertIn("documented synthetic tenants/users/rows", autonomy)
+        self.assertIn("at most three distinct actions", " ".join(autonomy.split()))
+        self.assertIn("Two consecutive actions with no source-of-truth progress", autonomy)
+        self.assertIn("Do not ask the user to run a command the agent can run", autonomy)
+        self.assertIn("machine-readable repair packet", verify)
+        self.assertIn("missing synthetic fixture", verify)
+        self.assertIn("does not make the verifier a mutation owner", verify)
+        self.assertIn("does not count against the product-code repair round", normalized_deploy)
+        self.assertIn(
+            "agent-resolvable `BLOCKED` is not immediately terminal",
+            normalized_ticket_flow,
+        )
+        self.assertIn("--no-promote --produce-evidence", milestone)
+        self.assertIn("consume the verifier's staging-autonomy repair packet", milestone)
+        self.assertIn("do not surface a milestone staging `BLOCKED`", epic)
+        self.assertIn("staging-autonomy.md", auto_deploy)
+        self.assertIn("Staging blocker legitimacy", outcomes)
+        self.assertIn("do not print a Next command", outcomes)
+
     def test_terminal_workflows_share_visible_outcome_and_closeout_contract(self) -> None:
         outcome = (ROOT / "skills/references/terminal-outcomes.md").read_text()
         workflow_names = (

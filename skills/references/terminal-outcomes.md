@@ -39,6 +39,11 @@ After the operation reaches a terminal result, inspect the scope once more:
    required work and cleanup are done, the canonical item is actually `completed`, and no
    outstanding in-scope change or ticket update remains. Otherwise use a non-complete outcome and
    name the owner and next action.
+8. **Staging blocker legitimacy:** when the outer workflow is a mutation-capable staging owner,
+   load `staging-autonomy.md` before emitting `BLOCKED`. The closeout must prove every remaining
+   precondition is `human_required`, `external_wait`, no-progress, or budget-exhausted. If a
+   `staging_safe` or `owner_repair` packet remains within budget, continue the repair/reverify lane;
+   do not print a Next command that merely hands the agent's own executable work to the user.
 
 Staging success is a successful stage, not final closure. Its notes must explicitly identify
 production or any other later gate as not yet verified. A production deploy is likewise not final

@@ -9,6 +9,8 @@ max_turns: 100
 Follow `../references/execution-economy.md`, `../references/ci-self-heal.md`, and
 `skills/references/terminal-outcomes.md`. Efficiency never weakens correctness, fail-loud behavior,
 lifecycle ownership, migration safety, deployment verification, or branch synchronization.
+For a staging target, also load `../references/staging-autonomy.md`; this command is a mutation
+owner for documented bounded deploy prerequisites.
 
 Auto-deploy creates or finds the deployment PR, proves CI and preflight readiness, lands it, runs
 all automatable deployment work, verifies deployment mechanics, and advances the ticket or epic to
@@ -68,7 +70,8 @@ Additional conditional routes:
 - Production DB writes use audited remote operations. Other authenticated production CLI mutations
   use `bin/redacted-exec`; raw secret-bearing logs are prohibited.
 - Deployment-guide reconciliation and `negative inventory` closure are mandatory.
-- Required manual work becomes explicit blocker metadata; it is never hidden or called complete.
+- Required manual work becomes explicit blocker metadata only after the staging-autonomy classifier
+  proves it is not an executable staging prerequisite; it is never hidden or called complete.
 - A direct `main` landing must complete the content-preserving staging back-sync before P10.
 - Current Conductor throwaway heads use `align-merged-pr-workspace`; never substitute a normal
   post-squash rebase or delete a repository-defined long-lived branch.

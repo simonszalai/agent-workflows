@@ -157,6 +157,8 @@ packet so ticket-deploy and ticket-verify consume the route rather than improvis
   round counter and cumulative run-budget receipt. Production failures retain their
   environment-specific safety boundary. A fresh conversation reuses that receipt; it never resets
   model-session or repair capacity.
+  A staging `BLOCKED` artifact with `repairability: staging_safe | owner_repair` is likewise a
+  resumable checkpoint, not a user-interaction gate; resume `/ticket-deploy` with its repair packet.
 - Treat ticket origin as immutable audit provenance only. Never branch delivery, pickup, status
   transitions, or blocker metadata on origin or on null execution-approval fields. Consume
   `next_ticket` eligibility as canonical server truth; `approve_execution=true` is an explicit
@@ -254,11 +256,12 @@ If `--no-land` or target `none`, stop after locally verified delivery and report
 `/ticket-deploy` owns the entire leg: `/auto-deploy` staging deploy, staging evidence
 verification, and — `full` only, gated on exact staging `PASS` — promotion, production deploy,
 production verification, incident cleanup, and `completed`. Relay its terminal report and stop
-conditions verbatim. A staging `FAIL` is not immediately terminal: `/ticket-deploy` may run one
-repair/redeploy/reverify cycle on `direct`/`standard`, or up to three on explicit `heavy`. Relay a
-stop only after PASS, the cumulative cap is exhausted, or the child identifies genuinely missing
-human information/authorization or an external condition no agent can change. Do not convert a
-routine deterministic failure into a request for the user to invoke `/ticket-flow` again.
+conditions verbatim. A staging `FAIL` or agent-resolvable `BLOCKED` is not immediately terminal:
+`/ticket-deploy` applies `staging-autonomy.md`, executes bounded operational prerequisites directly,
+and may run one product repair/redeploy/reverify cycle on `direct`/`standard`, or up to three on
+explicit `heavy`. Relay a stop only after PASS, the applicable cumulative cap is exhausted, or the
+child proves `human_required`/`external_wait`. Do not convert a documented staging seed, fixture,
+registration, deploy, or other deterministic repair into a request for the user to invoke a command.
 
 **Standalone, direct-production target:** `/ticket-deploy <ID> prod` (its §4a gate re-checks
 risk and asks for confirmation when the diff is not tiny/safe).
@@ -290,7 +293,8 @@ Epic-specific invariants (hold on both paths):
   `/ticket-promote --epic` after all milestone gates pass;
 - the runtime deploy steps that produce milestone evidence (`prefect deploy`, scheduler/worker
   registration, canary/observer runs, DAG syncs, runtime blocks) and the cross-step gate
-  (`/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote`) run **inside
+  (`/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote
+  --produce-evidence`) run **inside
   `/milestone-flow`**, whether it was reached via `/epic-flow` or via the direct-run hand-off
   above. ticket-flow never runs them directly.
 
@@ -430,9 +434,10 @@ Statuses are set by the owning phase skills, never duplicated here:
 | Standalone, direct production | `/ticket-deploy prod` | `completed` |
 | Epic step | integration branch landing | `merged` (or per `/milestone-flow` on the direct-run hand-off) |
 
-If `/ticket-deploy` reports an external/manual deploy dependency, the ticket status reflects the
-next verification state and the blocker lives in the ticket's independent blocker metadata, not
-as a lifecycle status.
+If `/ticket-deploy` reports an `external_wait`/`human_required` deploy dependency, the ticket status
+reflects the next verification state and the blocker lives in the ticket's independent blocker
+metadata, not as a lifecycle status. `staging_safe`/`owner_repair` dependencies remain inside the
+active staging workflow instead of appearing here as terminal blockers.
 
 ## Output
 

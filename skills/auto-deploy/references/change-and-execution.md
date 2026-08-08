@@ -78,15 +78,18 @@ the target environment determined in Phase 1.
   explicitly passed a target override, which is also confirmation).
 - Run steps in the order specified by the project deploy command
 - Each step depends on the previous one succeeding
-- If a step fails: STOP, do not continue, revert ticket status
+- If a production step fails: STOP, do not continue, revert ticket status. If a staging step fails
+  on a documented bounded prerequisite, apply `../../references/staging-autonomy.md`, repair and
+  retry that invalidated phase; stop only at its legitimate-stop boundary.
 - Log output of each step for verification
 - For production, prefer audited MCP/server-side mutations. Direct local production DB writes are
   prohibited. Any other authenticated production CLI step with no remote route must run as
   `bin/redacted-exec -- <documented command>`; never inspect the auth profile or write raw output to
   a compact-exec log.
 - Only flag steps to the user that are **genuinely manual** and cannot be
-  run from the CLI (e.g., clicking "Deploy" in a web dashboard). Steps
-  that have CLI commands are not manual — run them.
+  run from an available CLI/API/MCP route (e.g., clicking "Deploy" in a web dashboard with no
+  callable provider tool). Steps that have callable commands are not manual: run them. For staging,
+  documented bounded fixture/seed/registration prerequisites are standing-authorized.
 
 **Deployment-guide reconciliation (MANDATORY, after the detected categories run).** The
 project `/deploy` command is the per-repo source of truth for *how* standard categories
@@ -114,4 +117,3 @@ runtime surface, Phase 9 must also close the negative inventory recorded by the 
 guide: code/config search shows each old item absent, authoritative live inventory shows retired
 registrations absent, and the surviving route is exercised. An unexplained legacy item is a failed
 deploy verification.
-
