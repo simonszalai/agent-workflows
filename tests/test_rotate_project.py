@@ -82,7 +82,9 @@ class RotateProjectTest(unittest.TestCase):
         calls = env_log.read_text(encoding="utf-8")
         self.assertIn("sweep test [p-db-staging]", calls)
         self.assertIn("--keep-old", calls)
-        self.assertIn("p-vendor failed", proc.stderr)
+        self.assertIn("p-vendor", proc.stdout)
+        self.assertIn("failed", proc.stdout)
+        self.assertIn("stopped after a failure", proc.stdout)
 
     def test_manual_provider_requires_tty(self) -> None:
         proc = run(self.tmp, "exit 3", "p", "--reason", "x", "--manual", "--only", "p-vendor")
