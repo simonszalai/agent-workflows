@@ -101,12 +101,27 @@ vault_replace_value() { # ref  (value in $VAULT_VALUE env)
   # Preserve the item's immutable identity. The existing JSON and replacement
   # secret stay on stdin/in memory, never argv or disk. Exactly one matching
   # field must exist.
-  op_vault_mutation "$REF_VAULT" item get "$item_id" --vault "$REF_VAULT" --format json \
-    | REF_FIELD="$REF_FIELD" jq -e '
-        if ([.fields[]? | select(.label == env.REF_FIELD)] | length) == 1
-        then .fields |= map(if .label == env.REF_FIELD then .value = env.VAULT_VALUE else . end)
-        else error("item must contain exactly one matching field") end' \
-    | op_vault_mutation "$REF_VAULT" item edit "$item_id" --vault "$REF_VAULT" >/dev/null
+  #
+  # Concurrent editors (rotate-project runs many entries in parallel; several
+  # rotation entries may live as FIELDS of one grouped item) make 1Password
+  # return 409 Conflict for an edit based on a stale item version. Each retry
+  # re-reads the item fresh, so a conflicting write is replayed on top of the
+  # winner instead of failing the whole rotation.
+  local edit_attempt edit_ok=0
+  for edit_attempt in 1 2 3 4; do
+    if op_vault_mutation "$REF_VAULT" item get "$item_id" --vault "$REF_VAULT" --format json \
+      | REF_FIELD="$REF_FIELD" jq -e '
+          if ([.fields[]? | select(.label == env.REF_FIELD)] | length) == 1
+          then .fields |= map(if .label == env.REF_FIELD then .value = env.VAULT_VALUE else . end)
+          else error("item must contain exactly one matching field") end' \
+      | op_vault_mutation "$REF_VAULT" item edit "$item_id" --vault "$REF_VAULT" >/dev/null; then
+      edit_ok=1
+      break
+    fi
+    echo "  vault: edit conflict/failed for $ref (attempt $edit_attempt) — retrying with a fresh read" >&2
+    sleep "$edit_attempt"
+  done
+  [[ "$edit_ok" -eq 1 ]] || { echo "ERROR: vault item edit failed after retries ($ref)." >&2; return 1; }
   check="$(op_vault_read "$ref")" || return $?
   [[ "$check" == "$VAULT_VALUE" ]] || { echo "ERROR: vault item replacement did not verify ($ref)." >&2; return 1; }
   [[ "$(vault_item_id "$ref")" == "$item_id" ]] || { echo "ERROR: vault item identity changed during replacement ($ref)." >&2; return 1; }

@@ -183,6 +183,16 @@ case "$cmd" in
         for a in "$@"; do [[ "$prev" == "--vault" ]] && vault="$a"; prev="$a"; done
         title="${id#id-}"
         json="$(cat)"
+        # Simulate 1Password 409 Conflict for the first N edits (concurrency).
+        if [[ -n "${FAKE_OP_EDIT_CONFLICTS:-}" ]]; then
+          conflict_count_file="$state/.edit-conflicts"
+          n="$(cat "$conflict_count_file" 2>/dev/null || echo 0)"
+          if [[ "$n" -lt "$FAKE_OP_EDIT_CONFLICTS" ]]; then
+            echo $((n + 1)) > "$conflict_count_file"
+            echo "[ERROR] unable to process line 1: DB: (409) (Conflict), Internal server conflict." >&2
+            exit 1
+          fi
+        fi
         while IFS= read -r field; do
           jq -r --arg f "$field" '.fields[] | select(.label == $f) | .value' <<<"$json" \
             | tr -d '\n' > "$state/${vault}__${title}__${field}"
