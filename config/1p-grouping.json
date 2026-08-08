@@ -76,8 +76,6 @@
     { "project": "ts", "group": "Decrypt proxy", "old_ref": "op://TS/STAGING_DECRYPT_PROXY_AUTH_TOKEN_TS_PREFECT/value", "vault": "TS", "new_item": "Decrypt proxy staging", "new_field": "auth_token_ts_prefect" },
     { "project": "ts", "group": "Decrypt proxy", "old_ref": "op://TS/STAGING_PRIVATE_KEY_B64/value", "vault": "TS", "new_item": "Decrypt proxy staging", "new_field": "private_key_b64" },
     { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_ALERTS_BOT_TOKEN/value", "vault": "TS", "new_item": "Telegram", "new_field": "alerts_bot_token" },
-    { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_MAIN_BOT_TOKEN/value", "vault": "TS", "new_item": "Telegram", "new_field": "main_bot_token" },
-    { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_MAIN_CHAT_IDS/value", "vault": "TS", "new_item": "Telegram", "new_field": "main_chat_ids" , "pending_source": true },
     { "project": "ts", "group": "Telegram", "old_ref": "op://TS/TELEGRAM_ALERTS_CHAT_IDS/value", "vault": "TS", "new_item": "Telegram", "new_field": "alerts_chat_ids" , "pending_source": true },
     { "project": "ts", "group": "Kinde", "old_ref": "op://TS-sensitive/KINDE_CLIENT_SECRET/value", "vault": "TS", "new_item": "Kinde", "new_field": "client_secret" },
     { "project": "ts", "group": "Kinde", "old_ref": "op://TS/KINDE_CLIENT_SECRET/value", "vault": "TS", "new_item": "Kinde staging", "new_field": "client_secret" },
