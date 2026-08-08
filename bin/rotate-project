@@ -89,64 +89,139 @@ health_gate() { # entry json -> verify every consumer dest registered in health_
   [[ "$ok" -eq 1 ]]
 }
 
-echo "rotate-project $project — $count entries (tier=$tier)"
-first_staging_pg=1
-idx=0 ran=0 skipped=0
-while IFS= read -r entry; do
-  idx=$((idx + 1))
+# Filter the plan down to what this invocation actually runs.
+run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
+  def incsv($csv): ($csv | split(",")) as $l | . as $x | ($l | index($x)) != null;
+  [.[] | select(($only == "" or (.id | incsv($only)))
+    and (($skip == "") or ((.id | incsv($skip)) | not))
+    and (if $tier == "staging" then .staging
+         elif $tier == "prod" then (.staging | not)
+         else true end))]' <<< "$plan_json")"
+run_count="$(jq 'length' <<< "$run_json")"
+skipped=$((count - run_count))
+echo "rotate-project $project — $run_count of $count entries (tier=$tier, $skipped filtered out)"
+
+rotate_one() { # entry json, extra flag or ""; logs to $2-named file, returns rotate rc
+  local entry="$1" logf="$2" xtra="$3" id ref rc=0
   id="$(jq -r '.id' <<< "$entry")"
   ref="$(jq -r '.ref' <<< "$entry")"
-  mode="$(jq -r '.mode' <<< "$entry")"
-  provider="$(jq -r '.provider' <<< "$entry")"
-  staging="$(jq -r '.staging' <<< "$entry")"
-  if [[ -n "$only" ]] && ! in_csv "$id" "$only"; then continue; fi
-  if [[ -n "$skip" ]] && in_csv "$id" "$skip"; then echo "[$idx/$count] skip (--skip): $id"; skipped=$((skipped + 1)); continue; fi
-  if [[ "$tier" == "staging" && "$staging" != "true" ]] || [[ "$tier" == "prod" && "$staging" == "true" ]]; then
-    echo "[$idx/$count] skip (tier): $id"; skipped=$((skipped + 1)); continue
+  "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    health_gate "$entry" >> "$logf" 2>&1 || rc=99
+  fi
+  return "$rc"
+}
+
+manual_complete() { # entry json (provider printed its playbook already)
+  local entry="$1" id ref new_value
+  id="$(jq -r '.id' <<< "$entry")"
+  ref="$(jq -r '.ref' <<< "$entry")"
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    echo "ERROR: $id needs a manually minted value but there is no controlling terminal." >&2; return 1
+  fi
+  printf 'Paste the NEW value for %s (input hidden, Enter to submit): ' "$id" > /dev/tty
+  IFS= read -rs new_value < /dev/tty; echo > /dev/tty
+  [[ -n "$new_value" ]] || { echo "ERROR: empty value — aborting before touching $id." >&2; return 1; }
+  printf %s "$new_value" | "$ROTATE" --ref "$ref" --reason "$reason [$id]" --complete || { new_value=""; return 1; }
+  new_value=""
+  health_gate "$entry"
+}
+
+logdir="$(mktemp -d)"
+trap 'rm -rf "$logdir"' EXIT
+first_staging_pg=1 ran=0 failed=0 idx=0
+manual_queue=()
+
+# Phase batches: postgres entries run strictly sequentially (instance advisory
+# lock); other entries within one phase run concurrently when their consumer
+# dest sets are pairwise disjoint (overlapping services would race deploys).
+for phase in 1 2 3 4; do
+  phase_json="$(jq -c --argjson ph "$phase" '[.[] | select(.phase == $ph)]' <<< "$run_json")"
+  n="$(jq 'length' <<< "$phase_json")"
+  [[ "$n" -gt 0 ]] || continue
+
+  if [[ "$phase" -eq 1 || "$phase" -eq 4 ]]; then
+    # postgres: sequential
+    while IFS= read -r entry; do
+      idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
+      xtra=""
+      if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then xtra="--keep-old"; first_staging_pg=0; fi
+      if [[ "$dry" -eq 1 ]]; then
+        echo "[$idx/$run_count] would rotate (sequential): $id${xtra:+ $xtra} -> $(jq -r '.ref' <<< "$entry")"
+        continue
+      fi
+      echo "[$idx/$run_count] rotating (sequential): $id${xtra:+ $xtra}"
+      logf="$logdir/$id.log"; : > "$logf"
+      rc=0; rotate_one "$entry" "$logf" "$xtra" || rc=$?
+      cat "$logf"
+      if [[ "$rc" -ne 0 ]]; then
+        echo "ERROR: $id failed (rc=$rc) — stopping. Rerun the same command to resume." >&2
+        exit 1
+      fi
+      ran=$((ran + 1))
+    done < <(jq -c '.[]' <<< "$phase_json")
+  else
+    # non-postgres: greedy disjoint-consumer batches
+    remaining="$phase_json"
+    while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
+      batch="$(jq -c '
+        reduce .[] as $e ({batch: [], used: [], rest: []};
+          ($e.consumers // [] | map(.dest)) as $d
+          | if ((.used | map(. as $u | $d | index($u)) | map(select(. != null)) | length) == 0)
+            then {batch: (.batch + [$e]), used: (.used + $d), rest: .rest}
+            else {batch: .batch, used: .used, rest: (.rest + [$e])} end)
+        | {batch: .batch, rest: .rest}' <<< "$remaining")"
+      remaining="$(jq -c '.rest' <<< "$batch")"
+      current="$(jq -c '.batch' <<< "$batch")"
+      bn="$(jq 'length' <<< "$current")"
+      if [[ "$dry" -eq 1 ]]; then
+        while IFS= read -r entry; do
+          idx=$((idx + 1))
+          echo "[$idx/$run_count] would rotate (parallel x$bn): $(jq -r '.id' <<< "$entry") -> $(jq -r '.ref' <<< "$entry")"
+        done < <(jq -c '.[]' <<< "$current")
+        continue
+      fi
+      pids=() ids=() entries=()
+      while IFS= read -r entry; do
+        idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
+        echo "[$idx/$run_count] rotating (parallel x$bn): $id"
+        logf="$logdir/$id.log"; : > "$logf"
+        rotate_one "$entry" "$logf" "" &
+        pids+=($!); ids+=("$id"); entries+=("$entry")
+      done < <(jq -c '.[]' <<< "$current")
+      i=0
+      for pid in "${pids[@]}"; do
+        rc=0; wait "$pid" || rc=$?
+        id="${ids[$i]}"; entry="${entries[$i]}"
+        cat "$logdir/$id.log"
+        if [[ "$rc" -eq 3 ]]; then
+          echo "  $id: provider needs a manually minted value — queued for the paste phase."
+          manual_queue+=("$entry")
+        elif [[ "$rc" -ne 0 ]]; then
+          echo "ERROR: $id failed (rc=$rc) — see log above." >&2
+          failed=$((failed + 1))
+        else
+          ran=$((ran + 1))
+        fi
+        i=$((i + 1))
+      done
+      [[ "$failed" -eq 0 ]] || { echo "ERROR: stopping after parallel batch failures. Rerun to resume." >&2; exit 1; }
+    done
   fi
 
-  extra=()
-  if [[ "$provider" == "postgres" && "$staging" == "true" && "$first_staging_pg" -eq 1 ]]; then
-    extra+=(--keep-old); first_staging_pg=0
+  # Manual-completion queue drains at the end of its phase, one prompt at a time.
+  if [[ "${#manual_queue[@]}" -gt 0 && "$dry" -eq 0 ]]; then
+    for entry in "${manual_queue[@]}"; do
+      manual_complete "$entry" || exit 1
+      ran=$((ran + 1))
+    done
+    manual_queue=()
   fi
-  if [[ "$dry" -eq 1 ]]; then
-    echo "[$idx/$count] would rotate: $id ($mode/$provider${extra[0]:+ ${extra[*]}}) -> $ref"
-    "$ROTATE" --ref "$ref" --reason "dry-run" --dry-run || true
-    continue
-  fi
-
-  echo "[$idx/$count] rotating: $id ($mode/$provider${extra[0]:+ ${extra[*]}})"
-  rc=0
-  "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${extra[0]:+"${extra[@]}"} || rc=$?
-  if [[ "$rc" -eq 3 && "$provider" != "postgres" ]]; then
-    # Manual provider: the playbook was printed above. Collect the freshly
-    # minted value once, silently, and finish through --complete. stdin feeds
-    # the plan loop, so the human paste comes from the controlling terminal.
-    if ! { : < /dev/tty; } 2>/dev/null; then
-      echo "ERROR: $id needs a manually minted value but there is no controlling terminal." >&2; exit 1
-    fi
-    printf 'Paste the NEW value for %s (input hidden, Enter to submit): ' "$id" > /dev/tty
-    IFS= read -rs new_value < /dev/tty; echo > /dev/tty
-    [[ -n "$new_value" ]] || { echo "ERROR: empty value — aborting before touching $id." >&2; exit 1; }
-    printf %s "$new_value" | "$ROTATE" --ref "$ref" --reason "$reason [$id]" --complete || { new_value=""; exit 1; }
-    new_value=""
-  elif [[ "$rc" -eq 3 ]]; then
-    echo "ERROR: $id was refused by its provider (details above) — stopping." >&2
-    exit 1
-  elif [[ "$rc" -ne 0 ]]; then
-    echo "ERROR: rotation failed for $id (exit $rc) — stopping. Rerun the same command to resume." >&2
-    exit 1
-  fi
-  if ! health_gate "$entry"; then
-    echo "ERROR: post-rotation health gate failed for $id — stopping." >&2
-    exit 1
-  fi
-  ran=$((ran + 1))
-done < <(jq -c '.[]' <<< "$plan_json")
+done
 
 echo
 if [[ "$dry" -eq 1 ]]; then
-  echo "dry-run complete: $count entries planned."
+  echo "dry-run complete: $run_count entries planned."
 else
-  echo "rotate-project $project complete: $ran rotated+verified, $skipped skipped."
+  echo "rotate-project $project complete: $ran rotated+verified, $skipped filtered out."
 fi
