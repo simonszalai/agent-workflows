@@ -173,7 +173,13 @@ rotation_urlencode() { jq -nr --arg value "$1" '$value|@uri'; }
 # unprovable completeness returns 2, a found reference returns 1.
 render_inventory_has_predecessor() {
 	local regex="" user service_cursor="" service_page service_ids sid env_cursor env_page secret_cursor secret_page
-	local group_page group_ids gid group_detail matches found=0 next length pages=0 env_pages secret_pages
+	local group_page group_ids gid group_detail matches found=0 next length pages=0 env_pages secret_pages marker
+	# A predecessor login is only dangerous where it can authenticate: a value
+	# must ALSO reference this instance's host (db id marker) to count. Bare
+	# role names in EXPECTED_DB_ROLE-style vars or same-named logins on other
+	# instances are not credentials for this box. Fail closed without a marker.
+	marker="${ROTATION_INSTANCE_MARKER:-}"
+	[[ -n "$marker" ]] || { echo "ERROR: ROTATION_INSTANCE_MARKER is unset; cannot scope the predecessor scan." >&2; return 2; }
 	while IFS= read -r user; do regex="${regex:+$regex|}$user"; done < <(all_old_logins)
 	[[ -n "$regex" ]] || return 1
 	regex="(^|[^A-Za-z0-9_])(${regex})([^A-Za-z0-9_]|$)"
@@ -195,7 +201,7 @@ render_inventory_has_predecessor() {
 					(.envVar.key | type) == "string" and (.envVar.value | type) == "string"
 					and (.cursor | type) == "string" and (.cursor | length) > 0)' \
 					< <(printf '%s' "$env_page") >/dev/null || { echo "ERROR: render[$sid] env inventory response shape is invalid." >&2; return 2; }
-				matches="$(printf '%s' "$env_page" | jq -r --arg re "$regex" '.[] | select(.envVar.value | test($re)) | .envVar.key')" || return 2
+				matches="$(printf '%s' "$env_page" | jq -r --arg re "$regex" --arg marker "$marker" '.[] | select((.envVar.value | test($re)) and (.envVar.value | contains($marker))) | .envVar.key')" || return 2
 				while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: predecessor reference remains at render[$sid] env $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
 				next="$(printf '%s' "$env_page" | jq -r 'if length == 0 then "" else .[-1].cursor // "" end')" || return 2
 				length="$(printf '%s' "$env_page" | jq -r 'length')" || return 2
@@ -214,7 +220,7 @@ render_inventory_has_predecessor() {
 					(.secretFile.name | type) == "string" and (.secretFile.content | type) == "string"
 					and (.cursor | type) == "string" and (.cursor | length) > 0)' \
 					< <(printf '%s' "$secret_page") >/dev/null || { echo "ERROR: render[$sid] secret-file inventory response shape is invalid." >&2; return 2; }
-				matches="$(printf '%s' "$secret_page" | jq -r --arg re "$regex" '.[] | select(.secretFile.content | test($re)) | .secretFile.name')" || return 2
+				matches="$(printf '%s' "$secret_page" | jq -r --arg re "$regex" --arg marker "$marker" '.[] | select((.secretFile.content | test($re)) and (.secretFile.content | contains($marker))) | .secretFile.name')" || return 2
 				while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: predecessor reference remains at render[$sid] secret-file $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
 				next="$(printf '%s' "$secret_page" | jq -r 'if length == 0 then "" else .[-1].cursor // "" end')" || return 2
 				length="$(printf '%s' "$secret_page" | jq -r 'length')" || return 2
@@ -253,9 +259,9 @@ render_inventory_has_predecessor() {
 			and all(.envVars[]; (.key | type) == "string" and (.value | type) == "string")
 			and all(.secretFiles[]; (.name | type) == "string" and (.content | type) == "string")' \
 			< <(printf '%s' "$group_detail") >/dev/null || { echo "ERROR: render env-group[$gid] detail response shape is invalid." >&2; return 2; }
-		matches="$(jq -r --arg re "$regex" '
-			(.envVars[] | select(.value | test($re)) | "env " + .key),
-			(.secretFiles[] | select(.content | test($re)) | "secret-file " + .name)' < <(printf '%s' "$group_detail"))" || return 2
+		matches="$(jq -r --arg re "$regex" --arg marker "$marker" '
+			(.envVars[] | select((.value | test($re)) and (.value | contains($marker))) | "env " + .key),
+			(.secretFiles[] | select((.content | test($re)) and (.content | contains($marker))) | "secret-file " + .name)' < <(printf '%s' "$group_detail"))" || return 2
 		while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: predecessor reference remains at render env-group[$gid] $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
 		group_detail=""
 	done < <(printf '%s\n' "$group_ids")
