@@ -1369,5 +1369,102 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
             )
 
 
+SESSION_AWARE_REAL_OP = """\
+#!/usr/bin/env python3
+\"\"\"Fake op whose signin models the real desktop session: the FIRST caller pays
+the biometric delay and establishes the session; every later caller returns
+immediately because the session already exists.\"\"\"
+import json
+import os
+import sys
+import time
+
+record = {"argv": sys.argv[1:], "env_present": []}
+if len(sys.argv) > 1 and sys.argv[1] == "signin":
+    session = os.environ["FAKE_SESSION_FILE"]
+    with open(os.environ["FAKE_AUTH_CALLS"], "a") as ledger:
+        ledger.write(json.dumps(record, sort_keys=True) + "\\n")
+    if not os.path.exists(session):
+        # Only an unauthenticated signin can raise a biometric prompt.
+        time.sleep(float(os.environ.get("FAKE_SIGNIN_DELAY", "0")))
+        with open(session, "a") as handle:
+            handle.write("authenticated\\n")
+    raise SystemExit(0)
+
+with open(os.environ["FAKE_CHILD_CALLS"], "a") as ledger:
+    ledger.write(json.dumps(record, sort_keys=True) + "\\n")
+sys.stdout.write("resolved-value")
+"""
+
+
+class SharedAuthenticationLockTest(unittest.TestCase):
+    """One logical operation must cost ONE fingerprint however many op processes
+    it fans out into. Before the machine-wide signin lock, concurrent sensitive
+    invocations each raced their own `op signin`, and every racer that reached
+    the biometric path prompted separately — a 20-item parallel vault sweep cost
+    six fingerprints."""
+
+    CONCURRENCY = 6
+
+    def _run_concurrently(self, fixture, *, timeout: str | None) -> list[int]:
+        fixture.real_op.write_text(SESSION_AWARE_REAL_OP)
+        fixture.real_op.chmod(0o755)
+        updates = {"FAKE_SESSION_FILE": str(fixture.root / "op-session")}
+        if timeout is not None:
+            updates["OP_AUTH_LOCK_TIMEOUT"] = timeout
+        env = fixture.env(
+            reason="Concurrent sensitive sweep", credentials=True, **updates
+        )
+        procs = [
+            subprocess.Popen(
+                [str(fixture.op), "item", "get", f"item-{i}",
+                 "--vault", "AUTODEV-sensitive", "--format", "json"],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for i in range(self.CONCURRENCY)
+        ]
+        return [p.wait(timeout=60) for p in procs]
+
+    def test_concurrent_sensitive_calls_prompt_the_user_once(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            codes = self._run_concurrently(fixture, timeout=None)
+            self.assertEqual(codes, [0] * self.CONCURRENCY)
+            # Every process still runs its own idempotent signin...
+            self.assertEqual(len(fixture.auth_calls), self.CONCURRENCY)
+            # ...but only the one that actually authenticated can notify, so the
+            # user sees a single purpose notification beside a single Touch ID.
+            self.assertEqual(
+                fixture.events.count("notify"), 1,
+                f"expected exactly one biometric prompt, got {fixture.events}",
+            )
+            # All six still did their real work.
+            self.assertEqual(len(fixture.child_calls), self.CONCURRENCY)
+
+    def test_lock_is_released_so_a_later_operation_is_not_blocked(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            self._run_concurrently(fixture, timeout=None)
+            lock_root = fixture.state_dir / "op-auth-locks"
+            leftovers = list(lock_root.glob("*.lock")) if lock_root.exists() else []
+            self.assertEqual(leftovers, [], "authentication lock was not released")
+
+    def test_lock_timeout_degrades_to_unlocked_authentication(self) -> None:
+        """A wait that cannot be satisfied must never block a legitimate
+        operation: it proceeds unlocked and says so in the audit log."""
+        with SensitiveAccessFixture() as fixture:
+            lock_root = fixture.state_dir / "op-auth-locks"
+            lock_root.mkdir(parents=True, exist_ok=True)
+            # A held lock whose owner is this (very much alive) test process.
+            import hashlib
+            key = hashlib.sha256(CANONICAL_ACCOUNT.encode()).hexdigest()
+            held = lock_root / f"{key}.lock"
+            held.mkdir()
+            (held / "pid").write_text(f"{os.getpid()}\n")
+            self.addCleanup(shutil.rmtree, held, True)
+
+            codes = self._run_concurrently(fixture, timeout="0")
+            self.assertEqual(codes, [0] * self.CONCURRENCY)
+            self.assertIn("auth-lock-timeout", fixture.audit)
+
+
 if __name__ == "__main__":
     unittest.main()

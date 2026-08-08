@@ -24,6 +24,13 @@
 # hits remain notification- and authentication-free. OP_DESKTOP=1 is neither
 # required nor a supported workaround for sensitive access.
 #
+# The signin preflight is serialized by a machine-wide per-account lock, SHARED
+# across processes, shells, and agents (deliberately not scoped to
+# CONDUCTOR_SESSION_ID). One logical operation therefore costs at most one
+# fingerprint no matter how many op processes it fans out into; before the lock,
+# concurrent invocations each raced their own signin and every racer that
+# reached the biometric path prompted separately.
+#
 # Args are sanitized: any arg containing '=' is truncated at the '=' (field
 # assignments can carry values); op:// refs and subcommands pass through.
 # (the retired mcp-gateway used to bypass this shim via a direct
@@ -115,6 +122,65 @@ mode_is_not_group_or_other_writable() {
   inspect_file_mode "$1" || return 1
   mode_value=$((8#$INSPECTED_MODE))
   (( (mode_value & 0022) == 0 ))
+}
+
+# --- shared authentication lock ---------------------------------------------
+# One human authentication per account, SHARED across every process on the
+# machine. Without it, N concurrent sensitive op invocations each race their own
+# `op signin`: several reach the biometric path before any one of them has
+# established the desktop session, so a single logical operation costs the user
+# a fingerprint per racing process (a 20-item parallel vault sweep cost six).
+#
+# The lock is deliberately NOT scoped to CONDUCTOR_SESSION_ID — concurrent
+# agents, shells, and xargs children must share one authentication. Under the
+# lock the first caller authenticates once and is the only one that can show the
+# notification; every waiter then finds the session already live, so its
+# idempotent signin returns silently.
+#
+# mkdir is the atomic primitive (portable across macOS and Linux; flock is
+# absent on macOS and lockf on Linux). A crashed holder is detected by pid
+# liveness, and the wait is bounded: authentication that outlives the timeout
+# proceeds unlocked rather than blocking a legitimate operation forever.
+AUTH_LOCK_DIR=""
+AUTH_LOCK_TIMEOUT="${OP_AUTH_LOCK_TIMEOUT:-120}"
+
+release_auth_lock() {
+  [[ -n "$AUTH_LOCK_DIR" ]] || return 0
+  rm -f "$AUTH_LOCK_DIR/pid" 2>/dev/null
+  rmdir "$AUTH_LOCK_DIR" 2>/dev/null
+  AUTH_LOCK_DIR=""
+}
+
+# acquire_auth_lock ACCOUNT — rc 0 holding the lock, rc 1 timed out (proceed
+# unlocked). Never fails the caller: this is a serializer, not a gate.
+acquire_auth_lock() {
+  local account="$1" state_dir lock_root key holder waited=0 max_ticks
+  max_ticks=$(( AUTH_LOCK_TIMEOUT * 5 ))   # one tick per 0.2s sleep
+  state_dir="${XDG_STATE_HOME:-$HOME/.local/state}"
+  lock_root="$state_dir/op-auth-locks"
+  mkdir -p "$lock_root" 2>/dev/null || return 1
+  chmod 700 "$lock_root" 2>/dev/null
+  key="$(printf '%s' "$account" | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  [[ -n "$key" ]] || return 1
+  local candidate="$lock_root/$key.lock"
+  while (( waited < max_ticks )); do
+    if mkdir "$candidate" 2>/dev/null; then
+      AUTH_LOCK_DIR="$candidate"
+      printf '%s\n' "$$" > "$candidate/pid" 2>/dev/null
+      trap 'release_auth_lock' EXIT HUP INT TERM
+      return 0
+    fi
+    holder="$(cat "$candidate/pid" 2>/dev/null)"
+    if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+      # Holder died mid-authentication; reclaim rather than wait it out.
+      rm -f "$candidate/pid" 2>/dev/null
+      rmdir "$candidate" 2>/dev/null
+      continue
+    fi
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  return 1
 }
 
 load_human_account() {
@@ -457,7 +523,22 @@ if [[ -n "$sensitive_vault" ]]; then
       notification_pid=""
     fi
   }
-  trap cleanup_pending_notification EXIT HUP INT TERM
+
+  # Serialize the authentication preflight across every process on the machine
+  # so one logical operation costs at most one fingerprint. Waiters enter this
+  # section only after the holder has finished signing in, so their idempotent
+  # signin returns from the live desktop session without prompting or
+  # notifying. A timed-out wait proceeds unlocked (previous behavior).
+  auth_lock_held=0
+  if acquire_auth_lock "$auth_account"; then
+    auth_lock_held=1
+  else
+    printf '%s pid=%s parent=%s<-%s status=NOTE auth-lock-timeout vault=%s item=%s\n' \
+      "$(date '+%F %T')" "$$" "$parent" "$gparent" "$audit_vault" "$audit_item" \
+      >> "$LOG" 2>/dev/null
+  fi
+
+  trap 'cleanup_pending_notification; release_auth_lock' EXIT HUP INT TERM
   (
     sleep 0.25
     exec "$notifier" "$sensitive_vault" "$sensitive_item" "$reason" "$requester"
@@ -470,6 +551,7 @@ if [[ -n "$sensitive_vault" ]]; then
   wait "$notification_pid" 2>/dev/null
   notification_status=$?
   notification_pid=""
+  [[ "$auth_lock_held" == "1" ]] && release_auth_lock
   trap - EXIT HUP INT TERM
 
   if [[ "$notification_status" != "0" && "$notification_status" != "143" ]]; then
