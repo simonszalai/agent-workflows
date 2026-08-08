@@ -455,6 +455,22 @@ class HermesScheduleTests(unittest.TestCase):
                 "SCHEDULED_RUN_RESULT\nstatus: FAIL\nissues: not-json\n"
             )
         )
+        needs_more_time = runner.parse_result_block(
+            "SCHEDULED_RUN_RESULT\n"
+            "status: NEEDS_MORE_TIME\n"
+            "summary: provider operation is still progressing\n"
+            "resume_command: wait-provider-deploy deploy-123\n"
+        )
+        self.assertEqual(needs_more_time["status"], "NEEDS_MORE_TIME")
+        self.assertEqual(
+            needs_more_time["resume_command"],
+            "wait-provider-deploy deploy-123",
+        )
+        self.assertIsNone(
+            runner.parse_result_block(
+                "SCHEDULED_RUN_RESULT\nstatus: NEEDS_MORE_TIME\n"
+            )
+        )
 
     def test_health_issue_legacy_aliases_are_normalized(self) -> None:
         runner = load_schedule_runner()
@@ -808,6 +824,72 @@ class HermesScheduleTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_waitable_schedule_result_does_not_page_incidents(self) -> None:
+        runner = load_schedule_runner()
+        manifest = {
+            "runner": {"poll_seconds": 1},
+            "slack_channels": {
+                "#autodev-nightly": "C-nightly",
+                "#autodev-incidents": "C-incidents",
+            },
+            "schedules": [
+                {
+                    "name": "waitable-test",
+                    "enabled": True,
+                    "prompt": "nightly-verify-promote.md",
+                    "slack_channel": "#autodev-nightly",
+                    "max_runtime_minutes": 150,
+                }
+            ],
+        }
+        result = {
+            "status": "NEEDS_MORE_TIME",
+            "summary": "provider deployment is healthy and still progressing",
+            "checks_total": "1",
+            "checks_failed": "0",
+            "tickets_touched": ["F0001"],
+            "rc_fingerprints": [],
+            "resume_command": "wait-provider-deploy deploy-123",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(runner, "load_manifest", return_value=manifest),
+                mock.patch.object(runner, "state_dir", return_value=Path(directory)),
+                mock.patch.object(runner, "read_slack_token", return_value="token"),
+                mock.patch.object(
+                    runner,
+                    "launch_workspace",
+                    return_value=("workspace", "session", "conductor://run"),
+                ),
+                mock.patch.object(runner, "conductor_call"),
+                mock.patch.object(
+                    runner,
+                    "poll_session",
+                    return_value=("finished", result),
+                ),
+                mock.patch.object(
+                    runner,
+                    "post_message",
+                    side_effect=["parent", "reply"],
+                ) as post,
+                mock.patch.object(runner, "message_permalink") as permalink,
+                mock.patch.object(runner, "record_run") as record_run,
+            ):
+                exit_code = runner.run_schedule("waitable-test")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(post.mock_calls), 2)
+        self.assertEqual(
+            post.mock_calls[0],
+            mock.call(
+                "token",
+                "C-nightly",
+                "⏳ [waitable-test] provider deployment is healthy and still progressing",
+            ),
+        )
+        permalink.assert_not_called()
+        record_run.assert_called_once_with("waitable-test", "NEEDS_MORE_TIME", "workspace")
 
     def test_nightly_dream_posts_structured_reply_without_machine_dump(self) -> None:
         runner = load_schedule_runner()

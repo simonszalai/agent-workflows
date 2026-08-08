@@ -90,6 +90,13 @@ one timeout; the next model sampled is the single grader/verifier, not another w
   failure terminal predicates, a full log on disk, and one compact terminal result. Timeout exits
   nonzero and prints the exact resume/retry command. The script, never the model, performs the
   repeated status reads.
+- For a live external operation with authoritative progress, derive the waiter's deadline from its
+  ETA/SLA or observed/documented completion cadence with headroom; a shorter generic convenience
+  timeout is invalid. Wait through ordinary queueing, deployment, provider processing, propagation,
+  and eventual consistency.
+  If a harness/provider hard limit arrives while the same operation remains healthy and progressing,
+  persist `NEEDS_MORE_TIME` with its exact continuation; never report `BLOCKED` merely because the
+  deterministic wait exceeded one tool/agent window.
 - There is no maintained shared Render waiter. For a Render condition, use the generic scratch
   poller contract above only when its authenticated status transport is already available and
   secret-safe; otherwise stop with the exact resume command and missing-adapter limitation. Never

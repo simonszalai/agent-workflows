@@ -1301,6 +1301,7 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         epic = (ROOT / "skills/epic-flow/SKILL.md").read_text()
         auto_deploy = (ROOT / "skills/auto-deploy/SKILL.md").read_text()
         outcomes = (ROOT / "skills/references/terminal-outcomes.md").read_text()
+        economy = (ROOT / "skills/references/execution-economy.md").read_text()
         normalized_deploy = " ".join(deploy.split())
         normalized_ticket_flow = " ".join(ticket_flow.split())
 
@@ -1309,15 +1310,31 @@ class WorkflowEfficiencyTest(unittest.TestCase):
             "owner_repair",
             "human_required",
             "external_wait",
+            "agent_incapable",
         ):
             self.assertIn(classification, autonomy)
         self.assertIn("documented synthetic tenants/users/rows", autonomy)
         self.assertIn("at most three distinct actions", " ".join(autonomy.split()))
         self.assertIn("Two consecutive actions with no source-of-truth progress", autonomy)
         self.assertIn("Do not ask the user to run a command the agent can run", autonomy)
+        self.assertIn("`external_wait` is nonterminal", autonomy)
+        self.assertIn("ETA/SLA or", autonomy)
+        self.assertIn(
+            "`BLOCKED` is reserved for exactly two cases: `human_required`, or "
+            "`agent_incapable`",
+            " ".join(autonomy.split()),
+        )
         self.assertIn("machine-readable repair packet", verify)
         self.assertIn("missing synthetic fixture", verify)
         self.assertIn("does not make the verifier a mutation owner", verify)
+        self.assertIn("Direct interactive handoff", verify)
+        self.assertIn("/ticket-deploy <ID> staging", verify)
+        self.assertIn(
+            "must not surface an agent-resolvable staging",
+            " ".join(verify.split()),
+        )
+        self.assertIn("Active external work with no missing action is never included", verify)
+        self.assertIn("observed claim cadence", verify)
         self.assertIn("does not count against the product-code repair round", normalized_deploy)
         self.assertIn(
             "agent-resolvable `BLOCKED` is not immediately terminal",
@@ -1325,10 +1342,16 @@ class WorkflowEfficiencyTest(unittest.TestCase):
         )
         self.assertIn("--no-promote --produce-evidence", milestone)
         self.assertIn("consume the verifier's staging-autonomy repair packet", milestone)
+        self.assertIn("Run the deterministic waiter for `external_wait`", milestone)
         self.assertIn("do not surface a milestone staging `BLOCKED`", epic)
         self.assertIn("staging-autonomy.md", auto_deploy)
         self.assertIn("Staging blocker legitimacy", outcomes)
-        self.assertIn("do not print a Next command", outcomes)
+        self.assertIn("do not print a next command", " ".join(outcomes.split()).lower())
+        self.assertIn("wait on `external_wait`", outcomes)
+        self.assertIn("Passive wait legitimacy (all environments)", outcomes)
+        self.assertIn("Read-only-owner handoff", outcomes)
+        self.assertIn("ETA/SLA or observed/documented completion cadence", economy)
+        self.assertIn("never report `BLOCKED` merely because", economy)
 
     def test_terminal_workflows_share_visible_outcome_and_closeout_contract(self) -> None:
         outcome = (ROOT / "skills/references/terminal-outcomes.md").read_text()

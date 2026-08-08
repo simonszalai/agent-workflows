@@ -7,7 +7,8 @@ Conductor workspace per the entry, sends the referenced prompt file's contents a
 session message, polls the session with the entry's `max_runtime_minutes` cap, parses the
 `SCHEDULED_RUN_RESULT` ending, and posts the result to Slack (normally one line in the channel
 with detail in the thread; `health-6h` uses a parent bullet list plus one reply per issue;
-FAIL/BLOCKED additionally routes one line to `#autodev-incidents`).
+FAIL/BLOCKED additionally routes one line to `#autodev-incidents`; NEEDS_MORE_TIME remains in the
+schedule channel for automatic/next-run continuation).
 
 ## Runner mechanics (`runner.py`, deployed to `/opt/hermes-schedules`)
 
@@ -24,7 +25,8 @@ FAIL/BLOCKED additionally routes one line to `#autodev-incidents`).
   an hour of grace — green runs post, so silence means the scheduler is broken.
 - **Workspace retention.** The watchdog archives PASS workspaces after
   `runner.retention_days_pass` days; FAIL/BLOCKED workspaces are retained
-  `runner.retention_days_fail` days for triage before archival.
+  `runner.retention_days_fail` days for triage before archival. NEEDS_MORE_TIME uses the longer
+  retention so its wait receipt remains available to the continuation.
 - **Secret boundary.** The runner holds no Conductor credential (loopback MCP on 8794 owns
   it) and receives the Slack token only via systemd `LoadCredential`
   (`/etc/hermes-schedules/slack.token`, root-only 0400 — see `hermes/README.md`).
@@ -45,7 +47,7 @@ Rules:
   requiring prod-touch or human approval stops and reports to Slack instead of proceeding.
 - An `enabled: false` entry is staged but not yet runnable — its `blocked_on` field says
   what must land first.
-- The full unattended contract (mutation boundary, Slack report format, PASS/FAIL ending
+- The full unattended contract (mutation boundary, Slack report format, terminal-result ending
   schema, `rc_fingerprint` dedup) is canonical in `skills/references/scheduled-run.md`.
 
 Slack destinations:

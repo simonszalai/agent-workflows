@@ -231,11 +231,16 @@ recorded blocker is still true.
    - clear or supersede stale blocker metadata using the ticket tool's supported blocker fields;
    - continue with normal activation-boundary and evidence collection in this same run.
 5. If any blocking condition is still active:
-   - verdict is `BLOCKED` for that scope, not `FAIL` and not a silent skip;
+   - first classify it with `staging-autonomy.md` in staging, or the equivalent
+     human/action/wait distinction in production. A live operation/provider recovery with a healthy
+     producer and no missing action is `external_wait`: run the deterministic waiter and use
+     `NEEDS_MORE_TIME` only at a technical hard limit. It is not `BLOCKED`;
+   - otherwise verdict is `BLOCKED` for that scope only when the required action is
+     `human_required` or `agent_incapable`, not `FAIL` and not a silent skip;
    - leave the lifecycle status unchanged (`to_verify_staging`, `to_verify_prod`, etc.);
    - update/preserve blocker metadata with the ground-truth evidence and the exact next condition
      to re-check;
-   - in staging, load `../references/staging-autonomy.md`, assign `repairability`, and return a
+   - in staging, assign `repairability` and return a
      machine-readable repair packet with the authoritative instruction/script source, exact
      command/tool when known, target proof, resource bounds, rollback/cleanup, and success
      predicate.
@@ -248,6 +253,16 @@ Ground-truth blocker checks must remain read-only except for the bounded on-dema
 exception in §Boundaries. Do not perform a missing deploy, fixture seed, backfill, unbounded flow
 trigger, schedule change, or external manual action yourself. The staging-autonomy repair packet
 hands safe mutations to the active owner; it does not make the verifier a mutation owner.
+
+**Direct interactive handoff:** if this verifier is the user-invoked outer workflow rather than a
+child of `/ticket-deploy` or `/milestone-flow`, it still must not surface an agent-resolvable
+staging `BLOCKED` result. For standalone scope, dispatch one fresh `/ticket-deploy <ID> staging`
+owner with the packet; for an epic/milestone gate, dispatch
+`/milestone-flow <EPIC_ID> <MILESTONE>`. Terminate this verifier owner and relay that mutation
+owner's eventual terminal result so there is no recursive verification owner. `external_wait`
+stays here and runs its deterministic waiter. This handoff is disabled only in `--scheduled` mode,
+whose mutation boundary can make the action `agent_incapable`; scheduled mode reports the exact
+human/authorized-workflow action.
 
 ### 3a. Produce evidence in an intentionally idle staging environment
 
@@ -307,10 +322,12 @@ repeated Prefect status reads. A `failure` terminal result makes the evidence ro
 `FAIL`; persist the run id/state and stop the caller. A timeout may become `NEEDS_MORE_TIME` only
 when the same run is
 `RUNNING`, its worker is healthy, and fresh state/log evidence shows progress. A run still
-`PENDING`/`SCHEDULED` after the bounded startup wait is `BLOCKED` with its missing worker or queue
-precondition, not a timing wait. Include the waiter's exact resume command only for genuine timing
-waits. A successful terminal run is not itself a verification PASS: collect and grade every durable
-output row after it completes.
+`PENDING`/`SCHEDULED` is `external_wait`/`NEEDS_MORE_TIME` when a healthy worker/queue exists and
+authoritative queue evidence shows it will be claimed; continue the deterministic waiter using the
+observed claim cadence. It is `BLOCKED` only when a missing worker/queue action is
+`human_required`/`agent_incapable`; route agent-resolvable setup to the mutation owner. Include the
+waiter's exact resume command only for genuine timing waits. A successful terminal run is not itself
+a verification PASS: collect and grade every durable output row after it completes.
 
 If the triggered run completes but required downstream evidence is still absent, use
 `NEEDS_MORE_TIME` only after proving a live downstream producer will create it. Otherwise the verdict
@@ -613,8 +630,9 @@ items:
   registered in the target env and, for scheduled/continuous flows, executing), but one or more
   evidence items have no post-activation data yet (and none have failed). Use this **only** when
   passive waiting will actually produce the missing evidence;
-- `BLOCKED` — at least one of: (a) a selected ticket/gate had blocker metadata and §3 proved a
-  blocking condition is still active; or (b) the **deployment precondition (§5a) is unmet** — a
+- `BLOCKED` — a concrete human-required or agent-incapable action remains. Examples: (a) a
+  selected ticket/gate had blocker metadata and §3 proved such an action is still required; or
+  (b) the **deployment precondition (§5a) is unmet** — a
   required producing deployment is not registered in the target environment, or an
   on-demand/non-scheduled deployment has never run since the activation boundary and the bounded
   on-demand canary/shadow run exception does not apply or failed to start; or (c) a UI/visible-surface
@@ -626,6 +644,11 @@ items:
   milestone deploy via `/milestone-flow`; `prefect deploy` + trigger the deployment; or land/deploy the
   UI change to staging then `/ticket-verify staging <scope>`). This is an explicit outcome, never an
   omitted row.
+
+Active external work with no missing action is never included in `BLOCKED`: it is
+`external_wait`/`NEEDS_MORE_TIME` and follows the deterministic waiting contract. Agent-resolvable
+deploy-prerequisite actions return to the active mutation owner rather than surfacing as a final
+blocked verdict.
 
 For every staging `BLOCKED`, the evidence artifact's `failure_classes` entry and report action must
 also contain the `staging-autonomy.md` repair packet. Bare prose such as "provision the fixture" is
@@ -655,15 +678,23 @@ absent producer becomes `BLOCKED: deployment_prerequisite`. A row whose maturity
 was structurally wrong becomes `BLOCKED: invalid_evidence`, never product FAIL. Missing
 longitudinal observations do not consume this causal wait budget.
 
+This cap does not convert a specific healthy `external_wait` operation with fresh progress into
+FAIL merely because 24 hours elapsed. Its authoritative ETA/SLA or observed completion cadence is
+the eligibility window, and deterministic waiting continues while it remains on track. The causal
+cap begins only after that operation terminates, misses its completion window without progress, or
+otherwise had a real opportunity to produce the row.
+
 **Moving-target guard (scheduled-event waits).** When `NEEDS_MORE_TIME` waits on a scheduled event
 (e.g. "the next due poll"), the re-run MUST verify the awaited condition actually *arrives*, not
 just that time passed. Record the awaited timestamp (`scheduled_for` / `next_run_at` / due time)
 and compare it across rechecks. If it keeps advancing faster than it is consumed — a producer
 re-anchoring the schedule outruns the consumer, so the item is never actually due — that is a
 **structural design flaw, not a timing wait**: two consecutive rechecks where the awaited condition
-never became true (the due time moved forward again) ⇒ verdict `BLOCKED` with a design-flaw reason,
-never another `NEEDS_MORE_TIME`. Waiting longer cannot fix a due time that recedes on every producer
-tick (see review reference `data-integrity.md` §4b).
+never became true (the due time moved forward again) ⇒ verdict `FAIL` with a design-flaw repair
+packet, never another `NEEDS_MORE_TIME`. Route an agent-resolvable repair to the mutation owner;
+use `BLOCKED` only when the required design decision/action is `human_required` or
+`agent_incapable`. Waiting longer cannot fix a due time that recedes on every producer tick (see
+review reference `data-integrity.md` §4b).
 
 When the evidence contract was missing/`TBD` and you fell back to acceptance criteria, say so in
 the report so the gap is visible rather than silently passing.

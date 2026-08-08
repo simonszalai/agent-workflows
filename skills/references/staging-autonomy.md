@@ -11,13 +11,17 @@ Every unmet staging precondition gets one `repairability` value:
 - `staging_safe`: executable now under the standing authorization below;
 - `owner_repair`: agent-resolvable, but it needs a tracked code/config/deploy owner rather than an
   inline environment command;
+- `external_wait`: no action is missing; a live external operation/producer is making progress and
+  passive time can reach an explicit terminal predicate;
 - `human_required`: missing intent, authorization, credential approval, or an irreversible choice;
-- `external_wait`: an evidenced third-party condition that no available agent or tool can change.
+- `agent_incapable`: a concrete action is required, but no available agent can perform it with the
+  callable tools, permissions, credentials, or environment it has.
 
 `BLOCKED` is not a valid terminal result from a mutation-capable staging owner while any unmet
-precondition is `staging_safe` or `owner_repair` and its bounded repair budget remains. A read-only
-verifier may return `BLOCKED`, but it must return this classification and an executable repair
-packet to its caller. The caller repairs and re-verifies in the same top-level run.
+precondition is `staging_safe`, `owner_repair`, or `external_wait`. A read-only verifier may return
+`BLOCKED` for a required action outside its mutation boundary, but it must return this
+classification and an executable repair/wait packet to its caller. The caller repairs or waits and
+re-verifies in the same top-level run.
 
 ## 2. Standing authorization for `staging_safe`
 
@@ -78,10 +82,36 @@ most three distinct actions per top-level staging run, one execution per unchang
 target. A failed/no-op action may be replaced only after new evidence changes the command, target,
 or hypothesis. Two consecutive actions with no source-of-truth progress end the lane; do not loop.
 
-## 4. Legitimate stops
+## 4. Wait for live external work
 
-Stop and ask only when the remaining classification is `human_required`. Stop without asking when
-it is `external_wait`, and give the deterministic waiter/resume command if waiting can change the
-condition. A staging blocker report must include the repairability classification, evidence that
-the standing-authorization predicates failed, actions already attempted, rollback/cleanup state,
-and the single exact next action.
+`external_wait` is nonterminal. Use it only after source-of-truth evidence proves all of these:
+
+1. a specific run/deploy/job/provider operation exists and has started or is durably queued;
+2. its worker/provider is healthy enough to make progress, with fresh progress, an authoritative
+   ETA/SLA, or an observed/documented completion cadence;
+3. success and failure terminal predicates are explicit;
+4. no deploy, trigger, approval, configuration, credential, or other action is still missing.
+
+Start one deterministic waiter immediately. Derive its deadline from the operation's ETA/SLA or
+observed/documented completion cadence plus headroom instead of using a short generic timeout. The
+waiter, not the model, performs repeated status reads; the mutation owner blocks once for its
+compact terminal result and then continues the workflow. Wait through ordinary queueing, provider
+processing, deployment, propagation, and eventual-consistency delays when the evidence says they
+will complete.
+
+If a harness/provider hard limit expires while the same operation remains healthy and progressing,
+persist the wait receipt and return `NEEDS_MORE_TIME` with the exact continuation command or
+automatic continuation hook. Schedule the automatic continuation when the harness supports it;
+require user invocation only when no continuation mechanism exists. Never relabel a progressing
+wait as `BLOCKED`, `FAIL`, no-progress, or budget exhaustion. If evidence instead shows the
+operation cannot advance without an action,
+reclassify that action as `staging_safe`, `owner_repair`, `human_required`, or `agent_incapable`.
+
+## 5. Legitimate stops
+
+`BLOCKED` is reserved for exactly two cases: `human_required`, or `agent_incapable`. A no-progress
+repair lane or exhausted repair/model budget is `STOPPED`/`FAILED`, not `BLOCKED`; a live passive
+condition is `external_wait`/`NEEDS_MORE_TIME`, not `BLOCKED`. A staging blocker report must include
+the classification, evidence that an action is required, why that action needs a human or cannot be
+performed by any available agent, actions already attempted, rollback/cleanup state, and the single
+exact next action.

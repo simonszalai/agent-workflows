@@ -215,8 +215,9 @@ Treat deployment as incomplete until the deployment mechanics are verified by `/
 (migrations/blocks/scheduler/worker/Prefect registrations/service deploys as applicable). If a
 staging deploy fails on a documented bounded prerequisite, classify it with
 `staging-autonomy.md`, execute `staging_safe` directly or route `owner_repair`, and retry the
-invalidated deploy phase. Stop only for `human_required`, `external_wait`, or exhausted bounded
-repair capacity. Never run behavior verification against stale code.
+invalidated deploy phase. Run the deterministic waiter for `external_wait`. Emit `BLOCKED` only for
+`human_required`/`agent_incapable`; exhausted repair capacity is `STOPPED`/`FAILED`. Never run
+behavior verification against stale code.
 
 ### 7. Verify the milestone staging gate
 
@@ -255,26 +256,30 @@ re-run/fix the evidence write rather than marking the milestone complete.
   process, polls the leaf, substitutes a CLI `--watch`, or performs repeated provider status reads.
   This leaf is the only wait owner: the deploy owner terminates after returning the wait contract,
   and no parent watcher, backup timer, fallback agent, or second waiter is permitted.
-  After a successful predicate, start one fresh verifier agent and grade once. On timeout, persist
-  the gate state and resume command and report it; never claim milestone success. Repeated `wait`,
-  `write_stdin`, `wait_agent`, GitHub/Prefect/Render reads, or other model status checks are
-  prohibited.
+  Derive the poller's deadline from the live operation's ETA/SLA or observed completion cadence plus
+  headroom, not a short generic timeout. After a successful predicate, start one fresh verifier
+  agent and grade once. On a
+  harness/provider hard-limit timeout while the same operation remains healthy and progressing,
+  persist `NEEDS_MORE_TIME` plus the automatic continuation/resume command; never call it
+  `BLOCKED` or milestone success. Repeated `wait`, `write_stdin`, `wait_agent`, GitHub/Prefect/
+  Render reads, or other model status checks are prohibited.
 - `FAIL`: identify or create fix ticket(s) inside the same milestone, run `/ticket-flow` on those
   fixes with epic context, refresh the gate package, redeploy staging, and re-run the verifier.
   Use one fresh no-history repair owner and persist the failure class, contract delta, attempted
   fix, and round across rotations. Permit one automatic repair/redeploy/reverify cycle per
   milestone run. A failed re-verification returns `BUDGET_EXHAUSTED`; it does not create a second
   fix ticket or a fresh allowance.
-  Stop earlier only for genuinely missing human information/authorization or an external condition
-  no agent can change.
+  Stop earlier only for `human_required` or `agent_incapable`. A live external operation stays in
+  the `external_wait` lane.
 - `BLOCKED`: consume the verifier's staging-autonomy repair packet instead of returning it to the
   user. Execute each `staging_safe` action directly (for example, provision the documented bounded
   synthetic multi-tenant fixture), prove its postcondition, update the gate package when it omitted
   the prerequisite, and run one fresh verifier. Route `owner_repair` through the same tracked fix/
   deploy ownership used above. Safe operational actions do not require a fix ticket and do not
   consume the one product-code repair cycle; they have their own contract cap of three distinct
-  actions. Stop only for `human_required`, `external_wait`, two no-progress actions, or exhaustion.
-  A final `BLOCKED` result is invalid while a repairable packet remains within either budget.
+  actions. Wait on `external_wait`. Emit `BLOCKED` only for `human_required`/`agent_incapable`;
+  two no-progress actions or exhaustion are `STOPPED`/`FAILED`. A final `BLOCKED` result is invalid
+  while a repairable or waitable packet remains within either budget.
 
 Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
 milestone it was asked to execute.
