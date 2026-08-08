@@ -383,6 +383,18 @@ finalize_pending_deploys() {
   source "$HERE/../secrets/lib/read.sh"
   # shellcheck source=../secrets/lib/render-api.sh
   source "$HERE/../secrets/lib/render-api.sh"
+  # Deploy triggering needs the project's Render key + SA token, exactly like
+  # sync-secrets resolves them (entries deferred their deploys, so no child
+  # process resolved a project context on our behalf).
+  if [[ -z "${SECRETS_RENDER_KEY_REF:-}" ]]; then
+    local ctx
+    ctx="$("$HERE/project-context" --cwd "$repo")" || { echo "ERROR: project context resolution failed for $repo" >&2; return 1; }
+    SECRETS_SA_TOKEN_ENV="$(printf '%s' "$ctx" | jq -er '.service_account.token_env')" || return 1
+    SECRETS_SA_KEYCHAIN_ITEM="$(printf '%s' "$ctx" | jq -r '.service_account.keychain_item // ""')"
+    SECRETS_RENDER_KEY_REF="$(printf '%s' "$ctx" | jq -r '.tools.render.api_key_ref // ""')"
+    export SECRETS_SA_TOKEN_ENV SECRETS_SA_KEYCHAIN_ITEM SECRETS_RENDER_KEY_REF
+    [[ -n "$SECRETS_RENDER_KEY_REF" ]] || { echo "ERROR: no Render API key ref in project context for $repo" >&2; return 1; }
+  fi
   local sids nsids t0 dt
   sids="$(sort -u "$logdir/pending-dests")"
   : > "$logdir/pending-dests"
