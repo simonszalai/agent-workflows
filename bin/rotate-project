@@ -161,6 +161,58 @@ if [[ "$scope" == "auto" ]]; then
   [[ -z "$manual_left" ]] || echo "manual-intervention entries NOT included (run with --manual): $manual_left"
 fi
 
+# --- dry-run: render the full plan (credential-free) and exit ----------------
+if [[ "$dry" -eq 1 ]]; then
+  render_plan_section() { # title, color, entries json
+    local title="$1" color="$2" entries="$3" n entry id provider mode phase staging how ref dest env repo label host
+    n="$(jq 'length' <<< "$entries")"
+    [[ "$n" -gt 0 ]] || return 0
+    echo
+    echo "${color}${C_BOLD}${title} (${n})${C_OFF}"
+    while IFS= read -r entry; do
+      id="$(jq -r '.id' <<< "$entry")"
+      provider="$(jq -r '.provider' <<< "$entry")"
+      mode="$(jq -r '.mode' <<< "$entry")"
+      phase="$(jq -r '.phase' <<< "$entry")"
+      staging="$(jq -r '.staging' <<< "$entry")"
+      if [[ "$phase" == "1" || "$phase" == "4" ]]; then how="sequential"; else how="parallel, save-only + one deploy per service"; fi
+      local tierlabel="prod"; [[ "$staging" == "true" ]] && tierlabel="staging"
+      echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${mode} · ${tierlabel} · ${how}${C_OFF}"
+      echo "    ${C_RUN}$(jq -r '.ref' <<< "$entry")${C_OFF}"
+      while IFS=$'\t' read -r dest env repo; do
+        [[ -n "$dest" ]] || continue
+        if [[ "$dest" == srv-* ]]; then
+          host="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY" | sed -E 's#https?://##; s#/.*##')"
+          label="render ${host:-$dest}"
+          [[ -n "$host" ]] && label="$label ${C_DIM}($dest)${C_OFF}"
+        else
+          label="github $dest"
+        fi
+        printf '      %b→%b %b  %b%s%b\n' "$C_DIM" "$C_OFF" "$label" "$C_BOLD" "$env" "$C_OFF"
+      done < <(jq -r '.consumers[]? | [.dest, .env, .repo] | @tsv' <<< "$entry")
+      case "$provider" in
+        postgres)
+          if [[ "$phase" == "1" && "${dry_canary_flagged:-0}" -eq 0 ]]; then
+            dry_canary_flagged=1
+            echo "      ${C_DIM}→ new versioned DB login staged, deployed, health-gated (canary: --keep-old, predecessor stays valid)${C_OFF}"
+          else
+            echo "      ${C_DIM}→ new versioned DB login staged, deployed, health-gated, predecessor drained + retired${C_OFF}"
+          fi ;;
+        self_minted) echo "      ${C_DIM}→ new value minted automatically ($(jq -r '.generate.format + "/" + (.generate.bytes|tostring)' <<< "$entry" 2>/dev/null || echo hex))${C_OFF}" ;;
+        *) echo "      ${C_DIM}→ mint the new value at the provider, paste once when prompted${C_OFF}" ;;
+      esac
+    done < <(jq -c '.[]' <<< "$entries")
+  }
+  auto_json="$(jq -c '[.[] | select(.auto)]' <<< "$run_json")"
+  manual_json="$(jq -c '[.[] | select(.auto | not)]' <<< "$run_json")"
+  render_plan_section "AUTOMATIC — runs hands-off" "$C_OK" "$auto_json"
+  render_plan_section "MANUAL — prompts for a provider-minted value" "$C_ERR" "$manual_json"
+  echo
+  echo "${C_DIM}dry-run: nothing was read from 1Password or written anywhere.${C_OFF}"
+  exit 0
+fi
+
+
 rotate_one() { # entry json, log file, extra flag or "", batched(0|1); returns rotate rc
   local entry="$1" logf="$2" xtra="$3" batched="${4:-0}" id ref rc=0
   id="$(jq -r '.id' <<< "$entry")"
@@ -263,10 +315,6 @@ for phase in 1 2 3 4; do
       idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
       xtra=""
       if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then xtra="--keep-old"; first_staging_pg=0; fi
-      if [[ "$dry" -eq 1 ]]; then
-        echo "[$idx/$run_count] would rotate (sequential): $id${xtra:+ $xtra} -> $(jq -r '.ref' <<< "$entry")"
-        continue
-      fi
       echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id${xtra:+ ${C_DIM}$xtra${C_OFF}} ${C_DIM}(postgres, sequential)${C_OFF}"
       logf="$logdir/$id.log"; : > "$logf"
       t0=$SECONDS
@@ -289,13 +337,6 @@ for phase in 1 2 3 4; do
       current="$remaining"
       remaining="[]"
       bn="$(jq 'length' <<< "$current")"
-      if [[ "$dry" -eq 1 ]]; then
-        while IFS= read -r entry; do
-          idx=$((idx + 1))
-          echo "[$idx/$run_count] would rotate (parallel x$bn): $(jq -r '.id' <<< "$entry") -> $(jq -r '.ref' <<< "$entry")"
-        done < <(jq -c '.[]' <<< "$current")
-        continue
-      fi
       pids=() ids=() entries=()
       batch_t0=$SECONDS
       while IFS= read -r entry; do
@@ -347,9 +388,4 @@ for phase in 1 2 3 4; do
   fi
 done
 
-if [[ "$dry" -eq 1 ]]; then
-  echo
-  echo "dry-run complete: $run_count entries planned."
-  exit 0
-fi
 summary_and_exit 0
