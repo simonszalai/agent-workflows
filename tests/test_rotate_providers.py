@@ -442,5 +442,46 @@ class RotateProvidersTest(unittest.TestCase):
         self.assertEqual(self.log(), [])
 
 
+class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
+    """The advisory-lock session is opened once over the Render EXTERNAL
+    endpoint and is otherwise idle for the whole drain (each drain poll opens
+    its own connection). That proxy drops idle flows at ~5min, which is shorter
+    than the drain's own 600s budget, so a slow drain used to lose the lock and
+    abort after the fact. These are source invariants rather than a live drain:
+    the failure only reproduces against a real proxy after minutes of idling."""
+
+    SOURCE = (ROOT / "secrets" / "providers" / "postgres-rotate").read_text()
+
+    def _function_body(self, name: str) -> str:
+        start = self.SOURCE.index(f"\n{name}() {{\n")
+        end = self.SOURCE.index("\n}\n", start)
+        return self.SOURCE[start:end]
+
+    def test_every_drain_loop_probes_the_lock_each_poll(self) -> None:
+        for name in ("wait_for_predecessor_drain", "wait_for_fenced_sql_drain"):
+            with self.subTest(drain=name):
+                body = self._function_body(name)
+                self.assertIn("while [[", body)
+                probe = body.index("assert_rotation_lock_live")
+                loop = body.index("while [[")
+                # Inside the loop body, not a one-shot check before it.
+                self.assertGreater(probe, loop, f"{name} probes outside its poll loop")
+                self.assertIn("sleep \"${ROTATION_DRAIN_POLL_SECONDS:-10}\"", body)
+
+    def test_drain_stall_hook_cannot_desync_the_lock_protocol(self) -> None:
+        body = self._function_body("wait_for_predecessor_drain")
+        hook_line = next(l for l in body.splitlines() if '"$ROTATE_HOOK" drain-stall' in l)
+        # The lock is a strict one-write/one-read exchange on fds 8/7; a hook
+        # that touched either would silently desync every later probe.
+        self.assertIn("8>&-", hook_line)
+        self.assertIn("7<&-", hook_line)
+
+    def test_lock_connection_sets_socket_keepalives(self) -> None:
+        body = self._function_body("acquire_rotation_lock")
+        self.assertIn("PGKEEPALIVESIDLE=30", body)
+        self.assertIn("PGKEEPALIVESINTERVAL=10", body)
+        self.assertIn("PGKEEPALIVESCOUNT=6", body)
+
+
 if __name__ == "__main__":
     unittest.main()
