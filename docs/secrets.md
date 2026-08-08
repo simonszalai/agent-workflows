@@ -56,6 +56,16 @@ materialized in the vault.
   holds data-exposing secrets (prod DB write URLs, prod session keys): reads go
   through the canonical `bin/op` shim (human account, Touch ID, mandatory
   reason, notification). Plain vaults are service-account readable and silent.
+- **Which service account reads a plain ref is decided by the ref's VAULT, not
+  by the project being run.** A manifest may legitimately route a credential
+  another project owns (autodev consumes `op://TS/Autodev memory/api_token`).
+  When the running project owns the vault, its token is used directly; when
+  another project owns it, the ref is handed to `bin/op` unpinned so its
+  registry-driven owner routing (`projects[].service_account.vaults` in
+  `config/project-tools.json`) picks the right account and fails closed on an
+  unregistered vault or missing token. Pinning the running project's token
+  instead produced `could not read secret: "TS" isn't a vault in this account`
+  and a silent `RESOLVE FAILED` row on every rotation of such an entry.
 - **Environment is encoded in ITEM NAMES, never in destination env-var names.**
   Two accepted shapes:
   - legacy flat items: `STAGING_*` prefix vs unprefixed prod

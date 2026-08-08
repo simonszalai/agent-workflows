@@ -80,6 +80,30 @@ resolve_ref() {
   esac
 }
 
+# keychain_item_for_vault VAULT — the keychain item of the project that OWNS a
+# vault, per config/project-tools.json. Empty when the vault is unregistered.
+# Mirrors the lookup bin/op uses; kept here only to answer "does the RUNNING
+# project own this vault?", never to select a token directly.
+keychain_item_for_vault() {
+  local vault="$1"
+  local registry="${PROJECT_TOOLS_CONFIG:-$_SECRETS_LIB_DIR/../../config/project-tools.json}"
+  [[ -n "$vault" && -r "$registry" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -er --arg vault "$vault" '
+    .projects
+    | to_entries
+    | map(select(.value.service_account.vaults // [] | index($vault)))
+    | first
+    | .value.service_account.keychain_item // error("no keychain item")
+  ' "$registry" 2>/dev/null
+}
+
+# ref_vault REF -> the vault segment of an op:// reference.
+ref_vault() {
+  local rest="${1#op://}"
+  printf '%s' "${rest%%/*}"
+}
+
 sa_token() { # project service-account token from env or Keychain -> stdout (or rc 3)
   local tok=""
   if [[ -n "${SECRETS_SA_TOKEN_ENV:-}" ]]; then
@@ -108,12 +132,30 @@ op_read_ref() {
       "$OP_BIN" read --no-newline "$ref"
       ;;
     op://*/*/*)
-      # Non-sensitive -> the project service-account token, from env or the
-      # Keychain. ONE path, no ambient-op fallback (that silently read from
-      # whatever account op defaulted to and produced wrong-account errors).
-      local tok
-      tok="$(sa_token)" || return $?
-      OP_SERVICE_ACCOUNT_TOKEN="$tok" "$OP_BIN" read --no-newline "$ref"
+      # Non-sensitive -> a service-account token, never an ambient-op fallback
+      # (that silently read from whatever account op defaulted to and produced
+      # wrong-account errors).
+      #
+      # WHICH service account is decided by the vault the REF names, not by the
+      # project we happen to be running in. A manifest may legitimately route a
+      # credential owned by another project — autodev consumes
+      # op://TS/Autodev memory/api_token — and pinning the running project's
+      # token made every such row fail with
+      #   could not read secret: "TS" isn't a vault in this account
+      # which surfaced as RESOLVE FAILED on every rotation of that entry.
+      local tok vault owner_item
+      vault="$(ref_vault "$ref")"
+      owner_item="$(keychain_item_for_vault "$vault" || true)"
+      if [[ -n "$owner_item" && -n "${SECRETS_SA_KEYCHAIN_ITEM:-}" &&
+            "$owner_item" != "$SECRETS_SA_KEYCHAIN_ITEM" ]]; then
+        # Another project owns this vault. Hand the ref to the shim WITHOUT a
+        # pinned token so its registry-driven owner routing selects the right
+        # account and fails closed (exit 5/6) if the vault or token is missing.
+        env -u OP_SERVICE_ACCOUNT_TOKEN "$OP_BIN" read --no-newline "$ref"
+      else
+        tok="$(sa_token)" || return $?
+        OP_SERVICE_ACCOUNT_TOKEN="$tok" "$OP_BIN" read --no-newline "$ref"
+      fi
       ;;
     *)
       echo "ERROR: not an op:// reference: $ref" >&2

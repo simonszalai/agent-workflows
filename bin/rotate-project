@@ -138,8 +138,17 @@ log_highlights() { # concise facts pulled from a full entry log
   grep -E '^\s*(vault: updated|vault: created op|db: retired|drain: predecessor|render\[[^]]*\] deploy |minted new|health ok:)' "$1" \
     | sed -E 's/^ */    /' | sort -u | head -6 || true
 }
-entry_ok() { # id, seconds, logf
-  echo "${C_OK}✓${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2"))${C_OFF}"
+# A successful entry has two very different meanings, and rendering both as a
+# bare ✓ let "nothing was rotated" read as "rotated". ROTATE entries mint a new
+# credential; SYNC entries (manual/unconfigured providers) only push the value
+# the vault already holds, so the credential is unchanged and any actual
+# rotation is still owed to the operator.
+entry_ok() { # id, seconds, logf, kind(rotated|synced)
+  if [[ "${4:-rotated}" == "synced" ]]; then
+    echo "${C_OK}≡${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2")) — synced only, credential NOT rotated${C_OFF}"
+  else
+    echo "${C_OK}✓${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2"))${C_OFF}"
+  fi
   log_highlights "$3"
 }
 entry_fail() { # id, rc, seconds, logf
@@ -148,22 +157,43 @@ entry_fail() { # id, rc, seconds, logf
   tail -12 "$4" | sed 's/^/  /'
   echo "${C_DIM}  full log: $4${C_OFF}"
 }
-RESULT_IDS=(); RESULT_STATES=(); RESULT_TIMES=()
-record_result() { RESULT_IDS+=("$1"); RESULT_STATES+=("$2"); RESULT_TIMES+=("$3"); }
+# entry_kind ENTRY_JSON -> rotated|synced. `auto` entries run a provider that
+# mints a new credential; the rest only fan the current vault value out.
+entry_kind() {
+  if [[ "$(jq -r '.auto' <<< "$1")" == "true" ]]; then printf 'rotated'; else printf 'synced'; fi
+}
+
+RESULT_IDS=(); RESULT_STATES=(); RESULT_TIMES=(); RESULT_KINDS=()
+record_result() { RESULT_IDS+=("$1"); RESULT_STATES+=("$2"); RESULT_TIMES+=("$3"); RESULT_KINDS+=("${4:-rotated}"); }
 
 summary_and_exit() { # exit code
-  local code="$1" i=0 state mark total=$SECONDS
+  local code="$1" i=0 state kind mark note total=$SECONDS
+  local rotated_n=0 synced_n=0
   echo
   echo "${C_BOLD}── rotate-project $project summary ──${C_OFF}"
   for id in "${RESULT_IDS[@]-}"; do
     [[ -n "$id" ]] || continue
-    state="${RESULT_STATES[$i]}"
-    if [[ "$state" == "ok" ]]; then mark="${C_OK}✓${C_OFF}"; else mark="${C_ERR}✗${C_OFF}"; fi
-    printf '  %b %-45s %s\n' "$mark" "$id" "$(fmt_dur "${RESULT_TIMES[$i]}")"
+    state="${RESULT_STATES[$i]}"; kind="${RESULT_KINDS[$i]}"; note=""
+    if [[ "$state" != "ok" ]]; then
+      mark="${C_ERR}✗${C_OFF}"
+    elif [[ "$kind" == "synced" ]]; then
+      mark="${C_OK}≡${C_OFF}"
+      note="  ${C_DIM}synced only — credential NOT rotated${C_OFF}"
+      synced_n=$((synced_n + 1))
+    else
+      mark="${C_OK}✓${C_OFF}"
+      rotated_n=$((rotated_n + 1))
+    fi
+    printf '  %b %-45s %s%b\n' "$mark" "$id" "$(fmt_dur "${RESULT_TIMES[$i]}")" "$note"
     i=$((i + 1))
   done
   if [[ "$code" -eq 0 ]]; then
-    echo "  ${C_OK}${C_BOLD}$ran rotated+verified${C_OFF} ${C_DIM}in $(fmt_dur "$total") ($skipped filtered out)${C_OFF}"
+    local synced_note=""
+    [[ "$synced_n" -gt 0 ]] && synced_note=", ${C_BOLD}$synced_n synced only${C_OFF}"
+    echo "  ${C_OK}${C_BOLD}$rotated_n rotated+verified${C_OFF}${synced_note} ${C_DIM}in $(fmt_dur "$total") ($skipped filtered out)${C_OFF}"
+    if [[ "$synced_n" -gt 0 ]]; then
+      echo "  ${C_DIM}synced entries pushed the value the vault already held; rotate them at their source (see each entry's playbook).${C_OFF}"
+    fi
   else
     echo "  ${C_ERR}${C_BOLD}stopped after a failure${C_OFF} ${C_DIM}— rerun the same command to resume (completed entries converge instantly)${C_OFF}"
   fi
@@ -460,8 +490,9 @@ for phase in 1 2 3; do
         record_result "$id" "failed" "$dt"
         summary_and_exit 1
       fi
-      entry_ok "$id" "$dt" "$logf"
-      record_result "$id" "ok" "$dt"
+      kind="$(entry_kind "$entry")"
+      entry_ok "$id" "$dt" "$logf" "$kind"
+      record_result "$id" "ok" "$dt" "$kind"
       ran=$((ran + 1))
     done < <(jq -c '.[]' <<< "$phase_json")
   else
@@ -491,8 +522,9 @@ for phase in 1 2 3; do
           record_result "$id" "failed" "$dt"
           failed=$((failed + 1))
         else
-          entry_ok "$id" "$dt" "$logdir/$id.log"
-          record_result "$id" "ok" "$dt"
+          kind="$(entry_kind "$entry")"
+          entry_ok "$id" "$dt" "$logdir/$id.log" "$kind"
+          record_result "$id" "ok" "$dt" "$kind"
           ran=$((ran + 1))
         fi
         i=$((i + 1))

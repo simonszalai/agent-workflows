@@ -127,6 +127,38 @@ class RotateProjectTest(unittest.TestCase):
         self.assertIn("current 1Password value", proc.stdout)
         self.assertIn("p-vendor", proc.stdout)
 
+    def test_sync_only_entries_are_not_reported_as_rotated(self) -> None:
+        """`p-vendor` has an unimplemented provider, so the sweep only pushes the
+        value the vault already holds. Reporting that identically to a real mint
+        is how a rotation that never happened reads as done."""
+        env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0"))
+        proc = subprocess.run(
+            [BIN, "--repo", str(registry(self.tmp)), "p", "--reason", "x",
+             "--only", "p-vendor"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("credential NOT rotated", proc.stdout)
+        self.assertIn("1 synced only", proc.stdout)
+        self.assertIn("0 rotated+verified", proc.stdout)
+
+    def test_rotated_entries_are_still_reported_as_rotated(self) -> None:
+        env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        proc = subprocess.run(
+            [BIN, "--repo", str(registry(self.tmp)), "p", "--reason", "x",
+             "--only", "p-token"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("1 rotated+verified", proc.stdout)
+        self.assertNotIn("credential NOT rotated", proc.stdout)
+        self.assertNotIn("synced only", proc.stdout)
+
     def test_only_filter_narrows_to_one_entry(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--only", "p-vendor")
         self.assertIn("p-vendor", proc.stdout)

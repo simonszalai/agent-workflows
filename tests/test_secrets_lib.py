@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import unittest
 
@@ -140,6 +141,65 @@ class ManifestValidationTest(unittest.TestCase):
         proc = self._with_sync_repos("../other", self._sibling("otherproj", "op://V/I/value"))
         self.assertEqual(proc.returncode, 1)
         self.assertIn("must be a list of non-empty strings", proc.stderr)
+
+    # --- cross-vault service-account routing ----------------------------------
+
+    def _vault_owner_fixture(self) -> tuple[str, str]:
+        """A project registry where testproj owns TESTVAULT and otherproj owns
+        OTHERVAULT, plus a fake op that reports whether a token was PINNED by
+        read.sh rather than left for the shim's owner routing."""
+        registry = self.sb.root / "vault-owners.json"
+        registry.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "projects": {
+                    "testproj": {"service_account": {
+                        "keychain_item": "op-testproj-token", "vaults": ["TESTVAULT"]}},
+                    "otherproj": {"service_account": {
+                        "keychain_item": "op-otherproj-token", "vaults": ["OTHERVAULT"]}},
+                },
+            }),
+            encoding="utf-8",
+        )
+        probe = self.sb.root / "op-probe"
+        probe.write_text(
+            '#!/usr/bin/env bash\n'
+            'if [[ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then echo PINNED; else echo UNPINNED; fi\n',
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        return str(registry), str(probe)
+
+    def _read_ref(self, ref: str) -> subprocess.CompletedProcess[str]:
+        registry, probe = self._vault_owner_fixture()
+        env = self.sb.env(
+            PROJECT_TOOLS_CONFIG=registry,
+            OP_BIN=probe,
+            SECRETS_SA_KEYCHAIN_ITEM="op-testproj-token",
+            SECRETS_SA_TOKEN_ENV="TESTPROJ_OP_SERVICE_ACCOUNT_TOKEN",
+        )
+        return bash_lib(f'op_read_ref "{ref}"', env, config=str(self.config))
+
+    def test_own_vault_still_uses_the_running_projects_pinned_token(self) -> None:
+        proc = self._read_ref("op://TESTVAULT/ITEM/value")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "PINNED")
+
+    def test_another_projects_vault_is_left_for_owner_routing(self) -> None:
+        """Pinning the running project's token here is what produced
+        `could not read secret: "TS" isn't a vault in this account` and the
+        RESOLVE FAILED rows on every autodev rotation of the TS-owned API
+        token."""
+        proc = self._read_ref("op://OTHERVAULT/ITEM/value")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "UNPINNED")
+
+    def test_unregistered_vault_keeps_the_pinned_token_path(self) -> None:
+        """An unregistered vault is not evidence of another owner, so behavior
+        is unchanged (the shim still fails closed on its own terms)."""
+        proc = self._read_ref("op://UNKNOWNVAULT/ITEM/value")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "PINNED")
 
     def test_missing_manifest_file_returns_2(self) -> None:
         proc = bash_lib(
