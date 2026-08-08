@@ -61,6 +61,24 @@ class SyncSecretsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("no secrets config", proc.stderr)
 
+    def test_changed_ref_with_only_prefect_dev_rows_succeeds(self) -> None:
+        # A rotated ref may legitimately route only to prefect/dev — the
+        # github+render sweep has nothing to push and must NOT fail the
+        # rotation's fan-out leg (2026-08-08: ts-prefect-db-staging).
+        self.sb.write_manifest(
+            "prefect\tstaging\tDB_URL\top://TESTVAULT/ONLYPF/value\tself\n"
+            "dev\tprofile\tDB_URL\top://TESTVAULT/ONLYPF/value\tself\n"
+            "render\tsrv-alpha\tOTHER\top://TESTVAULT/ITEM/value\tself\n"
+        )
+        proc = self.sync("--changed", "op://TESTVAULT/ONLYPF/value", "--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("routes only to", proc.stdout)
+
+    def test_changed_ref_matching_nothing_still_errors(self) -> None:
+        proc = self.sync("--changed", "op://TESTVAULT/TYPO/value", "--reason", "t")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("matched no routes at all", proc.stderr)
+
     def test_malformed_manifest_fails_whole_file_before_any_action(self) -> None:
         self.sb.write_manifest("github\ta/b\tNAME\top://V/I/value\n")
         proc = self.sync()
