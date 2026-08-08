@@ -176,7 +176,9 @@ if [[ "$mode" == "retire-plan" ]]; then
     dangling=""
     while IFS= read -r repo; do
       [[ -d "$repo" ]] || { dangling="$repo (missing checkout)"; break; }
-      if git -C "$repo" grep -Il --fixed-strings "op://$vault/$title/" -- . >/dev/null 2>&1; then
+      # The grouping config keeps every old_ref verbatim by design (it IS the
+      # migration record), so it never counts as a dangling consumer.
+      if git -C "$repo" grep -Il --fixed-strings "op://$vault/$title/" -- . ':(exclude)config/1p-grouping.json' >/dev/null 2>&1; then
         dangling="$repo"
         break
       fi
@@ -343,17 +345,17 @@ if [[ "$mode" == "copy" ]]; then
 fi
 
 # --verify
-ok=0 bad=0 pending=0
-printf '%-14s %s\n' "STATUS" "MAPPING"
-while IFS= read -r m; do
+# Each mapping's two vault reads are independent, so they run concurrently
+# (GROUPING_VERIFY_PARALLEL workers, default 8; set 1 to serialize). Rows are
+# buffered per mapping and printed in config order once a batch completes.
+verify_one() { # mapping json, row file
+  local m="$1" row="$2" old_ref new_ref old_hash="" new_hash="" v w
   old_ref="$(jq -r '.old_ref' <<< "$m")"
   new_ref="$(new_ref_of "$m")"
   if [[ "$(jq -r '.pending_source // false' <<< "$m")" == "true" ]]; then
-    printf '%-14s %s\n' "PENDING" "$old_ref (source not provisioned yet — excluded from the gate)"
-    pending=$((pending + 1))
-    continue
+    printf '%-14s %s\n' "PENDING" "$old_ref (source not provisioned yet — excluded from the gate)" > "$row"
+    return 0
   fi
-  old_hash="" new_hash=""
   if v="$(op_vault_read "$old_ref" 2>/dev/null)" && [[ -n "$v" ]]; then
     old_hash="$(printf %s "$v" | shasum -a 256 | cut -d' ' -f1)"
   fi
@@ -362,19 +364,48 @@ while IFS= read -r m; do
   fi
   v="" w=""
   if [[ -z "$old_hash" ]]; then
-    printf '%-14s %s\n' "SOURCE_MISSING" "$old_ref (mark pending_source or provision it)"
-    bad=$((bad + 1))
+    printf '%-14s %s\n' "SOURCE_MISSING" "$old_ref (mark pending_source or provision it)" > "$row"
   elif [[ -z "$new_hash" ]]; then
-    printf '%-14s %s\n' "TARGET_MISSING" "$old_ref -> $new_ref (run --copy)"
-    bad=$((bad + 1))
+    printf '%-14s %s\n' "TARGET_MISSING" "$old_ref -> $new_ref (run --copy)" > "$row"
   elif [[ "$old_hash" == "$new_hash" ]]; then
-    printf '%-14s %s\n' "OK" "$old_ref -> $new_ref"
-    ok=$((ok + 1))
+    printf '%-14s %s\n' "OK" "$old_ref -> $new_ref" > "$row"
   else
-    printf '%-14s %s\n' "MISMATCH" "$old_ref -> $new_ref (re-run --copy; a rotation may have raced)"
-    bad=$((bad + 1))
+    printf '%-14s %s\n' "MISMATCH" "$old_ref -> $new_ref (re-run --copy; a rotation may have raced)" > "$row"
+  fi
+}
+
+ok=0 bad=0 pending=0
+par="${GROUPING_VERIFY_PARALLEL:-8}"
+[[ "$par" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: GROUPING_VERIFY_PARALLEL must be a positive integer." >&2; exit 2; }
+rowdir="$(mktemp -d)"
+trap 'rm -rf "$rowdir"' EXIT
+printf '%-14s %s\n' "STATUS" "MAPPING"
+n=0 inflight=0
+flush_batch() { # print buffered rows in order, tally statuses
+  wait
+  inflight=0
+  while [[ "$printed" -lt "$n" ]]; do
+    printed=$((printed + 1))
+    row="$rowdir/$printed"
+    [[ -f "$row" ]] || { echo "ERROR: verify worker $printed produced no result." >&2; exit 3; }
+    cat "$row"
+    case "$(awk '{print $1; exit}' "$row")" in
+      OK) ok=$((ok + 1)) ;;
+      PENDING) pending=$((pending + 1)) ;;
+      *) bad=$((bad + 1)) ;;
+    esac
+  done
+}
+printed=0
+while IFS= read -r m; do
+  n=$((n + 1))
+  verify_one "$m" "$rowdir/$n" &
+  inflight=$((inflight + 1))
+  if [[ "$inflight" -ge "$par" ]]; then
+    flush_batch
   fi
 done < <(mappings_json)
+flush_batch
 echo
 echo "verify: $ok OK, $bad failing, $pending pending."
 if [[ "$bad" -eq 0 ]]; then
