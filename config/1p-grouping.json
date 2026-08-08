@@ -150,7 +150,7 @@
     { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO/PROD_POSTGRES_URL_RO/value", "vault": "WORKFLOW_PRO", "new_item": "Postgres prod RO", "new_field": "canonical" },
     { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_WORKFLOW_WEB/value", "vault": "WORKFLOW_PRO", "new_item": "Postgres staging", "new_field": "workflow_web" },
     { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_RO/value", "vault": "WORKFLOW_PRO", "new_item": "Postgres staging", "new_field": "ro" },
-    { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO-sensitive/STAGING_POSTGRES_URL_OWNER/value", "vault": "WORKFLOW_PRO-sensitive", "new_item": "Postgres staging owner", "new_field": "owner", "pending_source": true },
+    { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO/STAGING_POSTGRES_URL_OWNER/value", "vault": "WORKFLOW_PRO-sensitive", "new_item": "Postgres staging owner", "new_field": "owner" },
     { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO/DEV_POSTGRES_URL/value", "vault": "WORKFLOW_PRO", "new_item": "Postgres dev", "new_field": "canonical" },
     { "project": "workflow-pro", "group": "Postgres", "old_ref": "op://WORKFLOW_PRO/LOCAL_DATABASE_URL/value", "vault": "WORKFLOW_PRO", "new_item": "Postgres dev", "new_field": "local" },
     { "project": "workflow-pro", "group": "Kinde", "old_ref": "op://WORKFLOW_PRO/KINDE_CLIENT_ID/value", "vault": "WORKFLOW_PRO", "new_item": "Kinde", "new_field": "client_id" },
