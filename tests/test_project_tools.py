@@ -64,6 +64,13 @@ EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS = {
     "workflow-pro": "op-workflow-pro-token",
 }
 
+EXPECTED_SERVICE_ACCOUNT_VAULTS = {
+    "amaru": ["AMARU"],
+    "autodev": ["AUTODEV"],
+    "ts": ["TS"],
+    "workflow-pro": ["WORKFLOW_PRO"],
+}
+
 EXPECTED_RENDER_REFS = {
     "amaru": "op://AMARU/Render/api_key",
     "autodev": "op://AUTODEV-sensitive/Render/api_key",
@@ -441,6 +448,10 @@ printf '{"ok":true}\\n'
             self.assertEqual(
                 projects[project]["service_account"].get("keychain_item"),
                 EXPECTED_SERVICE_ACCOUNT_KEYCHAIN_ITEMS.get(project),
+            )
+            self.assertEqual(
+                projects[project]["service_account"].get("vaults"),
+                EXPECTED_SERVICE_ACCOUNT_VAULTS[project],
             )
             self.assertEqual(
                 projects[project]["autodev_memory"],

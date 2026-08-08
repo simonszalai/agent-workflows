@@ -13,6 +13,30 @@ Also follow `../references/execution-economy.md` for run-local caching and bound
 read-only transaction, a read-only session default, and a 30-second statement timeout. Schema and
 data changes belong in each repository's approved application/migration workflow.
 
+## Vault policy: sensitivity is the tier's blast radius, not its name
+
+One rule decides where every Postgres credential lives, and therefore whether reaching it costs a
+Touch ID prompt:
+
+| Credential | Vault | Cost |
+|---|---|---|
+| Production **write** (`root`/`owner`/`app`/per-app) | `<PROJECT>-sensitive` | Touch ID, reason required |
+| Production **read-only** (`Postgres prod RO`) | `<PROJECT>` regular | silent, agent-safe |
+| **All staging and dev**, including write (`Postgres staging`, `Postgres dev`) | `<PROJECT>` regular | silent, agent-safe |
+
+Staging is never a reason to touch a `*-sensitive` vault. A staging write uses the `owner` (schema /
+migration) or `app` / per-app (runtime, RLS-applying) field of the regular-vault `Postgres staging`
+item — the same silent service account that serves staging reads. If a staging task appears to
+require Touch ID, that is a misconfiguration to report, not a prompt to approve.
+
+`bin/op` resolves the silent service-account token of the project that **owns** the addressed vault
+from `config/project-tools.json` (`projects[].service_account.vaults` -> `keychain_item`). A vault
+missing from that registry, or a registered vault whose token is not in the Keychain, fails closed
+with a specific error; it never falls back to a fingerprint prompt and never presents another
+project's service account. Never work around such an error by passing `--account` or by reaching for
+a sensitive credential — an explicit `--account` bypasses the service-account path entirely and
+turns an ordinary regular-vault read into a Touch ID prompt. Fix the registry or store the token.
+
 ## Primary interface: `psql-cli`
 
 Postgres MCP is retired. `psql-cli` is the canonical agent-investigation interface; use the

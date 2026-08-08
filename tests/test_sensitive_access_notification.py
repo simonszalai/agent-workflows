@@ -99,6 +99,13 @@ class SensitiveAccessFixture:
         self.close()
 
     def _copy_scripts(self) -> None:
+        # The silent service-account fallback resolves the owning project's
+        # Keychain item from the canonical registry next to bin/.
+        config_dir = self.root / "config"
+        config_dir.mkdir(exist_ok=True)
+        shutil.copy2(
+            ROOT / "config" / "project-tools.json", config_dir / "project-tools.json"
+        )
         shutil.copy2(ROOT / "bin" / "op", self.op)
         self.op.chmod(0o755)
         shutil.copy2(ROOT / "bin" / "op-env", self.op_env)
@@ -624,6 +631,113 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 fixture.child_calls,
                 [{"argv": args, "env_present": sorted(CREDENTIALS)}],
             )
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_regular_vault_read_uses_the_owning_project_keychain_item(self) -> None:
+        expected_items = {
+            "AMARU": "op-amaru-token",
+            "AUTODEV": "op-autodev-token",
+            "TS": "op-ts-token",
+            "WORKFLOW_PRO": "op-workflow-pro-token",
+        }
+        for vault, keychain_item in expected_items.items():
+            with self.subTest(vault=vault), SensitiveAccessFixture() as fixture:
+                args = ["read", f"op://{vault}/Postgres staging/owner"]
+                result = fixture.run_op(args, reason=None, credentials=False)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(fixture.events, ["security", "real"])
+                self.assertEqual(
+                    fixture.security_calls,
+                    [{"argv": ["find-generic-password", "-s", keychain_item, "-a", "simon", "-w"]}],
+                )
+                self.assertEqual(
+                    fixture.child_calls,
+                    [{"argv": args, "env_present": ["OP_SERVICE_ACCOUNT_TOKEN"]}],
+                )
+                self.assertNotIn("BIOMETRIC-PROMPT", fixture.audit)
+                self.assertIn("service-account(keychain)", fixture.audit)
+                self.assert_no_secret_sentinels(fixture, result)
+
+    def test_vault_operation_flag_resolves_the_same_owning_project_token(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["item", "list", "--vault", "WORKFLOW_PRO"]
+            result = fixture.run_op(args, reason=None, credentials=False)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                fixture.security_calls,
+                [
+                    {
+                        "argv": [
+                            "find-generic-password",
+                            "-s",
+                            "op-workflow-pro-token",
+                            "-a",
+                            "simon",
+                            "-w",
+                        ]
+                    }
+                ],
+            )
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_unregistered_vault_fails_closed_before_any_credential_or_prompt(
+        self,
+    ) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["read", "op://UNREGISTERED/Item/value"]
+            result = fixture.run_op(args, reason=None, credentials=False)
+
+            self.assertEqual(result.returncode, 5)
+            self.assertIn("has no project in config/project-tools.json", result.stderr)
+            self.assertEqual(fixture.security_calls, [])
+            self.assertEqual(fixture.events, [])
+            self.assertEqual(fixture.child_calls, [])
+            self.assertIn("status=BLOCKED unregistered-vault", fixture.audit)
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_registered_vault_without_stored_token_fails_closed(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["read", "op://AUTODEV/Postgres prod RO/canonical"]
+            result = fixture.run_op(
+                args,
+                reason=None,
+                credentials=False,
+                env_updates={"FAKE_SECURITY_VALUE": ""},
+            )
+
+            self.assertEqual(result.returncode, 6)
+            self.assertIn("no service-account token", result.stderr)
+            self.assertIn("op-autodev-token", result.stderr)
+            self.assertEqual(fixture.child_calls, [])
+            self.assertIn("status=BLOCKED missing-service-account-token", fixture.audit)
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_op_env_unregistered_vault_fails_closed_without_reading_via_helpers(
+        self,
+    ) -> None:
+        with SensitiveAccessFixture() as fixture:
+            env_file = fixture.root / "unregistered.env"
+            env_file.write_text('DATABASE_URL="op://UNREGISTERED/DATABASE_URL/value"\n')
+            result = fixture.run_op_env(env_file, credentials=False)
+
+            self.assertEqual(result.returncode, 5)
+            self.assertIn("no single registered owner", result.stderr)
+            self.assertIn("UNREGISTERED", result.stderr)
+            self.assertEqual(fixture.security_calls, [])
+            self.assertEqual(fixture.child_calls, [])
+            self.assertEqual(fixture.helper_calls, [])
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_command_without_a_vault_keeps_its_existing_behavior(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            args = ["--version"]
+            result = fixture.run_op(args, reason=None, credentials=False)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(fixture.security_calls, [])
+            self.assertEqual(fixture.child_calls, [{"argv": args, "env_present": []}])
             self.assert_no_secret_sentinels(fixture, result)
 
     def test_regular_vault_can_request_canonical_human_without_notification(self) -> None:

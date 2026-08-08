@@ -141,11 +141,76 @@ if ! command -v "$OP_BIN" >/dev/null 2>&1; then
   exit 2
 fi
 
-# Prefer an explicit token. Otherwise, use Simon's TS automation service-account
-# token from Keychain when present.
+# Prefer an explicit token. Otherwise, use the Keychain service-account token of
+# the project that OWNS the vaults this env file addresses. Each per-project
+# service account reads exactly one regular vault, so a file spanning several
+# projects (or naming an unregistered vault) resolves no token and keeps the
+# existing interactive behavior instead of presenting the wrong account.
+# Vault names are parsed in-process. No external command may read the env file:
+# it carries op:// references alongside whatever else the caller committed.
+collect_env_file_vaults() {
+  local scan_file="$1"
+  local line="" remainder="" vault="" existing="" known=0
+
+  ENV_FILE_VAULTS=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    remainder="$line"
+    while [[ "$remainder" =~ op://([^/\"[:space:]]+)/ ]]; do
+      vault="${BASH_REMATCH[1]}"
+      known=0
+      for existing in ${ENV_FILE_VAULTS[@]+"${ENV_FILE_VAULTS[@]}"}; do
+        if [[ "$existing" == "$vault" ]]; then
+          known=1
+          break
+        fi
+      done
+      (( known )) || ENV_FILE_VAULTS+=("$vault")
+      remainder="${remainder#*op://}"
+    done
+  done <"$scan_file"
+}
+
+keychain_item_for_vaults() {
+  local registry
+  registry="$(cd "${BASH_SOURCE[0]%/*}" && pwd)/../config/project-tools.json"
+
+  [[ -r "$registry" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -Rr --slurpfile registry "$registry" -s '
+    split("\n") | map(select(length > 0)) as $vaults
+    | ($registry[0].projects | to_entries) as $projects
+    | ($vaults | map(. as $v | $projects | map(select(.value.service_account.vaults // [] | index($v))) | first)) as $owners
+    | if ($owners | all(. != null)) and ($owners | map(.key) | unique | length) == 1
+      then $owners[0].value.service_account.keychain_item // empty
+      else empty
+      end
+  ' 2>/dev/null
+}
+
 if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
-  token="$(security find-generic-password -s op-ts-token -a simon -w 2>/dev/null || true)"
-  if [[ -n "$token" ]]; then
+  collect_env_file_vaults "$ENV_FILE"
+
+  # An env file with no op:// references needs no token. One that names vaults
+  # must resolve to exactly one owning project with a stored service account;
+  # anything else is a configuration fault and stops here rather than falling
+  # back to the human's fingerprint.
+  if (( ${#ENV_FILE_VAULTS[@]} > 0 )); then
+    keychain_item="$(
+      printf '%s\n' "${ENV_FILE_VAULTS[@]}" | keychain_item_for_vaults || true
+    )"
+    if [[ -z "$keychain_item" ]]; then
+      echo "op-env: $ENV_FILE references vaults with no single registered owner:" >&2
+      printf '  %s\n' "${ENV_FILE_VAULTS[@]}" >&2
+      echo "Register each vault under projects[].service_account.vaults in" >&2
+      echo "config/project-tools.json, or split the file per project." >&2
+      exit 5
+    fi
+    token="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+    if [[ -z "$token" ]]; then
+      echo "op-env: no service-account token for $ENV_FILE." >&2
+      echo "Store it with: security add-generic-password -U -s $keychain_item -a simon -w" >&2
+      exit 6
+    fi
     export OP_SERVICE_ACCOUNT_TOKEN="$token"
   fi
 fi

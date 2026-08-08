@@ -7,8 +7,14 @@
 # its parent process, and the op:// refs involved.
 #
 # SILENT-BY-DEFAULT (2026-07-08): non-sensitive reads retain an inherited
-# OP_SERVICE_ACCOUNT_TOKEN or the Keychain-backed token (service
-# "op-ts-token"), injected only into the exec'd op process. A detected
+# OP_SERVICE_ACCOUNT_TOKEN or the Keychain-backed token of the project that
+# OWNS the addressed vault (config/project-tools.json -> projects[].service_account.vaults
+# -> .keychain_item), injected only into the exec'd op process.
+# A command that names a regular vault FAILS CLOSED when that vault is not in
+# the registry (exit 5) or its project has no stored token (exit 6), rather than
+# presenting another project's service account or escalating an ordinary read to
+# the human's fingerprint. Commands that name no vault (signin, --version,
+# stdin-only inject) keep their existing behavior. A detected
 # sensitive cache miss instead requires a reason and valid reviewed
 # human-account selector configuration. It preflights idempotent `op signin`,
 # showing the macOS purpose notification only when authentication is
@@ -246,6 +252,49 @@ for a in "$@"; do
   previous="$a"
 done
 
+# --- regular-vault attribution ---------------------------------------------
+# The silent service-account fallback needs the OWNING project's token: the
+# per-project service accounts each read exactly one regular vault. Capture the
+# addressed vault separately from the sensitive gate above, which must keep its
+# own detection semantics untouched.
+requested_vault=""
+previous=""
+for a in "$@"; do
+  case "$a" in
+    op://*/*/*)
+      ref="${a#op://}"
+      requested_vault="${ref%%/*}"
+      ;;
+    --vault=*)
+      requested_vault="${a#--vault=}"
+      ;;
+    *)
+      if [[ "$previous" == "--vault" ]]; then requested_vault="$a"; fi
+      ;;
+  esac
+  previous="$a"
+done
+
+# Vault -> Keychain item, resolved from the canonical registry rather than a
+# single hardcoded project. An unknown vault yields no token, so the call falls
+# through to the existing interactive path instead of presenting the wrong
+# project's service account.
+keychain_item_for_vault() {
+  local vault="$1"
+  local registry="$HERE/../config/project-tools.json"
+
+  [[ -n "$vault" ]] || return 1
+  [[ -r "$registry" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -er --arg vault "$vault" '
+    .projects
+    | to_entries
+    | map(select(.value.service_account.vaults // [] | index($vault)))
+    | first
+    | .value.service_account.keychain_item // error("no keychain item")
+  ' "$registry" 2>/dev/null
+}
+
 if [[ -z "$sensitive_vault" && -n "$env_file" &&
       ( -e "$env_file" || -L "$env_file" ) ]]; then
   if [[ -f "$env_file" && -r "$env_file" ]]; then
@@ -468,12 +517,34 @@ else
   auth="interactive BIOMETRIC-PROMPT"
   if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
     auth="service-account(silent)"
-  elif [ "$wants_desktop" != "1" ]; then
-    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s op-ts-token -a simon -w 2>/dev/null)"
-    if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-      export OP_SERVICE_ACCOUNT_TOKEN
-      auth="service-account(keychain)"
+  elif [ "$wants_desktop" != "1" ] && [ -n "$requested_vault" ]; then
+    # A regular vault named on the command line must be served by its owning
+    # project's service account. Both "unregistered vault" and "registered vault
+    # with no stored token" are configuration faults, so fail closed instead of
+    # escalating an ordinary read to the human's fingerprint.
+    keychain_item="$(keychain_item_for_vault "$requested_vault" || true)"
+    if [ -z "$keychain_item" ]; then
+      printf '%s pid=%s parent=%s<-%s status=BLOCKED unregistered-vault vault=%s\n' \
+        "$(date '+%F %T')" "$$" "$parent" "$gparent" \
+        "$(printf '%s' "$requested_vault" | tr '\r\n\t' '   ' | cut -c1-220)" \
+        >> "$LOG" 2>/dev/null
+      echo "ERROR: vault '$requested_vault' has no project in config/project-tools.json." >&2
+      echo "Register it under projects[].service_account.vaults, or pass an explicit" >&2
+      echo "OP_SERVICE_ACCOUNT_TOKEN / --account for a deliberate non-registry read." >&2
+      exit 5
     fi
+    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null)"
+    if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+      printf '%s pid=%s parent=%s<-%s status=BLOCKED missing-service-account-token vault=%s item=%s\n' \
+        "$(date '+%F %T')" "$$" "$parent" "$gparent" \
+        "$(printf '%s' "$requested_vault" | tr '\r\n\t' '   ' | cut -c1-220)" \
+        "$keychain_item" >> "$LOG" 2>/dev/null
+      echo "ERROR: no service-account token for vault '$requested_vault'." >&2
+      echo "Store it with: security add-generic-password -U -s $keychain_item -a simon -w" >&2
+      exit 6
+    fi
+    export OP_SERVICE_ACCOUNT_TOKEN
+    auth="service-account(keychain)"
   fi
 fi
 
