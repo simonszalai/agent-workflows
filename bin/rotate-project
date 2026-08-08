@@ -161,15 +161,72 @@ if [[ "$scope" == "auto" ]]; then
   [[ -z "$manual_left" ]] || echo "manual-intervention entries NOT included (run with --manual): $manual_left"
 fi
 
-rotate_one() { # entry json, extra flag or ""; logs to $2-named file, returns rotate rc
-  local entry="$1" logf="$2" xtra="$3" id ref rc=0
+rotate_one() { # entry json, log file, extra flag or "", batched(0|1); returns rotate rc
+  local entry="$1" logf="$2" xtra="$3" batched="${4:-0}" id ref rc=0
   id="$(jq -r '.id' <<< "$entry")"
   ref="$(jq -r '.ref' <<< "$entry")"
-  "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
-  if [[ "$rc" -eq 0 ]]; then
-    health_gate "$entry" >> "$logf" 2>&1 || rc=99
+  if [[ "$batched" -eq 1 ]]; then
+    # Save-only: values are written everywhere but Render deploys are deferred;
+    # the orchestrator deploys each touched service once per phase.
+    ROTATE_NO_DEPLOY=1 "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      jq -r '.consumers[]?.dest' <<< "$entry" >> "$logdir/pending-dests"
+    fi
+  else
+    "$ROTATE" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+      health_gate "$entry" >> "$logf" 2>&1 || rc=99
+    fi
   fi
   return "$rc"
+}
+
+# Deploy every service touched by the batched saves exactly once, wait for the
+# deploy to reach a terminal state, then health-gate the service.
+finalize_pending_deploys() {
+  local sid url status key ref deadline ok=1
+  [[ -s "$logdir/pending-dests" ]] || return 0
+  # shellcheck source=../secrets/lib/read.sh
+  source "$HERE/../secrets/lib/read.sh"
+  # shellcheck source=../secrets/lib/render-api.sh
+  source "$HERE/../secrets/lib/render-api.sh"
+  local sids
+  sids="$(sort -u "$logdir/pending-dests")"
+  : > "$logdir/pending-dests"
+  while IFS= read -r sid; do
+    [[ -n "$sid" ]] || continue
+    ref="$(render_key_ref_for "$sid")" || { echo "ERROR: no Render key ref for $sid" >&2; return 1; }
+    RENDER_API_KEY="$(op_vault_read "$ref")" || { echo "ERROR: could not resolve Render key for $sid" >&2; return 1; }
+    export RENDER_API_KEY
+    render_trigger_deploy "$sid" || { echo "ERROR: deploy trigger failed for $sid" >&2; return 1; }
+  done <<< "$sids"
+  while IFS= read -r sid; do
+    [[ -n "$sid" ]] || continue
+    ref="$(render_key_ref_for "$sid")" || return 1
+    RENDER_API_KEY="$(op_vault_read "$ref")" || return 1
+    export RENDER_API_KEY
+    deadline=$(( $(date +%s) + 1200 ))
+    while [[ $(date +%s) -lt $deadline ]]; do
+      status="$(render_get "/services/${sid}/deploys?limit=1" | jq -r '.[0].deploy.status // .[0].status // empty')" || status=""
+      case "$status" in
+        live) break ;;
+        build_failed|update_failed|canceled|deactivated) echo "ERROR: deploy for $sid ended $status" >&2; return 1 ;;
+        *) sleep 15 ;;
+      esac
+    done
+    [[ "$status" == "live" ]] || { echo "ERROR: deploy for $sid did not go live in time" >&2; return 1; }
+    url="$(jq -r --arg d "$sid" '.health_urls[$d] // empty' "$REGISTRY")"
+    if [[ -n "$url" ]]; then
+      if curl -sf --max-time 30 "$url" >/dev/null; then
+        echo "  ${C_OK}deployed + healthy:${C_OFF} $sid"
+      else
+        echo "ERROR: post-deploy health check failed for $sid ($url)" >&2; ok=0
+      fi
+    else
+      echo "  deployed: $sid ${C_DIM}(no health URL registered)${C_OFF}"
+    fi
+  done <<< "$sids"
+  [[ "$ok" -eq 1 ]]
 }
 
 manual_complete() { # entry json (provider printed its playbook already)
@@ -225,18 +282,12 @@ for phase in 1 2 3 4; do
       ran=$((ran + 1))
     done < <(jq -c '.[]' <<< "$phase_json")
   else
-    # non-postgres: greedy disjoint-consumer batches
+    # non-postgres: deploys are deferred to finalize_pending_deploys, so env
+    # saves cannot race — the whole phase runs as one parallel batch.
     remaining="$phase_json"
     while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
-      batch="$(jq -c '
-        reduce .[] as $e ({batch: [], used: [], rest: []};
-          ($e.consumers // [] | map(.dest)) as $d
-          | if ((.used | map(. as $u | $d | index($u)) | map(select(. != null)) | length) == 0)
-            then {batch: (.batch + [$e]), used: (.used + $d), rest: .rest}
-            else {batch: .batch, used: .used, rest: (.rest + [$e])} end)
-        | {batch: .batch, rest: .rest}' <<< "$remaining")"
-      remaining="$(jq -c '.rest' <<< "$batch")"
-      current="$(jq -c '.batch' <<< "$batch")"
+      current="$remaining"
+      remaining="[]"
       bn="$(jq 'length' <<< "$current")"
       if [[ "$dry" -eq 1 ]]; then
         while IFS= read -r entry; do
@@ -251,7 +302,7 @@ for phase in 1 2 3 4; do
         idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
         echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id ${C_DIM}(parallel x$bn)${C_OFF}"
         logf="$logdir/$id.log"; : > "$logf"
-        rotate_one "$entry" "$logf" "" &
+        rotate_one "$entry" "$logf" "" 1 &
         pids+=($!); ids+=("$id"); entries+=("$entry")
       done < <(jq -c '.[]' <<< "$current")
       i=0
@@ -275,6 +326,9 @@ for phase in 1 2 3 4; do
       done
       [[ "$failed" -eq 0 ]] || summary_and_exit 1
     done
+    if [[ "$dry" -eq 0 ]]; then
+      finalize_pending_deploys || summary_and_exit 1
+    fi
   fi
 
   # Manual-completion queue drains at the end of its phase, one prompt at a time.
