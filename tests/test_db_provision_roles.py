@@ -151,6 +151,23 @@ printf '{"externalConnectionString":"postgresql://%s:pw-%s@ext-host:5432/%s?sslm
 """
 
 
+# The postgres provider no longer falls back to a naming convention for admin
+# credentials -- they must be declared. Mirror what config/db-roles.json now
+# states explicitly, so these fixtures exercise the same single path.
+for _proj in SYNTH_CONFIG["projects"].values():
+    _v, _s = _proj.get("vault"), _proj.get("vault_sensitive")
+    _proj.setdefault(
+        "admin_refs",
+        {
+            _t: {
+                "root": "op://%s/Postgres %s/root" % (_s if _t == "prod" else _v, _t),
+                "owner": "op://%s/Postgres %s/owner" % (_s if _t == "prod" else _v, _t),
+            }
+            for _t in _proj.get("tiers", {})
+        },
+    )
+
+
 class DbRolesConfigTest(unittest.TestCase):
     """The committed config's apps mirror EXPECTED_APPS exactly."""
 
