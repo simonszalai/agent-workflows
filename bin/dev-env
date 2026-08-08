@@ -2,7 +2,7 @@
 # dev-env — resolve one repo dev profile from 1Password and inject it ONLY into
 # the child process env. No .env files by design; values exist in the child env
 # and (optionally) an encrypted 24h cache. Superset of the ts-prefect and amaru
-# dev-envs, driven by the target repo's committed manifest (dev rows).
+# dev-envs, driven by the project config's dev routes.
 #
 # usage:
 #   dev-env [--repo <path>] <profile> [--reason TEXT] [--no-sensitive] [--refresh] -- <command...>
@@ -33,8 +33,8 @@ SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
 source "$SECRETS_LIB/read.sh"
 # shellcheck source=../secrets/lib/derive.sh
 source "$SECRETS_LIB/derive.sh"
-# shellcheck source=../secrets/lib/manifest.sh
-source "$SECRETS_LIB/manifest.sh"
+# shellcheck source=../secrets/lib/config.sh
+source "$SECRETS_LIB/config.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -73,17 +73,16 @@ if [[ -z "$repo" ]]; then
     || { echo "ERROR: not inside a git repo; pass --repo <path>" >&2; exit 2; }
 fi
 repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "ERROR: repo path does not exist" >&2; exit 2; }
-manifest="$repo/scripts/secrets/manifest"
-[[ -f "$manifest" ]] || { echo "ERROR: no secrets manifest at $manifest" >&2; exit 2; }
-export _MANIFEST_FILE="$manifest"
+export _SECRETS_CONFIG="$repo"
+manifest="$(config_path)" || exit $?
 
 if [[ "$mode" == "profiles" ]]; then
-  manifest_dests dev
+  config_dests dev
   exit 0
 fi
 
 [[ -n "$profile" ]] || usage
-rows="$(manifest_rows dev "$profile")" || exit $?
+rows="$(config_rows dev "$profile")" || exit $?
 [[ -n "$rows" ]] || { echo "ERROR: no dev rows for profile '$profile' in $manifest" >&2; exit 2; }
 
 if [[ "$skip_sensitive" == "1" ]]; then

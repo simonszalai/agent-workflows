@@ -55,11 +55,11 @@ class SyncSecretsTest(unittest.TestCase):
 
     # --- usage / manifest gates ----------------------------------------------
 
-    def test_missing_manifest_exits_2_with_clear_message(self) -> None:
-        (self.sb.repo / "scripts" / "secrets" / "manifest").unlink()
+    def test_missing_config_exits_2_with_clear_message(self) -> None:
+        (self.sb.repo / "secrets.yaml").unlink()
         proc = self.sync("--dry-run")
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("no secrets manifest", proc.stderr)
+        self.assertIn("no secrets config", proc.stderr)
 
     def test_malformed_manifest_fails_whole_file_before_any_action(self) -> None:
         self.sb.write_manifest("github\ta/b\tNAME\top://V/I/value\n")
@@ -191,9 +191,7 @@ class SyncSecretsTest(unittest.TestCase):
 
     def test_render_writer_ref_selection_of_db_credential_exits_2_directly(self) -> None:
         self.sb.write_manifest(DB_GUARD_MANIFEST)
-        env = self.sb.env(
-            _MANIFEST_FILE=str(self.sb.repo / "scripts" / "secrets" / "manifest"),
-        )
+        env = self.sb.env(_SECRETS_CONFIG=str(self.sb.repo))
         proc = run([RENDER_WRITER, "--ref", "op://TESTVAULT/PG_APP/value"], env)
         self.assertEqual(proc.returncode, 2)
         self.assertIn("db-provision-roles", proc.stderr)
@@ -239,9 +237,7 @@ class SyncSecretsTest(unittest.TestCase):
 
     def test_render_writer_include_db_without_ref_selection_exits_2(self) -> None:
         self.sb.write_manifest(DB_GUARD_MANIFEST)
-        env = self.sb.env(
-            _MANIFEST_FILE=str(self.sb.repo / "scripts" / "secrets" / "manifest"),
-        )
+        env = self.sb.env(_SECRETS_CONFIG=str(self.sb.repo))
         proc = run([RENDER_WRITER, "--include-db", "--reason", "t"], env)
         self.assertEqual(proc.returncode, 2)
         self.assertEqual(self.sb.log_lines(), [])

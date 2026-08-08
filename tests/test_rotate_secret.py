@@ -19,71 +19,54 @@ class RotateSecretTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sb = SecretsSandbox()
         self.addCleanup(self.sb.close)
-        self.registry_path = self.sb.root / "secret-rotation.json"
-        self.registry_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "secrets": [
-                        {
-                            "id": "test-hmac",
-                            "project": "testproj",
-                            "ref": SELF_MINTED_REF,
-                            "provider": "self_minted",
-                            "mode": "SELF_MINTED",
-                            "generate": {"format": "hex", "bytes": 16},
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [
-                                {"repo": str(self.sb.root / "consumer-a"), "dest": "srv-a", "env": "HMAC"},
-                                {"repo": str(self.sb.root / "consumer-b"), "dest": "srv-b", "env": "HMAC"},
-                            ],
-                        },
-                        {
-                            "id": "test-manual",
-                            "project": "testproj",
-                            "ref": MANUAL_REF,
-                            "provider": "manual",
-                            "mode": "MANUAL",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [
-                                {"repo": str(self.sb.repo), "dest": "srv-a", "env": "EXTERNAL_API_KEY"}
-                            ],
-                            "playbook": "1. Mint a new key in the provider dashboard.\n2. Revoke the old key after fan-out.",
-                        },
-                        {
-                            "id": "test-postgres",
-                            "project": "testproj",
-                            "ref": PG_REF,
-                            "provider": "postgres",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "consumers": [],
-                        },
-                        {
-                            "id": "test-disabled",
-                            "project": "testproj",
-                            "ref": DISABLED_REF,
-                            "provider": "postgres",
-                            "mode": "DUAL_KEY",
-                            "owner_repo": str(self.sb.repo),
-                            "disabled_reason": "activation spans unsupported channels",
-                            "consumers": [],
-                        },
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
+        routes = "\n".join([
+            f"render\tsrv-a\tHMAC\t{SELF_MINTED_REF}\tself",
+            f"render\tsrv-b\tHMAC\t{SELF_MINTED_REF}\tself",
+            f"render\tsrv-a\tEXTERNAL_API_KEY\t{MANUAL_REF}\tself",
+            f"render\tsrv-pg\tDATABASE_URL\t{PG_REF}\tself",
+            f"render\tsrv-coupled\tDATABASE_URL\t{DISABLED_REF}\tself",
+            "",
+        ])
+        rotation = {
+            "test-hmac": {
+                "ref": SELF_MINTED_REF,
+                "provider": "self_minted",
+                "mode": "SELF_MINTED",
+                "generate": {"format": "hex", "bytes": 16},
+                "owner_repo": "repo",
+            },
+            "test-manual": {
+                "ref": MANUAL_REF,
+                "provider": "manual",
+                "mode": "MANUAL",
+                "owner_repo": "repo",
+                "playbook": "1. Mint a new key in the provider dashboard.\n2. Revoke the old key after fan-out.",
+            },
+            "test-postgres": {
+                "ref": PG_REF,
+                "provider": "postgres",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+            },
+            "test-disabled": {
+                "ref": DISABLED_REF,
+                "provider": "postgres",
+                "mode": "DUAL_KEY",
+                "owner_repo": "repo",
+                "disabled_reason": "activation spans unsupported channels",
+            },
+        }
+        self.sb.write_manifest(routes, rotation=rotation)
 
     def env(self, **extra: str) -> dict[str, str]:
         return self.sb.env(
-            SECRET_ROTATION_CONFIG=str(self.registry_path),
             SYNC_SECRETS_BIN=str(self.sb.fakebin / "sync-secrets-fake"),
             **extra,
         )
 
     def rotate(self, *args: str, env: dict[str, str] | None = None, stdin: str | None = None):
-        return run([ROTATE, *args], env if env is not None else self.env(), stdin=stdin)
+        return run([ROTATE, "--repo", str(self.sb.repo), *args],
+                   env if env is not None else self.env(), stdin=stdin)
 
     def sync_calls(self) -> list[str]:
         return [l for l in self.sb.log_lines() if l.startswith("SYNC ")]
@@ -98,7 +81,7 @@ class RotateSecretTest(unittest.TestCase):
     def test_unknown_item_exits_2_and_lists_known_entries(self) -> None:
         proc = self.rotate("--ref", "op://TESTVAULT/NOT_REGISTERED/value", "--reason", "t", "--yes")
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("no rotation registry entry", proc.stderr)
+        self.assertIn("no rotation entry", proc.stderr)
         self.assertIn("test-hmac", proc.stderr)
         self.assertIn("test-manual", proc.stderr)
         self.assertEqual(self.sb.log_lines(), [])
@@ -126,8 +109,8 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("provider: self_minted", proc.stdout)
         self.assertIn(str(self.sb.repo), proc.stdout)
-        self.assertIn("consumer-a", proc.stdout)
-        self.assertIn("consumer-b", proc.stdout)
+        self.assertIn("render[srv-a]", proc.stdout)
+        self.assertIn("render[srv-b]", proc.stdout)
         self.assertEqual(self.sb.log_lines(), [])  # no op, no sync
 
     # --- live refusals ------------------------------------------------------------
@@ -161,12 +144,10 @@ class RotateSecretTest(unittest.TestCase):
         combined = proc.stdout + proc.stderr + "\n".join(self.sb.log_lines())
         self.assertNotIn(value, combined)
         calls = self.sync_calls()
-        self.assertEqual(len(calls), 3)  # owner + 2 consumers, deduped
-        for repo in (self.sb.repo, self.sb.root / "consumer-a", self.sb.root / "consumer-b"):
-            self.assertTrue(
-                any(f"--repo {repo}" in c and f"--changed {SELF_MINTED_REF}" in c for c in calls),
-                f"missing sync fan-out for {repo}: {calls}",
-            )
+        # ONE project-wide sync covers every consumer repo via the config routes
+        self.assertEqual(len(calls), 1)
+        self.assertIn(f"--repo {self.sb.repo}", calls[0])
+        self.assertIn(f"--changed {SELF_MINTED_REF}", calls[0])
 
     def test_self_minted_rerun_replaces_the_item_in_place(self) -> None:
         first = self.rotate("--ref", SELF_MINTED_REF, "--reason", "t", "--yes")
@@ -224,31 +205,41 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(self.sync_calls(), [])
 
 
-class ProductionRotationRegistryTest(unittest.TestCase):
-    def test_prefect_database_rotations_fail_closed_on_cross_channel_activation(self) -> None:
-        registry = json.loads(
-            (ROOT / "config" / "secret-rotation.json").read_text(encoding="utf-8")
-        )
-        entries = {entry["id"]: entry for entry in registry["secrets"]}
-        prod = entries["ts-prefect-db-prod"]
-        staging = entries["ts-prefect-db-staging"]
+class ExcludeDestsDerivationTest(unittest.TestCase):
+    """The Prefect-server topology invariant, now enforced structurally:
+    exclude_dests removes a route from the ACTIVATION surface (consumers)
+    while the route itself remains visible."""
 
-        self.assertTrue(prod["disabled_reason"])
-        self.assertTrue(staging["disabled_reason"])
-        self.assertEqual(
-            prod["consumers"],
-            [
-                {
-                    "repo": "/Users/simon/dev/ts-prefect",
-                    "dest": "srv-d3t8esjipnbc738h3ibg",
-                    "env": "DATABASE_URL",
+    def test_exclude_dests_removes_activation_target_but_keeps_route(self) -> None:
+        sb = SecretsSandbox()
+        self.addCleanup(sb.close)
+        ref = "op://TESTVAULT-sensitive/PG/value"
+        sb.write_manifest(
+            f"render\tsrv-app\tDATABASE_URL\t{ref}\tself\n"
+            f"render\tsrv-server\tPREFECT_API_DATABASE_CONNECTION_URL\t{ref}\tself\n",
+            rotation={
+                "db": {
+                    "ref": ref,
+                    "provider": "postgres",
+                    "mode": "DUAL_KEY",
+                    "owner_repo": "repo",
+                    "exclude_dests": ["srv-server"],
                 }
-            ],
+            },
         )
-        self.assertEqual(staging["consumers"], [])
-        serialized = json.dumps([prod, staging])
-        self.assertNotIn("srv-d1pjpb7fte5s73cdsnk0", serialized)
-        self.assertNotIn("srv-d6h0jefgi27c73a9a85g", serialized)
+        lib = ROOT / "secrets" / "lib" / "config.sh"
+        env = sb.env(_SECRETS_CONFIG=str(sb.repo))
+        proc = run(
+            ["bash", "-c", f'source "{lib}"; reg="$(config_registry)" && cat "$reg"'],
+            env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        reg = json.loads(proc.stdout)
+        entry = reg["secrets"][0]
+        dests = [c["dest"] for c in entry["consumers"]]
+        self.assertEqual(dests, ["srv-app"])
+        route_dests = [r["dest"] for r in entry["routes"]]
+        self.assertIn("srv-server", route_dests)
 
 
 if __name__ == "__main__":

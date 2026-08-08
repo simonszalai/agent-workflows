@@ -1,6 +1,5 @@
 """rotate-project orchestrator: selection, ordering, canary flag, stop-on-failure."""
 
-import json
 import os
 import stat
 import subprocess
@@ -8,33 +7,49 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 HERE = Path(__file__).resolve().parent
 BIN = str(HERE.parent / "bin" / "rotate-project")
 
 
 def registry(tmp: Path) -> Path:
-    data = {
-        "schema_version": 1,
-        "health_urls": {"srv-web": "http://127.0.0.1:1/health"},
-        "secrets": [
-            {"id": "p-db-prod", "project": "p", "ref": "op://P-sensitive/Postgres prod/web",
-             "provider": "postgres", "mode": "DUAL_KEY", "consumers": [{"dest": "srv-web", "env": "DATABASE_URL"}]},
-            {"id": "p-token", "project": "p", "ref": "op://P/API/token",
-             "provider": "self_minted", "mode": "SELF_MINTED", "consumers": []},
-            {"id": "p-db-staging", "project": "p", "ref": "op://P/Postgres staging/web",
-             "provider": "postgres", "mode": "DUAL_KEY", "consumers": []},
-            {"id": "p-vendor", "project": "p", "ref": "op://P/Vendor/key",
-             "provider": "vendor", "mode": "DUAL_KEY", "consumers": []},
-            {"id": "p-vendor2", "project": "p", "ref": "op://P/Vendor2/key",
-             "provider": "vendor", "mode": "DUAL_KEY",
-             "consumers": [{"repo": "/tmp", "dest": "srv-x", "env": "K"}]},
-            {"id": "other", "project": "q", "ref": "op://Q/API/token",
-             "provider": "self_minted", "mode": "SELF_MINTED", "consumers": []},
+    """Write the sandbox project repo (secrets.yaml) and return its path."""
+    doc = {
+        "project": "p",
+        "repos": ["repo"],
+        "health": {"srv-web": "http://127.0.0.1:1/health"},
+        "rotation": {
+            "p-db-prod": {"ref": "op://P-sensitive/Postgres prod/web",
+                          "provider": "postgres", "mode": "DUAL_KEY"},
+            "p-token": {"ref": "op://P/API/token",
+                        "provider": "self_minted", "mode": "SELF_MINTED"},
+            "p-db-staging": {"ref": "op://P/Postgres staging/web",
+                             "provider": "postgres", "mode": "DUAL_KEY"},
+            "p-vendor": {"ref": "op://P/Vendor/key",
+                         "provider": "vendor", "mode": "DUAL_KEY"},
+            "p-vendor2": {"ref": "op://P/Vendor2/key",
+                          "provider": "vendor", "mode": "DUAL_KEY"},
+        },
+        "routes": [
+            {"repo": "repo", "kind": "render", "dest": "srv-web",
+             "env": "DATABASE_URL", "ref": "op://P-sensitive/Postgres prod/web",
+             "transform": "self"},
+            {"repo": "repo", "kind": "dev", "dest": "profile", "env": "TOKEN",
+             "ref": "op://P/API/token", "transform": "self"},
+            {"repo": "repo", "kind": "dev", "dest": "profile", "env": "DB_STAGING",
+             "ref": "op://P/Postgres staging/web", "transform": "self"},
+            {"repo": "repo", "kind": "dev", "dest": "profile", "env": "VENDOR_KEY",
+             "ref": "op://P/Vendor/key", "transform": "self"},
+            {"repo": "repo", "kind": "render", "dest": "srv-x", "env": "K",
+             "ref": "op://P/Vendor2/key", "transform": "self"},
         ],
     }
-    p = tmp / "registry.json"
-    p.write_text(json.dumps(data), encoding="utf-8")
-    return p
+    repo = tmp / "repo"
+    repo.mkdir(exist_ok=True)
+    (repo / "secrets.yaml").write_text(yaml.safe_dump(doc, sort_keys=False),
+                                       encoding="utf-8")
+    return repo
 
 
 def fake_rotate(tmp: Path, script: str) -> Path:
@@ -46,9 +61,9 @@ def fake_rotate(tmp: Path, script: str) -> Path:
 
 def run(tmp: Path, rotate_body: str, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env["ROTATION_REGISTRY"] = str(registry(tmp))
     env["ROTATE_SECRET"] = str(fake_rotate(tmp, rotate_body))
-    return subprocess.run([BIN, *args], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+    return subprocess.run([BIN, "--repo", str(registry(tmp)), *args],
+                          capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
 
 
 class RotateProjectTest(unittest.TestCase):
@@ -68,7 +83,6 @@ class RotateProjectTest(unittest.TestCase):
         self.assertIn("render:127.0.0.1:1", out)
         self.assertIn("DATABASE_URL", out)
         self.assertIn("nothing was read", out)
-        self.assertNotIn("other", proc.stdout)
 
     def test_live_sweep_passes_reason_and_stops_on_failure(self) -> None:
         body = (
@@ -77,11 +91,11 @@ class RotateProjectTest(unittest.TestCase):
         )
         env_log = self.tmp / "calls.log"
         env = dict(os.environ)
-        env["ROTATION_REGISTRY"] = str(registry(self.tmp))
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, body))
         env["LOG"] = str(env_log)
         proc = subprocess.run(
-            [BIN, "p", "--reason", "sweep test", "--skip", "p-db-prod,p-vendor2"],
+            [BIN, "--repo", str(registry(self.tmp)), "p",
+             "--reason", "sweep test", "--skip", "p-db-prod,p-vendor2"],
             capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
         )
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
@@ -94,14 +108,13 @@ class RotateProjectTest(unittest.TestCase):
 
     def test_sync_entry_failure_stops_the_sweep(self) -> None:
         env = dict(os.environ)
-        env["ROTATION_REGISTRY"] = str(registry(self.tmp))
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         sync = self.tmp / "sync-secrets"
         sync.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
         sync.chmod(sync.stat().st_mode | stat.S_IEXEC)
         env["SYNC_SECRETS"] = str(sync)
         proc = subprocess.run(
-            [BIN, "p", "--reason", "x", "--only", "p-vendor2"],
+            [BIN, "--repo", str(registry(self.tmp)), "p", "--reason", "x", "--only", "p-vendor2"],
             capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
         )
         self.assertEqual(proc.returncode, 1)

@@ -11,23 +11,31 @@ argv, logs, or disk.
 
 | Piece | Location |
 |---|---|
-| Engine libraries (manifest parser, op reads, transforms, Render API, vault writes) | `secrets/lib/` |
+| Engine libraries (config loader, op reads, transforms, Render API, vault writes) | `secrets/lib/` |
 | Channel writers (github, render, prefect) | `secrets/lib/writers/` |
 | Rotation providers (self_minted, manual, postgres, resend, openai, xai, aws_iam) | `secrets/providers/` |
-| Rotation registry | `config/secret-rotation.json` |
-| Per-repo routing manifest | `<repo>/scripts/secrets/manifest` |
-| Entry points | `bin/sync-secrets`, `bin/rotate-secret`, `bin/dev-env` |
+| Project config (routes + rotation + health, one per project) | `<primary-repo>/secrets.yaml` |
+| Non-primary repo pointer | `<repo>/secrets.yaml` containing `extends: ../<primary-repo>/secrets.yaml` |
+| Entry points | `bin/sync-secrets`, `bin/rotate-secret`, `bin/rotate-project`, `bin/dev-env` |
 
-## Manifest format
+The engine holds no project data: every command discovers the project config
+from the repo it runs in (or `--repo`), fails closed when none exists, and
+derives each rotation entry's consumer set from the routes sharing its ref
+(`exclude_dests` removes a route from the activation surface without hiding
+it). The predecessor layout — per-repo `scripts/secrets/manifest` TSVs plus a
+central `config/secret-rotation.json` with a hand-maintained `consumers[]`
+copy of the routes — is retired; at migration 58 of 93 entries had drifted
+from the routes they restated.
 
-Tab-separated, exactly five fields per row; `#` comments and blank lines
-ignored. Validation is strict and whole-file fail-closed: any malformed row
-(wrong field count, empty field, unknown KIND/TRANSFORM, unsupported REF,
-duplicate `(KIND, DEST, ENVNAME)`) rejects the entire manifest (exit 1;
-missing file exit 2).
+## Route format
+
+Each route is one push of one vault field to one destination. Validation is
+strict and whole-file fail-closed: a malformed route, unknown kind/transform,
+unsupported REF, duplicate `(kind, dest, env)`, or a rotation entry whose ref
+has no route rejects the entire config (exit 1; missing file exit 2).
 
 ```
-KIND<TAB>DEST<TAB>ENVNAME<TAB>REF<TAB>TRANSFORM
+- {repo: <name>, kind: github|render|prefect|dev, dest: <dest>, env: <ENVNAME>, ref: <REF>, transform: <TRANSFORM>}
 ```
 
 | Field | Values |
@@ -116,7 +124,7 @@ sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]]
              [--channel github|render|prefect] [--no-deploy] [--include-db]
 ```
 
-- Default repo = the cwd's git toplevel; manifest = `<repo>/scripts/secrets/manifest`
+- Default repo = the cwd's git toplevel; config = `<repo>/secrets.yaml` (or its `extends:` target)
   (missing → exit 2).
 - Project layer (service-account token env/Keychain item, Render API key ref)
   resolves from the repo's git remote via `bin/project-context` — no ambient
@@ -164,7 +172,7 @@ rotate-secret --ref 'op://Vault/Item/field' --reason "<why>" [--resume] [--keep-
 printf %s '<new>' | rotate-secret --ref '...' --reason "<why>" --complete
 ```
 
-Registry-driven (`config/secret-rotation.json`): unknown (project, item, field)
+Config-driven (the project `secrets.yaml` rotation section): unknown (project, item, field)
 is exit 2 with the known-entries list — providers are never invented. Vault
 writes address items by immutable id and verify by re-read. After any
 successful mint+vault write, the fan-out runs
@@ -218,7 +226,7 @@ boxes via `admin_via`) and driven by the registry entry's consumer list
   drain → retirement. Any incomplete proof keeps the predecessor (exit 5,
   `--resume`).
 - **Health URLs are a fail-closed registry**: `health_urls` in
-  `config/secret-rotation.json` maps service id → endpoint returning HTTP 200
+  the project `secrets.yaml` `health:` section maps service id → endpoint returning HTTP 200
   with `{status:"ok", databaseRoleSafe:true}`. An unregistered target service
   refuses rotation before any mutation.
 - After promotion the normal rotate-secret fan-out runs with

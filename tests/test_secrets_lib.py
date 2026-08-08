@@ -11,11 +11,11 @@ LIB = ROOT / "secrets" / "lib"
 
 
 def bash_lib(snippet: str, env: dict[str, str], *, stdin: str | None = None,
-             manifest: str | None = None) -> subprocess.CompletedProcess[str]:
-    if manifest is not None:
+             config: str | None = None) -> subprocess.CompletedProcess[str]:
+    if config is not None:
         env = dict(env)
-        env["_MANIFEST_FILE"] = manifest
-    script = f'source "{LIB}/manifest.sh"; source "{LIB}/read.sh"; source "{LIB}/derive.sh"; {snippet}'
+        env["_SECRETS_CONFIG"] = config
+    script = f'source "{LIB}/config.sh"; source "{LIB}/read.sh"; source "{LIB}/derive.sh"; {snippet}'
     return run(["bash", "-c", script], env, stdin=stdin)
 
 
@@ -33,40 +33,40 @@ class ManifestValidationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sb = SecretsSandbox()
         self.addCleanup(self.sb.close)
-        self.manifest = self.sb.repo / "scripts" / "secrets" / "manifest"
+        self.config = self.sb.repo
 
     def validate(self, content: str) -> subprocess.CompletedProcess[str]:
         self.sb.write_manifest(content)
-        return bash_lib("manifest_validate", self.sb.env(), manifest=str(self.manifest))
+        return bash_lib("config_validate", self.sb.env(), config=str(self.config))
 
-    def test_committed_style_manifest_validates_cleanly(self) -> None:
-        proc = bash_lib("manifest_validate", self.sb.env(), manifest=str(self.manifest))
+    def test_committed_style_config_validates_cleanly(self) -> None:
+        proc = bash_lib("config_validate", self.sb.env(), config=str(self.config))
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_wrong_field_count_rejects_the_whole_manifest(self) -> None:
         proc = self.validate("github\ta/b\tNAME\top://V/I/value\n")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("expected 5 tab-separated fields", proc.stderr)
+        self.assertIn("missing/empty", proc.stderr)
 
     def test_empty_field_rejects(self) -> None:
         proc = self.validate("github\t\tNAME\top://V/I/value\tself\n")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("field 2 is empty", proc.stderr)
+        self.assertIn("missing/empty dest", proc.stderr)
 
     def test_unknown_kind_rejects(self) -> None:
         proc = self.validate("s3\ta/b\tNAME\top://V/I/value\tself\n")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("unknown KIND", proc.stderr)
+        self.assertIn("unknown kind", proc.stderr)
 
     def test_unknown_transform_rejects(self) -> None:
         proc = self.validate("github\ta/b\tNAME\top://V/I/value\trot13\n")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("unknown TRANSFORM", proc.stderr)
+        self.assertIn("unknown transform", proc.stderr)
 
     def test_ref_missing_field_segment_rejects(self) -> None:
         proc = self.validate("github\ta/b\tNAME\top://V/I\tself\n")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("unsupported REF", proc.stderr)
+        self.assertIn("REF needs vault/item/field", proc.stderr)
 
     def test_arbitrary_field_names_are_accepted_for_product_grouped_items(self) -> None:
         proc = self.validate("render\tsrv-x\tDATABASE_URL\top://V/Postgres prod/app\tself\n")
@@ -82,20 +82,20 @@ class ManifestValidationTest(unittest.TestCase):
 
     def test_missing_manifest_file_returns_2(self) -> None:
         proc = bash_lib(
-            "manifest_validate", self.sb.env(), manifest=str(self.sb.root / "nope")
+            "config_validate", self.sb.env(), config=str(self.sb.root / "nope")
         )
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("manifest not found", proc.stderr)
+        self.assertIn("no secrets config", proc.stderr)
 
-    def test_manifest_rows_ref_filter_is_exact_equality_not_substring(self) -> None:
+    def test_config_rows_ref_filter_is_exact_equality_not_substring(self) -> None:
         self.sb.write_manifest(
             "render\tsrv-x\tA\top://V/ITEM/value\tself\n"
             "render\tsrv-x\tB\top://V/ITEM2/value\tself\n"
         )
         proc = bash_lib(
-            'manifest_rows render "" "op://V/ITEM/value"',
+            'config_rows render "" "op://V/ITEM/value"',
             self.sb.env(),
-            manifest=str(self.manifest),
+            config=str(self.config),
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("\tA\t", proc.stdout)

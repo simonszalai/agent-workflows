@@ -55,7 +55,7 @@ so the OpenAI Admin API leg is unavailable. Rotate in the dashboard:
   3. After every consumer redeployed and verified, delete the old key in the
      dashboard.
 To automate this entry, add config.admin_key_ref (an sk-admin key in the vault)
-and config.project_id (proj_...) to config/secret-rotation.json.
+and config.project_id (proj_...) to the project secrets.yaml rotation entry.
 EOF
 }
 
