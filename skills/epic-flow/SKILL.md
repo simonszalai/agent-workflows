@@ -218,6 +218,10 @@ For each milestone in dependency order:
 
    If any required artifact destination is missing, re-enter `/milestone-flow` or the verifier
    evidence-write path rather than marking the milestone complete.
+   Likewise, do not surface a milestone staging `BLOCKED` result when its receipt says
+   `repairability: staging_safe | owner_repair`: dispatch one fresh milestone owner at the same
+   durable packet checkpoint so `staging-autonomy.md` can finish the bounded repair/reverify lane.
+   Surface only proved `human_required`, `external_wait`, no-progress, or budget-exhausted stops.
 4. For milestones after the first, ensure the milestone verifier included current-milestone
    evidence plus an impact-based regression subset from previously passed milestone gates. If a
    later milestone breaks earlier verified behavior, treat `/milestone-flow` as failed/incomplete

@@ -9,7 +9,7 @@ environment's row.
 | staging | PASS (contract-missing) | Persist the missing-contract evidence; set `staging_verified`; never auto-promote. |
 | staging | FAIL | Persist evidence; set `verify_staging_failed`; load the failure-capture reference, then the failure-investigation reference (§9d). |
 | staging | NEEDS_MORE_TIME | Leave status unchanged. |
-| staging | BLOCKED | Persist blocker evidence; leave status unchanged; update/preserve blocker metadata. |
+| staging | BLOCKED | Persist blocker evidence and the staging-autonomy repair packet; leave status unchanged; update/preserve blocker metadata; return `staging_safe`/`owner_repair` packets to the active mutation owner. |
 | production | PASS | Persist mandatory evidence; process deferred cleanup when present; otherwise set `completed`. |
 | production | FAIL | Persist mandatory evidence; set `verify_prod_failed`; load the failure-capture reference, then the failure-investigation reference (§9d). |
 | production | NEEDS_MORE_TIME | Leave status unchanged. |

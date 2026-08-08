@@ -51,6 +51,7 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 
 - `../references/execution-economy.md`
 - `../references/conductor-multi-repo.md`
+- `../references/staging-autonomy.md`
 
 ## Process
 
@@ -82,7 +83,9 @@ Read before acting on any cross-repo milestone or linked Conductor workspace:
 
 ### 2. Validate readiness
 
-Stop if:
+Repair missing staging contracts or runtime-producing step ownership first with
+`/epic-plan`/`/epic-split`; these are agent-owned readiness repairs, not user gates. Stop only if,
+after that repair:
 
 - epic has unresolved planning open questions;
 - any required blocker from an earlier milestone is not complete/merged;
@@ -92,12 +95,11 @@ Stop if:
   `--executor hermes` an unresolved repo is not a stop: resolve it by creating a Conductor
   workspace per `conductor-multi-repo.md` §Executor modes;
 - two same-repo steps are marked parallel but touch overlapping/conflicting areas;
-- the milestone has no staging evidence contract. Ask `/epic-flow`/planning to repair the
-  milestone before build work continues.
+- the milestone still has no staging evidence contract because accepted behavior/intent is missing;
 - the milestone evidence contract requires runtime/staging behavior (canary run, observer,
   flow, deployment, stored rows, polling, scheduler, worker, Prefect, supervisor, webhook, or
-  live readback) but no included step owns the producing runtime surface. Repair the split before
-  building; a schema/parser/model-only milestone cannot pass a stored-row or flow-run gate.
+  live readback) but no included step owns the producing runtime surface after split repair. A
+  schema/parser/model-only milestone cannot pass a stored-row or flow-run gate.
 
 ### 3. Build execution waves
 
@@ -210,16 +212,18 @@ wrapper's absolute `output_file` and exact `rerun_command`; never paste a full d
 the milestone context.
 
 Treat deployment as incomplete until the deployment mechanics are verified by `/auto-deploy`
-(migrations/blocks/scheduler/worker/Prefect registrations/service deploys as applicable). If
-deployment fails, record the blocker/failure on the epic or affected step ticket and stop; do not
-run behavior verification against stale code.
+(migrations/blocks/scheduler/worker/Prefect registrations/service deploys as applicable). If a
+staging deploy fails on a documented bounded prerequisite, classify it with
+`staging-autonomy.md`, execute `staging_safe` directly or route `owner_repair`, and retry the
+invalidated deploy phase. Stop only for `human_required`, `external_wait`, or exhausted bounded
+repair capacity. Never run behavior verification against stale code.
 
 ### 7. Verify the milestone staging gate
 
 Immediately after a successful deploy, run the explicit epic/milestone verifier:
 
 ```text
-/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote
+/ticket-verify staging --epic <EPIC_ID> --milestone <MILESTONE> --no-promote --produce-evidence
 ```
 
 Before its fresh verifier session starts, reserve `session_role: "milestone_verifier"` and the
@@ -263,6 +267,14 @@ re-run/fix the evidence write rather than marking the milestone complete.
   fix ticket or a fresh allowance.
   Stop earlier only for genuinely missing human information/authorization or an external condition
   no agent can change.
+- `BLOCKED`: consume the verifier's staging-autonomy repair packet instead of returning it to the
+  user. Execute each `staging_safe` action directly (for example, provision the documented bounded
+  synthetic multi-tenant fixture), prove its postcondition, update the gate package when it omitted
+  the prerequisite, and run one fresh verifier. Route `owner_repair` through the same tracked fix/
+  deploy ownership used above. Safe operational actions do not require a fix ticket and do not
+  consume the one product-code repair cycle; they have their own contract cap of three distinct
+  actions. Stop only for `human_required`, `external_wait`, two no-progress actions, or exhaustion.
+  A final `BLOCKED` result is invalid while a repairable packet remains within either budget.
 
 Do not leave deployment or verification to `/epic-flow`; `/milestone-flow` owns them for the
 milestone it was asked to execute.
@@ -330,7 +342,8 @@ Executor: local | hermes (workspace/session ids for any hermes-placed steps)
 Steps: 3/3 merged
 Gate package: deployment_guide artifact updated
 Deploy: PASS (/auto-deploy E0007 staging)
-Environment verify: PASS (/ticket-verify staging --epic E0007 --milestone M2 --no-promote)
+Environment verify: PASS
+  /ticket-verify staging --epic E0007 --milestone M2 --no-promote --produce-evidence
 Gate evidence: verification_evidence artifact ids recorded
 Rotations: {count}; reasons: {reason counts}; productive/stall/elapsed: {when available}
 

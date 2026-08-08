@@ -130,8 +130,8 @@ mcp__autodev-memory__update_epic(
 | Rebase         | CI fails after rebase| Self-heal; STOP only at human-judgment gate |
 | Detect         | Detection error      | STOP, report                        |
 | Merge          | Merge failure        | STOP, report (don't change status)  |
-| Deploy Steps   | Step failure         | STOP at failed step, report         |
-| Deploy Steps   | Manual step needed   | Flag to user, wait for confirmation |
+| Deploy Steps   | Step failure         | Production: STOP; staging: apply staging-autonomy repair lane, then stop only at its boundary |
+| Deploy Steps   | Manual step needed   | Prove no callable route; staging-safe work executes instead of waiting for confirmation |
 | Verify         | Verification failure | STOP, revert status to what it was before auto-deploy started, report |
 
 Auto-deploy never sets `verify_staging_failed` / `verify_prod_failed` — those verdicts belong

@@ -154,6 +154,10 @@ production delivery. Follow `ci-self-heal.md`: inspect terminal logs, fix routin
 failures, re-run focused + final-tree validation and review, commit/push, wait on the new tree,
 and resume automatically. A red CI check alone is never a terminal outcome.
 
+For staging, also load `../references/staging-autonomy.md`. This invocation is the mutation owner:
+documented bounded staging fixtures, seeds, registrations, and other disposable prerequisites are
+standing-authorized. Repair them and continue instead of returning a command for the user to run.
+
 ## Process
 
 ### 1. Resolve and resume safely
@@ -170,8 +174,10 @@ deployment-guide-contract --environment <staging|production|full> <absolute-cont
 ```
 
 This validation must precede `/auto-deploy`, `/ticket-promote`, schema/config mutation, evidence
-producer triggers, and every other remote mutation. An invalid, DRAFT, stale, or incomplete
-contract is a hard stop. Never repair the guide after mutation and retroactively call it valid.
+producer triggers, and every other remote mutation. If a staging contract is invalid, DRAFT, stale,
+or incomplete but the accepted source/plan supplies the missing fact, route `owner_repair`,
+re-finalize it, and validate again before mutation. Stop only when the repair needs missing human
+intent. Never repair the guide after mutation and retroactively call it valid.
 
 Enter from lifecycle truth rather than repeating completed legs:
 
@@ -200,8 +206,9 @@ Run `/auto-deploy <ID> staging`. Its pre-CI local parity gate must extract and r
 reproducible GitHub Actions step, batch-repair the complete failure inventory, and prove a passing
 exact-tree receipt before PR creation or the first CI wait. Require successful staging deployment mechanics and final
 `to_verify_staging` status. If it returns because CI is red, enter the shared CI self-heal loop
-and resume at the interrupted phase after CI passes. On any other failure it reverts status and
-reports; relay and stop.
+and resume at the interrupted phase after CI passes. If it returns a staging-autonomy packet,
+consume `staging_safe`/`owner_repair` and retry the invalidated phase. Relay and stop only at a
+proved legitimate-stop boundary.
 
 ### 3. Produce and verify staging evidence (`staging` and `full`)
 
@@ -216,10 +223,10 @@ Handle the verdict as follows:
 - `FAIL`: require a persisted failure class, investigation artifact, and machine-readable repair
   packet before another attempt. Enter the staging repair loop below rather than returning the
   failure to the user.
-- `BLOCKED`: repair and retry when the missing deployment, verifier, evidence contract, or other
-  precondition is agent-resolvable. Stop only for genuinely missing human information/
-  authorization, an unsafe trigger that needs a human decision, or an external condition no agent
-  can change.
+- `BLOCKED`: require the verifier's staging-autonomy repair packet. Execute `staging_safe` actions
+  directly, and route `owner_repair` through the bounded repair owner, then retry. Stop only for a
+  proved `human_required` or `external_wait` classification. A missing documented synthetic fixture
+  is not a reason to return control to the user.
 - `NEEDS_MORE_TIME`: stop with the recorded awaited condition and exact resume command. It is
   valid only when a live producer or already-triggered downstream process will produce evidence
   by waiting.
@@ -251,7 +258,7 @@ deployment owner.
    by one new verification attempt. Persist the counter and chained
    `ticket-run-budget-v1` receipt across rotations and resumed invocations; neither a new agent nor a
    new `/ticket-flow` turn resets it.
-2. For every agent-resolvable `FAIL` or `BLOCKED`, dispatch exactly one fresh
+2. For every agent-resolvable `FAIL` or `owner_repair` BLOCKED, dispatch exactly one fresh
    `fork_turns: "none"` repair subagent with the bounded failure packet. Route by class:
    `code_defect` through the normal repair owner, canonical local health gate, commit/push, and
    deploy (no same-risk re-review); `verifier_defect` to the verifier owner;
@@ -262,6 +269,11 @@ deployment owner.
    ordinary run preserves `unknown` and stops rather than adding hidden fanout.
    The repair owner changes only its assigned surface and may run required local health/deploy
    mechanics, but it never produces the environment-verification verdict for its own fix.
+   For a `staging_safe` BLOCKED packet, the deployment owner instead executes the exact documented
+   environment action directly under `staging-autonomy.md`, records the before/postcondition and
+   cleanup/rollback receipt, and clears blocker metadata only after proof. This safe operational
+   lane allows at most three distinct actions per top-level run. It does not count against the
+   product-code repair round. Do not dispatch another model merely to run a known bounded command.
 3. Re-run every lifecycle stage invalidated by the repair. Product/config changes reuse the prior
    review disposition when same-risk, or run full heavy review only after a new boundary; they still
    require a final-tree health PASS, commit/push, and staging redeploy before verification. Verifier
@@ -270,9 +282,10 @@ deployment owner.
 4. On another failure, persist the delta. Continue only when the selected intensity still has both
    a repair cycle and model-session capacity. Otherwise return `BUDGET_EXHAUSTED`; context rotation
    and a fresh user turn do not add capacity.
-5. Stop successfully on exact `PASS`. Stop unsuccessfully on budget exhaustion, genuinely absent
-   human information/authorization, or an external condition proven unchangeable by agents. Report
-   every attempted delta when the cap is exhausted.
+5. Stop successfully on exact `PASS`. Stop unsuccessfully on budget exhaustion, `human_required`,
+   or `external_wait`. Before emitting `BLOCKED`, validate that no `staging_safe` or `owner_repair`
+   packet remains within budget and include the staging-autonomy receipts. Report every attempted
+   delta when the cap is exhausted.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 

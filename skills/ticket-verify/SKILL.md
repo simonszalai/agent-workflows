@@ -38,7 +38,8 @@ First argument must be `staging`, `prod`, or `production` — except with `--sch
 omitting the environment means both (staging first, then production).
 
 `--produce-evidence` is staging-only and must be explicitly supplied by a human-authorized wrapper
-such as `/ticket-deploy` (targets `staging`/`full`) or by the user. It does not authorize production flow triggers.
+such as `/ticket-deploy` (targets `staging`/`full`) or `/milestone-flow`, or by the user. It does
+not authorize production flow triggers.
 
 ## Boundaries
 
@@ -234,9 +235,19 @@ recorded blocker is still true.
    - leave the lifecycle status unchanged (`to_verify_staging`, `to_verify_prod`, etc.);
    - update/preserve blocker metadata with the ground-truth evidence and the exact next condition
      to re-check;
+   - in staging, load `../references/staging-autonomy.md`, assign `repairability`, and return a
+     machine-readable repair packet with the authoritative instruction/script source, exact
+     command/tool when known, target proof, resource bounds, rollback/cleanup, and success
+     predicate.
+     A documented missing synthetic fixture or other bounded staging-only prerequisite is
+     `staging_safe`, not `human_required`. If called by `/ticket-deploy` or `/milestone-flow`,
+     return the packet to that active mutation owner rather than telling the user to provision it;
    - do not promote, complete, or run deferred cleanup.
 
-Ground-truth blocker checks must remain read-only except for the bounded on-demand canary/shadow run exception in §Boundaries. Do not perform a missing deploy, backfill, unbounded flow trigger, schedule change, or external manual action yourself unless another skill explicitly owns that step.
+Ground-truth blocker checks must remain read-only except for the bounded on-demand canary/shadow run
+exception in §Boundaries. Do not perform a missing deploy, fixture seed, backfill, unbounded flow
+trigger, schedule change, or external manual action yourself. The staging-autonomy repair packet
+hands safe mutations to the active owner; it does not make the verifier a mutation owner.
 
 ### 3a. Produce evidence in an intentionally idle staging environment
 
@@ -615,6 +626,11 @@ items:
   milestone deploy via `/milestone-flow`; `prefect deploy` + trigger the deployment; or land/deploy the
   UI change to staging then `/ticket-verify staging <scope>`). This is an explicit outcome, never an
   omitted row.
+
+For every staging `BLOCKED`, the evidence artifact's `failure_classes` entry and report action must
+also contain the `staging-autonomy.md` repair packet. Bare prose such as "provision the fixture" is
+invalid: name `repairability`, the exact authoritative source, the bounded command/tool when known,
+rollback/cleanup, the postcondition, and the mutation owner that can continue the current run.
 
 Controller grading is causal: every failed `causal_ship_gate` fails closed, while a failed
 `observation` is recorded and routed but cannot fail an unrelated causal ship gate. Missing,
