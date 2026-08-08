@@ -192,7 +192,7 @@ class DryRunPreflightTest(unittest.TestCase):
         proc = self.dry_run(fields)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("has no field 'key'", proc.stderr)
-        self.assertIn("FAILED preflight", proc.stderr)
+        self.assertIn("PREFLIGHT FAIL", proc.stderr)
 
     def test_missing_item_fails_the_dry_run(self) -> None:
         fields = {k: v for k, v in self.FIELDS.items() if k != "Vendor"}
