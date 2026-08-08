@@ -133,7 +133,7 @@ for i, r in enumerate(routes, 1):
         bad.append(f"route {i}: REF must be literal:<value> or op://<vault>/<item>/<field>, got {ref!r}")
     elif ref.startswith("op://") and len(ref[len("op://"):].split("/")) != 3:
         bad.append(f"route {i}: op:// REF needs vault/item/field, got {ref!r}")
-    if tr not in ("self", "conn-id") and not any(
+    if tr not in ("self", "conn-id", "no-query") and not any(
             tr.startswith(p) and len(tr) > len(p) for p in TRANSFORM_PREFIXES):
         bad.append(f"route {i}: unknown transform {tr!r}")
     key = (kind, dest, env)
