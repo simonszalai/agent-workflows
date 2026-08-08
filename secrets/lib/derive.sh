@@ -27,6 +27,12 @@ w = sys.stdout.write
 if t == "self":
     w(url)
     sys.exit(0)
+if t == "no-query":
+    # Strip the query string (and fragment): pgbouncer-style config generators
+    # cannot parse URLs carrying ?options=... parameters.
+    sp = up.urlsplit(url)
+    w(up.urlunsplit((sp.scheme, sp.netloc, sp.path, "", "")))
+    sys.exit(0)
 if t == "conn-id":
     if not url.startswith("conn_"):
         sys.stderr.write("ERROR: value is not a Kinde connection id (must start with conn_)\n")

@@ -177,6 +177,14 @@ class DeriveTransformTest(unittest.TestCase):
         proc = self.derive("self", "plain-value\n")
         self.assertEqual((proc.returncode, proc.stdout), (0, "plain-value"))
 
+    def test_no_query_strips_options(self) -> None:
+        proc = self.derive("no-query", self.URL)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "postgresql://user:p%40ss@host.frankfurt-postgres.render.com:5432/maindb",
+        )
+
     def test_conn_id_accepts_kinde_connection_ids_only(self) -> None:
         ok = self.derive("conn-id", "conn_abc123")
         self.assertEqual((ok.returncode, ok.stdout), (0, "conn_abc123"))
