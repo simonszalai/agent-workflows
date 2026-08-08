@@ -203,16 +203,20 @@
         },
         "autodev_memory": {
           "roles": {
-            "app": "autodev_memory_app"
+            "app": "autodev_memory_app",
+            "migrator": "autodev_memory_migrator"
           },
           "tiers": [
             "prod"
           ],
-          "item_prefix": "AUTODEV_MEMORY_"
+          "item_prefix": "AUTODEV_MEMORY_",
+          "note": "migrator: boot-time Alembic (scripts/migrate_all.py) across mem_autodev + mem_global + mem_workflow_pro. Member of the tier table_owner; the app role is revoked from alembic_version by design, so the migrator is a separate principal and NOT another project owner credential borrowed at runtime."
         },
         "autodev_mem_ts": {
           "roles": {
-            "app": "autodev_mem_ts"
+            "app": "autodev_mem_ts",
+            "migrator": "autodev_mem_ts_migrator",
+            "ro": "autodev_mem_ts_ro"
           },
           "tiers": [
             "prod"
@@ -227,11 +231,12 @@
           "databases": [
             "mem_ts"
           ],
-          "note": "SQL role on the TS prod box (admin via ts owner credential); item written into the AUTODEV vault \u2014 the consumer owns its credential."
+          "note": "SQL role on the TS prod box (admin via ts owner credential); item written into the AUTODEV vault \u2014 the consumer owns its credential. migrator on the TS prod box for mem_ts. Provisioned via the ts owner credential, stored in the AUTODEV vault: autodev owns the credential it runs with, so a TS owner rotation can never strand autodev-memory. ro: read-only principal for the autodev-dashboard schema-drift CI gate against mem_ts, replacing the borrowed op://TS/Postgres prod RO/canonical."
         },
         "autodev_mem_amaru": {
           "roles": {
-            "app": "autodev_mem_amaru"
+            "app": "autodev_mem_amaru",
+            "migrator": "autodev_mem_amaru_migrator"
           },
           "tiers": [
             "prod"
@@ -246,7 +251,7 @@
           "databases": [
             "mem_amaru"
           ],
-          "note": "SQL role on the Amaru prod box (admin via amaru owner credential); item written into the AUTODEV vault."
+          "note": "SQL role on the Amaru prod box (admin via amaru owner credential); item written into the AUTODEV vault. migrator on the Amaru prod box for mem_amaru. Provisioned via the amaru owner credential, stored in the AUTODEV vault (same ownership rule as mem_ts)."
         }
       },
       "tiers": {

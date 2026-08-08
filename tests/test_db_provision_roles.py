@@ -36,15 +36,22 @@ EXPECTED_APPS = {
     },
     "autodev": {
         "autodev_dashboard": {"roles": {"app": "autodev_dashboard_app"}, "tiers": ["prod"]},
-        "autodev_memory": {"roles": {"app": "autodev_memory_app"}, "tiers": ["prod"]},
+        "autodev_memory": {
+            "roles": {"app": "autodev_memory_app", "migrator": "autodev_memory_migrator"},
+            "tiers": ["prod"],
+        },
         "autodev_mem_ts": {
-            "roles": {"app": "autodev_mem_ts"},
+            "roles": {
+                "app": "autodev_mem_ts",
+                "migrator": "autodev_mem_ts_migrator",
+                "ro": "autodev_mem_ts_ro",
+            },
             "tiers": ["prod"],
             "instance": {"project": "ts", "tier_map": {"prod": "prod"}},
             "databases": ["mem_ts"],
         },
         "autodev_mem_amaru": {
-            "roles": {"app": "autodev_mem_amaru"},
+            "roles": {"app": "autodev_mem_amaru", "migrator": "autodev_mem_amaru_migrator"},
             "tiers": ["prod"],
             "instance": {"project": "amaru", "tier_map": {"prod": "prod"}},
             "databases": ["mem_amaru"],
@@ -91,7 +98,7 @@ SYNTH_CONFIG = {
             "roles": {"owner": "shared_owner", "app": "shared_app", "ro": "shared_ro"},
             "apps": {
                 "memsvc": {
-                    "roles": {"app": "memsvc_app"},
+                    "roles": {"app": "memsvc_app", "migrator": "memsvc_migrator"},
                     "tiers": ["prod"],
                     "item_prefix": "MEMSVC_",
                 },
@@ -293,6 +300,34 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("memsvc_app", url)
         self.assertIn("@ext-host:", url)
         self.assertIn("/mem_shared", url)
+
+    def test_migrator_role_is_a_separate_principal_owning_its_own_credential(self) -> None:
+        """The app role is revoked from alembic_version by design, so a service that
+        migrates at boot needs its own principal. Before this, autodev-memory borrowed
+        another PROJECT's owner credential at runtime and went stale the moment that
+        credential rotated."""
+        proc = self.provision("--project", "shared", "--app", "memsvc", "prod", "--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        log = "\n".join(self.sb.log_lines())
+        # the migrator verifies itself with the ownership trick applied, and its
+        # grants run on every database the app spans
+        self.assertIn("USER=MEMSVC_MIGRATOR DB=MEM_SHARED OPTIONS=-C ROLE=RENDER", log.upper())
+        self.assertIn("DB=MEM_EXTRA", log.upper())
+        url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc_migrator")
+        self.assertIn("memsvc_migrator", url)
+        # the ownership trick, so new objects stay owned by the table owner
+        self.assertIn("options=-c%20role%3Drender", url)
+        # the app credential is untouched and remains a separate field
+        app_url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc")
+        self.assertIn("memsvc_app", app_url)
+        self.assertNotIn("memsvc_migrator", app_url)
+
+    def test_migrator_dry_run_names_the_role_and_its_field(self) -> None:
+        proc = self.provision("--project", "shared", "--app", "memsvc", "prod", "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("memsvc_migrator", proc.stdout)
+        self.assertIn("op://SHAREDV-sensitive/Postgres prod/memsvc_migrator", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
 
     def test_cross_instance_app_provisions_on_owning_box_into_consumer_vault(self) -> None:
         proc = self.provision("--project", "shared", "--app", "crossapp", "prod", "--reason", "t")
