@@ -98,7 +98,7 @@ Every scheduled run's final session message ends with a fenced block the Hermes 
 
 ```
 SCHEDULED_RUN_RESULT
-status: PASS | FAIL | BLOCKED
+status: PASS | FAIL | BLOCKED | NEEDS_MORE_TIME
 schedule: <schedules.yaml name>
 summary: <one-line outcome; becomes the Slack line except for specialized schedule renderers>
 checks_total: <int>
@@ -107,6 +107,7 @@ tickets_touched: [<ticket ids, may be empty>]
 rc_fingerprints: [<fingerprints emitted this run, may be empty>]
 issues: <single-line JSON array using the issue object below>
 blocked_on: <exact command or manual action a human must take; omit unless BLOCKED>
+resume_command: <exact deterministic continuation; required for NEEDS_MORE_TIME>
 ```
 
 `nightly-dream` additionally requires a `dream_report: <JSON object>` line. The value must be
@@ -152,7 +153,14 @@ rejected.
 - `PASS`: everything in scope ran and is healthy.
 - `FAIL`: at least one check found a real problem (routes to `#autodev-incidents` per §2).
 - `BLOCKED`: the run could not complete an item without crossing the §1 boundary;
-  `blocked_on` carries the exact resume command/action.
+  `blocked_on` carries the exact human-required or agent-incapable action. A live external operation
+  is never `BLOCKED`.
+- `NEEDS_MORE_TIME`: a proved live external operation remains healthy/progressing after the
+  schedule's technical hard limit. Persist its wait receipt; the next scheduled run or supported
+  automatic continuation resumes it using `resume_command`. Do not route this status to
+  `#autodev-incidents`.
+  Before starting the waiter, read the schedule's `max_runtime_minutes` and leave enough closeout
+  headroom to emit this result instead of letting the runner cancel the session as a timeout.
 - `issues` is required for `health-6h`: one single-line JSON array entry per actionable issue,
   or `[]` on PASS. `owning_ticket_id` is the open ticket that owns the root cause, not a fallback
   ticket used only to store occurrence evidence. Use `null` only when no owning ticket could be

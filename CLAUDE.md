@@ -434,8 +434,9 @@ create_ticket(
   (status-aware production leg; direct-production asks confirmation unless tiny/safe), or `full`
   (staging then production, gated on exact staging PASS)
 - Mutation-capable staging owners apply `skills/references/staging-autonomy.md`: documented bounded
-  fixtures, seeds, registrations, and disposable prerequisites are repaired without asking; only
-  missing human intent/authorization or an agent-unchangeable condition may return `BLOCKED`.
+  fixtures, seeds, registrations, and disposable prerequisites are repaired without asking; live
+  external operations are waited to completion. Only human-required or agent-incapable actions may
+  return `BLOCKED`.
 - `/go-fable`: Ultra-light ticketless working-tree edits (no plan artifact, no commits/PRs)
 - `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
 - `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production

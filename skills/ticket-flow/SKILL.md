@@ -251,8 +251,10 @@ conditions verbatim. A staging `FAIL` or agent-resolvable `BLOCKED` is not immed
 `/ticket-deploy` applies `staging-autonomy.md`, executes bounded operational prerequisites directly,
 and may run one product repair/redeploy/reverify cycle on `direct`/`standard`, or up to three on
 explicit `heavy`. Relay a stop only after PASS, the applicable cumulative cap is exhausted, or the
-child proves `human_required`/`external_wait`. Do not convert a documented staging seed, fixture,
-registration, deploy, or other deterministic repair into a request for the user to invoke a command.
+child proves `human_required`/`agent_incapable`. `external_wait` remains inside the child's
+deterministic wait lane, or returns `NEEDS_MORE_TIME` only at a technical hard limit. Do not convert
+a documented staging seed, fixture, registration, deploy, wait, or other deterministic repair into
+a request for the user to invoke a command.
 
 **Standalone, direct-production target:** `/ticket-deploy <ID> prod` (its §4a gate re-checks
 risk and asks for confirmation when the diff is not tiny/safe).
@@ -425,10 +427,11 @@ Statuses are set by the owning phase skills, never duplicated here:
 | Standalone, direct production | `/ticket-deploy prod` | `completed` |
 | Epic step | integration branch landing | `merged` (or per `/milestone-flow` on the direct-run hand-off) |
 
-If `/ticket-deploy` reports an `external_wait`/`human_required` deploy dependency, the ticket status
-reflects the next verification state and the blocker lives in the ticket's independent blocker
-metadata, not as a lifecycle status. `staging_safe`/`owner_repair` dependencies remain inside the
-active staging workflow instead of appearing here as terminal blockers.
+If `/ticket-deploy` reports a `human_required`/`agent_incapable` deploy dependency, the ticket
+status reflects the next verification state and the blocker lives in the ticket's independent
+blocker metadata, not as a lifecycle status. `staging_safe`/`owner_repair` dependencies and
+`external_wait` remain inside the active staging workflow instead of appearing here as terminal
+blockers.
 
 ## Output
 

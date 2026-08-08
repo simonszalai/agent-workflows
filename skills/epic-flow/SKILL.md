@@ -221,7 +221,8 @@ For each milestone in dependency order:
    Likewise, do not surface a milestone staging `BLOCKED` result when its receipt says
    `repairability: staging_safe | owner_repair`: dispatch one fresh milestone owner at the same
    durable packet checkpoint so `staging-autonomy.md` can finish the bounded repair/reverify lane.
-   Surface only proved `human_required`, `external_wait`, no-progress, or budget-exhausted stops.
+   Keep `external_wait` inside the deterministic wait lane. Surface `BLOCKED` only for proved
+   `human_required`/`agent_incapable`; no-progress or budget exhaustion are `STOPPED`/`FAILED`.
 4. For milestones after the first, ensure the milestone verifier included current-milestone
    evidence plus an impact-based regression subset from previously passed milestone gates. If a
    later milestone breaks earlier verified behavior, treat `/milestone-flow` as failed/incomplete

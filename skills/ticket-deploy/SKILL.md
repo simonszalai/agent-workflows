@@ -192,13 +192,14 @@ Enter from lifecycle truth rather than repeating completed legs:
 | `verify_staging_failed` | resume §3 from the persisted failure class and repair-round counter | stop: staging repair pending | resume §3 |
 | `verify_prod_failed` | n/a | resume §5's contract-repair loop when the persisted class qualifies (verifier_defect/invalid_evidence, empty product-failure field); otherwise stop at the production safety boundary with the persisted remediation route | same |
 
-Do not resume past `NEEDS_MORE_TIME`, `PASS (contract-missing)` (unless its recorded `risk_tier` is
-`tiny_safe` per ticket-verify §2a), missing evidence, or a stale evidence artifact merely because
-the lifecycle status appears later than expected. A `BLOCKED` verdict resumes only when its repair
-packet classifies the precondition as agent-resolvable; otherwise it remains a stop. An evidence
-artifact is *stale* only when scope code landed on the environment's branch after the artifact's
-activation boundary, or its `staging_head_sha` no longer contains the promoted commits; age alone
-is not staleness.
+Resume `NEEDS_MORE_TIME` when its receipt identifies the same live `external_wait` operation; wait
+rather than asking the user to restart it. Do not resume past `PASS (contract-missing)` (unless its
+recorded `risk_tier` is `tiny_safe` per ticket-verify §2a), missing evidence, or a stale evidence
+artifact merely because the lifecycle status appears later than expected. A `BLOCKED` verdict
+resumes when its repair packet is `staging_safe`/`owner_repair`; it is terminal only for
+`human_required`/`agent_incapable`. An evidence artifact is *stale* only when scope code landed on
+the environment's branch after the artifact's activation boundary, or its `staging_head_sha` no
+longer contains the promoted commits; age alone is not staleness.
 
 ### 2. Deploy to staging (`staging` and `full`)
 
@@ -225,11 +226,13 @@ Handle the verdict as follows:
   failure to the user.
 - `BLOCKED`: require the verifier's staging-autonomy repair packet. Execute `staging_safe` actions
   directly, and route `owner_repair` through the bounded repair owner, then retry. Stop only for a
-  proved `human_required` or `external_wait` classification. A missing documented synthetic fixture
-  is not a reason to return control to the user.
-- `NEEDS_MORE_TIME`: stop with the recorded awaited condition and exact resume command. It is
-  valid only when a live producer or already-triggered downstream process will produce evidence
-  by waiting.
+  proved `human_required` or `agent_incapable` classification. If the packet is `external_wait`,
+  run its deterministic waiter instead of stopping. A missing documented synthetic fixture is not
+  a reason to return control to the user.
+- `NEEDS_MORE_TIME`: require a proved live `external_wait`, then run its deterministic waiter with
+  an ETA/SLA-derived deadline and continue after the terminal result. Return `NEEDS_MORE_TIME` only
+  if a harness/provider hard limit expires while the same operation remains healthy and progressing;
+  preserve its exact automatic continuation/resume command. Never return `BLOCKED` for this case.
 - `PASS (contract-missing)`: stop; a derived contract is not production-promotion evidence —
   unless the evidence artifact records `risk_tier: tiny_safe` (ticket-verify §2a), in which case
   treat it as exact `PASS`.
@@ -282,10 +285,11 @@ deployment owner.
 4. On another failure, persist the delta. Continue only when the selected intensity still has both
    a repair cycle and model-session capacity. Otherwise return `BUDGET_EXHAUSTED`; context rotation
    and a fresh user turn do not add capacity.
-5. Stop successfully on exact `PASS`. Stop unsuccessfully on budget exhaustion, `human_required`,
-   or `external_wait`. Before emitting `BLOCKED`, validate that no `staging_safe` or `owner_repair`
-   packet remains within budget and include the staging-autonomy receipts. Report every attempted
-   delta when the cap is exhausted.
+5. Stop successfully on exact `PASS`. Emit `BLOCKED` only for `human_required` or
+   `agent_incapable`. Wait on `external_wait`; report budget exhaustion/no-progress as
+   `STOPPED`/`FAILED`. Before emitting `BLOCKED`, validate that no `staging_safe`, `owner_repair`,
+   or `external_wait` packet remains and include the staging-autonomy receipts. Report every
+   attempted delta when the cap is exhausted.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 

@@ -40,6 +40,7 @@ INCIDENTS_CHANNEL_NAME = "#autodev-incidents"
 RESULT_MARKER = "SCHEDULED_RUN_RESULT"
 RESULT_LIST_KEYS = ("tickets_touched", "rc_fingerprints")
 RESULT_JSON_KEYS = ("issues", "dream_report")
+STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔", "NEEDS_MORE_TIME": "⏳"}
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
@@ -344,9 +345,13 @@ def parse_result_block(text: str) -> JsonObject | None:
             ]
         else:
             parsed[key] = value
-    if str(parsed.get("status", "")).upper() not in {"PASS", "FAIL", "BLOCKED"}:
+    if str(parsed.get("status", "")).upper() not in STATUS_ICONS:
         return None
     parsed["status"] = str(parsed["status"]).upper()
+    if parsed["status"] == "NEEDS_MORE_TIME" and not str(
+        parsed.get("resume_command", "")
+    ).strip():
+        return None
     return parsed
 
 
@@ -462,7 +467,7 @@ def health_issues(result: JsonObject | None, summary: str, status: str) -> list[
     """Return validated health issues, including a runner-failure fallback."""
     raw_issues = result.get("issues") if result is not None else None
     issues = parse_health_issues(raw_issues) or []
-    if not issues and status != "PASS":
+    if not issues and status in {"FAIL", "BLOCKED"}:
         issues.append(
             {
                 "title": "Scheduled health run failed",
@@ -873,7 +878,7 @@ def run_schedule(name: str) -> int:
         if status == "PASS" and issues:
             status = "FAIL"
             summary = "run reported issues with PASS status"
-        icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
+        icon = STATUS_ICONS[status]
         line = health_parent_message(icon, issues, summary)
         parent_ts = post_message(slack_token, channel, line)
         for issue in issues:
@@ -885,7 +890,7 @@ def run_schedule(name: str) -> int:
             )
     elif name == "nightly-dream":
         raw_report = result.get("dream_report") if result is not None else None
-        icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
+        icon = STATUS_ICONS[status]
         if isinstance(raw_report, dict) and result is not None:
             report = cast(DreamReport, raw_report)
             line = nightly_dream_parent_message(icon, report)
@@ -900,11 +905,11 @@ def run_schedule(name: str) -> int:
         parent_ts = post_message(slack_token, channel, line)
         post_message(slack_token, channel, reply, thread_ts=parent_ts)
     else:
-        icon = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔"}[status]
+        icon = STATUS_ICONS[status]
         line = f"{icon} [{name}] {summary}"
         parent_ts = post_message(slack_token, channel, line)
         post_message(slack_token, channel, "\n".join(detail_lines), thread_ts=parent_ts)
-    if status != "PASS":
+    if status in {"FAIL", "BLOCKED"}:
         permalink = message_permalink(slack_token, channel, parent_ts)
         if channel != incidents:
             post_message(

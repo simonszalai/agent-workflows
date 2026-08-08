@@ -41,9 +41,19 @@ After the operation reaches a terminal result, inspect the scope once more:
    name the owner and next action.
 8. **Staging blocker legitimacy:** when the outer workflow is a mutation-capable staging owner,
    load `staging-autonomy.md` before emitting `BLOCKED`. The closeout must prove every remaining
-   precondition is `human_required`, `external_wait`, no-progress, or budget-exhausted. If a
-   `staging_safe` or `owner_repair` packet remains within budget, continue the repair/reverify lane;
-   do not print a Next command that merely hands the agent's own executable work to the user.
+   precondition is `human_required` or `agent_incapable`. Continue `staging_safe`/`owner_repair`;
+   wait on `external_wait`; report no-progress or budget exhaustion as `STOPPED`/`FAILED`. Do not
+   print a Next command that hands the agent's own executable or waitable work to the user.
+9. **Passive wait legitimacy (all environments):** when no action is missing and a live external
+   operation has a healthy producer plus explicit terminal predicates, run its deterministic waiter
+   using an ETA/SLA or observed-cadence-derived deadline. A technical hard-limit timeout is
+   `NEEDS_MORE_TIME` with an automatic continuation when supported and an exact fallback command,
+   never `BLOCKED`. Across all environments, reserve `BLOCKED` for human-required actions or
+   concrete actions no available agent can perform.
+10. **Read-only-owner handoff:** a read-only workflow does not make an otherwise executable action
+    `agent_incapable`. In an interactive run, dispatch the authorized mutation owner and relay its
+    result. Only an explicit unattended/safety boundary, missing callable route, permission, or
+    credential can make the action agent-incapable.
 
 Staging success is a successful stage, not final closure. Its notes must explicitly identify
 production or any other later gate as not yet verified. A production deploy is likewise not final
