@@ -61,8 +61,8 @@ class RotateProjectTest(unittest.TestCase):
         ids = [l.strip().split(" ")[0] for l in out.splitlines()
                if l.strip().startswith(("p-db", "p-token", "p-vendor"))]
         self.assertEqual(ids, ["p-db-staging", "p-token", "p-db-prod", "p-vendor"])
-        self.assertIn("--keep-old", out)
-        self.assertIn("(srv-web)", out)
+        self.assertIn("rollback (canary)", out)
+        self.assertIn("render:127.0.0.1:1", out)
         self.assertIn("DATABASE_URL", out)
         self.assertIn("nothing was read", out)
         self.assertNotIn("other", proc.stdout)
