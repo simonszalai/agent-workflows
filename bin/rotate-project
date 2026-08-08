@@ -422,7 +422,7 @@ finalize_pending_deploys() {
       status="$(render_get "/services/${sid}/deploys?limit=1" | jq -r '.[0].deploy.status // .[0].status // empty')" || status=""
       case "$status" in
         live) break ;;
-        build_failed|update_failed|canceled|deactivated) echo "${C_ERR}✗ deploy for $sid ended $status${C_OFF}" >&2; return 1 ;;
+        build_failed|update_failed|canceled|deactivated|pre_deploy_failed) echo "${C_ERR}✗ deploy for $sid ended $status${C_OFF}" >&2; return 1 ;;
         *) sleep 15 ;;
       esac
     done
