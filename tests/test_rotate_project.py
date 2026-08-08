@@ -52,16 +52,19 @@ class RotateProjectTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
 
-    def test_dry_run_orders_phases_and_flags_canary(self) -> None:
+    def test_dry_run_plan_sections_and_canary(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--all")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        lines = [l for l in proc.stdout.splitlines() if "would rotate" in l]
-        ids = [l.split("): ")[1].split(" ")[0] for l in lines]
-        self.assertEqual(ids, ["p-db-staging", "p-token", "p-vendor", "p-db-prod"])
-        self.assertIn("--keep-old", lines[0])
-        self.assertIn("(sequential)", lines[0])
-        self.assertIn("(parallel", lines[1])
-        self.assertNotIn("--keep-old", lines[3])
+        out = proc.stdout
+        self.assertIn("AUTOMATIC", out)
+        self.assertIn("MANUAL", out)
+        ids = [l.strip().split(" ")[0] for l in out.splitlines()
+               if l.strip().startswith(("p-db", "p-token", "p-vendor"))]
+        self.assertEqual(ids, ["p-db-staging", "p-token", "p-db-prod", "p-vendor"])
+        self.assertIn("--keep-old", out)
+        self.assertIn("(srv-web)", out)
+        self.assertIn("DATABASE_URL", out)
+        self.assertIn("nothing was read", out)
         self.assertNotIn("other", proc.stdout)
 
     def test_live_sweep_passes_reason_and_stops_on_failure(self) -> None:
@@ -93,19 +96,19 @@ class RotateProjectTest(unittest.TestCase):
 
     def test_default_scope_excludes_manual_providers(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run")
-        self.assertNotIn("would rotate (parallel x1): p-vendor", proc.stdout)
+        self.assertNotIn("MANUAL —", proc.stdout)
         self.assertIn("NOT included (run with --manual): p-vendor", proc.stdout)
 
     def test_manual_scope_runs_only_manual_providers(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--manual")
-        lines = [l for l in proc.stdout.splitlines() if "would rotate" in l]
-        self.assertEqual(len(lines), 1)
-        self.assertIn("p-vendor", lines[0])
+        self.assertIn("p-vendor", proc.stdout)
+        self.assertNotIn("p-token", proc.stdout)
+        self.assertNotIn("AUTOMATIC", proc.stdout)
 
     def test_tier_staging_skips_prod_entries(self) -> None:
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--tier", "staging")
         self.assertIn("p-db-staging", proc.stdout)
-        self.assertNotIn("would rotate: p-db-prod", proc.stdout)
+        self.assertNotIn("p-db-prod", proc.stdout)
 
 
 if __name__ == "__main__":
