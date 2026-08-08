@@ -140,6 +140,23 @@ esac
 """
 
 
+# The postgres provider no longer falls back to a naming convention for admin
+# credentials -- they must be declared. Mirror what config/db-roles.json now
+# states explicitly, so these fixtures exercise the same single path.
+for _proj in DB_ROLES["projects"].values():
+    _v, _s = _proj.get("vault"), _proj.get("vault_sensitive")
+    _proj.setdefault(
+        "admin_refs",
+        {
+            _t: {
+                "root": "op://%s/Postgres %s/root" % (_s if _t == "prod" else _v, _t),
+                "owner": "op://%s/Postgres %s/owner" % (_s if _t == "prod" else _v, _t),
+            }
+            for _t in _proj.get("tiers", {})
+        },
+    )
+
+
 class RotateProvidersTest(unittest.TestCase):
     def setUp(self) -> None:
         self.sb = SecretsSandbox()
@@ -475,6 +492,35 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
         # that touched either would silently desync every later probe.
         self.assertIn("8>&-", hook_line)
         self.assertIn("7<&-", hook_line)
+
+    def test_admin_refs_have_no_convention_fallback(self) -> None:
+        # A missing admin_refs tier must throw, never resolve to a
+        # plausible-looking item that may hold the wrong principal.
+        self.assertNotIn('ROOT_REF="op://$(admin_vault_for_tier', self.SOURCE)
+        self.assertNotIn('ADMIN_OWNER_REF="op://$(admin_vault_for_tier', self.SOURCE)
+        for field in ("root", "owner"):
+            self.assertIn(f"no admin_refs.$INSTANCE_TIER.{field}", self.SOURCE)
+
+    def test_every_configured_tier_declares_its_admin_refs(self) -> None:
+        # With the fallback gone, a project whose admin resolves to itself must
+        # declare admin_refs for every tier or postgres rotation cannot run.
+        cfg = json.loads((ROOT / "config" / "db-roles.json").read_text())
+        for name, proj in cfg["projects"].items():
+            for tier in (proj.get("tiers") or {}):
+                via = ((proj["tiers"][tier].get("admin_via") or {}).get("project"))
+                admin = cfg["projects"][via] if via else proj
+                admin_tier = tier if not via else "prod"
+                refs = (admin.get("admin_refs") or {}).get(admin_tier) or {}
+                with self.subTest(project=name, tier=tier):
+                    self.assertTrue(refs.get("root"), f"{name}/{tier}: no admin root ref")
+                    self.assertTrue(refs.get("owner"), f"{name}/{tier}: no admin owner ref")
+
+    def test_drain_throws_when_lock_principal_is_a_predecessor(self) -> None:
+        body = self._function_body("wait_for_predecessor_drain")
+        # The guard must run before the poll loop, not inside it.
+        guard = body.index("is a predecessor of this rotation")
+        self.assertLess(guard, body.index("while [["))
+        self.assertIn('db_url_username "$ROOT_CONTROL_URL"', body)
 
     def test_lock_connection_sets_socket_keepalives(self) -> None:
         body = self._function_body("acquire_rotation_lock")
