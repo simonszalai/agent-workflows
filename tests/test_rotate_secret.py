@@ -12,6 +12,7 @@ ROTATE = str(ROOT / "bin" / "rotate-secret")
 SELF_MINTED_REF = "op://TESTVAULT/API_HMAC_SECRET/value"
 MANUAL_REF = "op://TESTVAULT/EXTERNAL_API_KEY/value"
 PG_REF = "op://TESTVAULT-sensitive/PROD_POSTGRES_URL_APP/value"
+DISABLED_REF = "op://TESTVAULT/COUPLED_DATABASE/value"
 
 
 class RotateSecretTest(unittest.TestCase):
@@ -58,6 +59,16 @@ class RotateSecretTest(unittest.TestCase):
                             "owner_repo": str(self.sb.repo),
                             "consumers": [],
                         },
+                        {
+                            "id": "test-disabled",
+                            "project": "testproj",
+                            "ref": DISABLED_REF,
+                            "provider": "postgres",
+                            "mode": "DUAL_KEY",
+                            "owner_repo": str(self.sb.repo),
+                            "disabled_reason": "activation spans unsupported channels",
+                            "consumers": [],
+                        },
                     ],
                 }
             ),
@@ -99,6 +110,14 @@ class RotateSecretTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("test-hmac", proc.stdout)
+
+    def test_disabled_entry_refuses_before_plan_or_mutation(self) -> None:
+        proc = self.rotate("--ref", DISABLED_REF, "--dry-run")
+
+        self.assertEqual(proc.returncode, 3)
+        self.assertIn("test-disabled", proc.stderr)
+        self.assertIn("unsupported channels", proc.stderr)
+        self.assertEqual(self.sb.log_lines(), [])
 
     # --- dry-run ----------------------------------------------------------------
 
@@ -203,6 +222,33 @@ class RotateSecretTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
         self.assertIn("is not in", proc.stderr)
         self.assertEqual(self.sync_calls(), [])
+
+
+class ProductionRotationRegistryTest(unittest.TestCase):
+    def test_prefect_database_rotations_fail_closed_on_cross_channel_activation(self) -> None:
+        registry = json.loads(
+            (ROOT / "config" / "secret-rotation.json").read_text(encoding="utf-8")
+        )
+        entries = {entry["id"]: entry for entry in registry["secrets"]}
+        prod = entries["ts-prefect-db-prod"]
+        staging = entries["ts-prefect-db-staging"]
+
+        self.assertTrue(prod["disabled_reason"])
+        self.assertTrue(staging["disabled_reason"])
+        self.assertEqual(
+            prod["consumers"],
+            [
+                {
+                    "repo": "/Users/simon/dev/ts-prefect",
+                    "dest": "srv-d3t8esjipnbc738h3ibg",
+                    "env": "DATABASE_URL",
+                }
+            ],
+        )
+        self.assertEqual(staging["consumers"], [])
+        serialized = json.dumps([prod, staging])
+        self.assertNotIn("srv-d1pjpb7fte5s73cdsnk0", serialized)
+        self.assertNotIn("srv-d6h0jefgi27c73a9a85g", serialized)
 
 
 if __name__ == "__main__":
