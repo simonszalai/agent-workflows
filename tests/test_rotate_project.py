@@ -61,6 +61,7 @@ def fake_rotate(tmp: Path, script: str) -> Path:
 
 def run(tmp: Path, rotate_body: str, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
+    env["ROTATE_PREFLIGHT"] = "0"  # sandbox refs aren't real vault items
     env["ROTATE_SECRET"] = str(fake_rotate(tmp, rotate_body))
     return subprocess.run([BIN, "--repo", str(registry(tmp)), *args],
                           capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
@@ -82,7 +83,7 @@ class RotateProjectTest(unittest.TestCase):
         self.assertIn("rollback (canary)", out)
         self.assertIn("render:127.0.0.1:1", out)
         self.assertIn("DATABASE_URL", out)
-        self.assertIn("nothing was read", out)
+        self.assertIn("no secret values were read", out)
 
     def test_live_sweep_passes_reason_and_stops_on_failure(self) -> None:
         body = (
@@ -91,6 +92,7 @@ class RotateProjectTest(unittest.TestCase):
         )
         env_log = self.tmp / "calls.log"
         env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, body))
         env["LOG"] = str(env_log)
         proc = subprocess.run(
@@ -108,6 +110,7 @@ class RotateProjectTest(unittest.TestCase):
 
     def test_sync_entry_failure_stops_the_sweep(self) -> None:
         env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         sync = self.tmp / "sync-secrets"
         sync.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
@@ -133,6 +136,76 @@ class RotateProjectTest(unittest.TestCase):
         proc = run(self.tmp, "exit 0", "p", "--dry-run", "--tier", "staging")
         self.assertIn("p-db-staging", proc.stdout)
         self.assertNotIn("p-db-prod", proc.stdout)
+
+
+class DryRunPreflightTest(unittest.TestCase):
+    """Dry-run verifies field EXISTENCE from item metadata and fails when a
+    required field is absent — the sweep must not pass a dry run it would
+    fail live (2026-08-08: Postgres staging/root)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def dry_run(self, fields_by_item: dict) -> subprocess.CompletedProcess:
+        import json as _json
+        spec = self.tmp / "op-items.json"
+        spec.write_text(_json.dumps(fields_by_item), encoding="utf-8")
+        op = self.tmp / "fake-op"
+        op.write_text(
+            "#!/usr/bin/env bash\n"
+            'exec python3 - "$3" <<PY\n'
+            "import json, sys\n"
+            f'spec = json.load(open("{spec}"))\n'
+            "title = sys.argv[1]\n"
+            "if title not in spec: sys.exit(1)\n"
+            'print(json.dumps({"fields": [{"label": f} for f in spec[title]]}))\n'
+            "PY\n",
+            encoding="utf-8",
+        )
+        op.chmod(0o755)
+        env = dict(os.environ)
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["DB_ROLES_CONFIG"] = "/nonexistent"
+        env["OP_BIN"] = str(op)
+        return subprocess.run(
+            [BIN, "--repo", str(registry(self.tmp)), "p", "--dry-run"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+
+    FIELDS = {
+        "Postgres prod": ["web"],
+        "API": ["token"],
+        "Postgres staging": ["web"],
+        "Vendor": ["key"],
+        "Vendor2": ["key"],
+    }
+
+    def test_all_fields_present_passes(self) -> None:
+        proc = self.dry_run(self.FIELDS)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("preflight:", proc.stdout)
+        self.assertIn("verified by field name", proc.stdout)
+
+    def test_missing_field_fails_the_dry_run(self) -> None:
+        fields = dict(self.FIELDS)
+        fields["Vendor2"] = ["something-else"]
+        proc = self.dry_run(fields)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("has no field 'key'", proc.stderr)
+        self.assertIn("FAILED preflight", proc.stderr)
+
+    def test_missing_item_fails_the_dry_run(self) -> None:
+        fields = {k: v for k, v in self.FIELDS.items() if k != "Vendor"}
+        proc = self.dry_run(fields)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("missing or unreadable", proc.stderr)
+
+    def test_sensitive_vault_is_reported_unchecked_not_prompted(self) -> None:
+        fields = {k: v for k, v in self.FIELDS.items() if k != "Postgres prod"}
+        # P-sensitive/Postgres prod must be skipped (Touch ID), not failed.
+        proc = self.dry_run(fields)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("unchecked (Touch ID vault", proc.stdout)
 
 
 if __name__ == "__main__":

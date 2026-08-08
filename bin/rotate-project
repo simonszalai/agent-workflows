@@ -264,7 +264,66 @@ if [[ "$dry" -eq 1 ]]; then
   render_plan_section "ROTATE — new credentials minted automatically" "$C_OK" "$auto_json"
   render_plan_section "SYNC — pushes the current 1Password value to consumers" "$C_RUN" "$sync_json"
   echo
-  echo "${C_DIM}dry-run: nothing was read from 1Password or written anywhere.${C_OFF}"
+
+  # ── preflight: verify every op:// field the sweep will READ actually exists.
+  # Item metadata only (field labels) — no values are read or printed. Vaults
+  # without a silent credential route (*-sensitive, Touch ID) are reported as
+  # unchecked rather than prompting during a dry run. ROTATE_PREFLIGHT=0 skips.
+  if [[ "${ROTATE_PREFLIGHT:-1}" == "1" ]]; then
+    db_roles="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
+    admin_vault="" admin_vault_sensitive=""
+    if [[ -f "$db_roles" ]]; then
+      admin_vault="$(jq -r --arg p "$project" '.projects[$p].vault // empty' "$db_roles")"
+      admin_vault_sensitive="$(jq -r --arg p "$project" '.projects[$p].vault_sensitive // empty' "$db_roles")"
+    fi
+    # every ref the run touches: entry ref, sync_refs, provider config refs,
+    # route refs — plus the postgres control root ref per tier.
+    needed="$(jq -r --arg av "$admin_vault" --arg avs "$admin_vault_sensitive" '
+      [.[] | ( [.ref] + (.sync_refs // [])
+              + [(.config.secret_ref // empty)]
+              + [(.routes // [])[].ref]
+              + (if .provider == "postgres" then
+                   [ (if .staging then ($av // "") else ($avs // "") end) as $v
+                     | select($v != "")
+                     | "op://" + $v + "/Postgres " + (if .staging then "staging" else "prod" end) + "/root" ]
+                 else [] end) )[] ]
+      | map(select(type == "string" and startswith("op://"))) | unique | .[]' <<< "$run_json")"
+    pf_fail=0 pf_checked=0 pf_unchecked=0
+    while IFS= read -r vault_item; do
+      [[ -n "$vault_item" ]] || continue
+      pf_vault="${vault_item%%/*}"; pf_item="${vault_item#*/}"
+      pf_fields="$(printf '%s
+' "$needed" | awk -F/ -v v="$pf_vault" -v i="$pf_item"         '{ rest=substr($0,6); vv=rest; sub("/.*","",vv); it=rest; sub("^[^/]*/","",it); f=it; sub("/[^/]*$","",it); sub(".*/","",f); if (vv==v && it==i) print f }' | sort -u)"
+      if [[ "$pf_vault" == *-sensitive ]]; then
+        pf_unchecked=$((pf_unchecked+1))
+        echo "  ${C_DIM}preflight: $pf_vault/$pf_item — unchecked (Touch ID vault; verified at run time)${C_OFF}"
+        continue
+      fi
+      if ! pf_json="$("${OP_BIN:-$HERE/op}" item get "$pf_item" --vault "$pf_vault" --format json 2>/dev/null)"; then
+        echo "  ${C_ERR}preflight FAIL: item '$pf_vault/$pf_item' is missing or unreadable${C_OFF}" >&2
+        pf_fail=1; continue
+      fi
+      pf_have="$(printf '%s' "$pf_json" | jq -r '[.fields[].label] | join("
+")')"
+      pf_json=""
+      while IFS= read -r pf_f; do
+        [[ -n "$pf_f" ]] || continue
+        if ! grep -qxF "$pf_f" <<< "$pf_have"; then
+          echo "  ${C_ERR}preflight FAIL: '$pf_vault/$pf_item' has no field '$pf_f'${C_OFF}" >&2
+          pf_fail=1
+        fi
+      done <<< "$pf_fields"
+      pf_checked=$((pf_checked+1))
+    done < <(printf '%s
+' "$needed" | sed 's|^op://||; s|/[^/]*$||' | sort -u)
+    if [[ "$pf_fail" -eq 1 ]]; then
+      echo
+      echo "${C_ERR}dry-run FAILED preflight: the sweep would stop on the missing refs above.${C_OFF}" >&2
+      exit 1
+    fi
+    echo "${C_DIM}preflight: $pf_checked item(s) verified by field name; $pf_unchecked Touch-ID item(s) unchecked. No values were read.${C_OFF}"
+  fi
+  echo "${C_DIM}dry-run: nothing was written anywhere; no secret values were read.${C_OFF}"
   exit 0
 fi
 
