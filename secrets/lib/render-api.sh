@@ -42,19 +42,18 @@ render_key_resolve() { # key_source -> key value on stdout
 
 render_curl() { # method path [json-body-on-stdin]
   local method="$1" path="$2"
-  local key="${RENDER_API_KEY:-}"
-  [[ -n "$key" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
+  [[ -n "${RENDER_API_KEY:-}" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
   # 429 means the request was NOT executed, so retrying a mutation is safe.
-  local body
+  # The body travels via env so every retry attempt can re-feed it on stdin.
+  local body rc
   body="$(cat)"
-  printf '%s' "$body" | render_retry_429 --silent --show-error --fail-with-body \
+  RENDER_RETRY_BODY="$body" render_retry_429 --silent --show-error --fail-with-body \
     --request "$method" \
     --url "https://api.render.com/v1${path}" \
     --header "Accept: application/json" \
     --header "Content-Type: application/json" \
-    --config <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
     --data-binary @-
-  local rc=$?
+  rc=$?
   body=""
   return "$rc"
 }
@@ -76,10 +75,18 @@ render_upsert_env_value() { # service_id key  (value piped on stdin)
 
 # Rate-limit aware curl: on HTTP 429 back off and retry (Render's API limits
 # are per-minute; a rotation sweep legitimately bursts). Bounded, then fails.
-render_retry_429() { # curl args...
+#
+# The Authorization config and any request body are REBUILT per attempt inside
+# the loop: a caller-supplied process substitution or piped stdin is a one-shot
+# fd that the first attempt consumes, which once sent an unauthenticated retry.
+# Auth comes from RENDER_API_KEY; an optional body from RENDER_RETRY_BODY
+# (env, never argv).
+render_retry_429() { # curl args (WITHOUT auth config / body)...
   local attempt=0 max="${RENDER_429_RETRIES:-5}" out rc
+  [[ -n "${RENDER_API_KEY:-}" ]] || { echo "ERROR: RENDER_API_KEY not set for render_retry_429" >&2; return 3; }
   while :; do
-    out="$(curl "$@" 2>&1)"; rc=$?
+    out="$(printf '%s' "${RENDER_RETRY_BODY:-}" | curl "$@" \
+      --config <(printf 'header = "Authorization: Bearer %s"\n' "$RENDER_API_KEY") 2>&1)"; rc=$?
     if [[ "$rc" -eq 22 && "$out" == *429* && "$attempt" -lt "$max" ]]; then
       attempt=$((attempt + 1))
       echo "  render API rate-limited (429) — backing off $((attempt * 15))s (retry $attempt/$max)" >&2
@@ -93,13 +100,11 @@ render_retry_429() { # curl args...
 
 render_get() { # path (GET, no request body) — read-only helpers
   local path="$1"
-  local key="${RENDER_API_KEY:-}"
-  [[ -n "$key" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
-  render_retry_429 --silent --show-error --fail-with-body \
+  [[ -n "${RENDER_API_KEY:-}" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
+  RENDER_RETRY_BODY="" render_retry_429 --silent --show-error --fail-with-body \
     --request GET \
     --url "https://api.render.com/v1${path}" \
-    --header "Accept: application/json" \
-    --config <(printf 'header = "Authorization: Bearer %s"\n' "$key")
+    --header "Accept: application/json"
 }
 
 render_trigger_deploy() { # service_id
