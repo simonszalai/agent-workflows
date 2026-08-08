@@ -117,9 +117,15 @@ the consumer's vault — the consumer owns its credential.
 |---|---|---|---|
 | Amaru | `amaru-web-staging` | `DATABASE_URL` / `MIGRATE` / `SYSTEM` | app / owner / owner |
 | TS | `ts-dashboard-staging` | `DATABASE_URL` | `ts_app` |
-| TS | `ts-prefect-server-staging` | Prefect DB URLs (asyncpg, db `ts_staging_prefect`) | `ts_app` |
+| TS | `ts-prefect-server-staging` | Prefect DB URLs (asyncpg, db `ts_staging_prefect`) | canonical migration credential |
+| TS | Prefect staging flow block | `DATABASE_URL` | `ts_prefect_app` |
 | TS | GHA `DATABASE_URL_STAGING` | secret | `ts_app` |
 | Workflow | `workflow-pro-staging` | `DATABASE_URL` / `MIGRATE` / `SYSTEM` | app / owner / owner |
 | Workflow | `application-scheduler-staging` | `DATABASE_URL` | `workflow_app` |
 
-Prefect server needs the **external** host form of the APP URL (internal host alone caused `update_failed` once). Web services on Render private network accept the internal host stored in the vault.
+Prefect is the exception to the normal app-only service rule. The Prefect server owns its Alembic
+lifecycle, so both tiers keep the canonical migration-capable credential. Flow-run blocks use
+`ts_prefect_app`; production flow clients pass through PgBouncer, whose `DATABASE_URL` must use the
+same login so its generated auth file contains that user. Never point the server at `ts_prefect_app`,
+and never rotate the flow credential without activating both the block and PgBouncer before retiring
+the predecessor.

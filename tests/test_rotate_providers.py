@@ -14,6 +14,7 @@ ROTATE = str(ROOT / "bin" / "rotate-secret")
 
 PG_APP_REF = "op://TESTVAULT-sensitive/PROD_POSTGRES_URL_APP/value"
 PG_OWNER_SQLROLE_REF = "op://TESTVAULT-sensitive/PROD_POSTGRES_URL_OWNER/value"
+PG_ROOT_REF = "op://TESTVAULT-sensitive/Postgres prod/root"
 RESEND_REF = "op://TESTVAULT/RESEND_API_KEY/value"
 AWS_ID_REF = "op://TESTVAULT/AWS_ACCESS_KEY_ID/value"
 AWS_SECRET_REF = "op://TESTVAULT/AWS_SECRET_ACCESS_KEY/value"
@@ -307,7 +308,7 @@ class RotateProvidersTest(unittest.TestCase):
 
     def test_postgres_lock_contention_maps_to_exit_2(self) -> None:
         self.seed_item(
-            "op://TESTVAULT-sensitive/PROD_POSTGRES_URL_ROOT/value",
+            PG_ROOT_REF,
             "postgresql://rootuser:rootpw@external-host:5432/testdb",
         )
         proc = self.rotate(
