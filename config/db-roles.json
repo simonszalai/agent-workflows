@@ -1,13 +1,13 @@
 {
   "$comment": [
     "Four-role Postgres credential split (root/owner/app/ro) across projects.",
-    "Secret names (no project prefix — vault scopes the project):",
+    "Secret names (no project prefix \u2014 vault scopes the project):",
     "  {PROD|STAGING}_POSTGRES_URL_{ROOT|OWNER|APP|RO}",
     "Vault routing (Amaru policy):",
-    "  prod write (ROOT/OWNER/APP) → <PROJECT>-sensitive",
-    "  prod RO + all staging → <PROJECT> regular (SA-readable)",
+    "  prod write (ROOT/OWNER/APP) \u2192 <PROJECT>-sensitive",
+    "  prod RO + all staging \u2192 <PROJECT> regular (SA-readable)",
     "Postgres login names always include the project slug (roles are catalog-global;",
-    "Workflow + Autodev share dpg-d66ig… so collisions matter).",
+    "Workflow + Autodev share dpg-d66ig\u2026 so collisions matter).",
     "Root username is the Render provider default and is NOT renamed.",
     "Per-app principals (slice 3a): projects[].apps.<app-slug> declares one login pair",
     "per application. Item naming stays flat for now (product-grouped items = slice 6):",
@@ -16,13 +16,13 @@
     "APPSLUG_UPPER = item_prefix minus its trailing underscore. Vault routing matches",
     "the project items: prod app -> <PROJECT>-sensitive, staging app + every RO ->",
     "<PROJECT> regular. instance: 'default' (own project's tiers) or",
-    "{project, tier_map} for cross-instance consumers — the role is created on the",
+    "{project, tier_map} for cross-instance consumers \u2014 the role is created on the",
     "OWNING project's box (admin via its owner credential) but the vault item is",
     "written into the CONSUMER project's vault. databases: optional override of",
     "which databases the grants (and the item URL's primary db) target; default is",
     "the tier database plus extra_databases.",
     "ts_scraper and ts_decrypt_proxy have NO DB rows in their manifests (checked",
-    "2026-08-07) — deliberately absent from ts.apps."
+    "2026-08-07) \u2014 deliberately absent from ts.apps."
   ],
   "projects": {
     "amaru": {
@@ -38,13 +38,22 @@
       },
       "apps": {
         "amaru_web": {
-          "roles": { "app": "amaru_web_app" },
-          "tiers": ["staging", "prod"],
+          "roles": {
+            "app": "amaru_web_app"
+          },
+          "tiers": [
+            "staging",
+            "prod"
+          ],
           "item_prefix": "AMARU_WEB_"
         },
         "amaru_mcp": {
-          "roles": { "app": "amaru_mcp_app" },
-          "tiers": ["prod"],
+          "roles": {
+            "app": "amaru_mcp_app"
+          },
+          "tiers": [
+            "prod"
+          ],
           "item_prefix": "AMARU_MCP_",
           "note": "prod only: no staging amaru-mcp service exists (staging AMARU_MCP_ENABLED=false)."
         }
@@ -75,13 +84,24 @@
       },
       "apps": {
         "ts_prefect": {
-          "roles": { "app": "ts_prefect_app" },
-          "tiers": ["staging", "prod"],
+          "roles": {
+            "app": "ts_prefect_app"
+          },
+          "tiers": [
+            "staging",
+            "prod"
+          ],
           "item_prefix": "TS_PREFECT_"
         },
         "ts_dashboard": {
-          "roles": { "app": "ts_dashboard_app", "ro": "ts_dashboard_ro" },
-          "tiers": ["staging", "prod"],
+          "roles": {
+            "app": "ts_dashboard_app",
+            "ro": "ts_dashboard_ro"
+          },
+          "tiers": [
+            "staging",
+            "prod"
+          ],
           "item_prefix": "TS_DASHBOARD_"
         }
       },
@@ -99,6 +119,16 @@
           "database": "ts_duoh",
           "root_username": "ts_duoh_user"
         }
+      },
+      "admin_refs": {
+        "staging": {
+          "root": "op://TS/STAGING_POSTGRES_URL_ROOT/value",
+          "owner": "op://TS/STAGING_POSTGRES_URL_OWNER/value"
+        },
+        "prod": {
+          "root": "op://TS-sensitive/PROD_POSTGRES_URL_ROOT/value",
+          "owner": "op://TS-sensitive/PROD_POSTGRES_URL_OWNER/value"
+        }
       }
     },
     "workflow-pro": {
@@ -114,13 +144,22 @@
       },
       "apps": {
         "workflow_web": {
-          "roles": { "app": "workflow_web_app" },
-          "tiers": ["staging", "prod"],
+          "roles": {
+            "app": "workflow_web_app"
+          },
+          "tiers": [
+            "staging",
+            "prod"
+          ],
           "item_prefix": "WORKFLOW_WEB_"
         },
         "workflow_mcp": {
-          "roles": { "app": "workflow_mcp_app" },
-          "tiers": ["prod"],
+          "roles": {
+            "app": "workflow_mcp_app"
+          },
+          "tiers": [
+            "prod"
+          ],
           "item_prefix": "WORKFLOW_MCP_",
           "note": "prod only (srv-d9it0j37uimc73c49cfg); SYSTEM_DATABASE_URL stays on workflow_owner."
         }
@@ -145,7 +184,7 @@
       "render_project": "workflow-pro",
       "slug": "autodev",
       "owner_kind": "sql_role",
-      "shared_instance_note": "Same Render Postgres as workflow-pro prod (dpg-d66ig…). Creating a Render credential would flip the instance default away from workflow_owner — so autodev_owner is a SQL role provisioned as the shared admin, not a Render credential. Root remains the instance admin (render).",
+      "shared_instance_note": "Same Render Postgres as workflow-pro prod (dpg-d66ig\u2026). Creating a Render credential would flip the instance default away from workflow_owner \u2014 so autodev_owner is a SQL role provisioned as the shared admin, not a Render credential. Root remains the instance admin (render).",
       "roles": {
         "owner": "autodev_owner",
         "app": "autodev_app",
@@ -153,30 +192,60 @@
       },
       "apps": {
         "autodev_dashboard": {
-          "roles": { "app": "autodev_dashboard_app" },
-          "tiers": ["prod"],
+          "roles": {
+            "app": "autodev_dashboard_app"
+          },
+          "tiers": [
+            "prod"
+          ],
           "item_prefix": "AUTODEV_DASHBOARD_",
           "note": "app (not ro): the dashboard performs writes (semantic mutations, human commands). Grants span mem_autodev + mem_global + mem_workflow_pro (tier database + extra_databases)."
         },
         "autodev_memory": {
-          "roles": { "app": "autodev_memory_app" },
-          "tiers": ["prod"],
+          "roles": {
+            "app": "autodev_memory_app"
+          },
+          "tiers": [
+            "prod"
+          ],
           "item_prefix": "AUTODEV_MEMORY_"
         },
         "autodev_mem_ts": {
-          "roles": { "app": "autodev_mem_ts" },
-          "tiers": ["prod"],
+          "roles": {
+            "app": "autodev_mem_ts"
+          },
+          "tiers": [
+            "prod"
+          ],
           "item_prefix": "AUTODEV_MEM_TS_",
-          "instance": { "project": "ts", "tier_map": { "prod": "prod" } },
-          "databases": ["mem_ts"],
-          "note": "SQL role on the TS prod box (admin via ts owner credential); item written into the AUTODEV vault — the consumer owns its credential."
+          "instance": {
+            "project": "ts",
+            "tier_map": {
+              "prod": "prod"
+            }
+          },
+          "databases": [
+            "mem_ts"
+          ],
+          "note": "SQL role on the TS prod box (admin via ts owner credential); item written into the AUTODEV vault \u2014 the consumer owns its credential."
         },
         "autodev_mem_amaru": {
-          "roles": { "app": "autodev_mem_amaru" },
-          "tiers": ["prod"],
+          "roles": {
+            "app": "autodev_mem_amaru"
+          },
+          "tiers": [
+            "prod"
+          ],
           "item_prefix": "AUTODEV_MEM_AMARU_",
-          "instance": { "project": "amaru", "tier_map": { "prod": "prod" } },
-          "databases": ["mem_amaru"],
+          "instance": {
+            "project": "amaru",
+            "tier_map": {
+              "prod": "prod"
+            }
+          },
+          "databases": [
+            "mem_amaru"
+          ],
           "note": "SQL role on the Amaru prod box (admin via amaru owner credential); item written into the AUTODEV vault."
         }
       },
@@ -185,7 +254,10 @@
           "db_id": "dpg-d66igcali9vc739u9m6g-a",
           "table_owner": "render",
           "database": "mem_autodev",
-          "extra_databases": ["mem_global", "mem_workflow_pro"],
+          "extra_databases": [
+            "mem_global",
+            "mem_workflow_pro"
+          ],
           "admin_via": {
             "project": "workflow-pro",
             "owner_cred": "workflow_owner",
