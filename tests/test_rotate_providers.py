@@ -528,6 +528,53 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
         self.assertIn("PGKEEPALIVESINTERVAL=10", body)
         self.assertIn("PGKEEPALIVESCOUNT=6", body)
 
+    def test_service_env_reads_use_the_consumer_workspace_key(self) -> None:
+        # Autodev services live in the autodev Render workspace; the shared
+        # box's admin key is workflow-pro. Using that key for /services/<sid>
+        # is HTTP 403. Declared-target env reads/writes must switch key.
+        for name in (
+            "capture_predecessors",
+            "observe_candidate_value",
+            "verify_sql_candidate_before_mutation",
+            "rotation_get_env",
+            "rotation_put_env",
+            "rotation_trigger_deploy",
+            "rotation_wait_deploy",
+        ):
+            with self.subTest(fn=name):
+                self.assertIn(name, self.SOURCE)
+        self.assertGreaterEqual(self.SOURCE.count("with_sid_render_key"), 7)
+
+    def test_autodev_dashboard_repo_maps_to_the_autodev_render_key(self) -> None:
+        import subprocess
+
+        tools = ROOT / "config" / "project-tools.json"
+        script = r"""
+jq -r --arg repo "autodev-dashboard" '
+  [.projects | to_entries[]
+   | select(any(.value.repo_remotes[]?;
+       (split("/")[-1] == $repo) or (split("/")[-1] == ($repo + ".git"))))
+   | .key] | unique | .[]
+' """
+        project = subprocess.check_output(
+            ["bash", "-lc", script + str(tools)], text=True
+        ).strip()
+        self.assertEqual(project, "autodev")
+        key = json.loads(tools.read_text())["projects"][project]["render"]["api_key_ref"]
+        self.assertEqual(key, "op://AUTODEV-sensitive/Render/api_key")
+        admin = json.loads((ROOT / "config" / "db-roles.json").read_text())["projects"][
+            "autodev"
+        ]["render_key_ref"]
+        self.assertEqual(admin, "op://WORKFLOW_PRO/Render/api_key")
+        self.assertNotEqual(key, admin)
+
+    def test_inventory_scans_every_consumer_workspace(self) -> None:
+        self.assertIn("inventory_render_key_refs", self.SOURCE)
+        self.assertIn("render_key_value_for_ref", self.SOURCE)
+        caller = self.SOURCE[self.SOURCE.index("ROTATION_INSTANCE_MARKER=") :]
+        self.assertIn("inventory_render_key_refs", caller[:900])
+        self.assertIn("render_inventory_has_predecessor", caller[:900])
+
 
 if __name__ == "__main__":
     unittest.main()
