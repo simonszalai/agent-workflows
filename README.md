@@ -4,19 +4,13 @@ Shared agent workflows, skills, hooks, and tool-specific agent definitions for a
 
 ## Contents
 
-- **Skills** - Shared methodology and knowledge (review patterns, research methods, etc.)
-- **Agents** - Tool-specific specialized agent roles (reviewer, planner, researcher, etc.)
+- **Skills** - Safety contracts, lifecycle references, and tool wrappers (the 2026-08 purge
+  removed methodology/choreography skills; models own their own process now)
+- **Agents** - Tool-specific agent roles (`ticket-curator`)
 - **Hooks** - Shared shell hooks for autodev-memory context injection
-- **Commands** - Legacy Claude command wrappers kept only where still needed
-- **Workflows** - Claude Code dynamic workflow scripts (`plan-fanout`, `review-collect`,
-  `review-synthesize`, etc.) for
-  bounded risk-focused fan-out; skills invoke them via `Workflow({ name: "..." })` on Claude, or run the
-  equivalent logic inline on Codex/Grok
 - **bin/** - Shared executables including the CLI service wrappers (`render-cli`, `resend-cli`,
-  `psql-cli`, `tailscale-admin`, `slack-api`), `external-agent` (cross-provider adapter),
-  `compact-exec`
-  (bounded command output), `wait-ci` (single-call CI waiting), and
-  `workflow-efficiency-report` (whole-agent-tree usage accounting)
+  `psql-cli`, `tailscale-admin`, `slack-api`), `compact-exec` (bounded command output),
+  `wait-ci` (single-call CI waiting), and `session-usage-report` (usage accounting)
 - **config/** - Trusted non-secret registries used by shared wrappers, including exact
   repository-to-project credential mappings
 - **hermes/** - Reproducible, secret-safe systemd services and configuration for the Hermes host
@@ -48,30 +42,6 @@ link has been switched, so stale pinned copies cannot become active again.
 Running `bin/install-agent-workflows` without `--version` now performs this same live-folder setup,
 so an old setup command cannot silently repin the machine. Pinned, one-way environments must pass
 an explicit `--version <commit>`; that mode exports the exact commit into an immutable version tree.
-
-`external-agent` shells out to peer provider CLIs (`claude`, `codex`, and/or `grok`), so the
-providers you want as peers must be installed and authenticated. `/review` and `/investigate`
-start with bounded native analysis and add peer providers only for explicit high-risk scope,
-material uncertainty, or unresolved disagreement. `/research` retains cross-provider fan-out by
-default (opt out per-run with `mode:solo` / `--solo`). When peers are used, the model is symmetric:
-
-- if Claude runs the main workflow, external peers are Codex + Grok;
-- if Codex runs the main workflow, external peers are Claude + Grok;
-- if Grok runs the main workflow, external peers are Claude + Codex.
-
-The current main runner is autodetected by `agent-workflow-provider` (override only when needed
-with `AGENT_WORKFLOW_PROVIDER=claude|codex|grok`). Skills should use
-`agent-workflow-provider --peers` instead of hard-coding Codex/Grok.
-
-All peer providers run **read-only with repo access** so they can grep/read code to ground their
-output — Claude via `claude -p` with only Read/Grep/Glob tools, Codex via `-s read-only`, and
-Grok via a read/search-only tool allowlist (`--tools Read,Grep,Glob`, no Bash/Write/Edit).
-None can modify the repo.
-
-External calls must receive the required, separately generated `--memory-context-file` (maximum 3K) and set
-the adapter's ambient-hook suppression automatically. See
-[`docs/memory-provider-matrix.md`](docs/memory-provider-matrix.md). Fable is a workflow/model
-variant, not a fourth provider.
 
 ### MCP access — two loopback proxies + CLI wrappers (2026-07-28 consolidation)
 
