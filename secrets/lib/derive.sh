@@ -13,6 +13,8 @@
 #                            port from the transform string, query dropped
 #   asyncpg-internal=<db>    postgresql+asyncpg on the Render-internal host
 #   asyncpg-external=<db>    postgresql+asyncpg on the external host
+#   rehost=<host>/<db>       swap host and database, keep scheme/user/query
+#                            (optional :port on host; default is the source port)
 #
 # Empty stdin -> exit 2. Unknown transform -> exit 3. The transform string is
 # passed via the TRANSFORM env var, never argv.
@@ -59,6 +61,22 @@ elif t.startswith("asyncpg-internal="):
 elif t.startswith("asyncpg-external="):
     db = t[len("asyncpg-external="):]
     w(f"postgresql+asyncpg://{cred}@{ext}:{port}/{db}")
+elif t.startswith("rehost="):
+    spec = t[len("rehost="):]
+    hostport, sep, db = spec.partition("/")
+    if not sep or not hostport or not db or "/" in db:
+        sys.stderr.write("ERROR: rehost needs host[:port]/db\n")
+        sys.exit(3)
+    if ":" in hostport:
+        host, _, port_s = hostport.rpartition(":")
+        if not host or not port_s.isdigit():
+            sys.stderr.write("ERROR: rehost host:port is malformed\n")
+            sys.exit(3)
+        port = int(port_s)
+    else:
+        host = hostport
+    tail = f"?{p.query}" if p.query else ""
+    w(f"{p.scheme}://{cred}@{host}:{port}/{db}{tail}")
 else:
     sys.stderr.write(f"ERROR: unknown transform: {t}\n")
     sys.exit(3)

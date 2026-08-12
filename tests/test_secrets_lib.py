@@ -273,6 +273,26 @@ class DeriveTransformTest(unittest.TestCase):
             "postgresql+asyncpg://user:p%40ss@host.frankfurt-postgres.render.com:5432/prefect",
         )
 
+    def test_rehost_swaps_host_and_db_and_keeps_query(self) -> None:
+        proc = self.derive(
+            "rehost=dpg-other.virginia-postgres.render.com/mem_amaru", self.URL
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "postgresql://user:p%40ss@dpg-other.virginia-postgres.render.com:5432/mem_amaru?sslmode=require",
+        )
+
+    def test_rehost_accepts_explicit_port(self) -> None:
+        proc = self.derive("rehost=ext.example:6543/otherdb", self.URL)
+        self.assertEqual(
+            proc.stdout,
+            "postgresql://user:p%40ss@ext.example:6543/otherdb?sslmode=require",
+        )
+
+    def test_rehost_rejects_malformed_spec(self) -> None:
+        self.assertEqual(self.derive("rehost=no-slash", self.URL).returncode, 3)
+
     def test_empty_stdin_exits_2(self) -> None:
         self.assertEqual(self.derive("self", "").returncode, 2)
 

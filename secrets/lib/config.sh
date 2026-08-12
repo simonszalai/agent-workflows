@@ -101,7 +101,7 @@ if mode == "pointer":
     sys.exit(0)
 
 KINDS = {"github", "render", "prefect", "dev"}
-TRANSFORM_PREFIXES = ("db=", "pgbouncer=", "asyncpg-internal=", "asyncpg-external=")
+TRANSFORM_PREFIXES = ("db=", "pgbouncer=", "asyncpg-internal=", "asyncpg-external=", "rehost=")
 bad = []
 
 for key in ("project", "routes"):

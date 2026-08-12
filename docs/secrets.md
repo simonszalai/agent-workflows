@@ -44,7 +44,7 @@ has no route rejects the entire config (exit 1; missing file exit 2).
 | DEST | github: `owner/repo`; render: service id `srv-...`/`crn-...`; prefect: `staging`\|`prod`; dev: profile name |
 | ENVNAME | destination env-var / secret name (also the `--only` selector key) |
 | REF | `op://<vault>/<item>/<field>` (any field name) or `literal:<value>` |
-| TRANSFORM | `self`, `conn-id`, `db=<name>`, `pgbouncer=<host:port>/<db>`, `asyncpg-internal=<db>`, `asyncpg-external=<db>` |
+| TRANSFORM | `self`, `conn-id`, `db=<name>`, `pgbouncer=<host:port>/<db>`, `asyncpg-internal=<db>`, `asyncpg-external=<db>`, `rehost=<host[:port]>/<db>` |
 
 Transforms are pure (stdin → stdout): one canonical URL per Postgres instance
 lives in the vault; every consumer shape is derived at push time, never
