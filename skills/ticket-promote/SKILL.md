@@ -6,9 +6,6 @@ max_turns: 250
 
 # Ticket Promote
 
-Follow `../references/execution-economy.md` for bounded output, run-local caching, batching, and
-non-model-driven waits. Its economy rules never relax production, ordering, or fail-loud gates.
-
 Promote work that passed staging verification from `staging` to `main`, then execute the
 project's **production deploy steps** for what landed. This skill owns the entire
 post-staging production path except behavior verification: land + deploy, then hand off to
@@ -32,7 +29,7 @@ Infer the mode from the arguments; if ambiguous, stop and ask.
 staging PASS **that passes its auto-promotion gate** (ticket-verify §9b: FINALIZED contract
 fully graded on fresh evidence, and no schema/deploy-config/auth category in the diff).
 Higher-risk scopes rest at `staging_verified` until a human invokes this skill explicitly.
-`/epic-flow` calls the epic mode after all milestone staging gates pass.
+Epic mode runs after all milestone staging gates pass.
 
 ## Unattended guard (scheduled contexts)
 
@@ -183,7 +180,7 @@ Run before creating any worktree, branch, or PR:
    if the list contains unrelated tickets, misses a required milestone dependency, or would
    promote an unverified milestone.
 
-This mode is the production half of `/epic-flow`: it promotes verified epic work only,
+This mode promotes verified epic work only,
 deploys production, and leaves behavior verification to
 `/ticket-verify production --epic <EPIC_ID>`.
 
@@ -299,10 +296,10 @@ helper fixed by a co-staged ticket is the classic false-PASS mechanism). Missing
 
 ## Production command preflight (before landing)
 
-Rebuild and validate the deployment/config ownership inventory immediately before promotion with
-`mode="promotion"`, `recheck_of`, and `rechecked_at_epoch` as defined in
-`../references/deployment-ownership.md`. Do not reuse the planning snapshot. Unresolved owners,
-missing owner workspaces, absent third-repo config steps, or an incomplete guide block promotion.
+Rebuild the deployment/config ownership inventory immediately before promotion — which repo,
+workflow, or person owns each deploy/config step touched by this diff. Do not reuse a planning
+snapshot. Unresolved owners, absent third-repo config steps, or an incomplete guide block
+promotion.
 
 While `origin/main` is still unchanged, read the cached production deployment guide and project
 deploy config, detect deploy categories with `git diff origin/main..HEAD`, and build the exact
@@ -310,9 +307,9 @@ ordered production command table. Preflight every command: validate imports/CLI/
 non-mutating command and, when the guide defines a safe idempotent staging mirror, execute the same
 command shape there with staging credentials. Record each expected production postcondition in the
 manifest. Missing/failed preflight stops before merge; never invent a dry-run flag or use the
-production mutation itself as its preflight. A preflight already recorded by `/auto-deploy`
-Phase 6b for the same command, guide version, and diff is valid — cite its recorded result
-instead of re-executing; re-preflight only commands whose shape, target, or inputs changed.
+production mutation itself as its preflight. A preflight already recorded earlier in
+the same workflow for the same command, guide version, and diff is valid — cite it instead of
+re-executing; re-preflight only commands whose shape, target, or inputs changed.
 
 ## Land on main
 
@@ -323,15 +320,9 @@ gh pr create --base main --head "$BRANCH" \
 wait-ci <pr_number> --timeout 540
 ```
 
-Under Conductor, dispatch that exact deterministic command immediately to exactly one fresh
-`fork_turns: "none"` waiter leaf with the PR number, 540-second deadline, terminal
-success/failure predicates, compact-result requirement, and timeout `resume_command`. The parent
-blocks once for the leaf's terminal result. It must not start the wait itself, poll
-`write_stdin`, poll the waiter agent, or substitute `gh`/GitHub status reads. Outside Conductor,
-run `wait-ci` as one blocking foreground tool call and consume its single JSON result. If CI
-fails, fix in the promotion worktree, push, and use one new waiter leaf for the new tree. If it
-cannot be made green, STOP
-(in batch mode: stop the whole batch).
+Run `wait-ci` as one blocking foreground call and consume its single JSON result — never poll
+`gh`/GitHub status in a loop. If CI fails, fix in the promotion worktree, push, and wait again
+for the new tree. If it cannot be made green, STOP (in batch mode: stop the whole batch).
 
 Merge with the method chosen in Preflight #5:
 
@@ -434,12 +425,11 @@ git worktree remove "$WT"
 
 ## Terminal outcome
 
-For every success or failure handoff, load and apply
-`skills/references/terminal-outcomes.md`. Run its post-check after status update/worktree cleanup
-and put the production-deploy or failure banner plus details block before the batch table or
-failure details. Promotion success uses `## ✅ PRODUCTION DEPLOYED` with `Closeout check: NOT READY`
-because this skill never owns final behavior verification or `completed`; a partial/failed
-promotion uses the accurate red-X, blocked, or stopped banner.
+After status update and worktree cleanup, put one accurate banner plus details block before the
+batch table or failure details. Promotion success uses `## ✅ PRODUCTION DEPLOYED` with
+`Closeout check: NOT READY` because this skill never owns behavior verification or `completed`;
+a partial/failed promotion uses an accurate red-X, blocked, or stopped banner. Never claim a
+stage that did not verifiably complete.
 
 ## Batch loop (`--all`) specifics
 
@@ -500,6 +490,4 @@ output, or service health).
 |---|---|
 | `/ticket-verify staging` | Upstream — sets `staging_verified` and auto-invokes single-ticket mode on PASS |
 | `/migration-parity-check` | Schema gate + re-converge truth source; run before/after schema-bearing promotion |
-| `/create-deployment-guide` | Produces the `deployment_guide` artifact whose prod steps this skill executes |
 | `/ticket-verify production` | Downstream — verifies behavior/evidence and sets `completed` |
-| `/epic-flow` | Calls `--epic` mode after all milestone staging gates pass |

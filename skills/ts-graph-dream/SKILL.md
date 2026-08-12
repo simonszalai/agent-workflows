@@ -5,7 +5,7 @@ description: Production-only whole-system knowledge graph consolidation for ts-g
 
 # TS Graph Dream
 
-`ts-graph-dream` is the graph-data analogue of `deep-dream`: it audits a knowledge graph for duplicate assertions, predicate drift, entity fragmentation, stale rows, and bad importer patterns, then proposes safe consolidation actions.
+`ts-graph-dream` is a graph-data consolidation skill: it audits a knowledge graph for duplicate assertions, predicate drift, entity fragmentation, stale rows, and bad importer patterns, then proposes safe consolidation actions.
 
 Default stance: **read-only report first**. Mutate only after explicit user approval or an explicit apply request.
 

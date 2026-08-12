@@ -21,46 +21,7 @@ and determine the correct fix target.
 - **The codebase itself** - If the gotcha identifies existing violations, fix them (or create a
   work item). Documenting a rule without fixing the known violation means the bug will recur.
 
-## 2. Plan Gap
-
-**Symptoms:**
-
-- Requirement was ambiguous or incomplete
-- Edge case wasn't identified during planning
-- Constraint wasn't researched
-
-**Fix targets:**
-
-- `skills/ticket-plan/SKILL.md` - Add research requirement
-- Memory service — store the missed constraint as a gotcha
-
-## 3. Build Todos Gap
-
-**Symptoms:**
-
-- Implementation step was missing or unclear
-- Should have referenced existing pattern
-- Verification step wasn't included
-
-**Fix targets:**
-
-- `skills/create-build-todos/SKILL.md` - Add research step
-- Memory service — store the pattern as a reference
-
-## 4. Review Gap
-
-**Symptoms:**
-
-- Issue should have been caught by a specific review dimension
-- Review skill doesn't check for this type of issue
-- Review checklist is incomplete
-
-**Fix targets:**
-
-- `skills/review/references/*.md` - Add checklist item
-- `skills/review/SKILL.md` - Add new review dimension
-
-## 5. Workflow Gap
+## 2. Workflow Gap
 
 **Symptoms:**
 
@@ -72,7 +33,7 @@ and determine the correct fix target.
 
 - `skills/*/SKILL.md` - Add or modify workflow steps in the relevant skill
 
-## 6. Implementation Gap (Not Systemic)
+## 3. Implementation Gap (Not Systemic)
 
 **Symptoms:**
 
@@ -99,11 +60,8 @@ For each item to analyze, determine:
    - User correction (Claude did X, should have done Y)
 
 2. **Which upstream gap?**
-   - Could plan have identified this? -> Plan Gap
-   - Should build todos have specified this? -> Build Todos Gap
    - Is this a known gotcha? -> Knowledge Gap
-   - Should review prompt check for this? -> Review Gap
-   - Is a workflow step missing? -> Workflow Gap
+   - Is a workflow/skill step or rule missing? -> Workflow Gap
    - One-off mistake? -> Implementation Gap (no systemic fix)
 
 3. **What's the fix target?**

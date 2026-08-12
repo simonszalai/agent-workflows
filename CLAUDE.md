@@ -1,5 +1,4 @@
 <!-- mem:project=autodev repo=agent-workflows -->
-
 # Universal Development Conventions
 
 Shared conventions for all projects using agent workflows in Claude Code and Codex.
@@ -22,73 +21,36 @@ Shared conventions for all projects using agent workflows in Claude Code and Cod
 - Always include the repo's active schema-deploy artifact when schema changes require it
   (Atlas reviewed plans, Prisma/Alembic migrations, or the repo-specific equivalent).
   Omitting the schema artifact means the column/object may not exist at runtime.
-- **Never put MCP-tracked ticket artifacts in `.context/`** - see File Storage Rules below.
-  Workflows that run without a ticket (e.g. `/go-fable`) may use `.context/` for their own scratch.
+- **Never put MCP-tracked ticket artifacts in `.context/`** — ticket artifacts live in the MCP
+  ticket system (`mcp__autodev-memory__create_artifact`). `.context/` is only for ephemeral
+  intra-session scratch and browser screenshot evidence (`.context/screenshots/`).
 - **Never modify `~/dev/*` (main repos) directly** - always work in the Conductor workspace
-  that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`). The
-  `~/dev/*` paths are the main checkouts and must not be touched unless explicitly requested.
+  that is in your context (e.g., `~/conductor/workspaces/<project>/<workspace-name>/`).
 - **After an agent confirms that it merged the PR whose head is the current Conductor workspace
   branch, clean up that throwaway branch before continuing.** Delete its remote head, then run
-  `align-merged-pr-workspace <pr-number-or-url>`. The command fetches the PR's latest base, performs
-  a guarded zero-commit rebase so squash-merged commits are not replayed, removes the deleted
-  upstream marker, and refuses dirty, mismatched, unmerged, or still-remote heads. Never substitute a
-  normal `git rebase origin/<base>`: a multi-commit squash merge can conflict or replay old work.
-  This rule does not apply when the PR head is a repository-defined long-lived branch; leave that
-  remote head intact, which makes the command fail closed if it is invoked accidentally.
+  `align-merged-pr-workspace <pr-number-or-url>`. Never substitute a normal
+  `git rebase origin/<base>`: a multi-commit squash merge can conflict or replay old work.
+  Does not apply to repository-defined long-lived branches; leave those remote heads intact.
 - **Visible work requires browser screenshots.** If the work changes or verifies anything visible
-  to a user — UI, UX, styling, rendered HTML/email/PDF/markdown/docs, charts, screenshots,
-  browser-visible errors, or other visual output — capture screenshots from the actual rendered
-  surface in a real browser session (Browser Use/in-app browser, gstack, Playwright, or the
-  project-approved browser tool). Do **not** substitute DOM-only checks, generated/mock images,
-  code snippets, or descriptions for screenshot evidence.
-- **Screenshot paths must be absolute.** Save visible-work screenshots under the workspace
-  (prefer `.context/screenshots/<timestamp>-<slug>.png` when no project-specific location exists)
-  and include each screenshot as an absolute filesystem path in the final response and any
-  durable ticket/PR/review/verification artifact. For multi-state UI work, capture the relevant
-  before/after or state-specific screenshots. If a browser screenshot cannot be captured, state the
-  exact blocker and the attempted browser command/tool.
-
-## File Storage Rules (Critical)
-
-When running inside Conductor, each workspace has a `.context/` directory. This directory is
-**only for ephemeral inter-agent scratch data** (e.g., temporary intermediate results passed
-between parallel subagents within a single session). It is gitignored and disposable.
-
-**Ticket artifacts are stored in the MCP ticket system**, not on the local filesystem.
-Use `mcp__autodev-memory__create_artifact` to store plans, build todos, review findings, etc.
-
-**Never use `.context/` for:**
-
-- Plans, build todos, review findings, or any artifact that belongs to a tracked ticket
-- Anything that needs to survive across sessions
-
-**Only use `.context/` for:**
-
-- Temporary data passed between parallel subagents in a single session
-- Scratch computations that are consumed immediately and then discarded
-- Scratch state for ticketless autonomous workflows (e.g. `/go-fable`) that have no ticket to write to
-- Browser screenshot evidence for visible work, saved under `.context/screenshots/` and linked
-  by absolute path from the final response and durable artifacts. Treat these files as disposable
-  local evidence; the durable artifact stores the paths and context.
+  to a user — UI, UX, styling, rendered HTML/email/PDF/markdown/docs, charts, browser-visible
+  errors — capture screenshots from the actual rendered surface in a real browser session.
+  Do **not** substitute DOM-only checks, generated/mock images, code snippets, or descriptions.
+  Save screenshots under `.context/screenshots/<timestamp>-<slug>.png` and reference each by
+  absolute path in the final response and any durable ticket/PR artifact. If a browser screenshot
+  cannot be captured, state the exact blocker and the attempted browser command/tool.
 
 ## Scope and Response Style
 
-Load and follow the `autism` skill for all communication. It is the default communication
-protocol for the main agent and every delegated agent. Task-specific structured or verbatim output
-contracts still win.
+Load and follow the `autism` skill for all communication. Task-specific structured or verbatim
+output contracts still win.
 
 **Deliver what was asked, at the scope intended.** Make routine judgment calls yourself, and check
 in only when different readings of the request would lead to materially different work. If the
 request looks mistaken or a better approach exists, say so in a sentence and continue with the task
-as asked rather than quietly narrowing, widening, or transforming it. Finish the whole task; stop
-short of adjacent improvements, refactors, and extra files nobody asked for — name them in the
-report instead.
+as asked. Finish the whole task; stop short of adjacent improvements nobody asked for — name them
+in the report instead.
 
-**Answer in the fewest words that fully answer.** No preamble, no restating the request back, no
-summary of work the user just watched you do. Lead with the outcome — the first sentence says what
-happened or what you found — then supporting detail for whoever wants it. Written deliverables
-follow the same rule: cover the substance, skip filler sections, redundant summaries, and
-boilerplate.
+**Answer in the fewest words that fully answer.** Lead with the outcome, then supporting detail.
 
 ## Code Style (All Projects)
 
@@ -100,46 +62,12 @@ boilerplate.
 - Imports only at top of file (exception: circular imports with comment)
 - All timestamps need server_default with CURRENT_TIMESTAMP
 
-## What I Mean by "Agent Workflows"
+## Agent Workflows
 
-Agent workflows are shared skills plus tool-specific agent, hook, MCP, and legacy command
-configuration:
-
-1. **Skills** - Portable methodology documents (the HOW)
-   - Review checklists, research methods, tool references, testing patterns
-   - Universal (unprefixed) skills NEVER contain project-specific details (no table names,
-     service IDs, routes) — at most a clearly labeled example (`*Example (ts-prefect):*`)
-   - Exception: skills prefixed with a project identifier (e.g. `ts-`, `workflow-`, `amaru-`)
-     MAY embed that project's specifics even though they live in agent-workflows — this shares
-     one project's skills across its multiple repos. Repo-level skills (in the project repo)
-     may always be project-specific.
-   - Loaded by agents as reference material
-   - File: `skills/<name>/SKILL.md` with optional `templates/` subdirectory
-
-2. **Agents** - Tool-specific role definitions (the WHO)
-   - Define a specialized agent's purpose, methodology, skills to load, tool access
-   - Get project context from project instructions - not hardcoded
-   - Claude (user-level shared): `agents/<name>.md` in agent-workflows
-   - Claude (project-level): `.claude/agents/<name>.md` in the project repo
-   - Codex: `.codex/agents/<name>.toml`
-
-### User-Level vs Project-Level
-
-| Level   | Location                                                 | Contains                                 |
-| ------- | -------------------------------------------------------- | ---------------------------------------- |
-| User    | `~/.agents/skills`, `~/.claude/skills`, tool agent dirs  | Universal methodology for ALL projects   |
-| Project | `.agents/skills`, `.claude/agents`, `.codex/agents`      | Project-specific overrides and additions |
-
-**Rule:** If a skill or hook is used in 2+ projects, it belongs at user level.
-Project-specific context (table names, services, routes) goes in project instructions, not in
-shared skill or agent definitions.
-
-Project-level overrides user-level when both have the same filename.
-
-### Agent Workflow Distribution
-
-Shared skills, hooks, tool-specific agents, and this instruction file live in
-`simonszalai/agent-workflows`.
+Shared skills, hooks, binaries, and this instruction file live in
+`simonszalai/agent-workflows`. Skills are portable methodology/reference documents
+(`skills/<name>/SKILL.md`); universal (unprefixed) skills never contain project-specific details;
+project-prefixed skills (e.g. `ts-`) may. Project-level files override user-level on filename.
 
 | Environment     | Mechanism                                      | Direction |
 | --------------- | ---------------------------------------------- | --------- |
@@ -147,338 +75,63 @@ Shared skills, hooks, tool-specific agents, and this instruction file live in
 | NanoClaw        | Volume mount from agent-workflows              | Two-way   |
 | Cloud sessions  | SessionStart copies agent-workflows            | One-way   |
 
-**Resolution:** shared skills live under `.agents/skills` and are symlinked into Claude where
-needed. Agent definitions remain tool-specific because Claude and Codex use different formats.
+**Local dev links point directly at `~/dev/agent-workflows`.** Never run
+`bin/install-agent-workflows --version` locally: explicit-version mode pins the links to a frozen
+snapshot and merges silently stop reaching live sessions. Running it without `--version` repairs
+the live folder-link layout. A merge to remote `main` does not update the live checkout when its
+local branch is dirty, ahead, behind, or divergent.
 
-**Local dev links point directly at `~/dev/agent-workflows`**. Dedicated configuration roots are
-folder symlinks: `~/.claude/{skills,agents,hooks,workflows}`, `~/.agents/skills`, and
-`~/.codex/hooks`. Codex's shared skills root keeps one
-`~/.codex/skills/agent-workflows -> ~/dev/agent-workflows/skills` folder link so Codex-managed and
-personal skills can coexist. `~/.local/bin` is also shared, so its executables remain direct
-per-file links. Adding a skill directory requires no installer rerun. A merge to remote `main`
-does **not** update that checkout automatically when
-its local branch is dirty, ahead, behind, or divergent. Remote merge, local live propagation, and
-already-running session context are three separate states: new cloud sessions receive merged files;
-new local sessions read the live symlink checkout; an ongoing session retains instructions already
-loaded into its context, though explicit later file reads see filesystem changes.
-Running `bin/install-agent-workflows` locally without `--version` repairs this live folder-link
-layout. Never pass `--version` locally: explicit-version mode pins the links to a frozen snapshot
-under `~/.local/share/agent-workflows/versions/<commit>`, after which repo edits and merges silently
-stop reaching live sessions (this caused PRs #36/#37 to sit dormant). Explicit-version mode is only
-for environments that intentionally deploy pinned commits.
-
-### Where to Make Changes
-
-| Change type                      | Target                                    | Why                  |
-| -------------------------------- | ----------------------------------------- | -------------------- |
-| Project-specific skill          | `.agents/skills` in project repo          | Shared by tools      |
-| Project-specific agent          | `.claude/agents` or `.codex/agents`       | Tool-specific format |
-| Shared skill or hook            | `~/.agents`/`~/.claude`/`~/.codex` symlink | Available everywhere |
-| User-level conventions          | agent-workflows instruction files         | Shared rules         |
-| Knowledge gotcha/reference      | Autodev-memory MCP                        | Persisted in MCP     |
-
-### Committing User-Level Changes (Critical)
-
-When the `compound` skill, `heal-workflows` skill, or any correction triggers a user-level change:
-
-1. In Conductor, edit only the linked/current `agent-workflows` workspace and follow
-   `/workflow-authoring`; never edit `~/dev/agent-workflows` directly.
-2. Commit all files, push the workspace branch, merge its PR to `main`, and confirm the remote merge.
-3. Run `bin/verify-agent-workflows-live <merge-sha>` after fetching `origin/main`. If the live
-   symlink checkout is dirty/diverged or does not contain the merge, report **local propagation
-   pending**. Never overwrite, reset, stash, or auto-merge unrelated live-checkout work.
-4. Outside Conductor, direct edits through a clean live symlink checkout may be committed/pushed
-   there, but the same live verification is still required.
-
-A remote merge ensures cloud/other-machine propagation. Only the verifier proves local propagation.
-
-**Project-level changes** (files in the project's config directories)
-do NOT need this — they are committed as part of normal project workflow.
-
-## Proactive Command & Agent Triggers
-
-When the user mentions these activities, proactively use the corresponding skill or agent:
-
-### Investigation & Research
-
-| User says                                                 | Action             |
-| --------------------------------------------------------- | ------------------ |
-| "investigate", "what's wrong with", "why is this failing" | Use the `investigate` skill |
-| "research", "how does X work", "find all instances of"    | Use the `research` skill    |
-| "look into", "debug this", "root cause"                   | Use the `investigate` skill |
-
-### Planning & Building
-
-| User says                                      | Action                    |
-| ---------------------------------------------- | ------------------------- |
-| "plan", "design", "architect", "how should we" | Run `/ticket-plan`                   |
-| "build", "implement", "start working on"       | Use the `build` skill              |
-| "create build todos", "break this down"        | Use the `create-build-todos` skill |
-
-### Review & Quality
-
-| User says                                   | Action                |
-| ------------------------------------------- | --------------------- |
-| "review", "check my code", "look over this" | Use the `review` skill         |
-| "resolve review", "fix review findings"     | Use the `resolve-review` skill |
-
-### Testing
-
-| User says                                                 | Action              |
-| --------------------------------------------------------- | ------------------- |
-| "write tests", "add tests", "test coverage"               | Use the `write-tests` skill |
-| "fix tests", "tests failing", "CI failing", "test broken" | Investigate root cause, then fix (test or code, whichever is wrong) |
-| "verify in browser", "check the UI", "smoke test"         | Use browser testing workflow |
-
-### Verification & Deployment
-
-| User says                                       | Action                         |
-| ----------------------------------------------- | ------------------------------ |
-| "verify staging", "check staging"               | Run `/ticket-verify staging`   |
-| "verify production", "verify deployed"          | Run `/ticket-verify production` |
-| "create deployment guide"                       | Run `/create-deployment-guide` |
-| "create PR", "make a PR", "open PR"             | Run `/create-pr`               |
-
-### Automation
-
-| User says                               | Action            |
-| --------------------------------------- | ----------------- |
-| "auto-build", "build this ticket end to end", "ticket flow" | Run `/ticket-flow` (stops after staging verify) |
-| "full auto ticket", "staging through production", "entire ticket dance" | Run `/ticket-flow <ID> prod` |
-| "just deploy/verify this built ticket" | Run `/ticket-deploy <ID> staging|prod|full` |
-| "multi-ticket", "batch these related tickets" | Run `/ticket-flow` per ticket, or an epic when coordinated |
-| "milestone flow", "run this milestone"  | Run `/milestone-flow` |
-| "epic flow", "run this epic"            | Run `/epic-flow` |
-| "auto-fix", "fix this bug autonomously" | Create/run ticket via `/ticket-flow` (or `/go-fable` for ultra-light untracked edits) |
-
-### Learning & Correction Detection
-
-| User says                                                          | Action                        |
-| ------------------------------------------------------------------ | ----------------------------- |
-| "save this", "remember this", "store this", "compound", "document this", "save this learning", "what did we learn", "learn from review", "learn from this" | Run `/compound` |
-| "wtf", "why didn't you know this", "you should have known"         | Run `/autodev-wtf`            |
-| "retrospect", "what went wrong", "post-mortem"                     | Run `/retrospect`             |
-| "which workflow stage missed this bug"                             | Run `/autodev-wtf-workflows`  |
-| "no, do X instead", "that's wrong", "you should have", "don't do that", "actually the correct way is", "you keep doing X" | Proactively offer `/compound` |
-
-**Correction detection:** When the user explicitly corrects Claude's approach or output,
-proactively ask: "Should I `/compound` this so it sticks?" `/compound` decides whether the
-correction becomes a memory entry, a CLAUDE.md change, or a skill/workflow change.
-
-### Maintenance
-
-| User says                                                       | Action                 |
-| --------------------------------------------------------------- | ---------------------- |
-| "heal workflows", "check agent config"                          | Run `/heal-workflows`  |
-| "consolidate memories", "audit memories", "clean up memories", "dream", "deep dream", "whole-system dream", "improve skills from logs/tickets" | Run `/deep-dream` |
-| "session retro", "audit this session's tokens", "why was this run so expensive" | Run `/session-retro` |
-| "apply/implement the retro", "implement R1/R2", accepts session-retro recommendations | Run `/retro-apply`; the parent only writes the compact packet and delegates with `fork_turns: "none"` |
-
-### Ticket Management
-
-| User says                                                | Action                |
-| -------------------------------------------------------- | --------------------- |
-| "exclude from scope", "defer this", "out of scope"       | Spawn ticket-curator  |
-| "new ticket", "track this as", "create backlog item"     | Spawn ticket-curator  |
-| "add to F003", "update ticket source", "add context to"  | Spawn ticket-curator  |
-
-### Agent Workflow Modification
-
-When the user wants to add or modify a skill, agent, hook, binary, or workflow, use the
-`workflow-authoring` skill. It owns bounded discovery, the canonical repository health gate,
-worktree-safe PR merge/cleanup, and truthful remote-versus-local propagation reporting.
-
-When those changes are accepted recommendations from `/session-retro`, use `/retro-apply` first.
-It creates the bounded change packet and makes a fresh workflow-maintainer context own the entire
-`workflow-authoring` lifecycle; the long retro parent wakes only for the terminal result.
-
-## Delegation
-
-Delegate when the work needs its own context window — a wide multi-file investigation, a
-sizeable independent track, or a step whose intermediate reads would crowd out yours. Work you
-could finish in a handful of tool calls is cheaper done yourself; a subagent that only tails a
-log or greps one path costs more than it saves. Prefer one agent that can finish the job over
-several that split it, and never spawn an agent to check your own work.
-
-When you do delegate several genuinely independent agents, issue the `Agent` calls in a single
-assistant message so they run concurrently rather than in sequence.
+**Committing user-level changes:** edit only the linked/current `agent-workflows` Conductor
+workspace, commit, push, merge the PR to `main`, then run
+`bin/verify-agent-workflows-live <merge-sha>` after fetching `origin/main`. If the live symlink
+checkout is dirty/diverged or missing the merge, report **local propagation pending**. Never
+overwrite, reset, stash, or auto-merge unrelated live-checkout work. Only the verifier proves
+local propagation.
 
 ## Ticket System (MCP-Based)
 
 All tickets and their artifacts are managed via the `mcp__autodev-memory` MCP server.
-No local `work_items/` directory is used.
 
-### Ticket Context Resolution
+**Context resolution** (required for all ticket MCP calls):
+project from `<!-- mem:project=X -->` in the repo's CLAUDE.md; repo from
+`basename -s .git $(git config --get remote.origin.url)`.
 
-Every command that works with tickets must resolve `project` and `repo`:
+**Types/IDs:** Features `F0023`, bugs `B0023`, refactors `R0023` (repo-scoped, auto-generated by
+`create_ticket`); epics `E0023` (project-scoped, `create_epic`). Link cross-repo work via the
+`related` field (`related=["ts-scraper/F0004"]`).
 
-```
-# Project: from <!-- mem:project=X --> in CLAUDE.md
-# Repo: from git remote — basename -s .git $(git config --get remote.origin.url)
-```
+**Tools:** `create_ticket`, `get_ticket`, `list_tickets`, `update_ticket`, `search_tickets`,
+`next_ticket`, `get_similar_tickets`, `create_artifact`, `update_artifact`.
 
-These two values are required for all ticket MCP calls.
+**Bounded reads:** request the smallest sufficient context — `detail="light",
+include_events=false` for routing/status checks; `detail="full", artifact_types=[...]` for named
+artifact bodies. Cache a ticket response for the run and reuse its artifact IDs.
 
-### Ticket Types and IDs
-
-- Features: `F0023` (auto-generated by `create_ticket` with `type: "feature"`)
-- Bugs: `B0023` (auto-generated with `type: "bug"`)
-- Refactors: `R0023` (auto-generated with `type: "refactor"`)
-- Epics: `E0023` (auto-generated by `create_epic`; **project-scoped** — see
-  `skills/references/epic-lifecycle.md`)
-
-Ticket IDs are **repo-scoped** — each repo maintains its own sequence per type prefix.
-`create_ticket` auto-generates the next available ID. Use `seq_num` only for migrations.
-
-### MCP Ticket Tools
-
-| Tool | Purpose |
-|---|---|
-| `create_ticket` | Create a new ticket (description becomes source artifact) |
-| `get_ticket` | Get bounded ticket context; use `detail`, `artifact_types`, and `include_events` |
-| `list_tickets` | List tickets filtered by status/type/repo |
-| `update_ticket` | Update status, title, tags, epic assignment, etc. |
-| `search_tickets` | Semantic + BM25 search across all ticket artifacts |
-| `next_ticket` | Get the next planned/backlog ticket |
-| `get_similar_tickets` | Find similar completed tickets |
-| `create_artifact` | Add plan, build_todo, review_todo, etc. to a ticket |
-| `update_artifact` | Update artifact content or status |
-
-Ticket reads must request the smallest sufficient context:
-
-- `detail="light", include_events=false` returns ticket metadata plus artifact manifests without
-  artifact bodies. Use it for routing, existence checks, status checks, and prerequisite gates.
-- `detail="full", artifact_types=[...], include_events=false` returns content only for the named
-  artifact types. Standalone tools may use this bounded read when no delegated ticket-delivery
-  context owner exists.
-- Full unfiltered artifacts and event history are reserved for audits and retrospectives that
-  genuinely need them.
-- Cache a ticket response for the workflow run and reuse its artifact IDs and `context_version`.
-  Do not call `get_ticket` again unless a relevant artifact changed outside the current workflow.
-- In ticket investigation, planning, and build flows, the main orchestrator reads only the light
-  manifest. A fresh no-history context curator owns every current artifact body plus applicable
-  memory/similar-ticket retrieval and returns one relevance-filtered phase packet with no fixed
-  byte ceiling. See
-  `skills/references/delegated-ticket-context.md`.
-- The curator uses `detail="compact"` for `search_tickets` and `get_similar_tickets`, expands only
-  applicable results, and records provenance. The parent and downstream agents receive the packet
-  path/hash and must not replay those reads.
-
-### Artifact Types
-
-| Type | Purpose | Key Fields |
-|---|---|---|
-| `source` | Problem/feature description | Auto-created by `create_ticket` |
-| `plan` | Architecture plan | content |
-| `build_todo` | Implementation step | title, sequence, status, content |
-| `review_todo` | Review finding | title, sequence, status, content |
-| `investigation` | Root cause analysis | content |
-| `retrospective` | Post-mortem analysis | content |
-| `deployment_guide` | Deployment instructions | content |
-| `learning_report` | Knowledge/workflow improvements | content |
-| `verification_evidence` | Post-deploy evidence collected by `/ticket-verify` | content |
-| `html` | Rendered plan/epic explainer page (`/plan-explainer`) | content |
-
-### Status Vocabulary (two enums)
-
-Canonical lifecycles (standalone direct-main, standalone staging-first, and epic-step) live in
-`skills/references/ticket-lifecycle.md` and `skills/references/epic-lifecycle.md` — read those
-for the full state diagrams. Essentials:
-
-There is no `approved` ticket status; approval is the decision to leave `planned` and begin
-work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
-are retired; use the single actual active-work status `in_progress`.
-`/ticket-flow` may deploy standalone tickets only through `/auto-deploy` after it chooses the
-staging-first or direct-production route. Post-deploy behavior verification remains owned by
-`/ticket-verify`; promotion (landing on main **plus** running the production deploy steps) is
-owned by `/ticket-promote`, which then invokes `/ticket-verify production`; epic milestone
-staging gates are owned by `/milestone-flow`, which must deploy and run the explicit
-epic/milestone verifier before it can return success. `to_verify_prod` means "production landing
-and deploy steps complete; behavior unverified".
-
-### Cross-Repository Tickets
-
-When a feature spans multiple repos, create linked tickets using the `related` field:
-
-```
-create_ticket(
-  project="ts", repo="ts-prefect",
-  title="Feature title (ts-prefect side)",
-  type="feature",
-  description="...",
-  related=["ts-scraper/F0004"]
-)
-```
-
-### Ticket Lifecycle
-
-1. **Create** — `create_ticket(status="backlog")`
-2. **Start** — `update_ticket(status="in_progress")`
-3. **Plan** — `create_artifact(artifact_type="plan", content=...)`
-4. **Build todos** — `create_artifact(artifact_type="build_todo", sequence=N, ...)`
-5. **Build** — `update_artifact(status="in_progress")` then `update_artifact(status="complete")`
-6. **Review** — `create_artifact(artifact_type="review_todo", sequence=N, ...)`
-7. **Resolve** — `update_artifact(status="resolved")` for each review finding
-8. **Deploy/promote** — `/auto-deploy` or `/ticket-promote` sets `to_verify_staging`/`to_verify_prod`
-9. **Verify** — `/ticket-verify` collects evidence and sets `completed` (or `verify_*_failed`)
-
-### Autonomous Workflows
-
-- `/ticket-flow`: Autonomous single-ticket execution — compact delivery for direct/standard,
-  risk-focused `/ticket-plan` -> `/ticket-build` for heavy, then `/ticket-deploy staging`; stops
-  after staging verification by default. With the `prod` argument
-  it runs `/ticket-deploy full` instead: production promotion/deploy -> production verification ->
-  completed; stops on failures, blockers, or genuine timing waits. Intensity
-  (`direct`/`standard`/`heavy`, see `skills/references/execution-intensity.md`) is decided once
-  and always requires a plan MCP artifact. Routine additive migrations do not select heavy, and
-  cumulative model-session counts never stop a later required phase.
-- `/ticket-build`: Implementation phase — todos + build/tests in one owner chain -> targeted review
-  -> resolve -> local health gate
-- `/ticket-deploy`: Deploy+verify phase — `staging` (deploy + verify staging), `prod`
-  (status-aware production leg; direct-production asks confirmation unless tiny/safe), or `full`
-  (staging then production, gated on exact staging PASS)
-- Mutation-capable staging owners apply `skills/references/staging-autonomy.md`: documented bounded
-  fixtures, seeds, registrations, and disposable prerequisites are repaired without asking; live
-  external operations are waited to completion. Only human-required or agent-incapable actions may
-  return `BLOCKED`.
-- `/go-fable`: Ultra-light ticketless working-tree edits (no plan artifact, no commits/PRs)
-- `/ticket-verify`: Timer-friendly staging/production verification; a low-risk standalone staging PASS auto-calls `/ticket-promote` (auto-promotion gate: FINALIZED contract fully graded, no schema/deploy-config/auth in the diff — riskier scopes rest at `staging_verified` for explicit promotion); explicit epic/milestone mode reports parent gates
-- `/ticket-promote`: Promote staging-verified tickets — lands on main AND runs the production
-  deploy steps, then invokes `/ticket-verify production`. Modes: single ticket (default,
-  auto-invoked by a gate-passing staging PASS), `--all` batch, `--epic <ID>`, `--all-staging`
-- `/epic-plan`, `/epic-split`, `/milestone-flow`, `/epic-flow`: Epic/milestone orchestration over ticket-flow; `/milestone-flow` deploys/verifies each staging milestone gate, and `/epic-flow` sequences milestones plus final prod after all gates pass
+**Lifecycle:** canonical state machines live in `skills/references/ticket-lifecycle.md` and
+`skills/references/epic-lifecycle.md` — statuses, staging-first vs direct-production routes,
+promotion and verification gates. There is no `approved` status; leaving `planned` means setting
+`in_progress`. `to_verify_prod` means "production landing and deploy steps complete; behavior
+unverified". Staging mutation autonomy boundaries are in
+`skills/references/staging-autonomy.md`.
 
 ## Knowledge System
 
 | Tier   | Location                              | Purpose                                       | Always in Context |
 | ------ | ------------------------------------- | --------------------------------------------- | ----------------- |
-| Tier 1 | CLAUDE.md                             | Project conventions (stack, branches, rules)  | Yes — auto-loaded |
-| Tier 2 | Starred memory entry (autodev-memory) | Critical gotchas / rules that must always apply | Yes — auto-injected by memory hook |
-| Tier 3 | Memory service (unstarred)            | Detailed references, gotchas, solutions       | No — surfaced via `mcp__autodev-memory__search` |
+| Tier 1 | CLAUDE.md                             | Project conventions                           | Yes — auto-loaded |
+| Tier 2 | Starred memory entry (autodev-memory) | Critical gotchas that must always apply       | Yes — auto-injected by memory hook |
+| Tier 3 | Memory service (unstarred)            | Detailed references, gotchas, solutions       | No — via `mcp__autodev-memory__search` |
 
-Knowledge lives in the memory service via `mcp__autodev-memory`. Tier 2 entries are
-auto-injected with the same authority as CLAUDE.md; Tier 3 entries are pulled in on
-demand. The `/compound` skill is the canonical authority on which tier a new piece of
-knowledge belongs in.
+Search memory when researching patterns, past solutions, or known gotchas. The `compound` skill
+owns saving new knowledge and deciding its tier.
 
-### When to Search Memory Service
+## Delegation
 
-- Researching patterns for a new feature
-- Looking for past solutions to similar problems
-- Reviewing code for known gotchas
-- Creating build_todos that need codebase patterns
+Delegate when the work needs its own context window — a wide multi-file investigation or a
+sizeable independent track. Work you could finish in a handful of tool calls is cheaper done
+yourself. Dispatch agents in the foreground; background only genuinely fire-and-forget work,
+since a backgrounded agent's result is not collected this turn.
 
 ## Markdown Formatting
 
-- Line length: 100 characters max
-- Exception: Tables and URLs may exceed
-
-## Agent Dispatch: Foreground vs Background (Critical)
-
-Dispatch agents in the foreground. `run_in_background: true` returns immediately with only an
-output file path, so if you need the agent's result — to consolidate findings, to feed the next
-step, to synthesize across several agents — backgrounding loses it, and the workflow reports
-success on output nobody collected. That has happened repeatedly.
-
-Background only genuinely fire-and-forget work whose result you will not consume this turn, or
-work the user explicitly asked to run in the background.
+- Line length: 100 characters max (tables and URLs may exceed)
