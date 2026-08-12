@@ -1,6 +1,7 @@
 # Ticket lifecycle reference
 
-This is the canonical lifecycle for ticket-level workflow skills.
+The canonical state machine for tickets. Role names below (executor, promoter, verifier) mean
+"whoever performs that step in the current session" — there are no dedicated phase skills.
 
 ## Key terms
 
@@ -8,10 +9,8 @@ This is the canonical lifecycle for ticket-level workflow skills.
 - **Deploy**: run deployment steps, wait for deploy infrastructure, or push deploy config.
 - **Verify**: observe staging/production behavior and update ticket status from evidence.
 
-`/ticket-flow` may deploy standalone tickets only by invoking `/auto-deploy`, which owns the
-merge/deploy mechanics and next verification status. Ticket execution must not perform
-ad-hoc deployment commands or post-deploy behavior verification. Verification and promotion are
-separate timer-friendly skills.
+Landing/deploy mechanics, behavior verification, and production promotion are separate steps:
+never mark work verified from build output, and never treat a landing as a verification.
 
 ## Standalone ticket statuses
 
@@ -27,27 +26,25 @@ to_verify_prod -> completed | prod_verified_needs_cleanup | verify_prod_failed
 
 # staging landing/deployment
 to_verify_staging -> verify_staging_failed
-                 \-> staging_verified -> ticket-promote -> to_verify_prod -> completed | prod_verified_needs_cleanup | verify_prod_failed
+                 \-> staging_verified -> promotion -> to_verify_prod -> completed | prod_verified_needs_cleanup | verify_prod_failed
 ```
 
-Staging PASS **auto**-invokes `/ticket-promote` only for low-risk scopes that pass the
-auto-promotion gate (`ticket-verify` §9b: FINALIZED contract fully graded on fresh
-post-activation evidence, and no schema/deploy-config/auth category in the diff).
+A staging PASS may auto-promote only low-risk scopes: the ticket's contract fully graded on
+fresh post-activation evidence, and no schema, deploy-config, or auth category in the diff.
 Schema-, deploy-config-, or auth-bearing tickets rest at `staging_verified` until a human
-runs `/ticket-promote` explicitly — that resting state is normal, not a stall.
+explicitly asks for promotion — that resting state is normal, not a stall.
 
-`/ticket-promote` is the post-staging production step: it lands the promoted commits on
-`main` AND runs the project's production deploy steps before setting `to_verify_prod`.
+**Promotion** is the post-staging production step: it lands the promoted commits on `main`
+AND runs the project's production deploy steps before setting `to_verify_prod`.
 
 `to_verify_prod` means: **production landing AND deploy steps are complete; behavior is
-unverified.** Only `/ticket-verify production` moves a ticket from `to_verify_prod` to
-`completed`, `prod_verified_needs_cleanup`, or `verify_prod_failed`.
+unverified.** Only production verification with evidence moves a ticket from `to_verify_prod`
+to `completed`, `prod_verified_needs_cleanup`, or `verify_prod_failed`.
 
 `prod_verified_needs_cleanup` means: **production behavior passed verification, but deferred
 cleanup still needs trigger/execution/soak/final evidence, or approval for critical/unknown
-destructive cleanup, on the same ticket/epic.**
-Only `/ticket-verify production` moves it to `completed` (cleanup evidence passed) or
-`verify_prod_failed` (cleanup evidence failed/out-of-scope/revert required).
+destructive cleanup, on the same ticket/epic.** Only production verification moves it to
+`completed` (cleanup evidence passed) or `verify_prod_failed`.
 
 Use `abandoned` and `on_ice` only for explicit cancellation/deprioritization.
 
@@ -55,24 +52,18 @@ Use `abandoned` and `on_ice` only for explicit cancellation/deprioritization.
 
 Do not create or use a `blocked` lifecycle status. Any lifecycle column can have a blocker.
 When work/deploy/verification is waiting on an external dependency, keep the ticket in the
-correct lifecycle status and set independent blocker metadata:
+correct lifecycle status and set independent blocker metadata: `blocked_at`, `blocked_by`,
+`blocked_reason`, `blocked_context`.
 
-- `blocked_at`
-- `blocked_by`
-- `blocked_reason`
-- `blocked_context`
-
-Example: after an automatable production deploy is complete, a ticket should still move to
-`to_verify_prod`. If verification is waiting on a Thomas-only `ts-decrypt-proxy` production
-deploy, set `blocked_by="Thomas"` and include `{"repo":"ts-decrypt-proxy","target":"production"}`
-in `blocked_context`. The dashboard shows this as a red blocker indicator in the normal status
-column.
+Example: after an automatable production deploy completes, the ticket still moves to
+`to_verify_prod`; if verification waits on a human-only deploy elsewhere, set
+`blocked_by="<person>"` with the repo/target in `blocked_context`.
 
 ## Deferred cleanup holding status
 
-Deferred cleanup is not split into a child cleanup ticket. When `ticket-verify` §10a finds a
-structured decommission/retirement follow-up after production verification passes, the original
-ticket/epic keeps a `deferred_cleanup` artifact and moves to `prod_verified_needs_cleanup`:
+Deferred cleanup is not split into a child cleanup ticket. When production verification passes
+but a structured decommission/retirement follow-up remains, the original ticket/epic keeps a
+`deferred_cleanup` artifact and moves to `prod_verified_needs_cleanup`:
 
 ```text
 to_verify_prod
@@ -80,69 +71,59 @@ to_verify_prod
   -> completed | verify_prod_failed
 ```
 
-Approval, trigger, and soak are blocker metadata per the existing blocker policy above, not
-separate statuses. Bounded noncritical destructive cleanup (including terminal Prefect flow-run
-history) is automatically eligible and does not require approval; critical/unknown destructive
-cleanup still does. Normal work pickup queues skip blocked items (`next_ticket` excludes them),
-but `/ticket-verify production` includes cleanup holders in its default verification queue; an
-explicit ticket ID can target one holder. See
-`ticket-verify` §10/§10a for the artifact contract and execution rules. Legacy
-`cleanup=true` child tickets may be read for historical context, but new cleanup work stays on
-the parent item.
+Approval, trigger, and soak are blocker metadata, not separate statuses. Bounded noncritical
+destructive cleanup (including terminal Prefect flow-run history) is automatically eligible and
+does not require approval; critical/unknown destructive cleanup does. Normal work pickup queues
+skip blocked items (`next_ticket` excludes them), but production verification includes cleanup
+holders in its default queue. New cleanup work stays on the parent item; legacy `cleanup=true`
+child tickets are historical context only.
 
 ## Epic-step ticket statuses
 
 Epic source tickets are parked as `absorbed_into_epic` and never land. Epic step tickets are
-ordinary tickets that are executed with epic context. After their code is landed for the
-milestone/integration target, they move to `merged`; the parent epic or milestone gate owns
-staging/prod verification.
+ordinary tickets executed with epic context. After their code lands for the milestone/integration
+target, they move to `merged`; the parent epic or milestone gate owns staging/prod verification.
 
 ```text
 backlog -> up_next -> in_progress -> planned -> in_progress -> merged
 ```
 
-When `/ticket-verify` is invoked with an explicit parent epic/milestone scope, it may also use
-the shared verification states as parent-owned flags:
+When verification runs with an explicit parent epic/milestone scope, it may also use the shared
+verification states as parent-owned flags:
 
 ```text
 merged -> staging_verified -> to_verify_prod -> completed
 ```
 
-These status changes mean "the parent epic gate verified/promoted this step", not that the step
-was verified or promoted as a standalone ticket. Default ticket verification/promotion queues
-should still skip epic step tickets unless the parent epic/milestone scope is explicit.
+These mean "the parent epic gate verified/promoted this step", not that the step was verified
+standalone. Default verification/promotion queues skip epic step tickets unless the parent
+epic/milestone scope is explicit.
 
 ## Staging verification statuses
 
 The ticket lifecycle enum includes the staging segment as of **migration 025**:
-
-- `ready_to_deploy_staging`
-- `to_verify_staging`
-- `staging_verified`
-- `verify_staging_failed`
+`ready_to_deploy_staging`, `to_verify_staging`, `staging_verified`, `verify_staging_failed`.
 
 A standalone ticket landed to staging advances to `to_verify_staging` directly (no epic
-required); the dashboard board surfaces it in the "Verify staging" lane. Do not emulate status
-with tags or free-form metadata.
+required). Do not emulate status with tags or free-form metadata.
 
 ## Approval
 
 There is no `approved` ticket status. Approval is the decision to leave `planned` and start
-work again by setting `in_progress`. Ticket statuses `planning`, `building`, and `active`
-are retired; use `in_progress` for any ticket-related flow that has started.
+work again by setting `in_progress`. Statuses `planning`, `building`, and `active` are retired;
+use `in_progress` for any started flow.
 
 ### Origin and execution-approval audit state
 
 Ticket `origin` is immutable audit provenance, not an ownership, authorization, execution, or
-pickup boundary. A project-scoped principal with ticket write capability may create tickets in any
-canonical lifecycle status and move tickets across lifecycle statuses inside its project scope.
-Workflow skills must never infer an execution gate from an origin value.
+pickup boundary. A project-scoped principal with ticket write capability may create tickets in
+any canonical lifecycle status and move tickets across statuses inside its project scope. Never
+infer an execution gate from an origin value.
 
-`approve_execution=true` remains an explicit connected-admin action that stamps
-`execution_approved_at` and `execution_approved_by` for audit purposes. The approval pair is not a
-prerequisite for pickup or for leaving `planned`. Changes to approved source or plan material may
-clear the pair, but null fields do not block implementation.
+`approve_execution=true` remains an explicit connected-admin action stamping
+`execution_approved_at`/`execution_approved_by` for audit. The pair is not a prerequisite for
+pickup or leaving `planned`; null fields do not block implementation.
 
-`next_ticket` is the canonical pickup contract. It selects unblocked `planned` or `backlog` tickets
-by lifecycle state, repo scope, and ordering; it does not filter by origin or execution approval.
-Skills and clients must not add a second origin/approval filter, status rewrite, tag, or blocker.
+`next_ticket` is the canonical pickup contract: unblocked `planned` or `backlog` tickets by
+lifecycle state, repo scope, and ordering. Do not add a second origin/approval filter, status
+rewrite, tag, or blocker.

@@ -7,7 +7,6 @@ description: Project-aware Postgres investigation through the shared read-only p
 
 How to query project databases during investigation.
 
-Also follow `../references/execution-economy.md` for run-local caching and bounded output.
 
 **Important:** `psql-cli` has no mutation mode. Every connection is constrained by a
 read-only transaction, a read-only session default, and a 30-second statement timeout. Schema and

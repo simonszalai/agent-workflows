@@ -54,25 +54,19 @@ Same-repo edges order the waterfall but do not need cross-repo contracts.
 Epic execution works one milestone at a time:
 
 ```text
-epic-plan -> epic-split
-  -> milestone-flow M1 (build + deploy staging + verify M1 staging gate)
-  -> milestone-flow M2 (build + deploy staging + verify M2 staging gate)
+plan -> split into milestone-assigned step tickets
+  -> milestone M1: build steps + deploy staging + verify M1 staging gate
+  -> milestone M2: build steps + deploy staging + verify M2 staging gate
   -> ...
   -> ordered epic production promotion/deploy -> final production verify
 ```
 
-The lower-level ticket-flow may execute individual step tickets, but it must load epic context
-and respect the contracts. The epic/milestone orchestrator owns parallelism and gate progression.
-A **direct** ticket-flow run on a step (no `--epic-context`) that completes its milestone hands
-off to `/milestone-flow` so the deploy + gate still run; a delegated run (`--epic-context`) or one
-that leaves siblings open lands only and lets `/milestone-flow` deploy the milestone as a unit.
-
-`/milestone-flow` owns the staging gate loop for the milestone it is asked to run: it executes the
-step-ticket DAG, writes the gate package, deploys the parent epic/milestone target to staging,
-invokes explicit epic/milestone verification, fixes failures inside the same milestone, and returns
-success only after a staging `PASS`. `/epic-flow` sequences milestones and owns final production
-promotion/verification after all staging gates pass; it must not treat a build-only milestone
-handoff as complete.
+Individual step tickets may be executed on their own, but must load epic context and respect the
+contracts. The milestone gate loop executes the step-ticket DAG, writes the gate package, deploys
+the parent epic/milestone target to staging, runs explicit epic/milestone verification, fixes
+failures inside the same milestone, and succeeds only on a staging `PASS`. Final production
+promotion/verification happens only after all staging gates pass; a build-only milestone handoff
+is not complete.
 
 ## Epic status vocabulary
 
@@ -85,8 +79,8 @@ planning -> in_progress -> to_verify_staging -> staging_verified -> to_verify_pr
 
 - `to_verify_staging` / `staging_verified` are set per milestone gate progress (the last
   milestone gate PASS moves the epic to `staging_verified`).
-- `to_verify_prod` is set when production promotion of the epic lands (`/ticket-promote
-  --epic`); `completed` when `/ticket-verify production` passes the epic scope.
+- `to_verify_prod` is set when production promotion of the epic lands; `completed` when
+  production verification passes the epic scope.
 - Blockers are metadata, not statuses — same rule as tickets (see ticket-lifecycle.md).
 
 ## Verification evidence placement

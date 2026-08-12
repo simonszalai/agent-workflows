@@ -1,7 +1,7 @@
 ---
 name: night-dream
 description: >-
-  Scheduled, cloud-safe subset of deep-dream. Nightly unattended consolidation over autodev
+  Scheduled, cloud-safe nightly unattended consolidation over autodev
   tickets + the memory store ONLY (session logs are local-only and excluded by design). Auto-applies
   only adversarially-surviving repair/supersession/quarantine memory actions; everything else —
   including the ts-graph-dream production graph cleanup plan — is posted to Slack as a proposal.
@@ -10,9 +10,8 @@ max_turns: 200
 
 # Night Dream
 
-`/night-dream` is the scheduled arm of the dreaming family: what `/deep-dream` does in a manual
-local session, this does unattended from a cloud workspace, restricted to evidence and mutations
-that are safe without a human present. It runs under the full unattended contract in
+`/night-dream` is unattended nightly consolidation over tickets and the memory store,
+restricted to evidence and mutations that are safe without a human present. It runs under the full unattended contract in
 `../references/scheduled-run.md` — mutation boundary, Slack one-line + thread format,
 `SCHEDULED_RUN_RESULT` ending, `rc_fingerprint` dedup. Invoked by Hermes
 `hermes/schedules/nightly-dream.md`; report channel `#autodev-nightly` (ID from
@@ -31,18 +30,24 @@ that are safe without a human present. It runs under the full unattended contrac
 
 ## Channels
 
-Three consolidation channels, reusing deep-dream's methodology files for candidate quality and
-gating — read both before proposing anything:
+Three consolidation channels:
 
 | Channel | Method | Output |
 |---|---|---|
-| Memory audit/consolidation | `../deep-dream/references/audit-checklist.md` over a bounded slice of entries | repair/supersession/quarantine actions (auto-apply if surviving), everything else proposed |
+| Memory audit/consolidation | audit a bounded slice of entries for the defect classes below | repair/supersession/quarantine actions (auto-apply if surviving), everything else proposed |
 | Ticket-failure patterns | recurring root causes across recent tickets (verify FAILs, investigation artifacts, review findings) | proposals; recurring findings use `rc_fingerprint` extend-not-duplicate |
 | Knowledge gaps | incidents/tickets that a missing memory entry would have prevented | proposed new-entry drafts in the thread (creation is not auto-applied) |
 
-Every candidate action must survive the adversarial gate in
-`../deep-dream/references/adversarial-base.md`. **A run that applies zero mutations because
-nothing survived scrutiny is a normal, successful PASS** — bias is toward not acting.
+Memory-audit defect classes: factually wrong or stale content; duplicates/near-duplicates of a
+canonical entry; entries contradicted by newer confirmed knowledge; harmful or misleading
+guidance; orphaned project-specific entries for retired systems. An entry is a candidate only
+with concrete evidence (the contradicting ticket/entry/commit), never on style grounds.
+
+**Adversarial gate:** before applying any candidate action, genuinely try to refute it — is the
+"stale" fact actually still true, is the "duplicate" carrying distinct nuance, would quarantine
+lose knowledge that still fires usefully? An action is applied only when the refutation attempt
+fails on evidence. **A run that applies zero mutations because nothing survived scrutiny is a
+normal, successful PASS** — bias is toward not acting.
 
 ## Mutation policy (the entire unattended surface)
 
@@ -96,8 +101,8 @@ or attempt to post Slack messages directly: the runner renders one count-rich pa
 one structured thread reply, while the raw machine block remains in Conductor only. A zero-action
 PASS must say why no action was safe or necessary; never use a generic `ended PASS` summary.
 
-## Relation to the manual skills
+## Relation to manual sessions
 
-`/deep-dream` (whole-system, session logs, skill edits), `/heal-workflows`, and
-`/autodev-improve` remain **manual-local only**. Night-dream never substitutes for them; it
-surfaces what it cannot safely do as proposals for those sessions.
+Whole-system consolidation involving session logs or skill/workflow edits remains manual-local
+only. Night-dream never substitutes for it; it surfaces what it cannot safely do as proposals
+for a manual session.

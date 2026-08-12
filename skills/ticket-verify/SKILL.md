@@ -10,11 +10,8 @@ max_turns: 30
 
 # Ticket Verify
 
-Follow `../references/execution-economy.md`; coalescing execution never coalesces lifecycle truth
-or waives an evidence row.
-
 Verify tickets, or an explicit epic/milestone gate, after code has landed and deployment has
-completed.
+completed. Evidence collection never coalesces lifecycle truth or waives an evidence row.
 
 ## Usage
 
@@ -23,12 +20,11 @@ completed.
 /ticket-verify production           # to_verify_prod + verify_prod_failed tickets, plus pending epic gates
 /ticket-verify staging F0123 B0042
 /ticket-verify production F0123 --lookback 24h
-/ticket-verify staging --no-promote # report staging PASS but do not call ticket-promote
+/ticket-verify staging --no-promote # report staging PASS but do not promote
 /ticket-verify staging F0123 --produce-evidence # run one bounded idle-staging producer if needed
 
 /ticket-verify staging --epic E0007 --milestone M2 --no-promote
 /ticket-verify production --epic E0007
-/ticket-verify production --epic E0007 --milestone M2
 
 /ticket-verify --scheduled            # unattended nightly: full default queue, staging AND production, verify-only
 /ticket-verify staging --scheduled    # unattended, one environment
@@ -37,764 +33,332 @@ completed.
 First argument must be `staging`, `prod`, or `production` — except with `--scheduled`, where
 omitting the environment means both (staging first, then production).
 
-`--produce-evidence` is staging-only and must be explicitly supplied by a human-authorized wrapper
-such as `/ticket-deploy` (targets `staging`/`full`) or `/milestone-flow`, or by the user. It does
-not authorize production flow triggers.
+`--produce-evidence` is staging-only and must be explicitly supplied by the user or a
+human-authorized deploying workflow. It does not authorize production flow triggers.
 
 ## Boundaries
 
-- Verification evidence collection is read-only by default: no data mutation, no flow triggers, no deploys.
-  Exception: if the selected scope's evidence contract/deployment guide explicitly requires a bounded on-demand canary/shadow run in the target environment, or staging `--produce-evidence` resolves one unambiguous bounded producer under §3a, and the deployment is already registered with safe parameters (for example `enqueue_mode=off`, capped `max_items`, no schedule change), `/ticket-verify` may trigger exactly that on-demand run and then grade its durable outputs. Record the command, run id, parameters, and terminal state in the evidence artifact. Do not use this exception for backfills, unbounded/full enqueue, schedule creation, deploys, migrations, manual Render deploys, or external-service mutations.
-  A triggered canary is not free to leave behind: **successful canary/shadow runs and their temporary artifacts must be cleaned up after grading.** That includes the successful canary flow run itself, any temporary deployment/schedule registered to produce it, and any throwaway rows/records it wrote purely to generate evidence. Real production data the canary happened to process is left alone — only the artifacts that exist *because* the canary ran are removed. In staging, clean up inline after grading and before recording PASS. For a production contract-triggered canary, use the §10 `deferred_cleanup` path or inline cleanup when it is trivially and fully reversible. Record what was removed in the evidence artifact. A canary left registered or running after verification is a defect, not a PASS. On terminal failure, preserve the failed flow-run history and logs so the user can inspect the failure; clean temporary registrations and throwaway data that are not needed for diagnosis, record the retained run id in failure evidence, and stop.
-- Treat local `.context` files as **temporary scratch only**, not as verification artifacts or
-  durable evidence. The canonical verification report must be persisted to autodev as a ticket
-  or epic artifact. After the artifact is created or updated, delete any local scratch files this
-  verification run created under `.context` (logs, JSON dumps, markdown drafts, screenshots, temp
-  artifact JSON files, etc.) unless the user explicitly asked to keep them.
-- On standalone staging PASS, this skill invokes `/ticket-promote` for that ticket **only
-  when the auto-promotion gate (§9b) passes** — low-risk scopes with a fully graded
-  FINALIZED contract. Higher-risk scopes rest at `staging_verified` for an explicit human
-  `/ticket-promote`. Promotion (landing on main + production deploy steps) is a separate
-  step, not part of evidence collection.
-- The verifier agents this skill spawns are strictly read-only. The two narrow mutations this
-  skill allows — the bounded on-demand canary/shadow trigger and the deferred post-PASS
-  cleanup command (§10) — are executed by the ORCHESTRATOR (the ticket-verify runner itself),
-  never by a spawned verifier agent.
-- With staging `--produce-evidence`, the bounded on-demand canary/shadow exception is expected when
-  the required staging producer is intentionally idle. Trigger exactly one unambiguous registered
-  producer, wait for that run once with the bounded waiter contract, grade its durable outputs, and
-  clean up only artifacts created for verification. The flag never weakens the trigger safety rules.
-- In `--epic`/`--milestone` mode — **including epics auto-included by the default queue (§1)** —
-  do **not** auto-promote. The parent `/epic-flow` controls milestone progression and production
+- Verification evidence collection is read-only by default: no data mutation, no flow triggers,
+  no deploys. Exception: if the scope's evidence contract explicitly requires a bounded on-demand
+  canary/shadow run, or staging `--produce-evidence` resolves one unambiguous bounded producer
+  (§3a), and the deployment is already registered with safe parameters (e.g. `enqueue_mode=off`,
+  capped `max_items`, no schedule change), trigger exactly that run and grade its durable outputs.
+  Record command, run id, parameters, and terminal state in the evidence artifact. Never use this
+  exception for backfills, unbounded enqueue, schedule creation, deploys, migrations, or
+  external-service mutations.
+- **Successful canary/shadow runs and their temporary artifacts must be cleaned up after
+  grading**: the canary flow run itself, any temporary deployment/schedule registered to produce
+  it, and throwaway rows written purely for evidence. Real data the canary happened to process is
+  left alone. In staging, clean up inline before recording PASS; in production use the deferred
+  cleanup path (§10) unless trivially reversible. A canary left registered or running after
+  verification is a defect, not a PASS. On terminal failure, preserve the failed run history and
+  logs for diagnosis and stop.
+- Local `.context` files are temporary scratch only. The canonical verification report is
+  persisted to autodev as a ticket or epic artifact; after it is written, delete the run's
+  scratch files.
+- On standalone staging PASS, promote **only when the auto-promotion gate (§9b) passes**.
+  Higher-risk scopes rest at `staging_verified` for an explicit human promotion. Promotion
+  (landing on main + production deploy steps) is a separate step, not evidence collection.
+- Spawned verifier agents are strictly read-only. The two narrow mutations this skill allows —
+  the bounded canary trigger and deferred post-PASS cleanup (§10) — are executed by the
+  orchestrator itself, never a spawned agent.
+- In `--epic`/`--milestone` mode — including epics auto-included by the default queue — do
+  **not** auto-promote; the epic orchestration owns milestone progression and production
   promotion.
 - On production PASS, set standalone ticket status to `completed`. In epic mode, update the
-  parent epic/milestone gate and included step tickets according to the epic lifecycle.
-- On failure, set `verify_staging_failed` or `verify_prod_failed` on the standalone ticket, or
-  record the failed epic/milestone gate and failed evidence rows for `/epic-flow`'s fix loop.
-  Every FAIL is then root-caused (§9d): a bounded read-only investigation persists an
-  `investigation` artifact and machine-readable repair packet, then returns it to an active
-  standalone staging deployment owner's bounded repair loop or proposes ranked remediation routes.
-- Blocker metadata is **not** a skip signal. If a selected ticket/gate has an active blocker,
-  first re-check the recorded blocking condition against source-of-truth systems. If the blocker
-  has cleared, continue verification in the same run.
-- Verification stays read-only except for two narrow cases: (1) the bounded on-demand
-  canary/shadow run exception above, and (2) on **production PASS**, a ticket may carry a deferred
-  post-verification cleanup that runs only after the PASS verdict is recorded. Bounded
-  noncritical cleanup may run automatically even when irreversible; critical/unknown destructive
-  cleanup remains approval-gated (see §10).
+  parent epic/milestone gate and included step tickets per the epic lifecycle.
+- On failure, set `verify_staging_failed` or `verify_prod_failed` (or record the failed gate),
+  then root-cause it (§9d).
+- Blocker metadata is **not** a skip signal: re-check the recorded blocking condition against
+  source-of-truth systems first (§3).
 
 ## Scheduled mode (`--scheduled`)
 
 Unattended nightly invocation (Hermes `hermes/schedules/nightly-verify-promote.md`). The run
 inherits the full unattended contract in `../references/scheduled-run.md` — mutation boundary,
-Slack one-line + thread format, `SCHEDULED_RUN_RESULT` ending, `rc_fingerprint` dedup. This
-section only states what changes relative to an interactive run; everything else in this skill
-applies unchanged.
+Slack one-line + thread format, `SCHEDULED_RUN_RESULT` ending, `rc_fingerprint` dedup.
 
-- **Verify-only. §9b auto-promotion is SUPPRESSED — unconditionally.** Never load
-  `verify-staging-promotion.md`, never invoke `/ticket-promote`, in any mode, for any tier
-  (including `tiny_safe`). Merging to `main` is a de-facto production deploy for ts-prefect
-  (flows `git_clone` at runtime), so a scheduled run never merges or pushes to long-lived
-  branches. A standalone staging PASS sets `staging_verified` and reports
-  `promotion-ready — prod promotion awaiting Simon` with the exact
-  `/ticket-promote <ID>` command; a human runs it.
-- **No interactive questions.** Anything that would need human input, approval, or a credential
-  not already held ends that scope as `BLOCKED` with `blocked_on` naming the exact command or
-  manual action — never a prompt, never improvisation around the boundary.
-- **Strictly read-only evidence collection.** The bounded on-demand canary/shadow exception and
-  `--produce-evidence` are **not available** in scheduled mode: no flow triggers in any
-  environment (a schedule is not the human-authorized wrapper §Usage requires). Do NOT trigger
-  production flows. Scopes whose contract requires an on-demand producer run end `BLOCKED`
-  naming the bounded trigger a human should run. §10/§10a deferred cleanup does not execute
-  from a scheduled run either — a production PASS holding cleanup rests at
-  `prod_verified_needs_cleanup` and reports the pending cleanup command.
-- **Bounded queue.** Cap the default queue explicitly per run (e.g. `--limit N` scopes or an
-  explicit lookback window); never run an unbounded sweep. Report anything left unprocessed as
-  carried-over in the thread.
-- **Prod DB reads only via `psql-cli prod` when the selected project registry exposes a
-  non-sensitive read-only production profile.** A missing profile is BLOCKED; never substitute a
-  read-write credential. Nothing may raise a 1Password/Touch ID prompt (no `*-sensitive` reads).
-- **Environments.** With no environment argument, run the staging default queue first, then the
-  production default queue, in one run.
+- **Verify-only. §9b auto-promotion is SUPPRESSED — unconditionally**, in any mode, for any
+  tier. Merging to `main` is a de-facto production deploy for ts-prefect (flows `git_clone` at
+  runtime), so a scheduled run never merges or pushes to long-lived branches. A standalone
+  staging PASS sets `staging_verified` and reports
+  `promotion-ready — prod promotion awaiting Simon` with the exact `/ticket-promote <ID>`
+  command; a human runs it.
+- **No interactive questions.** Anything needing human input, approval, or an unheld credential
+  ends that scope as `BLOCKED` with `blocked_on` naming the exact command or manual action.
+- **Strictly read-only.** The canary exception and `--produce-evidence` are NOT available: no
+  flow triggers in any environment. Scopes whose contract requires an on-demand producer end
+  `BLOCKED` naming the bounded trigger a human should run. §10 deferred cleanup does not execute
+  either — a production PASS holding cleanup rests at `prod_verified_needs_cleanup`.
+- **Bounded queue.** Cap the default queue explicitly per run (scope limit or lookback window);
+  report anything unprocessed as carried-over.
+- **Prod DB reads only via `psql-cli prod`** when the project registry exposes a non-sensitive
+  read-only production profile. Missing profile is BLOCKED; never substitute a read-write
+  credential. Nothing may raise a Touch ID prompt (no `*-sensitive` reads).
 - **Slack report to `#autodev-nightly`** (channel ID from `hermes/schedules/schedules.yaml`):
-  one summary line in the channel, per-scope detail as thread replies. The summary line ends
-  with either `all verified` (no scope is awaiting promotion) or
-  `promotion-ready — prod promotion awaiting Simon` (at least one staging PASS is resting at
-  `staging_verified`). FAIL/BLOCKED routing to `#autodev-incidents` per scheduled-run.md §2.
-  The session's final message ends with the `SCHEDULED_RUN_RESULT` block (scheduled-run.md §3).
+  one summary line, per-scope detail as thread replies; summary ends `all verified` or
+  `promotion-ready — prod promotion awaiting Simon`. FAIL/BLOCKED routes to
+  `#autodev-incidents` per scheduled-run.md §2; end with the `SCHEDULED_RUN_RESULT` block.
 
 ## Process
 
 ### 1. Select scope
 
-If explicit standalone ticket IDs are provided, load only those tickets. For default-queue mode,
-`--epic`/`--milestone` mode, or any run with multiple scopes, load
-`../references/verify-scope-dispatch.md`. Epic/milestone runs must also load
-`../references/verify-epic-gates.md`.
-
-Do **not** skip tickets merely because they have `blocked_at`, `blocked_by`, `blocked_reason`, or
-`blocked_context` metadata. Blocked candidates stay in scope and go through the blocker re-check
-in §3.
-
-### 1a. Parallel verifier dispatch
-
-Single-scope runs execute inline. Multi-scope/queue runs load and follow the parallel-dispatch
-section of `../references/verify-scope-dispatch.md`.
+Explicit ticket IDs load only those tickets. Default-queue mode selects the environment's
+pending/failed tickets, production cleanup holders, and pending epic gates. Multi-scope runs may
+verify scopes in parallel with read-only verifier agents, one scope each. Do **not** skip tickets
+with blocker metadata — they go through §3.
 
 ### 2. Load context
 
-For each standalone ticket, or for the epic/milestone gate as a unit:
-
-- begin with `detail="light", include_events=false` and cache the response's artifact IDs and
-  `context_version` for the entire verification run;
-- fetch `detail="full"` only for the artifact types the contract needs — normally `source`,
-  `deployment_guide`, and the latest environment-matching `verification_evidence`; add `plan`,
-  review notes, or milestone acceptance criteria only when the source/contract refers to them;
-- do not call `get_ticket` again when `context_version` is unchanged; use `known_version` with the
-  bulk context API when refreshing multiple tickets;
-- read the **`deployment_guide` artifact** — its **Verification Evidence** section is the
-  contract you grade against. Each row is one evidence item: a reproducible query/command, an
-  expected good output, and a bad-output interpretation, listed per environment (staging / prod).
-  Also read its **Activation boundary**. If the artifact is missing or its evidence rows are still
-  `TBD`/empty, fall back to deriving evidence from source + plan acceptance criteria, and flag in
-  the report that the work shipped without a finalized evidence contract — the best staging
-  verdict such a scope can earn is `PASS (contract-missing)` (§8), which does not auto-promote
-  unless the scope classifies as `tiny_safe` under §2a.
-  Exception — items in `prod_verified_needs_cleanup` (or legacy tickets tagged
-  `cleanup=true`): the item's `deferred_cleanup.evidence_contract` IS the FINALIZED cleanup
-  contract (§10/§10a); the contract-missing verdict cap does not apply and no
-  `deployment_guide` is synthesized for cleanup-only verification;
-- find PR/commit/landing branch from ticket tags and loaded artifacts first; request event history
-  only when those bounded sources cannot establish the activation boundary;
-- for a production bug ticket whose manifest has a cleanup artifact, or whose loaded source
-  structurally identifies Prefect incident runs, fetch only the matching `investigation`,
-  `deferred_cleanup`, or legacy cleanup body needed by §10; do not load unrelated artifacts or event
-  history to discover cleanup;
-- read `.claude/environments/{env}.md` when present.
-
-The verifier has one context owner. Before any child/controller dispatch, write a runtime context
-receipt containing the light-manifest reads, direct artifact IDs/hashes, bounded child packet
-references, and any canonical artifact replacements, then run:
-
-```text
-bin/workflow-ticket-context-check receipt <receipt.json>
-```
-
-The first manifest read must be light. A refresh is allowed only after the version changes and
-must send the cached prior version as `known_version`; a repeated same-`context_version` read is a
-contract failure. Children receive artifact IDs, hashes, and excerpts, never complete ticket
-bodies. Plan/deployment-guide updates replace a bounded current body; historical revisions stay in
-artifact history rather than being appended to that canonical body. Do not dispatch or grade from
-a static-only context check: the validated runtime receipt is required evidence.
+Per standalone ticket or epic/milestone gate: start with `detail="light",
+include_events=false`, cache artifact IDs and `context_version` for the run; fetch
+`detail="full"` only for the artifact types needed — normally `source`, `deployment_guide`, and
+the latest environment-matching `verification_evidence`. Read the **`deployment_guide`
+Verification Evidence section — it is the contract you grade against**: each row is a
+reproducible query/command, expected good output, and bad-output interpretation, per
+environment. Also read its Activation boundary. If the contract is missing/`TBD`, derive
+evidence from source + plan acceptance criteria and flag it: the best staging verdict is then
+`PASS (contract-missing)` (§8), which does not auto-promote unless `tiny_safe` (§2a). For items
+in `prod_verified_needs_cleanup`, the `deferred_cleanup.evidence_contract` IS the finalized
+contract. Read `.claude/environments/{env}.md` when present.
 
 ### 2a. Risk tier (tiny/safe fast path)
 
-Classify the scope's actual diff once per run against the direct-to-main conditions in
-`../references/landing-policy.md` (no schema/migration or backfill, no prompt/LLM change, no
-auth/security/payment/deploy-config change, no cross-repo contract, no user-visible multi-step
-workflow change, clean local tests/review, small and easily reversible diff). Record the result
-and the diff SHA in the evidence artifact metadata as `risk_tier: tiny_safe | standard`. If a
-`risk_tier` was already recorded for the same diff SHA by an earlier leg of this workflow, reuse
-it instead of re-deriving.
-
-For a `tiny_safe` scope, the reduced contract applies:
-
-- run every contract row (or derived acceptance row) for the environment once; the edge-case
-  battery, negative/regression supplements, and storage-amplification checks of §5 are required
-  only when the contract/source/plan names them or the diff touches a repeated writer;
-- `PASS (contract-missing)` counts as `PASS` for the §9b auto-promotion gate, provided every
-  derived row passed on fresh post-activation data and the tier classification evidence
-  (conditions checked, diff SHA) is recorded in the artifact.
-
-Any single failed condition, or unresolved doubt about a condition, means `standard` tier — the
-full §5 battery and the normal §8/§9b rules apply unchanged. The tier never waives blocker
-re-checks (§3), producer boundedness (§3a), destructive-cutover grading (§4a), deployment
-preconditions (§5a), or visible-surface rules (§5b).
+Classify the scope's actual diff once per run as `risk_tier: tiny_safe | standard` and record
+it with the diff SHA in the evidence artifact. `tiny_safe` requires ALL of: no schema/migration
+or backfill; no prompt/LLM change; no auth/security/payment/deploy-config change; no cross-repo
+contract; no user-visible multi-step workflow change; clean local tests/review; small, easily
+reversible diff. For `tiny_safe`: run every contract (or derived) row once; the edge-case
+battery and storage-amplification checks are required only when named or when the diff touches
+a repeated writer; `PASS (contract-missing)` counts as `PASS` for §9b when every derived row
+passed on fresh post-activation data. Any failed or doubtful condition means `standard`. The
+tier never waives §3, §3a, §4a, §5a, or §5b.
 
 ### 3. Re-check active blockers from ground truth
 
-Before skipping, delaying, or reporting a selected ticket/gate as blocked, prove whether each
-recorded blocker is still true.
-
-1. Read the ticket/epic blocker metadata (`blocked_at`, `blocked_by`, `blocked_reason`,
-   `blocked_context`) plus the event that created the blocker.
-2. Translate the blocker into concrete source-of-truth checks. Examples:
-   - manual Render worker redeploy -> Render service/deploy status and deployed image/commit;
-   - external repo deploy -> target branch commit containment, deployment logs, health endpoint;
-   - Prefect deploy/schedule availability -> Prefect API deployment/work-pool state;
-   - data/backfill availability -> read-only database query or flow-run evidence;
-   - third-party outage/rate limit -> provider status/log/API evidence.
-3. Run those checks directly against the authoritative system. A stale blocker flag, a human note,
-   or the absence of a recent failure is not enough; include reproducible command/query output.
-4. If **all** blocking conditions are resolved:
-   - record the resolution evidence in the verification report;
-   - clear or supersede stale blocker metadata using the ticket tool's supported blocker fields;
-   - continue with normal activation-boundary and evidence collection in this same run.
-5. If any blocking condition is still active:
-   - first classify it with `staging-autonomy.md` in staging, or the equivalent
-     human/action/wait distinction in production. A live operation/provider recovery with a healthy
-     producer and no missing action is `external_wait`: run the deterministic waiter and use
-     `NEEDS_MORE_TIME` only at a technical hard limit. It is not `BLOCKED`;
-   - otherwise verdict is `BLOCKED` for that scope only when the required action is
-     `human_required` or `agent_incapable`, not `FAIL` and not a silent skip;
-   - leave the lifecycle status unchanged (`to_verify_staging`, `to_verify_prod`, etc.);
-   - update/preserve blocker metadata with the ground-truth evidence and the exact next condition
-     to re-check;
-   - in staging, assign `repairability` and return a
-     machine-readable repair packet with the authoritative instruction/script source, exact
-     command/tool when known, target proof, resource bounds, rollback/cleanup, and success
-     predicate.
-     A documented missing synthetic fixture or other bounded staging-only prerequisite is
-     `staging_safe`, not `human_required`. If called by `/ticket-deploy` or `/milestone-flow`,
-     return the packet to that active mutation owner rather than telling the user to provision it;
-   - do not promote, complete, or run deferred cleanup.
-
-Ground-truth blocker checks must remain read-only except for the bounded on-demand canary/shadow run
-exception in §Boundaries. Do not perform a missing deploy, fixture seed, backfill, unbounded flow
-trigger, schedule change, or external manual action yourself. The staging-autonomy repair packet
-hands safe mutations to the active owner; it does not make the verifier a mutation owner.
-
-**Direct interactive handoff:** if this verifier is the user-invoked outer workflow rather than a
-child of `/ticket-deploy` or `/milestone-flow`, it still must not surface an agent-resolvable
-staging `BLOCKED` result. For standalone scope, dispatch one fresh `/ticket-deploy <ID> staging`
-owner with the packet; for an epic/milestone gate, dispatch
-`/milestone-flow <EPIC_ID> <MILESTONE>`. Terminate this verifier owner and relay that mutation
-owner's eventual terminal result so there is no recursive verification owner. `external_wait`
-stays here and runs its deterministic waiter. This handoff is disabled only in `--scheduled` mode,
-whose mutation boundary can make the action `agent_incapable`; scheduled mode reports the exact
-human/authorized-workflow action.
+Before skipping or reporting a blocked scope, prove each recorded blocker is still true:
+translate `blocked_*` metadata into concrete source-of-truth checks (deploy status, commit
+containment, Prefect API state, read-only DB query, provider status) and run them. A stale flag
+or human note is not evidence. If all conditions resolved: record the evidence, clear the
+blocker, continue verification in the same run. If still active: classify with
+`staging-autonomy.md` in staging (a live operation/provider recovery with a healthy producer is
+`external_wait` — run the deterministic waiter, not `BLOCKED`); verdict `BLOCKED` only when the
+required action is human-required or agent-incapable; leave lifecycle status unchanged; update
+blocker metadata with the ground-truth evidence and exact next re-check condition. In staging,
+return a machine-readable repair packet (authoritative source, exact command when known,
+rollback/cleanup, success predicate) so a deploying owner can fix it. Ground-truth checks stay
+read-only except the bounded canary exception; never perform the missing deploy, fixture seed,
+or manual action yourself.
 
 ### 3a. Produce evidence in an intentionally idle staging environment
 
-This section applies only when all of these are true:
+Only when: staging + `--produce-evidence` + a required row lacks post-activation activity
+because its producer is intentionally idle, and waiting cannot change that. Resolve the producer
+from the deployment guide; infer a registered deployment only when scope, name, entrypoint, and
+safe parameters identify exactly one candidate — ambiguity is `BLOCKED`, never a guessed
+trigger.
 
-- environment is staging;
-- `--produce-evidence` was supplied;
-- a required evidence row lacks post-activation activity because its producer is intentionally
-  unscheduled or idle;
-- waiting without a trigger cannot change that fact.
+**Boundedness is a mechanical precondition, not a prose claim.** Inspect the actual parameter
+schema and entrypoint selection loop; require a code-enforced selector/cap (one explicit entity,
+`max_items`, dry-run/shadow mode, or a fixed-inventory canary). Default-empty parameters,
+full-table or due-work scans, and uncapped loops are unbounded even when on-demand. Record a
+conservative maximum for units, external calls, writes, cost, and duration (fitting the
+producer's timeout with headroom); unknown maxima are `BLOCKED` before triggering. Never run
+first and infer boundedness afterwards.
 
-Resolve the producer from the FINALIZED deployment guide first. If the guide omits it, an existing
-registered Prefect deployment may be inferred only when ticket scope, deployment name, entrypoint,
-and safe parameters identify exactly one candidate. Multiple candidates, missing bounded parameters,
-or uncertainty about side effects is `BLOCKED`, never a guessed trigger.
+Before triggering, prove: the deployment is registered in staging at the activated revision;
+bounds are mechanically verified; it cannot alter schedules, backfill, deploy, migrate, enqueue
+unbounded work, or mutate external production services; cleanup is defined. If the producer
+fans out across units, first run one real unit through the exact final transport/parsing path
+(same argv, credentials, timeout — a dry-run or health probe is insufficient); a failed
+exact-path canary stops fan-out.
 
-**Boundedness is a mechanical precondition, not a prose claim.** A guide saying "one run" limits
-invocation count only; it does not bound records, due items, backlog, external calls, writes, cost,
-or duration. Before triggering, inspect the actual parameter schema and entrypoint selection loop.
-Require a code-enforced selector/cap (for example one explicit entity, `max_items`, dry-run/shadow
-mode, or a dedicated canary with a fixed maximum inventory). Default-empty parameters, full-table
-or due-work scans, dynamic backlog consumers, and uncapped sequential loops are unbounded even when
-on-demand. A FINALIZED guide cannot waive this gate.
-
-Record a conservative maximum for selected units, external calls, durable writes, estimated cost,
-and wall-clock duration, including retry/scraper/provider worst cases. The duration must fit inside
-the producer's outer timeout with headroom. If any maximum is unknown or depends on current database
-cardinality, return `BLOCKED` before triggering and name the missing cap/canary plus the deployment-
-guide repair. Never run first and infer boundedness from what happened.
-
-Before triggering, prove and record:
-
-1. the deployment/object is already registered in staging and points at the activated revision;
-2. the invocation has the mechanically verified work/cost/write/duration bounds above;
-3. it cannot enable or alter a schedule, run a backfill, perform a deploy/migration, enqueue an
-   unbounded workload, or mutate an external production service;
-4. cleanup is defined for temporary run/deployment/throwaway data artifacts.
-
-If the producer fans out across multiple external calls, records, SSH sessions, browser sessions,
-or similar units, first run one real unit through the exact final producer transport and parsing
-path. The canary must use the same argv/options, credentials mechanism, target mapping, timeout,
-protocol, and cleanup as the full run; a dry-run or separate health probe is insufficient. Require
-one gradeable result and retain a bounded credential-free error classification before spending the
-remaining budget. A failed exact-path canary is `BLOCKED`/`FAIL` as appropriate and stops fan-out.
-
-Trigger exactly once and capture the run id and parameters. For Prefect, wait with one bounded
-process:
+Trigger exactly once, capture run id and parameters, and wait with one bounded blocking call:
 
 ```text
 wait-prefect-flow <run-id> --command-prefix '<project-approved prefect command>' --timeout 540
 ```
 
-Follow `execution-economy.md`: in Conductor, dispatch that exact deterministic command immediately
-to one fresh `fork_turns: "none"` leaf and block once for its terminal result. The parent never
-starts or polls a resumable process, polls the leaf, substitutes a CLI `--watch`, or performs
-repeated Prefect status reads. A `failure` terminal result makes the evidence row and verdict
-`FAIL`; persist the run id/state and stop the caller. A timeout may become `NEEDS_MORE_TIME` only
-when the same run is
-`RUNNING`, its worker is healthy, and fresh state/log evidence shows progress. A run still
-`PENDING`/`SCHEDULED` is `external_wait`/`NEEDS_MORE_TIME` when a healthy worker/queue exists and
-authoritative queue evidence shows it will be claimed; continue the deterministic waiter using the
-observed claim cadence. It is `BLOCKED` only when a missing worker/queue action is
-`human_required`/`agent_incapable`; route agent-resolvable setup to the mutation owner. Include the
-waiter's exact resume command only for genuine timing waits. A successful terminal run is not itself
-a verification PASS: collect and grade every durable output row after it completes.
-
-If the triggered run completes but required downstream evidence is still absent, use
-`NEEDS_MORE_TIME` only after proving a live downstream producer will create it. Otherwise the verdict
-is `BLOCKED` with the missing producer/action; do not claim passive waiting will help.
+A `failure` terminal result makes the row and verdict `FAIL`. A timeout becomes
+`NEEDS_MORE_TIME` only when the same run is `RUNNING` with a healthy worker and fresh progress
+evidence. `PENDING`/`SCHEDULED` with a healthy queue is `external_wait`. A successful terminal
+run is not itself a PASS: grade every durable output row after it completes.
 
 ### 4. Determine activation boundary
 
-Do not use naive wall-clock lookback when a commit boundary is available.
-
-- Production: commit landed on `origin/main`.
-- Staging: commit landed on `origin/staging`.
-- Epic/milestone staging: use the latest included milestone step commit on the staging target and
-  the deploy completion time from `/auto-deploy <EPIC_ID> staging`.
-- Projects that pull code from git at runtime: activation may be the first run after git land;
-  measure feature fill rates from the first post-land evidence row, not just merge time.
-- If §3 cleared a blocker that delayed activation (for example a manual worker redeploy or an
-  external service release), use the later of the code-deploy boundary and blocker-resolution
-  evidence as the activation boundary for post-activation checks.
+Never naive wall-clock lookback when a commit boundary exists. Production: commit landed on
+`origin/main`. Staging: commit landed on `origin/staging`. Repos that pull code from git at
+runtime: activation is the first run after land. If §3 cleared a blocker that delayed
+activation, use the later of code-deploy and blocker-resolution evidence.
 
 ### 4a. Grade destructive-cutover runtime readiness
 
-When the deployed change removes or renames a schema/runtime object, schema truth alone is
-insufficient evidence. Before PASS, grade every destructive-cutover row in the deployment guide and
-independently require:
+When the change removes/renames a schema or runtime object, schema truth alone is insufficient.
+Before PASS: (1) inventory every long-lived reader/consumer/worker/job that can touch the
+removed object, including cached-query and indirect config paths; (2) prove each restarted or
+loaded post-cutover code after the activation boundary (instance/run/revision evidence, not
+registration); (3) run or observe the guide's bounded real-input soak; (4) require zero new
+undefined-object failures and zero new infrastructure quarantines in the soak window; (5) never
+suppress, relabel, or delete failures to obtain a clean result. Missing inventory/activation
+proof is `BLOCKED` before a destructive step and `FAIL` once active.
 
-1. inventory every long-lived reader, consumer, worker, scheduler, and job that can touch the
-   removed object, including cached-query and indirect configuration paths;
-2. prove each inventoried process restarted or otherwise loaded post-cutover code/config after the
-   activation boundary, using instance/run/revision evidence rather than registration alone;
-3. run or observe the guide's bounded, representative real-input soak after the destructive
-   cutover is active;
-4. query runtime failures and infrastructure quarantine stores for the soak window and require
-   zero new undefined-object failures and zero new infrastructure quarantines;
-5. preserve intentional FAILED-state observability and failure history. Never suppress, relabel,
-   catch-and-ignore, or delete failures to obtain a clean result.
+### 5a. Deployment precondition (check before grading runtime rows)
 
-Missing inventory or activation proof is `BLOCKED` before a destructive step and `FAIL` once the
-cutover is active. Any new undefined-object failure or infrastructure quarantine is `FAIL` and its
-evidence remains visible. A clean Atlas/schema-truth result or matching schema fingerprint cannot
-substitute for running-reader activation and soak evidence.
+Before grading any evidence item that depends on runtime output of a deployed object, confirm
+the producing object is live in the target env: it is **registered** (deployment listed, cron
+installed, worker up), and for on-demand objects at least one post-activation run exists or the
+bounded canary exception applies. If absent, the feature is **not deployed yet** — do not grade
+its runtime rows as "no data yet": stop and return `BLOCKED` (§8) with the exact unblock action.
+Be precise about provenance: rows written by a different deployment are not evidence this
+ticket's flow ran — confirm matching deployment/run id or source marker before crediting them.
 
-### 5a. Deployment precondition (check before grading runtime-evidence rows)
+### 5b. Visible surfaces are staging-first
 
-Before grading any evidence item that depends on runtime output from a deployed object (Prefect
-deployment/flow, scheduler, worker, supervisor-managed flow, webhook, canary, on-demand
-deployment, cron, queue consumer), confirm the producing object is actually live in the target
-environment:
-
-1. the producing deployment/object is **registered** in the target env (e.g.
-   `prefect deployment ls` against the env's API, the cron is installed, the worker is up); and
-2. for **on-demand / non-scheduled** deployments, either at least **one run exists after the activation
-   boundary** or the verifier triggers the exact bounded canary/shadow run allowed by §Boundaries.
-   A registered-but-never-triggered on-demand flow produces no rows on its own.
-
-If the producing object is absent, the feature is **not deployed yet**. If an on-demand object has
-never run post-activation and the bounded-run exception does not apply, do not grade its runtime
-rows as "no data yet / wait" — that is a deploy-prerequisite gap. Stop collecting runtime evidence
-for that scope and return `BLOCKED` (§8) with the exact unblock action. Common cause: an **epic
-step** lands at `merged`, but its milestone staging deploy is owned by `/milestone-flow` and has not
-run — so `prefect deploy` + trigger never happened. Standalone `/ticket-verify` of such a step is
-premature; route to `/milestone-flow <EPIC_ID> <MILESTONE>` unless the already-registered bounded
-on-demand canary/shadow exception applies.
-
-Be precise about provenance: rows written by a **different** deployment (e.g. an M1 fixture
-canary) are not evidence that **this** ticket's flow ran. Confirm the rows were produced by the
-deployment under verification (matching deployment/run id, scraper id, or source marker) before
-crediting them.
-
-### 5b. Visible-surface (UI) acceptance is staging-first with one production-only exception
-
-Load and follow `../references/verify-visible-surfaces.md` only when acceptance includes a UI,
-rendered document, email preview, chart, public page, or other browser-visible state. Production
-browser grading is permitted only when `bin/environment-capability` confirms no staging, the
-acceptance contract is explicitly production-only, the user authorized it, and the exact approved
-verifier mode matches. Require server-enforced short expiry, read-only mutation denial, narrow
-project/surface scope, secret-safe token transport, and real-browser screenshot evidence. A
-backdoor is authentication only: separately preflight browser execution capability and every
-other evidence producer. Missing/unknown topology or any failed gate remains staging-first and
-fails closed.
+When acceptance includes a UI, rendered document, email preview, chart, or other
+browser-visible state, grade it in a real browser session with screenshots (CLAUDE.md visible-
+work rule) against **staging**. Production browser grading is allowed only when
+`bin/environment-capability` confirms there is no staging, the acceptance contract is
+explicitly production-only, and the user authorized it; anything else fails closed as
+staging-first.
 
 ### 5. Collect evidence
 
-#### Evidence feasibility preflight
+First recheck each contract row's feasibility: declared maturity delay, sample size, and
+acquisition time must fit the verification deadline
+(`maturity_delay + acquisition_time <= deadline`; for natural traffic,
+`acquisition >= ceil(sample_size / conservative_eligible_units_per_day * 86400)`), and failure
+must demonstrate a defect controlled by the shipped change. A structurally infeasible or
+non-causal row is `BLOCKED: invalid_evidence` routed to the contract owner — never executed,
+never silently weakened or reclassified after seeing current output.
 
-Before compiling or executing any row, recheck the FINALIZED contract's machine-readable timing
-against the current producer and measured baseline. For each row:
+Run **every** contract row for the environment being verified, then supplement with read-only
+checks until the report proves the feature and its edge cases work, not just one happy path:
+affected flows/jobs since activation; service logs; database state via read-only queries;
+every edge case named in source, plan, review notes, bug hypotheses, and acceptance criteria;
+negative/regression checks that would have failed before the fix.
 
-- confirm the declared maturity delay, sample size, conservative eligible-unit rate, acquisition
-  time, deadline, minimum sufficient evidence, and defect distinguished;
-- for natural traffic, recompute
-  `ceil(sample_size / conservative_eligible_units_per_day * 86400)` and require the declared
-  acquisition time to be at least that large;
-- for causal rows, require
-  `maturity_delay_seconds + acquisition_time_seconds <= verification_deadline_seconds`;
-- confirm failure would demonstrate a defect controlled by the shipped change. A valid empty
-  provider result, rare calendar state, noisy orphan/recovery metric, or documented non-goal is not
-  causal without an explicit source guarantee;
-- check whether deterministic evidence, one exact-path live case, or a bounded replay already
-  distinguishes the same defect with less time, traffic, or cost.
+For pollers, schedulers, queue consumers, webhooks, scrapers, or any repeated writer,
+supplement with storage-amplification checks even if the guide omitted them: observed rows/run
+and extrapolated rows/day vs the volume budget; proof that unchanged source data is deduped or
+change-gated across runs; retention/TTL for intentional per-run history. Never treat "rows
+exist" as PASS for a repeated writer creating redundant durable data.
 
-If a causal row is structurally infeasible or non-causal, do not execute it, consume a
-`NEEDS_MORE_TIME` attempt, or mark the product failed. Persist `BLOCKED: invalid_evidence`, route it
-to the evidence-contract owner, and keep the product failure field empty. The guide must be revised
-before verification resumes. Do not silently weaken or reclassify a row after seeing current
-output. A revision needs the original acceptance source or a new explicit user decision and must
-record the reason. Longitudinal observations may remain infeasible within the release deadline;
-record and route them without blocking causal PASS.
+Every claim includes a reproducible command/query, expected good output, actual output, and
+bad-output interpretation. Intermediate files go in one run-scoped
+`.context/ticket-verify/<scope>-<env>-<stamp>/` directory, folded into the artifact before
+cleanup.
 
-#### One revision-bound controller
+### 6. Record the Verification Evidence artifact
 
-Compile the finalized environment rows and required supplements into one bounded manifest for
-`bin/deploy-verify-controller`. The manifest preserves the existing deploy, authorization,
-exact-transport, safety, cleanup, and evidence predicates; compilation never drops or weakens a
-row. It records:
+Artifact type `verification_evidence`, title
+`Staging|Production verification evidence — <scope>`. Metadata at minimum: `environment`,
+`verdict`, `activation_boundary`, `evidence_count`, `edge_case_count`, `screenshot_count`,
+`scope`, `generated_by`, `risk_tier`, `failure_classes` (row -> class for every non-PASS row),
+and for staging runs the co-tenancy attribution: `staging_head_sha`
+(`git rev-parse origin/staging`) and `co_staged_tickets` (ticket IDs in
+`git log origin/main..origin/staging` subjects excluding this scope) — promotion compares this
+against what it actually promotes. Content is the durable proof package: strong enough that a
+future reader need not re-derive whether the problem is solved.
 
-- exact activated revision, environment, activation/contract key, ordered prior staging revision
-  SHAs plus the resulting sequence, exact working directory, one runtime-identity command, overall
-  deadline, state path, and full-log directory;
-- `contract_status: FINALIZED` plus references to the preserved deploy, authorization,
-  exact-transport, safety, and evidence predicate receipts;
-- each row's gate class, acceptance source/reference, argv, expected exit code, timeout, sample
-  size, minimum sufficient evidence, timing feasibility, causal failure meaning when applicable,
-  explicit idempotent/resume-safe predicate, defect distinguished, and failure class;
-- baseline, sample-size rationale, finite resource budget, and an earlier same-defect exact-path
-  canary reference for every statistical/high-N row; and
-- from the third staging revision for the same activation/contract, the stabilization failure
-  class and contract delta.
+Production evidence is mandatory before any production PASS; staging evidence is written
+whenever this command verifies staging, but its absence never blocks production verification.
+If the verdict changed, create a new correctly titled artifact and mark the prior one
+`superseded` — never overwrite a verdict-bearing title with contradictory metadata.
 
-Run the controller as one blocking foreground call. It deterministically waits for the exact
-revision, first requires the working directory to be the clean Git worktree root at that exact
-HEAD and records its commit/tree identity, attests runtime identity, executes the rows in manifest
-order, refuses unsupported
-surfaces, stops high-N work after a failed canary, reattests identity, persists full logs/state,
-and emits one compact terminal JSON receipt. The model consumes only that terminal receipt or one
-bounded `timeout` with its exact `resume_command`; it never drives row/status polling. In
-Conductor, if the host cannot hold the foreground call, dispatch only this exact controller to one
-fresh `fork_turns: "none"` leaf and block once.
+**FAIL→PASS supersession requires signature comparison (B0312/B0306):** before superseding a
+FAIL with a PASS on "pre-existing failure / baseline noise" grounds, compare the failure
+**diagnostic signature**, not just source/category/rate. If the baseline failed with a
+specific, actionable error and post-activation failures show a different error for the same
+source, that is a new regression that masks diagnostics — the FAIL stands.
 
-An evidence surface without a maintained command adapter is `invalid_evidence`/`BLOCKED`, not a
-license to perform ad-hoc model-driven collection. Persist the manifest, terminal receipt, and log
-references in the verification evidence artifact. Put controller state/logs under a durable
-credential-safe cache such as `~/.cache/agent-workflows/deploy-verify/<run-id>/`, never under the
-run-scoped `.context` directory deleted by §9a. The receipt carries bounded output tails plus full
-log hashes/paths; full logs stay at those paths.
-
-#### Reusable query packs
-
-Before inventing sequential schema-discovery and evidence queries, look for a repo-owned bounded
-verification query pack referenced by the deployment guide or stored under
-`.agents/verification-query-packs/`. A pack is project-specific and must declare:
-
-- a stable pack ID/version and the ticket surfaces it proves;
-- the target environment/database role (read-only only);
-- selected tables/columns plus one bounded schema-fingerprint query;
-- one or a few parameterized aggregate queries, preferably multi-CTE, that return only the compact
-  evidence fields required by the contract;
-- expected-good and bad-output interpretations for every returned field.
-
-Load a matching pack once per run and cache its fingerprint/result at the activation boundary.
-When the fingerprint matches, run the packed aggregate instead of repeating `information_schema`
-discovery and one query per evidence row. If it does not match, run exactly one bounded discovery
-query, mark the pack stale, and fall back to explicit contract queries; never guess around schema
-drift. Packs optimize retrieval only: every ticket-specific evidence row still needs an explicit
-grade and provenance, and a shared aggregate cannot hide a missing result.
-
-Run **every** Verification Evidence item listed for the environment being verified (staging items
-for staging, prod items for prod) — execute each item's query/command and compare against its
-expected good output. Then supplement with read-only checks until the report proves the feature
-and its edge cases work, not just one happy path:
-
-- affected flows/jobs since activation;
-- service logs since activation;
-- database state and data quality using read-only queries;
-- feature-specific success-path logs or rows;
-- every edge case named in source, plan, build todos, review notes, bug hypotheses, and acceptance
-  criteria;
-- negative/regression checks that would have failed before the fix when applicable;
-- bug hypothesis re-evaluation when investigation artifacts contain confirmed hypotheses.
-
-For pollers, observers, schedulers, queue consumers, webhooks, scrapers, supervisor flows, or
-any repeated writer that persists data, supplement the contract with storage-amplification
-checks even if the deployment guide omitted them:
-
-- compute observed rows/run and extrapolated rows/day, bytes/day, and index/WAL impact from
-  the activation window;
-- compare actual growth against the plan/deployment-guide volume budget;
-- prove repeated unchanged source data is deduped or change-gated across runs, not merely
-  unique within a fresh fetch/run id;
-- distinguish canonical entities from append-only observations, snapshots, and logs;
-- verify retention/TTL/partitioning exists for any intentional per-run history.
-
-Never treat "rows exist" as PASS for a repeated writer if polling frequency is creating
-redundant durable data. "Lossless" is not a waiver to save the same payload every interval.
-
-Every claim must include a reproducible command/query, expected good output, actual observed
-output, bad-output interpretation, gate class, and acceptance source. Record, per evidence item,
-whether it passed, failed, or had no post-activation data yet. A single successful happy-path run
-is never sufficient evidence for PASS when edge cases are in scope. Edge cases are "in scope" when
-named in the contract, source, plan, build todos, review notes, or bug hypotheses — for a
-`tiny_safe` scope (§2a) with none named, the contract rows alone suffice.
-
-If you need intermediate files, put them in a single run-scoped scratch directory such as:
-
-```text
-.context/ticket-verify/<scope>-<env>-<YYYYMMDDTHHMMSSZ>/
-```
-
-Do not scatter verification files directly in `.context`. Before cleanup, fold the relevant
-contents into the `verification_evidence` artifact: exact commands/queries, compact outputs,
-summaries of long logs, artifact IDs/URLs, and the final verdict. The autodev artifact must be
-self-contained enough that the local scratch directory can be deleted without losing the
-verification record.
-
-Visible-surface evidence uses the screenshot and authentication rules in
-`../references/verify-visible-surfaces.md`.
-
-### 6. Record the fixed Verification Evidence artifact
-
-The collected evidence is a first-class artifact, separate from the `deployment_guide` contract:
-
-- Artifact type: `verification_evidence`.
-- Title: `Staging verification evidence — <scope>` or `Production verification evidence — <scope>`.
-- Metadata must include at least:
-  - `environment`: `staging` or `production`;
-  - `verdict`: `PASS`, `FAIL`, `NEEDS_MORE_TIME`, or `BLOCKED`;
-  - `activation_boundary`: the boundary from §4;
-  - `evidence_count`: total executed rows/checks;
-  - `edge_case_count`: total explicit edge cases checked;
-  - `screenshot_count`: total screenshots captured;
-  - `scope`: ticket id or epic/milestone gate id;
-  - `generated_by`: `/ticket-verify`;
-  - `controller_receipt`: manifest/state/log references plus exact revision pre/post attestation;
-  - `failure_classes`: row id -> bounded class/owner for every non-PASS row;
-  - **staging runs only** — co-tenancy attribution (staging is shared, and this ticket's
-    evidence was collected with other tickets' code present):
-    - `staging_head_sha`: `git rev-parse origin/staging` at collection time;
-    - `co_staged_tickets`: ticket IDs found in `git log origin/main..origin/staging`
-      subjects (excluding this scope). `/ticket-promote` compares this against the set it
-      actually promotes; a later prod regression can then distinguish "PASS was never
-      attributable to this ticket alone" from a genuine environment difference.
-
-Content must be the durable proof package: activation boundary, every evidence row with command or
-query, expected good output, actual observed output, bad-output interpretation, screenshot paths,
-edge-case coverage, failures/blockers, and final verdict. It should be strong enough that a future
-reader does not need to re-think whether the problem is solved.
-
-Staging evidence is optional in the lifecycle: absence of a staging `verification_evidence`
-artifact must not by itself block production verification. If this command verifies staging,
-however, write the staging evidence artifact. Production evidence is mandatory: a production run
-must create/update the production `verification_evidence` artifact for every selected scope, and a
-production PASS is invalid until that artifact exists and contains all executed evidence and edge
-case coverage.
-
-For standalone tickets, write the artifact on the ticket with `create_artifact` (or update the
-latest matching environment artifact when repeating the same verdict). If the verdict changed,
-create a new correctly titled artifact first, then mark the prior artifact `superseded` and link it
-to the new artifact ID. Never overwrite a verdict-bearing title with contradictory metadata.
-
-**FAIL→PASS supersession requires signature comparison (CRITICAL, B0312/B0306):** Before
-superseding a FAIL with a PASS on "pre-existing failure / baseline noise" grounds, compare the
-**failure diagnostic signature**, not just the failing source, category, or failure rate. If the
-pre-activation baseline failed with a specific, actionable error (e.g., bot-protection/browser/
-proxy diagnostics after a 150s stall) and post-activation failures show a *different* error for
-the same source (e.g., generic `TimeoutError("retry coordinator deadline exceeded")` at the new
-55s deadline), that is a **new regression that masks diagnostics** — the FAIL stands even if the
-failure count is similar and a later run recovered. "Same source, same rate, now bounded" is not
-sufficient evidence of no regression; the error text/class and its actionability must also match.
-
-For explicit epic/milestone verification, evidence must be persisted across all applicable
-scopes (canonical gate artifact on the epic, full per-step ticket artifacts, and a compact epic
-summary). This is **only** relevant in `--epic`/`--milestone` mode — see the "§6 (epic/milestone)"
-section of `../references/verify-epic-gates.md`.
-
-### 7. Epic/milestone aggregation
-
-Epic/milestone aggregation produces one gate verdict for the requested scope. This is **only**
-relevant in `--epic`/`--milestone` mode — see the "§7" section of
-`../references/verify-epic-gates.md`.
+Epic/milestone verification persists evidence in three places before status changes: the
+canonical gate artifact on the epic, a `verification_evidence` artifact on every included step
+ticket (with a pointer to the gate artifact), and a compact epic summary index
+(see `../references/epic-lifecycle.md`).
 
 ### 8. Verdict
 
-The deployment_guide evidence contract is the gate — verdict is determined by the env's evidence
-items:
+- `PASS` — every causal ship-gate row for this environment passed and no related causal failure
+  surfaced. A failure is *related* only in a surface the diff touched or the contract names;
+  a pre-existing failure with an identical diagnostic signature across the boundary is not.
+- `PASS (contract-missing)` — every derived row passed but the contract was missing/`TBD`.
+  Best possible verdict for such a scope; sets `staging_verified` without auto-promotion
+  (exception: `tiny_safe`, §2a).
+- `FAIL` — a causal row demonstrates related broken behavior or expected-but-missing activity.
+- `NEEDS_MORE_TIME` — the producing deployment is registered and running, but rows have no
+  post-activation data yet and none failed; use only when passive waiting will actually
+  produce the evidence.
+- `BLOCKED` — a concrete human-required or agent-incapable action remains: a still-true
+  blocker (§3), an unmet deployment precondition (§5a), or an undeployed visible surface
+  (§5b). These are deploy-prerequisite gaps, never `NEEDS_MORE_TIME`; name the exact unblock
+  action.
 
-- `PASS` — every `causal_ship_gate` for this environment passed and no related causal failure
-  surfaced. Failed observations remain explicit and routed but do not change the causal verdict.
-  A failure is *related* only when it occurs in a surface the diff touched or the contract names;
-  a pre-existing failure whose diagnostic signature is identical before and after the activation
-  boundary is not related (signature comparison rules in §6);
-- `PASS (contract-missing)` — every derived evidence item passed, but the deployment_guide
-  evidence contract was missing/`TBD` and the items were derived from source/plan acceptance
-  criteria. This is the **best possible verdict** for such a scope. On staging it sets
-  `staging_verified` but does **not** auto-invoke `/ticket-promote`: promotion requires an
-  explicit human go-ahead, or a regenerated FINALIZED deployment guide followed by a re-run
-  that grades the real contract. Exception: a `tiny_safe` scope (§2a) with every derived row
-  passed on fresh post-activation data auto-promotes as if `PASS`;
-- `FAIL` — a `causal_ship_gate` demonstrates related broken behavior or expected-but-missing
-  activity. Observation failures remain recorded and routed but do not change causal PASS;
-- `NEEDS_MORE_TIME` — the feature **is deployed and running** (its producing deployment is
-  registered in the target env and, for scheduled/continuous flows, executing), but one or more
-  evidence items have no post-activation data yet (and none have failed). Use this **only** when
-  passive waiting will actually produce the missing evidence;
-- `BLOCKED` — a concrete human-required or agent-incapable action remains. Examples: (a) a
-  selected ticket/gate had blocker metadata and §3 proved such an action is still required; or
-  (b) the **deployment precondition (§5a) is unmet** — a
-  required producing deployment is not registered in the target environment, or an
-  on-demand/non-scheduled deployment has never run since the activation boundary and the bounded
-  on-demand canary/shadow run exception does not apply or failed to start; or (c) a UI/visible-surface
-  scope's change is not deployed to **staging** (§5b), and no fully gated production-only topology
-  exception applies, so its rendering cannot be graded — reason: **needs to be deployed to staging
-  as well, not only main**. Cases (b) and (c) are
-  deploy-prerequisite gaps, **not** `NEEDS_MORE_TIME`: waiting alone will never produce evidence
-  because nothing is scheduled to run. The reason must name the exact unblock action (run the
-  milestone deploy via `/milestone-flow`; `prefect deploy` + trigger the deployment; or land/deploy the
-  UI change to staging then `/ticket-verify staging <scope>`). This is an explicit outcome, never an
-  omitted row.
+Failed observation rows are recorded and routed but cannot fail an unrelated causal gate, and
+cannot be relabeled causal after output is known. Thresholds remain the accepted contract.
 
-Active external work with no missing action is never included in `BLOCKED`: it is
-`external_wait`/`NEEDS_MORE_TIME` and follows the deterministic waiting contract. Agent-resolvable
-deploy-prerequisite actions return to the active mutation owner rather than surfacing as a final
-blocked verdict.
+**NEEDS_MORE_TIME cap.** Track per causal row from
+`evidence_eligible_at = activation_boundary + maturity_delay`. After **3 eligible
+NEEDS_MORE_TIME runs or 24h past eligibility** (whichever first), re-run feasibility: a feasible
+live row still showing expected-but-missing activity becomes `FAIL`; an absent producer becomes
+`BLOCKED: deployment_prerequisite`; structurally wrong timing math becomes
+`BLOCKED: invalid_evidence`. A healthy `external_wait` with fresh progress is exempt until its
+ETA/cadence is missed. **Moving-target guard:** when waiting on a scheduled event, verify the
+awaited condition actually arrives; if the due time keeps advancing faster than it is consumed
+(two consecutive rechecks where it never became true), that is a structural design flaw —
+verdict `FAIL` with a repair packet, never another `NEEDS_MORE_TIME`.
 
-For every staging `BLOCKED`, the evidence artifact's `failure_classes` entry and report action must
-also contain the `staging-autonomy.md` repair packet. Bare prose such as "provision the fixture" is
-invalid: name `repairability`, the exact authoritative source, the bounded command/tool when known,
-rollback/cleanup, the postcondition, and the mutation owner that can continue the current run.
+### 9. Status, promotion, and failure handling
 
-Controller grading is causal: every failed `causal_ship_gate` fails closed, while a failed
-`observation` is recorded and routed but cannot fail an unrelated causal ship gate. Missing,
-unsupported, or ambiguous causal evidence is `invalid_evidence`, never PASS. A failed observation
-does not erase a causal PASS, and it also cannot be relabeled as causal after current output is
-known. `unknown` blocks promotion fail-closed only for a causal gate. A missing or immature
-observation is `external_observation`, never `unknown`, and cannot block promotion. Thresholds
-remain the accepted contract rather than being tailored to the run.
+Persist all evidence artifacts **before** status changes, then delete the run's `.context`
+scratch (retry once; report leftovers with a cleanup command).
 
-Never report `NEEDS_MORE_TIME` for a feature whose producing deployment is absent or has never
-run — that misrepresents "nobody deployed/triggered it" as "wait for data." If §5a could not
-confirm the producing object is live, the verdict is `BLOCKED`, not `NEEDS_MORE_TIME`.
+Status actions: staging PASS -> `staging_verified` (then §9b); staging FAIL ->
+`verify_staging_failed`; production PASS -> `completed`, or `prod_verified_needs_cleanup` when
+deferred cleanup remains (§10); production FAIL -> `verify_prod_failed`; `NEEDS_MORE_TIME` and
+`BLOCKED` leave the lifecycle status unchanged. Epic mode updates gates and step tickets per
+`../references/epic-lifecycle.md` instead.
 
-**NEEDS_MORE_TIME cap.** `NEEDS_MORE_TIME` is not an indefinitely repeatable verdict. Track it per
-causal row. Compute `evidence_eligible_at = activation_boundary + maturity_delay_seconds`; attempts
-before that timestamp do not increment the row's count. At or after eligibility, record
-`needs_more_time_count` and `needs_more_time_first_seen`, incrementing only when the declared
-producer had a real opportunity to create the row. After **3 eligible NEEDS_MORE_TIME runs or 24
-hours after `evidence_eligible_at`** (whichever comes first), re-run the feasibility preflight. A
-live causal row that was feasible and still shows expected-but-missing activity becomes `FAIL`. An
-absent producer becomes `BLOCKED: deployment_prerequisite`. A row whose maturity/rate/deadline math
-was structurally wrong becomes `BLOCKED: invalid_evidence`, never product FAIL. Missing
-longitudinal observations do not consume this causal wait budget.
+**9b. Auto-promotion gate (standalone staging PASS only).** Promote automatically only when ALL
+hold: not `--scheduled`, not `--no-promote`, not epic mode; the contract was FINALIZED and fully
+graded on fresh post-activation evidence (or `tiny_safe` per §2a); and the diff contains no
+schema/migration, deploy-config, or auth/security category. Anything else rests at
+`staging_verified` with the exact `/ticket-promote <ID>` command in the report.
 
-This cap does not convert a specific healthy `external_wait` operation with fresh progress into
-FAIL merely because 24 hours elapsed. Its authoritative ETA/SLA or observed completion cadence is
-the eligibility window, and deterministic waiting continues while it remains on track. The causal
-cap begins only after that operation terminates, misses its completion window without progress, or
-otherwise had a real opportunity to produce the row.
+**9c/9d. Every FAIL is root-caused before the run ends.** Run a bounded read-only investigation
+per failure cluster; persist an `investigation` artifact with root-cause hypothesis, confidence,
+and classification (`code_defect`, `environment`, `verifier_defect`, `invalid_evidence`); then
+either hand a machine-readable repair packet to the active deploying owner (staging) or propose
+2–4 ranked remediation routes. A `verifier_defect`/`invalid_evidence` classification also
+records the contract-authoring lesson via `/compound`. Production or epic remediation that
+changes product code/config/auth requires a new fix ticket or epic step — never an untracked
+branch. This skill never mutates product code or environments; the FAIL verdict and evidence
+artifacts are never rewritten.
 
-**Moving-target guard (scheduled-event waits).** When `NEEDS_MORE_TIME` waits on a scheduled event
-(e.g. "the next due poll"), the re-run MUST verify the awaited condition actually *arrives*, not
-just that time passed. Record the awaited timestamp (`scheduled_for` / `next_run_at` / due time)
-and compare it across rechecks. If it keeps advancing faster than it is consumed — a producer
-re-anchoring the schedule outruns the consumer, so the item is never actually due — that is a
-**structural design flaw, not a timing wait**: two consecutive rechecks where the awaited condition
-never became true (the due time moved forward again) ⇒ verdict `FAIL` with a design-flaw repair
-packet, never another `NEEDS_MORE_TIME`. Route an agent-resolvable repair to the mutation owner;
-use `BLOCKED` only when the required design decision/action is `human_required` or
-`agent_incapable`. Waiting longer cannot fix a due time that recedes on every producer tick (see
-review reference `data-integrity.md` §4b).
+### 10. Deferred post-verification cleanup (production PASS only)
 
-When the evidence contract was missing/`TBD` and you fell back to acceptance criteria, say so in
-the report so the gap is visible rather than silently passing.
-
-### 9. Status and promotion
-
-After computing the verdict, load `../references/verify-lifecycle-actions.md` and apply only the row
-for the current environment/mode. Epic/milestone mode instead uses the lifecycle section of
-`../references/verify-epic-gates.md`.
-
-### 9a. Persist report before status changes and clean scratch
-
-For every terminal verdict (`PASS`, `FAIL`, `BLOCKED`) and for `NEEDS_MORE_TIME` when evidence was
-collected, first create or update all required evidence artifacts, then update ticket/epic status.
-For epic/milestone gates the required order is: canonical gate artifact on the epic -> per-step
-ticket evidence artifacts -> compact epic summary -> status changes. The `verification_evidence`
-artifacts are the source of truth; local files are not.
-
-After the autodev artifact write succeeds:
-
-1. Verify the artifact ID is returned and the artifact content includes all evidence needed to
-   understand the verdict without reading local files.
-2. Delete the run-scoped `.context/ticket-verify/<...>/` scratch directory and any one-off
-   `.context` files created by the verification run.
-3. If cleanup fails, retry once. If it still fails, mention the leftover path in the final output
-   with a cleanup command. Do not present leftover `.context` files as canonical evidence.
-
-Do not delete pre-existing user/project `.context` files that this verification run did not
-create.
-
-### 9b. Auto-promotion gate (standalone staging PASS only)
-
-Load `../references/verify-staging-promotion.md` only for a standalone staging PASS when
-`--no-promote` and batch/epic holds do not already prohibit promotion. In `--scheduled` mode this
-gate is suppressed unconditionally (see §Scheduled mode): never load the reference, never invoke
-`/ticket-promote`; report `promotion-ready — prod promotion awaiting Simon` instead.
-
-### 9c. Capture failure knowledge (FAIL verdicts, staging or production)
-
-Load `../references/verify-failure-capture.md` only after a staging or production `FAIL`.
-
-### 9d. Root-cause investigation and remediation routing (FAIL verdicts)
-
-A FAIL is not fully reported until it is root-caused. After §9c, load
-`../references/verify-failure-investigation.md` and follow it: spawn bounded read-only investigator
-agents per failure cluster, persist an `investigation` artifact with the root-cause hypothesis,
-confidence, and classification, then either return a repair packet to the active standalone
-`/ticket-deploy` loop (staging always; production only for the reference's §3a-prod
-verifier/contract-defect path — the owner dispatches a fresh repair subagent and owns
-repair/redeploy/reverify) or propose 2–4 ranked remediation routes. When any failed row is
-classified `verifier_defect` or `invalid_evidence`, also apply the reference's §2a and compound
-the contract-authoring lesson as a `verifier-contract`-tagged memory. This skill never
-recursively invokes `/ticket-deploy` or mutates product code/environments. The
-FAIL verdict and evidence artifacts are never rewritten by this step.
-
-Production or epic remediation that changes product code/config/auth must create a new fix
-ticket/epic step attached to the failed milestone. Ticketless `/go-fable` and untracked auxiliary branches are
-prohibited as the final route. Record separate owners and truth for `implemented`, `landed`,
-`configured`, `deployed`, and `producer available`; no earlier stage may be called “unblocked.”
-
-### 10 / 10a. Deferred post-verification cleanup (production PASS only)
-
-Load `../references/verify-deferred-cleanup.md` when a `deferred_cleanup` artifact exists, when the
-artifact manifest contains a legacy flow-run-cleanup artifact, or when a production bug-ticket
-source/investigation structurally attributes Prefect incident flow runs. It defines the
-ticket-attributed flow-run normalization preflight, §10 (the `deferred_cleanup` contract,
-dry-run/scope enforcement, same-cycle path), and §10a (the `prod_verified_needs_cleanup` holding
-status and cleanup-holding lifecycle). A ticket/epic without a cleanup artifact or structured
-incident-run attribution has no cleanup step, and a non-PASS verdict never triggers one.
+When a `deferred_cleanup` artifact exists (or a production bug ticket structurally attributes
+incident flow runs), grade its `evidence_contract` and execute the cleanup only after the PASS
+verdict is recorded. Bounded noncritical destructive cleanup (including terminal Prefect
+flow-run history) runs automatically; critical/unknown destructive cleanup is approval-gated —
+the ticket rests at `prod_verified_needs_cleanup` with the pending command as blocker metadata
+(see `../references/ticket-lifecycle.md`). Enforce the artifact's dry-run and scope bounds; a
+non-PASS verdict never triggers cleanup.
 
 ## Output
 
-Load and apply `skills/references/terminal-outcomes.md` after verdict persistence, lifecycle
-actions, and deferred cleanup. Its post-check is part of the verdict handoff: re-read the canonical
-item, confirm evidence/ticket updates and run-owned cleanup, then put exactly one large,
-environment-specific banner and details block before the table below. Production PASS may use
-`## ✅ COMPLETED — READY TO CLOSE` only when the item re-reads as `completed` and the closeout audit
-is clean; otherwise report the accurate successful stage, blocker, cleanup hold, or red-X failure.
-
-Report one table for all selected tickets or gate scopes:
+Report truthfully: one large environment-specific banner (`## ✅ ...` only for a verdict that
+was actually persisted and whose status action completed; production `completed` only after the
+item re-reads as `completed`), then one table for all selected scopes:
 
 ```text
 Scope            Env      Verdict          Action
 F0123            staging  PASS             artifact <id>; scratch cleaned; promoted -> to_verify_prod
 B0042            staging  NEEDS_MORE_TIME  left to_verify_staging
 F0130            prod     BLOCKED          blocker still true; left to_verify_prod
-E0007/M2         staging  PASS             gate artifact <id>; step artifacts F1:<id>, F2:<id>; epic summary <id>; held for epic promotion
-E0007/final      prod     PASS             final gate artifact <id>; per-step evidence artifacts <ids>; epic summary <id>; epic completed
+E0007/M2         staging  PASS             gate artifact <id>; step artifacts <ids>; held for epic promotion
 ```
 
 For every FAIL row, append the §9d result: investigation artifact ID, root-cause one-liner with
-confidence, repair packet, persisted round, and either `returned to active /ticket-deploy staging
-repair loop` or the top proposed route, e.g.:
-
-```text
-F0125            staging  FAIL             evidence <id>; investigation <id>; repair packet <id>, round 2; root cause: enqueue filter drops NULL owners (confirmed, code_defect); returned to active /ticket-deploy staging repair loop
-```
-
-Also include any cleanup exception:
-
-```text
-Scratch cleanup: FAILED for .context/ticket-verify/F0123-staging-...; run `rm -rf ...`
-```
+confidence, and the repair packet or top remediation route. Include any scratch-cleanup failure
+with the exact cleanup command.

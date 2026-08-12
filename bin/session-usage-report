@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report bounded token/tool usage for a Claude Code session tree (main + subagents).
 
-Companion to bin/workflow-efficiency-report (which covers Codex rollouts). Streams
+Streams
 JSONL session logs and prints a bounded report: per-agent totals, prompt-bundle cost
 of each spawn, tool histogram, repeated identical commands and MCP reads, and
 external provider legs. Never prints raw transcript content beyond short labels.
@@ -283,10 +283,7 @@ def main() -> None:
     print("## External provider legs")
     for command in external[: args.top]:
         print(f"- {command[:120]}")
-    if external:
-        print("(cross-check Codex cost: bin/workflow-efficiency-report on "
-              "~/.codex/sessions rollouts in this window; Grok legs need usage sidecars)")
-    else:
+    if not external:
         print("- none")
     print()
 
