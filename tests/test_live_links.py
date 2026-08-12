@@ -89,6 +89,36 @@ class LiveLinksTest(unittest.TestCase):
                 (home / ".codex/skills/agent-workflows/new-skill/SKILL.md").is_file()
             )
 
+    def test_links_tree_without_every_managed_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_tree(root)
+            home = root / "home"
+            stale = home / ".claude/workflows"
+            stale.parent.mkdir(parents=True)
+            stale.symlink_to(source / "workflows")
+            (source / "workflows").rmdir()
+
+            result = self.run_linker(source, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((home / ".claude/skills").resolve(), (source / "skills").resolve())
+            self.assertEqual((home / ".claude/agents").resolve(), (source / "agents").resolve())
+            self.assertFalse(stale.is_symlink())
+
+    def test_keeps_unmanaged_destination_when_source_directory_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_tree(root)
+            home = root / "home"
+            unmanaged = home / ".claude/workflows"
+            unmanaged.mkdir(parents=True)
+            (unmanaged / "mine.md").write_text("mine")
+            (source / "workflows").rmdir()
+
+            result = self.run_linker(source, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((unmanaged / "mine.md").is_file())
+
     def test_refuses_unmanaged_root_content_before_mutating(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -195,15 +195,21 @@ def link_live(source: Path, home: Path) -> None:
     source = source.expanduser().resolve()
     home = home.expanduser().resolve()
     store = home / STORE
-    for _, source_name in ROOT_LINKS:
-        if not (source / source_name).is_dir():
-            raise SystemExit(
-                f"link-agent-workflows-live: missing source directory: {source / source_name}"
-            )
+    # A directory the repo no longer ships is a slimmed-down tree, not a fault:
+    # linking the roots that do exist keeps the rest working.
+    present = [
+        (destination_name, source_name)
+        for destination_name, source_name in ROOT_LINKS
+        if (source / source_name).is_dir()
+    ]
+    if not present:
+        raise SystemExit(
+            f"link-agent-workflows-live: no managed source directories in {source}"
+        )
 
     roots = [
         (home / destination_name, source / source_name)
-        for destination_name, source_name in ROOT_LINKS
+        for destination_name, source_name in present
     ]
     for destination, expected in roots:
         _preflight_root(destination, expected, source, store)
@@ -219,6 +225,12 @@ def link_live(source: Path, home: Path) -> None:
 
     for destination, expected in roots:
         _replace_root(destination, expected)
+    for destination_name, source_name in ROOT_LINKS:
+        if (source / source_name).is_dir():
+            continue
+        stale = home / destination_name
+        if stale.is_symlink() and _managed_link(stale, source, store):
+            stale.unlink()
     _link_codex_skills(home, source, store)
     _link_bins(home, source, store)
     _merge_hooks(settings_paths[0], home / ".claude/hooks")
