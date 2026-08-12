@@ -31,7 +31,6 @@ Compound auto-detects the right mode from context:
 | User says "save this", "remember this" | **Save** | Extract from conversation, store |
 | After review findings resolved | **Improve** | Analyze gaps, store knowledge, update workflows |
 | After a bug fix | **Improve** | Analyze root cause, store knowledge |
-| Inside `/ticket-flow` | **Improve** | Auto-analyze, auto-apply |
 | Ambiguous | **Both** | Save explicit knowledge + analyze for improvements |
 
 ## Save Mode
@@ -106,10 +105,7 @@ definitions.
 | ------------------ | ------------------------------------------------- | ------------------------------------------------ |
 | Knowledge Gap      | Should this be a documented gotcha/reference?     | Memory service                                   |
 | Rule Gap           | Is this a simple rule being repeatedly violated?  | Star the memory entry; or `CLAUDE.md` if it's a project convention (see Tier model) |
-| Plan Gap           | Should planning have researched this?             | `plan` skill                                     |
-| Build Todos Gap    | Should build todos have found this pattern?       | `create-build-todos` skill                       |
-| Review Gap         | Should a reviewer have caught this?               | `review/references/*.md`                         |
-| Workflow Gap       | Is a skill missing a step?                        | `skills/*.md`                                    |
+| Workflow Gap       | Is a skill missing a step or rule?                | `skills/*.md`                                    |
 | Implementation Gap | One-off mistake, no systemic fix needed           | None                                             |
 
 ### Step 4: Self-Review for Value
@@ -240,8 +236,3 @@ Keep it short; star instead.
 
 | Skill             | Relationship                                                          |
 | ----------------- | --------------------------------------------------------------------- |
-| `/retrospect`     | Thread-driven post-mortem (memory + workflow gap). `/compound` is lighter and broader |
-| `/autodev-wtf`    | Deep production incident analysis                                     |
-| `/resolve-review` | Fixes review findings. `/compound` learns from those fixes            |
-| `/ticket-flow`    | Calls `/compound` after review resolution                             |
-| `/deep-dream`     | Audits and consolidates existing entries. `/compound` adds new ones   |

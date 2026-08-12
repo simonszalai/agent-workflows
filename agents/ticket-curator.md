@@ -260,4 +260,4 @@ tickets = mcp__autodev-memory__list_tickets(project=PROJECT, status="in_progress
 - Always report what you created/modified with ticket ID
 - When creating from scope split, include the extracted context summary
 - When importing, clearly state old ID → new ID
-- Suggest next steps: "/ticket-plan F0023" or "consider adding to sprint"
+- Suggest next steps: e.g. "plan F0023" or "consider adding to sprint"

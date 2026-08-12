@@ -3,7 +3,7 @@
 One canonical workflow tree serves every model. There are no per-model skill forks: which
 model plans, builds, or reviews is configuration (agent frontmatter `model:`/`effort:`,
 `bin/external-build` flags), never a duplicated skill file. This reference keeps edits —
-including ones made by `/compound`, `/deep-dream`, and `/heal-workflows` — consistent.
+including ones made by `/compound` — consistent.
 
 ## Style rules (all skills and agents)
 
@@ -65,8 +65,7 @@ scaffolding become the shared default.
 
 ## Standard guardrail snippets
 
-Place these where they apply (Anthropic-recommended wording; keep it stable so
-`/heal-workflows` can recognize them):
+Place these where they apply (Anthropic-recommended wording; keep it stable):
 
 - **Anti-overplanning** (all skills): "When you have enough information to act, act. Do not
   re-derive facts already established, re-litigate a decision already made, or narrate options
@@ -99,9 +98,8 @@ Place these where they apply (Anthropic-recommended wording; keep it stable so
 
 ## Drift rules
 
-- Shared reference files (`skills/review/references/*`, `skills/ticket-plan/references/*`,
-  `skills/ticket-plan/templates/*`, `skills/references/*`) are single-sourced; skills point
-  at the originals rather than carrying copies.
-- `/heal-workflows`: a skill that re-grows per-model forks, unconditional multi-provider
+- Shared reference files (`skills/references/*`) are single-sourced; skills point at the
+  originals rather than carrying copies.
+- Audit rule: a skill that re-grows per-model forks, unconditional multi-provider
   fan-out, prescriptive reasoning scaffolding, a producer-side confidence/severity suppression
   gate, or an adversarial pass over the model's own output IS a finding.
