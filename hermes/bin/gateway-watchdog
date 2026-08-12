@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Hermes gateway liveness watchdog.
+
+The gateway process can outlive its platform connections: on 2026-08-12 the
+slack_bolt socket-mode client crashed out of its listener loop after Slack's
+apps.connections.open returned internal_error, and the process stayed alive
+but deaf for four hours. systemd Restart= only covers process exit, so this
+oneshot (run from a timer) checks connection-level liveness and restarts the
+service when the Slack socket is provably dead.
+
+Checks, in order:
+1. hermes-gateway inactive -> restart (belt and braces; Restart=always is
+   the primary recovery for exits).
+2. Slack socket death: no established TCP connection from the gateway main
+   PID to any IP currently resolved for wss-primary.slack.com. DNS rotation
+   can hide a healthy long-lived connection, so a single miss only records a
+   stamp; a second consecutive miss, or a miss with the known WSS-reissue
+   error in the journal since process start, triggers a restart.
+3. WhatsApp fatal state ("failed to connect" / bridge logged out) cannot be
+   fixed by restarting (it needs QR re-pairing), so it only produces a Slack
+   alert, once per gateway process.
+
+Alerts are best-effort posts to #autodev-incidents using the root-only
+schedule Slack token via systemd LoadCredential.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+UNIT = "hermes-gateway.service"
+SLACK_WSS_HOST = "wss-primary.slack.com"
+WSS_ERROR_NEEDLE = "Failed to retrieve WSS URL"
+WHATSAPP_NEEDLES = (
+    "whatsapp failed to connect",
+    "Fatal whatsapp adapter error",
+)
+INCIDENTS_CHANNEL = "C0BM7CUHGAV"  # #autodev-incidents
+MIN_PROCESS_AGE_SECONDS = 180
+STATE_DIR = Path(os.environ.get("STATE_DIRECTORY", "/var/lib/hermes-gateway-watchdog"))
+MISS_STAMP = STATE_DIR / "slack-miss"
+WHATSAPP_STAMP = STATE_DIR / "whatsapp-alerted-pid"
+
+
+def run(*argv: str) -> str:
+    return subprocess.run(
+        argv, check=False, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def slack_alert(text: str) -> None:
+    credentials = os.environ.get("CREDENTIALS_DIRECTORY")
+    if not credentials:
+        return
+    token_path = Path(credentials) / "slack.token"
+    if not token_path.exists():
+        return
+    token = token_path.read_text().strip()
+    body = json.dumps({"channel": INCIDENTS_CHANNEL, "text": text}).encode()
+    request = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response.read()
+    except OSError as error:
+        print(f"watchdog: slack alert failed: {error}", file=sys.stderr)
+
+
+def gateway_main_pid() -> int:
+    value = run("systemctl", "show", UNIT, "--property=MainPID", "--value")
+    return int(value) if value.isdigit() else 0
+
+
+def process_age_seconds(pid: int) -> float:
+    try:
+        return time.time() - Path(f"/proc/{pid}").stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def established_remote_ips(pid: int) -> set[str]:
+    ips: set[str] = set()
+    for line in run("ss", "-Htnp", "state", "established").splitlines():
+        if f"pid={pid}," not in line:
+            continue
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        remote = fields[3]
+        ips.add(remote.rsplit(":", 1)[0].strip("[]"))
+    return ips
+
+
+def slack_wss_ips() -> set[str]:
+    try:
+        infos = socket.getaddrinfo(SLACK_WSS_HOST, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return set()
+    return {info[4][0] for info in infos}
+
+
+def journal_since_pid_start(pid: int) -> str:
+    return run("journalctl", "-u", UNIT, f"_PID={pid}", "--no-pager", "-o", "cat")
+
+
+def restart_gateway(reason: str) -> None:
+    print(f"watchdog: restarting {UNIT}: {reason}")
+    subprocess.run(["systemctl", "restart", UNIT], check=False)
+    slack_alert(f":arrows_counterclockwise: gateway-watchdog restarted {UNIT}: {reason}")
+
+
+def main() -> int:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if run("systemctl", "is-active", UNIT) != "active":
+        MISS_STAMP.unlink(missing_ok=True)
+        restart_gateway("service was not active")
+        return 0
+
+    pid = gateway_main_pid()
+    if not pid or process_age_seconds(pid) < MIN_PROCESS_AGE_SECONDS:
+        return 0
+
+    journal = journal_since_pid_start(pid)
+
+    # WhatsApp fatal state: alert once per gateway process; a restart cannot
+    # re-authenticate a logged-out session.
+    if any(needle in journal for needle in WHATSAPP_NEEDLES):
+        already = WHATSAPP_STAMP.read_text().strip() if WHATSAPP_STAMP.exists() else ""
+        if already != str(pid):
+            WHATSAPP_STAMP.write_text(str(pid))
+            slack_alert(
+                ":warning: hermes-gateway WhatsApp adapter is down and needs "
+                "manual QR re-pairing (`hermes whatsapp` on the Hermes host); "
+                "restarts will not fix it."
+            )
+
+    slack_ips = slack_wss_ips()
+    if not slack_ips:
+        # DNS failure here says nothing about the gateway; try next run.
+        return 0
+
+    if established_remote_ips(pid) & slack_ips:
+        MISS_STAMP.unlink(missing_ok=True)
+        return 0
+
+    if WSS_ERROR_NEEDLE in journal:
+        MISS_STAMP.unlink(missing_ok=True)
+        restart_gateway("no Slack socket and WSS-reissue error in journal")
+        return 0
+
+    if MISS_STAMP.exists():
+        MISS_STAMP.unlink(missing_ok=True)
+        restart_gateway("no Slack socket on two consecutive checks")
+        return 0
+
+    MISS_STAMP.write_text(str(int(time.time())))
+    print("watchdog: no Slack socket match; recording first miss")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

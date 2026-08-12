@@ -40,6 +40,10 @@ not replace this file with an admin or cross-project token.
 - `bin/run-autodev-memory`: systemd credential-to-process boundary for the generic MCP proxy.
 - `schedules/`: the scheduled-run manifest, thin prompt files, and `runner.py` — the timer-driven
   runner deployed to `/opt/hermes-schedules` (see `schedules/README.md`).
+- `bin/gateway-watchdog`: root oneshot (5-minute timer) that restarts `hermes-gateway` when its
+  Slack socket-mode connection is provably dead (process alive but deaf), and posts a one-time
+  alert to `#autodev-incidents` when the WhatsApp adapter is in the logged-out state that only
+  manual QR re-pairing can fix.
 - `systemd/`: hardened service definitions, plus the schedule template service
   (`hermes-schedule@.service`), one instantiated timer per manifest entry, the OnFailure alert
   template, and the watchdog service/timer pair.

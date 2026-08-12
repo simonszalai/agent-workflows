@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes gateway liveness watchdog (Slack socket + WhatsApp state)
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: it must restart hermes-gateway and read its journal/socket table.
+User=root
+Group=root
+LoadCredential=slack.token:/etc/hermes-schedules/slack.token
+StateDirectory=hermes-gateway-watchdog
+StateDirectoryMode=0700
+ExecStart=/opt/hermes-gateway-watchdog/gateway-watchdog
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077

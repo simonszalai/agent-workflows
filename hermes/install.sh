@@ -80,6 +80,16 @@ fi
 chown -R root:root /opt/hermes-schedules
 chmod -R go-w /opt/hermes-schedules
 
+install -d -o root -g root -m 0755 /opt/hermes-gateway-watchdog
+install -o root -g root -m 0755 \
+  "$ROOT/hermes/bin/gateway-watchdog" /opt/hermes-gateway-watchdog/gateway-watchdog
+install -o root -g root -m 0644 \
+  "$ROOT/hermes/systemd/hermes-gateway-watchdog.service" \
+  /etc/systemd/system/hermes-gateway-watchdog.service
+install -o root -g root -m 0644 \
+  "$ROOT/hermes/systemd/hermes-gateway-watchdog.timer" \
+  /etc/systemd/system/hermes-gateway-watchdog.timer
+
 install -o root -g root -m 0644 \
   "$ROOT/hermes/systemd/hermes-autodev-mcp.service" \
   /etc/systemd/system/hermes-autodev-mcp.service
@@ -106,6 +116,7 @@ systemctl restart hermes-gateway.service
 # Timers are always enabled; runner.py skips entries with enabled:false, so
 # activation is purely a reviewed schedules.yaml flip plus re-install.
 systemctl enable --now "${SCHEDULE_TIMERS[@]}"
+systemctl enable --now hermes-gateway-watchdog.timer
 
 systemctl is-active --quiet hermes-autodev-mcp.service
 systemctl is-active --quiet hermes-conductor.service
