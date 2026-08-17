@@ -1,17 +1,21 @@
 ---
 name: ticket-deploy
 description: >-
-  Deploy-and-verify for one standalone ticket. Takes a target argument — staging, prod, or
-  full — and owns the deploy mechanics (PR, CI, merge, deploy steps), then hands evidence
-  collection to /ticket-verify and production landing to /ticket-promote. Repairs routine CI
-  and staging failures autonomously; stops on no-progress, unsafe evidence, or human decisions.
+  Get a branch CI-green, then deploy. Iterates the repo's deterministic local checks until they
+  pass, waits for CI, iterates CI failures, and compounds any local-vs-CI discrepancy. With a
+  ticket ID, continues through staging/prod verify and ticket status; without one, skips ticket
+  state, /ticket-verify, and /ticket-promote.
 max_turns: 150
 ---
 
 # Ticket Deploy
 
-Run the deploy+verify leg of one standalone ticket. This skill owns deploy mechanics itself and
-delegates only the two things with dedicated owners:
+Own the path from a finished tree to a green PR, then (when a target is given) land and deploy.
+The local-health → CI → discrepancy-compound loop is mandatory on every path. Ticket ceremony
+is optional: no ID means no ticket load, no status writes, no `/ticket-verify`, no
+`/ticket-promote`.
+
+With a ticket, this skill still delegates only the two dedicated owners:
 
 - `/ticket-verify` — behavior/evidence verification, verdicts, evidence artifacts
 - `/ticket-promote` — staging→main landing + production deploy steps
@@ -19,15 +23,22 @@ delegates only the two things with dedicated owners:
 ## Usage
 
 ```text
+/ticket-deploy                 # current branch: local checks + CI until green
+/ticket-deploy staging         # same, then land+deploy to staging (no ticket)
 /ticket-deploy F0123 staging   # deploy to staging + verify staging; stop there
 /ticket-deploy F0123 prod      # production leg only (status-aware, see below)
 /ticket-deploy F0123 full      # staging leg, then on exact staging PASS the production leg
 ```
 
-The target argument is required: `staging`, `prod` (alias `production`), or `full`.
+Parse the first token as a ticket ID only when it matches `F|B|R` plus digits. Otherwise it is
+the target. `prod` accepts alias `production`.
 
-Standalone tickets only. Epic step tickets land on their milestone integration branch and are
-gated by `/ticket-verify --epic`; refuse them here and say so.
+- Ticket ID present: target is required (`staging`, `prod`, or `full`).
+- No ticket: target is optional. Omit it to stop after CI is green. `staging` / `prod` /
+  `full` still land and deploy from the project deploy config.
+- Standalone tickets only. Epic step/source tickets land on their milestone integration
+  branch and are gated by `/ticket-verify --epic`; refuse them here and say so. No ticket
+  means this check does not apply.
 
 ## Authorization
 
@@ -35,20 +46,77 @@ Invoking with `prod` or `full` is the explicit human authorization for productio
 promotion/deploy (after an exact staging `PASS` where one exists). Never infer that
 authorization from a `staging` invocation. `staging` and `full` also authorize
 `/ticket-verify staging --produce-evidence` (one safe bounded producer run under ticket-verify's
-contract; never a deploy, schedule enablement, backfill, or unbounded pipeline run).
+contract; never a deploy, schedule enablement, backfill, or unbounded pipeline run) — only
+when a ticket ID is in scope.
+
+## Ticket optional
+
+A missing ticket is a first-class mode, not an error. Do not create a ticket to continue.
+
+| | Ticket in scope | No ticket |
+|---|---|---|
+| Load ticket / `deployment_guide` | yes | skip |
+| Local health + CI loop (§Loop) | yes | yes |
+| Land + project deploy steps | yes, from guide + project config | yes, from project config only |
+| `update_ticket` / lifecycle status | yes | skip |
+| `/ticket-verify`, `/ticket-promote` | yes | skip |
+
+Without a ticket, `full` is staging land+deploy then production land+deploy, with no verify
+gate — the invocation is the authorization, and the report must say behavior was not verified.
 
 ## References
 
 Read and follow:
 
-- `../references/ticket-lifecycle.md`
+- `../references/ticket-lifecycle.md` (ticket mode)
 - `../references/staging-autonomy.md` (staging legs)
 - `../references/environment-topology.md`
 - the called skills' own boundaries
 
+## Loop — local health, then CI
+
+Run this loop before every push that should go to CI, and after every CI-driven fix. Ticket
+or not. Goal: the tree CI sees already passed the same deterministic checks locally; when it
+did not, diagnose the miss and give `/compound` a chance to close it.
+
+**Local gate.** Take the inventory from the repo's own definition — package scripts, Makefile,
+project CLAUDE.md, and the CI workflow — not a guessed subset. Typical members: lint,
+typecheck, tests, plus any lockfile or generated-file check CI will run. Run the **full**
+inventory on the current tree. On failure: fix every finding, re-run the full gate, repeat.
+Permit rounds only while each round makes concrete, stateable progress against the previous
+failure. Stop on no-progress or a human decision (product intent, secrets, infrastructure).
+Do not push a tree whose local gate is red.
+
+**CI wait.** Push, open or reuse the PR against the target base (current-branch PR if no
+target), then `wait-ci <pr_number> --timeout 540` as one blocking call. Never poll `gh`.
+
+**CI iterate.** A red check is never terminal. Read the failing job logs, fix the repository
+failure (lint, types, flaky-but-reproducible tests, lockfiles, generated files), re-run the
+full local gate on the new tree, push, wait-ci again. Same stop conditions as the local gate.
+
+**Discrepancy → `/compound`.** If CI failed on a tree whose local gate had passed, that is a
+discrepancy. After the fix — or when stopping — classify why local missed it, then run
+`/compound` once per distinct discrepancy. Causes include a missing or weaker local check,
+different command or flags, env/version drift, generated files, lockfile, a flake local did
+not reproduce, **or a skill/workflow gap** (this skill's inventory omitted a CI check, or
+the agent did not follow it). Do not compound a CI failure the local gate already reported
+on the same tree.
+
+`/compound` APPLY and SKIP are both valid. APPLY closes a knowledge or workflow gap so the
+next local gate would have caught it. SKIP (one-off, already documented, no systemic fix,
+or a skill issue compound cannot close) is not a deploy failure — notify the user: the
+discrepancy, the classification, that compound did not change anything, and what a human
+would need to change if they want the gap closed. Do not pretend the miss is fixed.
+
+Then, if a ticket is in scope and this loop just completed a land+deploy gate, write the
+lifecycle status for that gate (`to_verify_staging` after staging deploy, or whatever §2/§4
+names). If no ticket, skip the write.
+
 ## Process
 
 ### 1. Resolve and resume safely
+
+**No ticket:** skip this section; go to the loop, then to the target section if one was given.
 
 Load the ticket once with `detail="light", include_events=false`, then fetch only the artifact
 bodies you need — at minimum the current `deployment_guide`. Refuse epic step/source tickets,
@@ -75,24 +143,21 @@ landed after the artifact's activation boundary; age alone is not staleness.
 
 ### 2. Deploy to staging (`staging` and `full`)
 
-1. Run the repo's full local health gate (typecheck, tests, lint as the project defines) on the
-   final tree before pushing. Fix the complete failure inventory first.
-2. Push the branch, open a PR against `staging`, and wait for CI as one blocking call:
-   `wait-ci <pr_number> --timeout 540`. Never poll `gh` in a loop.
-3. **CI self-heal:** a red check alone is never terminal. Inspect the failing job's logs, fix
-   routine repository failures (lint, types, flaky-but-reproducible tests, lockfiles, generated
-   files), re-run local health, push, and wait on the new tree. Stop only for failures that need
-   a human decision (product intent, secrets, infrastructure).
-4. Merge, then run the staging deploy steps from the ticket's `deployment_guide` and the project
-   deploy config — execute each automatable step yourself and verify its success before the
-   next. Include any repo-required schema-deploy artifact (Atlas reviewed plan, migrations).
-5. Set `to_verify_staging`.
+1. Run the local-health → CI loop against a PR on `staging`.
+2. Merge, then run the staging deploy steps from the ticket's `deployment_guide` (if any) and
+   the project deploy config — execute each automatable step yourself and verify its success
+   before the next. Include any repo-required schema-deploy artifact (Atlas reviewed plan,
+   migrations).
+3. Ticket in scope: set `to_verify_staging`. No ticket: skip status and stop unless the
+   target is `full` (continue to production land+deploy, no verify).
 
 Staging mutations follow `staging-autonomy.md`: documented bounded fixtures, seeds, and
 registrations are standing-authorized — repair and continue instead of returning a command for
 the user to run.
 
 ### 3. Verify staging (`staging` and `full`)
+
+Ticket required. No ticket: skip.
 
 Run:
 
@@ -116,19 +181,24 @@ Handle the verdict:
   continue from the terminal result.
 
 **Staging repair loop.** For an agent-resolvable `FAIL`: diagnose from the verifier's evidence,
-fix the assigned surface (code defect → fix + local health + redeploy; verifier/contract defect →
-re-finalize the contract, no redeploy), then re-run the verify command once. Permit repair rounds
-only while each round makes concrete, stateable progress against the previous failure; when a
-round changes nothing, stop and report every attempted delta. Never loop on hope.
+fix the assigned surface (code defect → fix + local-health → CI loop + redeploy;
+verifier/contract defect → re-finalize the contract, no redeploy), then re-run the verify
+command once. Permit repair rounds only while each round makes concrete, stateable progress
+against the previous failure; when a round changes nothing, stop and report every attempted
+delta. Never loop on hope.
 
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 
-Precondition: latest staging evidence is an exact `PASS` (or `tiny_safe` contract-missing PASS).
+**No ticket:** do not call `/ticket-promote`. PR against `main`, run the local-health → CI
+loop, merge, run production deploy steps from the project deploy config, stop. Report
+behavior unverified.
 
-Run `/ticket-promote <ID>`. This invocation satisfies the human-authorization requirement but
-waives none of ticket-promote's schema, isolation, parity, CI, or deploy gates. It lands the
-work on `main`, runs production deploy steps, sets `to_verify_prod`, and hands off to
-`/ticket-verify production <ID>` (§5). Apply the same CI self-heal loop to promotion PR checks.
+**Ticket:** precondition is latest staging evidence is an exact `PASS` (or `tiny_safe`
+contract-missing PASS). Run `/ticket-promote <ID>`. This invocation satisfies the
+human-authorization requirement but waives none of ticket-promote's schema, isolation, parity,
+CI, or deploy gates. It lands the work on `main`, runs production deploy steps, sets
+`to_verify_prod`, and hands off to `/ticket-verify production <ID>` (§5). The promotion PR
+uses the same local-health → CI loop.
 
 ### 4a. Production leg — direct-to-production (never staged)
 
@@ -136,8 +206,8 @@ Only for tiny safe standalone work. Classify the actual diff first: schema, auth
 deploy-config, new infrastructure/cost, wide blast radius, or material uncertainty means **not**
 tiny/safe — stop and ask the user for confirmation before any production mutation, naming
 exactly what makes it risky and recommending the staging path. With a tiny/safe classification
-or explicit confirmation: PR against `main`, CI, merge, production deploy steps, then
-`/ticket-verify production <ID>`.
+or explicit confirmation: PR against `main`, local-health → CI loop, merge, production deploy
+steps, then `/ticket-verify production <ID>` if a ticket is in scope.
 
 Direct-to-main never leaves staging behind: merge the same change into `staging` and deploy it
 there in the same run, and confirm that back-sync before reporting the leg complete.
@@ -147,6 +217,8 @@ production database from a local shell. Authenticated production CLI mutations w
 route run through `bin/redacted-exec -- <documented command>`.
 
 ### 5. Verify and complete production
+
+Ticket required. No ticket: skip; the production land+deploy already happened in §4/§4a.
 
 `/ticket-verify production <ID>` owns the production verdict, deferred cleanup, and
 `completed`. Relay its terminal result. If it fails with a pure verifier/contract defect
@@ -158,13 +230,17 @@ than claiming completion.
 
 ## Terminal report
 
-One row per lifecycle gate: command, result, PR/commit or run identifier, evidence artifact ID,
-resulting ticket status. End with exactly one of:
+One row per gate: command, result, PR/commit or run identifier, evidence artifact ID (ticket
+mode), resulting ticket status (ticket mode). End with exactly one of:
 
+- `CI GREEN` — no target, or no-ticket loop finished with CI pass and no further land;
+- `STAGING DEPLOYED` — no-ticket `staging` finished land+deploy (behavior not verified);
 - `COMPLETE` — production verification passed and the ticket is `completed` (`prod`/`full`);
-- `STAGING VERIFIED` — target `staging` finished with exact staging `PASS`; next command is
-  `/ticket-deploy <ID> prod`;
+- `STAGING VERIFIED` — ticket + target `staging` finished with exact staging `PASS`; next
+  command is `/ticket-deploy <ID> prod`;
 - `STOPPED` — the failed/blocked/timing gate and the exact next command or human decision.
 
 Never report `full` success from a staging PASS alone. Every PASS line must cite concrete
 evidence; end with a "Not verified:" line for anything claimed but not exercised in this run.
+If a local-vs-CI discrepancy was compounded and SKIPPED, name it in the report — do not bury
+it inside a green banner.
