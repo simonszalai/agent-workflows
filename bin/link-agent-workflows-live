@@ -19,6 +19,9 @@ ROOT_LINKS = (
     (".claude/workflows", "workflows"),
     (".agents/skills", "skills"),
     (".codex/hooks", "hooks"),
+    (".cursor/agents", "agents"),
+    (".cursor/skills", "skills"),
+    (".cursor/hooks", "hooks"),
 )
 SHARED_SKILLS_ROOT = ".codex/skills"
 SHARED_SKILLS_LINK = "agent-workflows"
