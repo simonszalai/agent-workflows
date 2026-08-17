@@ -70,6 +70,9 @@ class InstallerTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((home / ".claude/skills").resolve(), (source / "skills").resolve())
+            self.assertEqual((home / ".cursor/skills").resolve(), (source / "skills").resolve())
+            self.assertEqual((home / ".cursor/agents").resolve(), (source / "agents").resolve())
+            self.assertEqual((home / ".cursor/hooks").resolve(), (source / "hooks").resolve())
             self.assertFalse((home / ".local/share/agent-workflows").exists())
             self.assertEqual(
                 (home / ".local/bin/psql-cli").resolve(),
@@ -79,6 +82,7 @@ class InstallerTest(unittest.TestCase):
             (source / "skills/added-later").mkdir()
             (source / "skills/added-later/SKILL.md").write_text("live")
             self.assertTrue((home / ".claude/skills/added-later/SKILL.md").is_file())
+            self.assertTrue((home / ".cursor/skills/added-later/SKILL.md").is_file())
 
     def test_fresh_upgrade_and_rollback_in_temporary_home(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

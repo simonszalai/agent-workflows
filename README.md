@@ -31,13 +31,15 @@ git clone git@github.com:simonszalai/agent-workflows.git ~/dev/agent-workflows
 ```
 
 The live linker makes the dedicated roots (`~/.claude/{agents,skills,hooks,workflows}`,
-`~/.agents/skills`, and `~/.codex/hooks`) folder symlinks to the checkout. Adding any file or
-skill directory under the corresponding repository folder is therefore visible immediately,
-without rerunning an installer. Codex's skills root also contains Codex-managed and personal
-skills, so it keeps that directory and uses one folder link at
-`~/.codex/skills/agent-workflows`. `~/.local/bin` is shared too, so executables remain direct
-per-file links. The migration deletes the superseded immutable snapshot store after every live
-link has been switched, so stale pinned copies cannot become active again.
+`~/.agents/skills`, `~/.codex/hooks`, and `~/.cursor/{agents,skills,hooks}`) folder
+symlinks to the checkout. Adding any file or skill directory under the corresponding
+repository folder is therefore visible immediately, without rerunning an installer. Codex's
+skills root also contains Codex-managed and personal skills, so it keeps that directory and
+uses one folder link at `~/.codex/skills/agent-workflows`. Cursor's built-in skills live in
+`~/.cursor/skills-cursor`, so `~/.cursor/skills` stays a dedicated folder link. `~/.local/bin`
+is shared too, so executables remain direct per-file links. The migration deletes the
+superseded immutable snapshot store after every live link has been switched, so stale pinned
+copies cannot become active again.
 
 Running `bin/install-agent-workflows` without `--version` now performs this same live-folder setup,
 so an old setup command cannot silently repin the machine. Pinned, one-way environments must pass

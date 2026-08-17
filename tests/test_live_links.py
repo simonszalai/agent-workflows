@@ -52,10 +52,12 @@ class LiveLinksTest(unittest.TestCase):
                 home / ".claude/skills",
                 home / ".agents/skills",
                 home / ".codex/skills",
+                home / ".cursor/skills",
             ):
                 destination.mkdir(parents=True)
                 (destination / "example").symlink_to(store / "skills/example")
             (home / ".claude/skills/external").symlink_to(source / "skills/external")
+            (home / ".cursor/skills/external").symlink_to(source / "skills/external")
             codex_system = home / ".codex/skills/.system"
             codex_system.mkdir()
             (home / ".local/bin").mkdir(parents=True)
@@ -65,6 +67,9 @@ class LiveLinksTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((home / ".claude/skills").resolve(), (source / "skills").resolve())
             self.assertEqual((home / ".agents/skills").resolve(), (source / "skills").resolve())
+            self.assertEqual((home / ".cursor/skills").resolve(), (source / "skills").resolve())
+            self.assertEqual((home / ".cursor/agents").resolve(), (source / "agents").resolve())
+            self.assertEqual((home / ".cursor/hooks").resolve(), (source / "hooks").resolve())
             self.assertTrue(codex_system.is_dir())
             self.assertEqual(
                 (home / ".codex/skills/agent-workflows").resolve(),
@@ -85,6 +90,7 @@ class LiveLinksTest(unittest.TestCase):
             (source / "skills/new-skill/SKILL.md").write_text("new")
             self.assertTrue((home / ".claude/skills/new-skill/SKILL.md").is_file())
             self.assertTrue((home / ".agents/skills/new-skill/SKILL.md").is_file())
+            self.assertTrue((home / ".cursor/skills/new-skill/SKILL.md").is_file())
             self.assertTrue(
                 (home / ".codex/skills/agent-workflows/new-skill/SKILL.md").is_file()
             )
@@ -105,6 +111,7 @@ class LiveLinksTest(unittest.TestCase):
             self.assertFalse(skills.is_symlink())
             self.assertTrue(unmanaged.is_dir())
             self.assertFalse((home / ".claude/agents").exists())
+            self.assertFalse((home / ".cursor/skills").exists())
 
     def test_preserves_unrelated_shared_bin_and_codex_skills(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -137,6 +144,7 @@ class LiveLinksTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(collision.read_text(), "mine")
             self.assertFalse((home / ".claude/skills").exists())
+            self.assertFalse((home / ".cursor/skills").exists())
 
 
 if __name__ == "__main__":

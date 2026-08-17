@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Report bounded token/tool usage for a Claude Code session tree (main + subagents).
+"""Report bounded token/tool usage for a Claude Code or Cursor session tree.
 
-Streams
-JSONL session logs and prints a bounded report: per-agent totals, prompt-bundle cost
-of each spawn, tool histogram, repeated identical commands and MCP reads, and
-external provider legs. Never prints raw transcript content beyond short labels.
+Streams JSONL session logs (Claude `message.role` and Cursor top-level
+`role`/`message`/`tool_use`) and prints a bounded report: per-agent totals,
+prompt-bundle cost of each spawn, tool histogram, repeated identical commands
+and MCP reads, and external provider legs. Never prints raw transcript content
+beyond short labels. Unknown log shapes exit with `unsupported log shape`.
 """
 
 from __future__ import annotations
@@ -18,6 +19,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 SPAWN_TOOLS = {"Task", "Agent"}
+COMMAND_TOOLS = {"Bash", "Shell"}
+METADATA_TYPES = {
+    "queue-operation", "attachment", "file-history-snapshot", "progress",
+    "system", "summary", "last-prompt",
+}
+UNSUPPORTED_SHAPE = "unsupported log shape"
 TEST_CMD_RE = re.compile(
     r"\b(pytest|vitest|jest|tsc\b|ruff|eslint|mypy|pyright|go test|cargo test|"
     r"npm (run )?test|pnpm (run )?test|alembic|atlas)\b"
@@ -61,6 +68,9 @@ class SessionStats:
     first_user_prefix: str = ""
     start: datetime | None = None
     end: datetime | None = None
+    recognized_turns: int = 0
+    metadata_records: int = 0
+    opaque_records: int = 0
     tool_counts: dict[str, int] = field(default_factory=dict)
     bash_commands: list[str] = field(default_factory=list)
     mcp_calls: list[tuple[str, str]] = field(default_factory=list)
@@ -78,6 +88,36 @@ def iter_records(path: Path):
                 yield record
 
 
+def record_turn(record: dict) -> tuple[str | None, dict | None]:
+    """Return (role, message) for Claude (`message.role`) or Cursor (top-level `role`)."""
+    message = record.get("message")
+    nested = message if isinstance(message, dict) else None
+    role = nested.get("role") if nested else None
+    if role not in {"user", "assistant"}:
+        role = record.get("role") if record.get("role") in {"user", "assistant"} else None
+    if role is None:
+        return None, None
+    return role, nested if nested is not None else record
+
+
+def is_metadata(record: dict) -> bool:
+    return record.get("type") in METADATA_TYPES
+
+
+def looks_opaque(record: dict) -> bool:
+    if is_metadata(record):
+        return False
+    return any(key in record for key in ("message", "role", "content", "tool_calls"))
+
+
+def require_supported_shape(stats: SessionStats) -> None:
+    if stats.assistant_msgs or stats.recognized_turns:
+        return
+    if stats.metadata_records and not stats.opaque_records:
+        return
+    raise SystemExit(UNSUPPORTED_SHAPE)
+
+
 def scan_session(path: Path) -> SessionStats:
     stats = SessionStats(path=path)
     for record in iter_records(path):
@@ -85,10 +125,14 @@ def scan_session(path: Path) -> SessionStats:
         if ts:
             stats.start = min(stats.start, ts) if stats.start else ts
             stats.end = max(stats.end, ts) if stats.end else ts
-        message = record.get("message")
-        if not isinstance(message, dict):
+        role, message = record_turn(record)
+        if role is None or message is None:
+            if is_metadata(record):
+                stats.metadata_records += 1
+            elif looks_opaque(record):
+                stats.opaque_records += 1
             continue
-        role = message.get("role")
+        stats.recognized_turns += 1
         content = message.get("content")
         if role == "user" and not stats.first_user_prefix:
             text = ""
@@ -125,7 +169,7 @@ def scan_session(path: Path) -> SessionStats:
             stats.tool_counts[name] = stats.tool_counts.get(name, 0) + 1
             tool_input = block.get("input")
             tool_input = tool_input if isinstance(tool_input, dict) else {}
-            if name == "Bash":
+            if name in COMMAND_TOOLS:
                 command = norm(str(tool_input.get("command") or ""))
                 if command:
                     stats.bash_commands.append(command)
@@ -226,6 +270,7 @@ def main() -> None:
         raise SystemExit("pass a session path or --project-dir")
 
     main_stats = scan_session(main_path)
+    require_supported_shape(main_stats)
     children = discover_children(main_stats, timedelta(seconds=args.window_slack))
     tree = [main_stats, *children]
 

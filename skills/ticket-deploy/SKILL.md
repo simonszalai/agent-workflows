@@ -1,19 +1,19 @@
 ---
 name: ticket-deploy
 description: >-
-  Get a branch CI-green, then deploy. Iterates the repo's deterministic local checks until they
-  pass, waits for CI, iterates CI failures, and compounds any local-vs-CI discrepancy. With a
-  ticket ID, continues through staging/prod verify and ticket status; without one, skips ticket
-  state, /ticket-verify, and /ticket-promote.
+  Get a branch CI-green, merge the PR, then deploy. Iterates the repo's deterministic local
+  checks until they pass, waits for CI, iterates CI failures, compounds any local-vs-CI
+  discrepancy, and lands the PR. With a ticket ID, continues through staging/prod verify and
+  ticket status; without one, skips ticket state, /ticket-verify, and /ticket-promote.
 max_turns: 150
 ---
 
 # Ticket Deploy
 
-Own the path from a finished tree to a green PR, then (when a target is given) land and deploy.
-The local-health → CI → discrepancy-compound loop is mandatory on every path. Ticket ceremony
-is optional: no ID means no ticket load, no status writes, no `/ticket-verify`, no
-`/ticket-promote`.
+Own the path from a finished tree to a green, merged PR, then (when a target is given) deploy.
+The local-health → CI → discrepancy-compound loop is mandatory on every path, and a green PR
+is always merged — CI-green is not landed. Ticket ceremony is optional: no ID means no ticket
+load, no status writes, no `/ticket-verify`, no `/ticket-promote`.
 
 With a ticket, this skill still delegates only the two dedicated owners:
 
@@ -23,8 +23,8 @@ With a ticket, this skill still delegates only the two dedicated owners:
 ## Usage
 
 ```text
-/ticket-deploy                 # current branch: local checks + CI until green
-/ticket-deploy staging         # same, then land+deploy to staging (no ticket)
+/ticket-deploy                 # current branch: local checks + CI until green, then merge
+/ticket-deploy staging         # same, then deploy to staging (no ticket)
 /ticket-deploy F0123 staging   # deploy to staging + verify staging; stop there
 /ticket-deploy F0123 prod      # production leg only (status-aware, see below)
 /ticket-deploy F0123 full      # staging leg, then on exact staging PASS the production leg
@@ -34,8 +34,8 @@ Parse the first token as a ticket ID only when it matches `F|B|R` plus digits. O
 the target. `prod` accepts alias `production`.
 
 - Ticket ID present: target is required (`staging`, `prod`, or `full`).
-- No ticket: target is optional. Omit it to stop after CI is green. `staging` / `prod` /
-  `full` still land and deploy from the project deploy config.
+- No ticket: target is optional. Omit it to stop after the PR is merged. `staging` / `prod` /
+  `full` still run project deploy steps after the merge.
 - Standalone tickets only. Epic step/source tickets land on their milestone integration
   branch and are gated by `/ticket-verify --epic`; refuse them here and say so. No ticket
   means this check does not apply.
@@ -57,7 +57,8 @@ A missing ticket is a first-class mode, not an error. Do not create a ticket to 
 |---|---|---|
 | Load ticket / `deployment_guide` | yes | skip |
 | Local health + CI loop (§Loop) | yes | yes |
-| Land + project deploy steps | yes, from guide + project config | yes, from project config only |
+| Merge the PR (§Merge) | yes | yes |
+| Project deploy steps | yes, from guide + project config | yes, from project config only; skip when no target |
 | `update_ticket` / lifecycle status | yes | skip |
 | `/ticket-verify`, `/ticket-promote` | yes | skip |
 
@@ -70,22 +71,23 @@ Read and follow:
 
 - `../references/ticket-lifecycle.md` (ticket mode)
 - `../references/staging-autonomy.md` (staging legs)
-- `../references/environment-topology.md`
+- `../references/environment-topology.md` (staging/prod/full target)
 - the called skills' own boundaries
 
 ## Loop — local health, then CI
 
 Run this loop before every push that should go to CI, and after every CI-driven fix. Ticket
-or not. Goal: the tree CI sees already passed the same deterministic checks locally; when it
-did not, diagnose the miss and give `/compound` a chance to close it.
+or not. Start at the local gate — feature review is not a deploy gate. Goal: the tree CI sees
+already passed the same deterministic checks locally; when it did not, diagnose the miss and
+give `/compound` a chance to close it.
 
-**Local gate.** Take the inventory from the repo's own definition — package scripts, Makefile,
-project CLAUDE.md, and the CI workflow — not a guessed subset. Typical members: lint,
-typecheck, tests, plus any lockfile or generated-file check CI will run. Run the **full**
-inventory on the current tree. On failure: fix every finding, re-run the full gate, repeat.
-Permit rounds only while each round makes concrete, stateable progress against the previous
-failure. Stop on no-progress or a human decision (product intent, secrets, infrastructure).
-Do not push a tree whose local gate is red.
+**Local gate.** First commands: `ci-local --run` (or the workflow's exact `run:` steps) and
+`git status`. Do not review product source. Do not dump the full diff. The ci-local receipt's
+`tree_sha` is the tree identity. Run the **full** gate on the current tree. On failure: fix
+every finding, re-run the full gate, repeat. Permit rounds only while each round makes
+concrete, stateable progress against the previous failure. Stop on no-progress or a human
+decision (product intent, secrets, infrastructure). Do not push a tree whose local gate is
+red.
 
 **CI wait.** Push, open or reuse the PR against the target base (current-branch PR if no
 target), then `wait-ci <pr_number> --timeout 540` as one blocking call. Never poll `gh`.
@@ -108,15 +110,49 @@ or a skill issue compound cannot close) is not a deploy failure — notify the u
 discrepancy, the classification, that compound did not change anything, and what a human
 would need to change if they want the gap closed. Do not pretend the miss is fixed.
 
-Then, if a ticket is in scope and this loop just completed a land+deploy gate, write the
-lifecycle status for that gate (`to_verify_staging` after staging deploy, or whatever §2/§4
-names). If no ticket, skip the write.
+Then merge the green PR (§Merge). If a ticket is in scope and this run just completed a
+land+deploy gate, write the lifecycle status for that gate (`to_verify_staging` after staging
+deploy, or whatever §2/§4 names). If no ticket, skip the write.
+
+## Merge
+
+A green PR is not landed. After the loop succeeds, merge it. If it is already `MERGED`, treat
+land as done and continue. Do not stop after CI passes and hand the merge back to the user.
+
+Detect the allowed method — do not assume a policy:
+
+```bash
+gh repo view --json squashMergeAllowed,rebaseMergeAllowed,mergeCommitAllowed
+```
+
+Prefer squash when allowed. Use `--merge` only when the head is a long-lived branch
+(`staging` / `main`) that must keep ancestry. If the needed method is not allowed, STOP.
+
+```bash
+HEAD_BRANCH=$(gh pr view <pr_number> --json headRefName -q .headRefName)
+gh pr merge <pr_number> --squash                    # or the chosen allowed method
+test "$(gh pr view <pr_number> --json state -q .state)" = "MERGED"
+case "$HEAD_BRANCH" in
+  staging|main) echo "Head is long-lived ($HEAD_BRANCH) — leave it." ;;
+  *)            if git ls-remote --exit-code --heads origin "refs/heads/$HEAD_BRANCH" >/dev/null
+                then git push origin --delete "$HEAD_BRANCH"
+                fi
+                align-merged-pr-workspace <pr_number> ;;
+esac
+```
+
+Never pass `--delete-branch` to `gh pr merge` from a Conductor worktree. `gh` may try to check
+out the base locally even after the remote merge succeeded, then fail because that base is
+already used by another worktree. Confirm remote `MERGED` first, delete only the remote
+throwaway head, then use the guarded alignment command.
 
 ## Process
 
 ### 1. Resolve and resume safely
 
-**No ticket:** skip this section; go to the loop, then to the target section if one was given.
+**No ticket:** skip this section. Do not review product source; do not dump the full diff.
+First commands: `ci-local --run` (or the workflow's exact `run:` steps) and `git status`.
+Then the loop, merge the PR, then the target section if one was given.
 
 Load the ticket once with `detail="light", include_events=false`, then fetch only the artifact
 bodies you need — at minimum the current `deployment_guide`. Refuse epic step/source tickets,
@@ -143,8 +179,8 @@ landed after the artifact's activation boundary; age alone is not staleness.
 
 ### 2. Deploy to staging (`staging` and `full`)
 
-1. Run the local-health → CI loop against a PR on `staging`.
-2. Merge, then run the staging deploy steps from the ticket's `deployment_guide` (if any) and
+1. Run the local-health → CI loop against a PR on `staging`, then merge it (§Merge).
+2. Run the staging deploy steps from the ticket's `deployment_guide` (if any) and
    the project deploy config — execute each automatable step yourself and verify its success
    before the next. Include any repo-required schema-deploy artifact (Atlas reviewed plan,
    migrations).
@@ -190,7 +226,7 @@ delta. Never loop on hope.
 ### 4. Production leg — promote staging-verified work (`prod` and `full`)
 
 **No ticket:** do not call `/ticket-promote`. PR against `main`, run the local-health → CI
-loop, merge, run production deploy steps from the project deploy config, stop. Report
+loop, merge (§Merge), run production deploy steps from the project deploy config, stop. Report
 behavior unverified.
 
 **Ticket:** precondition is latest staging evidence is an exact `PASS` (or `tiny_safe`
@@ -206,8 +242,8 @@ Only for tiny safe standalone work. Classify the actual diff first: schema, auth
 deploy-config, new infrastructure/cost, wide blast radius, or material uncertainty means **not**
 tiny/safe — stop and ask the user for confirmation before any production mutation, naming
 exactly what makes it risky and recommending the staging path. With a tiny/safe classification
-or explicit confirmation: PR against `main`, local-health → CI loop, merge, production deploy
-steps, then `/ticket-verify production <ID>` if a ticket is in scope.
+or explicit confirmation: PR against `main`, local-health → CI loop, merge (§Merge), production
+deploy steps, then `/ticket-verify production <ID>` if a ticket is in scope.
 
 Direct-to-main never leaves staging behind: merge the same change into `staging` and deploy it
 there in the same run, and confirm that back-sync before reporting the leg complete.
@@ -233,7 +269,7 @@ than claiming completion.
 One row per gate: command, result, PR/commit or run identifier, evidence artifact ID (ticket
 mode), resulting ticket status (ticket mode). End with exactly one of:
 
-- `CI GREEN` — no target, or no-ticket loop finished with CI pass and no further land;
+- `LANDED` — no target: CI passed and the PR is merged; no deploy steps ran;
 - `STAGING DEPLOYED` — no-ticket `staging` finished land+deploy (behavior not verified);
 - `COMPLETE` — production verification passed and the ticket is `completed` (`prod`/`full`);
 - `STAGING VERIFIED` — ticket + target `staging` finished with exact staging `PASS`; next
