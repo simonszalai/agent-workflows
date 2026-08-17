@@ -33,6 +33,7 @@
 # usage:
 #   db-provision-roles --project <id> <staging|prod|all> --reason "<why>" [--dry-run]
 #   db-provision-roles --project <id> --app <app-slug> <staging|prod|all> --reason "<why>" [--dry-run]
+#   db-provision-roles --project <id> --app <app-slug> --roles migrator[,ro] ...
 #   db-provision-roles --list
 case "$-" in *x*) set +x ;; esac
 set -euo pipefail
@@ -183,11 +184,15 @@ usage() {
 usage:
   db-provision-roles --project <amaru|ts|workflow-pro|autodev> <staging|prod|all> --reason "<why>" [--dry-run]
   db-provision-roles --project <id> --app <app-slug> <staging|prod|all> --reason "<why>" [--dry-run]
+  db-provision-roles --project <id> --app <app-slug> --roles migrator[,ro] <tier> --reason "<why>"
   db-provision-roles --list
 
 Idempotent. Project mode rotates app/ro passwords and upserts the eight (or
 four for autodev) vault items. App mode (--app) provisions/rotates just that
 application's login(s) and upserts {PROD|STAGING}_POSTGRES_URL_{APPSLUG_UPPER}[_RO].
+--roles (app mode only) limits which declared principals are created/rotated:
+app, ro, migrator. Default is every role the app declares. Use --roles migrator
+to add a boot-time migrator without rotating the live app password.
 Creates the Render owner credential when missing (dedicated DBs only).
 EOF
   exit 2
@@ -200,7 +205,7 @@ list_projects() {
   exit 0
 }
 
-PROJECT="" APP="" TIER_ARG="" DRY_RUN=0 REASON=""
+PROJECT="" APP="" TIER_ARG="" DRY_RUN=0 REASON="" ROLES_ARG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --list) list_projects ;;
@@ -208,6 +213,8 @@ while [[ $# -gt 0 ]]; do
     --project=*) PROJECT="${1#*=}"; shift ;;
     --app) APP="${2:?}"; shift 2 ;;
     --app=*) APP="${1#*=}"; shift ;;
+    --roles) ROLES_ARG="${2:?}"; shift 2 ;;
+    --roles=*) ROLES_ARG="${1#*=}"; shift ;;
     staging|prod|all) TIER_ARG="$1"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     --reason) REASON="${2:?}"; shift 2 ;;
@@ -234,6 +241,28 @@ cfg_get ".projects[\"$PROJECT\"]" >/dev/null || {
 if [[ -n "$APP" ]]; then
   cfg_get ".projects[\"$PROJECT\"].apps[\"$APP\"]" >/dev/null 2>&1 || {
     echo "ERROR: unknown app '$APP' for project '$PROJECT'. Known: $(jq -r ".projects[\"$PROJECT\"].apps // {} | keys[]" "$CONFIG" 2>/dev/null | tr '\n' ' ')" >&2
+    exit 2
+  }
+fi
+
+# --roles: default every declared kind. Restricting requires --app so a project
+# sweep cannot silently skip the live app password.
+WANT_APP=1 WANT_RO=1 WANT_MIGRATOR=1
+if [[ -n "$ROLES_ARG" ]]; then
+  [[ -n "$APP" ]] || { echo "ERROR: --roles is only valid with --app" >&2; exit 2; }
+  WANT_APP=0 WANT_RO=0 WANT_MIGRATOR=0
+  IFS=',' read -r -a _roles_sel <<< "$ROLES_ARG"
+  for _kind in "${_roles_sel[@]}"; do
+    case "$_kind" in
+      app) WANT_APP=1 ;;
+      ro) WANT_RO=1 ;;
+      migrator) WANT_MIGRATOR=1 ;;
+      "" ) ;;
+      *) echo "ERROR: --roles must be a comma list of app, ro, migrator (got '$_kind')" >&2; exit 2 ;;
+    esac
+  done
+  [[ $((WANT_APP + WANT_RO + WANT_MIGRATOR)) -gt 0 ]] || {
+    echo "ERROR: --roles selected nothing" >&2
     exit 2
   }
 fi
@@ -266,13 +295,13 @@ render_api_get() {
   local path="$1"
   # render-cli prints a context line then body; strip non-json prefix.
   local out
-  out="$("$RENDER_CLI" --project "$RENDER_PROJECT" api GET "$path" 2>/dev/null)" || return $?
+  out="$("$RENDER_CLI" --project "$RENDER_PROJECT" --allow-cross-project api GET "$path" 2>/dev/null)" || return $?
   printf '%s' "${out#*\{}" | { echo -n '{'; cat; }
 }
 
 render_api_get_json() {
   local path="$1" out
-  out="$("$RENDER_CLI" --project "$RENDER_PROJECT" api GET "$path" 2>&1)" || {
+  out="$("$RENDER_CLI" --project "$RENDER_PROJECT" --allow-cross-project api GET "$path" 2>&1)" || {
     echo "ERROR: render GET $path failed" >&2
     return 3
   }
@@ -285,7 +314,7 @@ render_create_owner() {
   echo "  render: creating credential $OWNER_CRED on $db_id (becomes default)"
   if [[ "$DRY_RUN" -eq 1 ]]; then return 0; fi
   jq -n --arg u "$OWNER_CRED" '{username:$u}' \
-    | "$RENDER_CLI" --project "$RENDER_PROJECT" --write \
+    | "$RENDER_CLI" --project "$RENDER_PROJECT" --allow-cross-project --write \
         --reason "$SENSITIVE_ACCESS_REASON" \
         api POST "/v1/postgres/$db_id/credentials" 2>/dev/null \
     || {
@@ -454,22 +483,106 @@ SQL
 # explicitly revoked from alembic_version above, which is correct — but a service
 # that applies migrations at boot then needs its own principal, or it borrows
 # another project's owner credential and goes stale the moment that credential
-# rotates. Membership in the tier's table_owner gives DDL rights over existing
-# objects; the stored URL carries `options=-c role=<table_owner>` so everything
-# the migrator creates is owned by table_owner too, exactly like the owner
-# credential's ownership trick.
-sql_grant_migrator_on_db() { # admin_url_for_db role table_owner
-  local admin_url="$1" role="$2" table_owner="$3"
-  ROLE_NAME="$role" TABLE_OWNER="$table_owner" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+# rotates.
+#
+# SET ROLE target:
+#   sql_role       — project SQL owner (autodev_owner). GRANT render is
+#                    impossible (no ADMIN OPTION).
+#   dedicated      — table_owner when someone we can connect as has ADMIN
+#                    (ts_root on ts_user). Otherwise the migrator itself,
+#                    after REASSIGN of the consumer database only.
+sql_grant_migrator_on_db() { # admin_url_for_db role — CONNECT + CREATE only
+  local admin_url="$1" role="$2"
+  ROLE_NAME="$role" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
 \set role_name `printf %s "$ROLE_NAME"`
-\set table_owner `printf %s "$TABLE_OWNER"`
 SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'role_name') \gexec
 SELECT format('GRANT USAGE, CREATE ON SCHEMA public TO %I', :'role_name') \gexec
--- Role membership, not per-table grants: migrations ALTER and DROP objects that
--- do not exist yet at provisioning time.
-SELECT format('GRANT %I TO %I', :'table_owner', :'role_name')
-WHERE to_regrole(:'table_owner') IS NOT NULL
-  AND NOT pg_has_role(:'role_name', :'table_owner', 'MEMBER') \gexec
+SQL
+}
+
+# Returns 0 if member already or GRANT succeeded. Caller retries via ROOT.
+sql_grant_role_membership() { # admin_url granted_role member
+  local admin_url="$1" granted="$2" member="$3"
+  [[ "$granted" != "$member" ]] || return 0
+  GRANTED="$granted" MEMBER="$member" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set granted `printf %s "$GRANTED"`
+\set member `printf %s "$MEMBER"`
+SELECT format('GRANT %I TO %I', :'granted', :'member')
+WHERE to_regrole(:'granted') IS NOT NULL
+  AND to_regrole(:'member') IS NOT NULL
+  AND NOT pg_has_role(:'member', :'granted', 'MEMBER') \gexec
+SQL
+}
+
+# PG 16+: GRANT on an existing membership updates the named options.
+# Never specify ADMIN: the creator record already has it, and
+# "GRANT ... ADMIN TRUE" to your own grantor is rejected
+# ("ADMIN option cannot be granted back to your own grantor").
+# Do not guard with pg_has_role(..., MEMBER).
+sql_alter_membership_options() { # admin_url granted member inherit set_opt
+  local admin_url="$1" granted="$2" member="$3" inherit="$4" set_opt="$5"
+  GRANTED="$granted" MEMBER="$member" INH="$inherit" SETO="$set_opt" \
+    run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set granted `printf %s "$GRANTED"`
+\set member `printf %s "$MEMBER"`
+\set inh `printf %s "$INH"`
+\set seto `printf %s "$SETO"`
+SELECT format(
+  'GRANT %I TO %I WITH INHERIT %s, SET %s',
+  :'granted', :'member', :'inh', :'seto')
+WHERE to_regrole(:'granted') IS NOT NULL
+  AND to_regrole(:'member') IS NOT NULL \gexec
+SQL
+}
+
+sql_has_role_usage() { # admin_url role -> prints t|f
+  local admin_url="$1" role="$2"
+  ROLE_NAME="$role" run_psql_url "$admin_url" -q -t -A -v ON_ERROR_STOP=1 <<'SQL'
+\set role_name `printf %s "$ROLE_NAME"`
+SELECT pg_has_role(:'role_name', 'USAGE')
+SQL
+}
+
+# REASSIGN requires privileges of BOTH roles. inherit=f ADMIN membership
+# (the PG 16 creator record) is not enough. Caller must flip INHERIT on
+# first, then connect as from_role.
+sql_reassign_owned_on_db() { # admin_url_as_from from_role to_role
+  local admin_url="$1" from_role="$2" to_role="$3"
+  [[ "$from_role" != "$to_role" ]] || return 0
+  FROM_ROLE="$from_role" TO_ROLE="$to_role" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set from_role `printf %s "$FROM_ROLE"`
+\set to_role `printf %s "$TO_ROLE"`
+SELECT format('REASSIGN OWNED BY %I TO %I', :'from_role', :'to_role')
+WHERE to_regrole(:'from_role') IS NOT NULL
+  AND to_regrole(:'to_role') IS NOT NULL \gexec
+SQL
+}
+
+is_owner_principal() { # username expected_owner_cred
+  local user="$1" cred="$2"
+  [[ "$user" == "$cred" || "$user" == "${cred}_login_"* ]]
+}
+
+sql_default_privs_app_on_db() { # session_as_owner grantee
+  local session_url="$1" grantee="$2"
+  GRANTEE="$grantee" run_psql_url "$session_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set grantee `printf %s "$GRANTEE"`
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+  :'grantee') \gexec
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I',
+  :'grantee') \gexec
+SQL
+}
+
+sql_default_privs_ro_on_db() { # session_as_owner grantee
+  local session_url="$1" grantee="$2"
+  GRANTEE="$grantee" run_psql_url "$session_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+\set grantee `printf %s "$GRANTEE"`
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO %I',
+  :'grantee') \gexec
 SQL
 }
 
@@ -534,6 +647,15 @@ provision_app_tier() {
   own_owner_kind="$(jq -r ".projects[\"$own_project\"].owner_kind // \"render_credential\"" "$CONFIG")"
   own_owner_cred="$(cfg_get ".projects[\"$own_project\"].roles.owner")"
   own_render_project="$(cfg_get ".projects[\"$own_project\"].render_project")"
+  # Dedicated boxes SET ROLE table_owner. sql_role boxes cannot GRANT that
+  # role (`render` has no ADMIN OPTION holder), so the migrator SET ROLEs
+  # the SQL owner instead.
+  local mig_set_role
+  if [[ "$own_owner_kind" == "sql_role" ]]; then
+    mig_set_role="$own_owner_cred"
+  else
+    mig_set_role="$own_table_owner"
+  fi
 
   # Databases the grants target: explicit app override, else the owning tier's
   # database plus extra_databases. First entry is the item URL's primary db.
@@ -551,6 +673,16 @@ provision_app_tier() {
   ro_role="$(jq -r ".projects[\"$PROJECT\"].apps[\"$APP\"].roles.ro // \"\"" "$CONFIG")"
   migrator_role="$(jq -r ".projects[\"$PROJECT\"].apps[\"$APP\"].roles.migrator // \"\"" "$CONFIG")"
   [[ -n "$app_role$ro_role$migrator_role" ]] || { echo "ERROR: app $APP declares no roles" >&2; return 2; }
+  if [[ -n "$ROLES_ARG" ]]; then
+    [[ "$WANT_APP" -eq 0 || -n "$app_role" ]] || { echo "ERROR: --roles app but $APP declares no app role" >&2; return 2; }
+    [[ "$WANT_RO" -eq 0 || -n "$ro_role" ]] || { echo "ERROR: --roles ro but $APP declares no ro role" >&2; return 2; }
+    [[ "$WANT_MIGRATOR" -eq 0 || -n "$migrator_role" ]] || { echo "ERROR: --roles migrator but $APP declares no migrator role" >&2; return 2; }
+  fi
+  do_app=0 do_ro=0 do_migrator=0
+  [[ "$WANT_APP" -eq 1 && -n "$app_role" ]] && do_app=1
+  [[ "$WANT_RO" -eq 1 && -n "$ro_role" ]] && do_ro=1
+  [[ "$WANT_MIGRATOR" -eq 1 && -n "$migrator_role" ]] && do_migrator=1
+  [[ $((do_app + do_ro + do_migrator)) -gt 0 ]] || { echo "ERROR: nothing to provision for $APP after --roles filter" >&2; return 2; }
 
   # Grouped item naming (slice 6 layout): per-app fields on the tier's Postgres
   # item. Prod write URLs live on "<sens>/Postgres prod/<slug>", prod RO on
@@ -572,17 +704,22 @@ provision_app_tier() {
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "  would connect as admin via $own_project owner path ($own_owner_cred, kind=$own_owner_kind)"
-    [[ -n "$app_role" ]] && {
+    [[ "$do_app" -eq 1 ]] && {
       echo "  would create/rotate LOGIN $app_role ({slug}_app grant set on: ${dbs[*]})"
       echo "  would upsert op://$app_vault/$app_item/$app_field"
     }
-    [[ -n "$ro_role" ]] && {
+    [[ "$do_ro" -eq 1 ]] && {
       echo "  would create/rotate LOGIN $ro_role ({slug}_ro grant set on: ${dbs[*]})"
       echo "  would upsert op://$ro_vault/$ro_item/$ro_field"
     }
-    [[ -n "$migrator_role" ]] && {
-      echo "  would create/rotate LOGIN $migrator_role (migrator: member of $own_table_owner on: ${dbs[*]})"
+    [[ "$do_migrator" -eq 1 ]] && {
+      echo "  would create/rotate LOGIN $migrator_role (preferred SET ROLE $mig_set_role on: ${dbs[*]})"
       echo "  would upsert op://$app_vault/$app_item/${app_field}_migrator"
+      if [[ "$own_owner_kind" == "sql_role" ]]; then
+        echo "  would REASSIGN OWNED BY $own_table_owner TO $mig_set_role on: ${dbs[*]}"
+      else
+        echo "  GRANT $own_table_owner falls back to instance ROOT, then to SET ROLE $migrator_role + REASSIGN"
+      fi
     }
     return 0
   fi
@@ -600,8 +737,8 @@ provision_app_tier() {
     admin_url="$EXT_URL"
     echo "  admin via shared-instance default credential user=$admin_user"
   else
-    [[ "$admin_user" == "$own_owner_cred" ]] || {
-      echo "ERROR: default credential is '$admin_user', expected owner '$own_owner_cred'." >&2
+    is_owner_principal "$admin_user" "$own_owner_cred" || {
+      echo "ERROR: default credential is '$admin_user', expected owner '$own_owner_cred' or ${own_owner_cred}_login_*." >&2
       echo "Run db-provision-roles --project $own_project $own_tier first (owner bootstrap)." >&2
       return 3
     }
@@ -612,8 +749,65 @@ provision_app_tier() {
       echo "ERROR: admin session current_user='$effective', expected '$own_table_owner'." >&2
       return 3
     }
-    echo "  admin session verified (current_user=$own_table_owner)"
+    echo "  admin session verified (current_user=$own_table_owner, login=$admin_user)"
   fi
+
+  local effective_mig_set_role="$mig_set_role" need_reassign=0
+  [[ "$own_owner_kind" == "sql_role" ]] && need_reassign=1
+  local own_root_ref=""
+  own_root_ref="$(jq -r ".projects[\"$own_project\"].admin_refs[\"$own_tier\"].root // empty" "$CONFIG")"
+
+  grant_migrator_set_role() { # grant_url db_name
+    local grant_url="$1" db_name="$2"
+    if sql_grant_role_membership "$grant_url" "$effective_mig_set_role" "$migrator_role" 2>/dev/null; then
+      return 0
+    fi
+    echo "  GRANT $effective_mig_set_role as owner failed on $db_name"
+    if [[ "$own_owner_kind" != "sql_role" && -n "$own_root_ref" ]]; then
+      local root_url root_db_url RU_USER RU_PASS RU_HOST RU_PORT RU_DB RU_QUERY
+      root_url="$(vault_read_optional "$own_root_ref")" || root_url=""
+      if [[ -n "$root_url" ]]; then
+        parse_url "$root_url"
+        echo "  retrying GRANT $own_table_owner via instance ROOT login=$U_USER"
+        RU_USER="$U_USER" RU_PASS="$U_PASS"
+        root_db_url="$(compose_url_db "$root_url" "$RU_USER" "$RU_PASS" "$db_name")"
+        if sql_grant_role_membership "$root_db_url" "$own_table_owner" "$migrator_role"; then
+          effective_mig_set_role="$own_table_owner"
+          return 0
+        fi
+        echo "  GRANT $own_table_owner via ROOT failed on $db_name"
+      fi
+    fi
+    # Last resort: SET ROLE the migrator itself and take ownership of this DB.
+    effective_mig_set_role="$migrator_role"
+    need_reassign=1
+    return 0
+  }
+
+  reassign_with_temp_membership() { # admin_as_table_owner _plain_unused db
+    local as_owner_url="$1" db_name="$3"
+    local usage=""
+    echo "  REASSIGN OWNED BY $own_table_owner TO $effective_mig_set_role on $db_name"
+    # from_role (render/ts_user/amaru_db_user) already has inherit=f ADMIN on
+    # the target. Flip INHERIT so REASSIGN as SET ROLE from_role is legal,
+    # then restore the creator-record flags.
+    sql_alter_membership_options "$as_owner_url" "$effective_mig_set_role" \
+      "$own_table_owner" TRUE TRUE
+    usage="$(sql_has_role_usage "$as_owner_url" "$effective_mig_set_role" | tr -d '[:space:]')"
+    if [[ "$usage" != "t" ]]; then
+      sql_alter_membership_options "$as_owner_url" "$effective_mig_set_role" \
+        "$own_table_owner" FALSE FALSE || true
+      echo "ERROR: after GRANT INHERIT, $own_table_owner still has no USAGE on $effective_mig_set_role" >&2
+      return 3
+    fi
+    if ! sql_reassign_owned_on_db "$as_owner_url" "$own_table_owner" "$effective_mig_set_role"; then
+      sql_alter_membership_options "$as_owner_url" "$effective_mig_set_role" \
+        "$own_table_owner" FALSE FALSE || true
+      return 3
+    fi
+    sql_alter_membership_options "$as_owner_url" "$effective_mig_set_role" \
+      "$own_table_owner" FALSE FALSE
+  }
 
   provision_one_login() { # role kind(app|ro|migrator) — sets LOGIN_PW_OUT
     local role="$1" kind="$2" pw db_admin_url
@@ -627,7 +821,18 @@ provision_app_tier() {
       fi
       case "$kind" in
         ro) sql_grant_ro_on_db "$db_admin_url" "$role" ;;
-        migrator) sql_grant_migrator_on_db "$db_admin_url" "$role" "$own_table_owner" ;;
+        migrator)
+          local mig_grant_url="$db_admin_url" mig_plain_url
+          mig_plain_url="$(compose_url_db "$EXT_URL" "$admin_user" "$admin_pass" "$d")"
+          if [[ "$own_owner_kind" == "sql_role" ]]; then
+            mig_grant_url="$(with_owner_options "$db_admin_url" "$own_table_owner")"
+          fi
+          sql_grant_migrator_on_db "$mig_grant_url" "$role"
+          grant_migrator_set_role "$mig_grant_url" "$d"
+          if [[ "$need_reassign" -eq 1 ]]; then
+            reassign_with_temp_membership "$mig_grant_url" "$mig_plain_url" "$d"
+          fi
+          ;;
         *) sql_grant_app_on_db "$db_admin_url" "$role" ;;
       esac
     done
@@ -644,7 +849,7 @@ provision_app_tier() {
     app_base="$INT_URL"
   fi
 
-  if [[ -n "$app_role" ]]; then
+  if [[ "$do_app" -eq 1 ]]; then
     provision_one_login "$app_role" app
     local app_pw="$LOGIN_PW_OUT" app_url_stored app_url_ext
     app_url_stored="$(compose_url_db "$app_base" "$app_role" "$app_pw" "$primary_db")"
@@ -652,7 +857,7 @@ provision_app_tier() {
     run_psql_url "$app_url_ext" -q -t -A -v ON_ERROR_STOP=1 -c "SELECT current_user" >/dev/null
     UPSERT_VALUE="$app_url_stored" vault_upsert "$app_vault" "$app_item" "$app_field"
   fi
-  if [[ -n "$ro_role" ]]; then
+  if [[ "$do_ro" -eq 1 ]]; then
     provision_one_login "$ro_role" ro
     local ro_pw="$LOGIN_PW_OUT" ro_url_ext
     ro_url_ext="$(compose_url_db "$EXT_URL" "$ro_role" "$ro_pw" "$primary_db")"
@@ -664,24 +869,49 @@ provision_app_tier() {
     echo "  verified $ro_role (cannot write)"
     UPSERT_VALUE="$ro_url_ext" vault_upsert "$ro_vault" "$ro_item" "$ro_field"
   fi
-  if [[ -n "$migrator_role" ]]; then
+  if [[ "$do_migrator" -eq 1 ]]; then
     provision_one_login "$migrator_role" migrator
     local mig_pw="$LOGIN_PW_OUT" mig_url_stored mig_url_ext
-    # `options=-c role=<table_owner>` on the STORED url: the migrator must both
-    # alter table_owner's objects and leave new ones owned by table_owner, or the
-    # next migration run cannot touch what this one created.
+    # `options=-c role=<effective_mig_set_role>` on the STORED url: new objects
+    # stay owned by the SET ROLE target, so the next migration can ALTER them.
     mig_url_stored="$(with_owner_options \
-      "$(compose_url_db "$app_base" "$migrator_role" "$mig_pw" "$primary_db")" "$own_table_owner")"
+      "$(compose_url_db "$app_base" "$migrator_role" "$mig_pw" "$primary_db")" "$effective_mig_set_role")"
     mig_url_ext="$(with_owner_options \
-      "$(compose_url_db "$EXT_URL" "$migrator_role" "$mig_pw" "$primary_db")" "$own_table_owner")"
+      "$(compose_url_db "$EXT_URL" "$migrator_role" "$mig_pw" "$primary_db")" "$effective_mig_set_role")"
     local mig_effective
     mig_effective="$(run_psql_url "$mig_url_ext" -q -t -A -v ON_ERROR_STOP=1 \
       -c 'SELECT current_user' | tr -d '[:space:]')"
-    [[ "$mig_effective" == "$own_table_owner" ]] || {
-      echo "ERROR: $migrator_role session current_user='$mig_effective', expected '$own_table_owner'." >&2
+    [[ "$mig_effective" == "$effective_mig_set_role" ]] || {
+      echo "ERROR: $migrator_role session current_user='$mig_effective', expected '$effective_mig_set_role'." >&2
       return 3
     }
-    echo "  verified $migrator_role (session runs as $own_table_owner)"
+    echo "  verified $migrator_role (session runs as $effective_mig_set_role)"
+    if [[ "$need_reassign" -eq 1 ]]; then
+      local def_app_role def_ro_role
+      while IFS= read -r def_app_role; do
+        [[ -n "$def_app_role" ]] || continue
+        sql_default_privs_app_on_db "$mig_url_ext" "$def_app_role"
+      done < <(jq -r --arg p "$PROJECT" --arg own "$own_project" --arg skip "$migrator_role" '
+        [
+          .projects[$p].roles.app // empty,
+          ((.projects[$p].apps // {}) | to_entries[]
+            | select((.value.instance.project // $own) == $own)
+            | .value.roles.app // empty)
+        ] | map(select(. != "" and . != $skip)) | unique | .[]
+      ' "$CONFIG")
+      while IFS= read -r def_ro_role; do
+        [[ -n "$def_ro_role" ]] || continue
+        sql_default_privs_ro_on_db "$mig_url_ext" "$def_ro_role"
+      done < <(jq -r --arg p "$PROJECT" --arg own "$own_project" '
+        [
+          .projects[$p].roles.ro // empty,
+          ((.projects[$p].apps // {}) | to_entries[]
+            | select((.value.instance.project // $own) == $own)
+            | .value.roles.ro // empty)
+        ] | map(select(. != "")) | unique | .[]
+      ' "$CONFIG")
+      echo "  default privileges as $mig_set_role for same-instance app/ro roles"
+    fi
     UPSERT_VALUE="$mig_url_stored" vault_upsert "$app_vault" "$app_item" "${app_field}_migrator"
   fi
   echo "  done $tier (app $APP)"
@@ -876,11 +1106,11 @@ if [[ -n "$APP" ]]; then
 
 Done for project=$PROJECT app=$APP tier=$TIER_ARG.
 Next:
-  1. Point the app's service DATABASE_URL rows at the new per-app item(s) in
-     the repo manifest; MIGRATE/SYSTEM stay on *_OWNER.
-  2. Redeploy every re-pointed service (manifest sync's deploy-last does this).
-  3. Retire the shared {PROD|STAGING}_POSTGRES_URL_APP reference for this app
-     once every consumer is flipped.
+  1. Manifest: DATABASE_URL_* → app field; MIGRATE_* → *_migrator; schema-drift
+     RO → Postgres prod RO/<slug>. Do not point runtime DATABASE_URL at a migrator.
+  2. sync-secrets --changed the new refs (--no-deploy unless a boot/migration
+     must pick them up now).
+  3. App logins were not rotated unless --roles included app (or --roles was omitted).
 EOF
   exit 0
 fi

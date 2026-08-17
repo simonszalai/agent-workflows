@@ -230,7 +230,7 @@
             "prod"
           ],
           "item_prefix": "AUTODEV_MEMORY_",
-          "note": "migrator: boot-time Alembic (scripts/migrate_all.py) across mem_autodev + mem_global + mem_workflow_pro. Member of the tier table_owner; the app role is revoked from alembic_version by design, so the migrator is a separate principal and NOT another project owner credential borrowed at runtime."
+          "note": "migrator: boot-time Alembic (scripts/migrate_all.py) across mem_autodev + mem_global + mem_workflow_pro. Member of autodev_owner (sql_role SET ROLE target). GRANT render is impossible (no ADMIN OPTION on render); provision REASSIGNs mem_* objects from render to autodev_owner so ALTER TABLE works. Independent of autodev_memory_app: rotating this does not rewrite DATABASE_URL_*."
         },
         "autodev_mem_ts": {
           "roles": {

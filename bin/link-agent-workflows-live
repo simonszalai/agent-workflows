@@ -16,13 +16,13 @@ ROOT_LINKS = (
     (".claude/agents", "agents"),
     (".claude/skills", "skills"),
     (".claude/hooks", "hooks"),
-    (".claude/workflows", "workflows"),
     (".agents/skills", "skills"),
     (".codex/hooks", "hooks"),
     (".cursor/agents", "agents"),
     (".cursor/skills", "skills"),
     (".cursor/hooks", "hooks"),
 )
+RETIRED_ROOTS = (".claude/workflows",)
 SHARED_SKILLS_ROOT = ".codex/skills"
 SHARED_SKILLS_LINK = "agent-workflows"
 STORE = ".local/share/agent-workflows"
@@ -61,6 +61,11 @@ def _preflight_root(destination: Path, expected: Path, source: Path, store: Path
         raise SystemExit(
             f"link-agent-workflows-live: refusing non-workflow content in {destination}: {names}"
         )
+
+
+def _remove_retired_root(destination: Path, source: Path, store: Path) -> None:
+    if destination.is_symlink() and _managed_link(destination, source, store):
+        destination.unlink()
 
 
 def _replace_root(destination: Path, expected: Path) -> None:
@@ -222,6 +227,8 @@ def link_live(source: Path, home: Path) -> None:
 
     for destination, expected in roots:
         _replace_root(destination, expected)
+    for destination_name in RETIRED_ROOTS:
+        _remove_retired_root(home / destination_name, source, store)
     _link_codex_skills(home, source, store)
     _link_bins(home, source, store)
     _merge_hooks(settings_paths[0], home / ".claude/hooks")

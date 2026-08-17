@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import Any
 
 
-MANAGED = ("agents", "commands", "skills", "hooks", "workflows", "bin", "config")
+MANAGED = ("agents", "commands", "skills", "hooks", "bin", "config")
 DESTINATIONS = (
     (".claude/agents", "agents"), (".claude/commands", "commands"),
     (".claude/skills", "skills"), (".claude/hooks", "hooks"),
-    (".claude/workflows", "workflows"), (".agents/skills", "skills"),
+    (".agents/skills", "skills"),
     (".codex/skills", "skills"), (".codex/hooks", "hooks"),
     (".cursor/agents", "agents"), (".cursor/skills", "skills"),
     (".cursor/hooks", "hooks"), (".local/bin", "bin"),

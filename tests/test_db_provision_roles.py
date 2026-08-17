@@ -73,7 +73,12 @@ SYNTH_CONFIG = {
                     "roles": {"app": "web_app", "ro": "web_ro"},
                     "tiers": ["staging", "prod"],
                     "item_prefix": "WEB_",
-                }
+                },
+                "migweb": {
+                    "roles": {"app": "migweb_app", "migrator": "migweb_migrator"},
+                    "tiers": ["prod"],
+                    "item_prefix": "MIGWEB_",
+                },
             },
             "tiers": {
                 "prod": {
@@ -127,16 +132,20 @@ set -uo pipefail
 for a in "$@"; do
   case "$a" in *pw-*) echo "LEAK: password on psql argv" >&2; exit 90 ;; esac
 done
+stdin=$(cat || true)
 printf 'PSQL user=%s db=%s options=%s args=%s\n' \
   "${PGUSER:-}" "${PGDATABASE:-}" "${PGOPTIONS:-}" "$*" >> "$FAKE_LOG"
-cat >/dev/null || true
 case "$*" in
   *_provision_ro_probe*) exit 1 ;;
   *"SELECT current_user"*)
     cu="${PGUSER:-}"
     case "${PGOPTIONS:-}" in *role=*) cu="${PGOPTIONS##*role=}" ;; esac
     printf '%s\n' "$cu"
+    exit 0
     ;;
+esac
+case "$stdin" in
+  *pg_has_role*) printf 't\n' ;;
 esac
 exit 0
 """
@@ -147,7 +156,7 @@ printf 'RENDER %s\n' "$*" >> "$FAKE_LOG"
 path=""
 for a in "$@"; do case "$a" in /v1/*) path="$a" ;; esac; done
 case "$path" in
-  *dpg-alpha-prod*) u=alpha_owner db=alpha_db ;;
+  *dpg-alpha-prod*) u=alpha_owner_login_20260808t204833_ef12ea db=alpha_db ;;
   *dpg-alpha-staging*) u=alpha_staging_owner db=alpha_staging ;;
   *dpg-shared-prod*) u=shared_admin db=mem_shared ;;
   *) echo "fake render-cli: unknown path $path" >&2; exit 1 ;;
@@ -248,6 +257,14 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = subprocess.run(["bash", "-n", BIN], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_reassign_flips_inherit_and_does_not_skip_on_member(self) -> None:
+        src = Path(BIN).read_text(encoding="utf-8")
+        self.assertIn("sql_alter_membership_options", src)
+        self.assertIn("WITH INHERIT %s, SET %s", src)
+        self.assertNotIn("WITH INHERIT %s, SET %s, ADMIN %s", src)
+        alter = src.split("sql_alter_membership_options()", 1)[1].split("sql_has_role_usage", 1)[0]
+        self.assertNotIn("pg_has_role", alter)
+
     def test_list_shows_apps_per_project(self) -> None:
         proc = self.provision("--list")
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -294,6 +311,8 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("/alpha_db", app_url)
         self.assertIn("web_ro", ro_url)
         self.assertIn("@ext-host:", ro_url)
+        # Dual-key owner rotation names the Render default <owner>_login_<tag>.
+        self.assertIn("login=alpha_owner_login_", proc.stdout)
         # owner attestation ran as the table owner, grants ran for both roles
         log = "\n".join(self.sb.log_lines())
         self.assertIn("role=alpha_user", log)
@@ -326,14 +345,15 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = self.provision("--project", "shared", "--app", "memsvc", "prod", "--reason", "t")
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         log = "\n".join(self.sb.log_lines())
-        # the migrator verifies itself with the ownership trick applied, and its
-        # grants run on every database the app spans
-        self.assertIn("USER=MEMSVC_MIGRATOR DB=MEM_SHARED OPTIONS=-C ROLE=RENDER", log.upper())
+        # sql_role box: SET ROLE the SQL owner, not table_owner (`render`).
+        # GRANT render is impossible (no ADMIN OPTION). Grants span every db.
+        self.assertIn("USER=MEMSVC_MIGRATOR DB=MEM_SHARED OPTIONS=-C ROLE=SHARED_OWNER", log.upper())
         self.assertIn("DB=MEM_EXTRA", log.upper())
+        self.assertIn("REASSIGN OWNED BY render TO shared_owner", proc.stdout)
         url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc_migrator")
         self.assertIn("memsvc_migrator", url)
-        # the ownership trick, so new objects stay owned by the table owner
-        self.assertIn("options=-c%20role%3Drender", url)
+        self.assertIn("options=-c%20role%3Dshared_owner", url)
+        self.assertNotIn("role%3Drender", url)
         # the app credential is untouched and remains a separate field
         app_url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc")
         self.assertIn("memsvc_app", app_url)
@@ -343,8 +363,25 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = self.provision("--project", "shared", "--app", "memsvc", "prod", "--dry-run")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("memsvc_migrator", proc.stdout)
+        self.assertIn("preferred SET ROLE shared_owner", proc.stdout)
+        self.assertIn("REASSIGN OWNED BY render TO shared_owner", proc.stdout)
         self.assertIn("op://SHAREDV-sensitive/Postgres prod/memsvc_migrator", proc.stdout)
         self.assertEqual(self.sb.log_lines(), [])
+
+    def test_dedicated_box_migrator_sets_role_to_table_owner(self) -> None:
+        proc = self.provision("--project", "alpha", "--app", "migweb", "prod", "--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        url = self.stored("ALPHAV-sensitive", "Postgres prod", "migweb_migrator")
+        self.assertIn("migweb_migrator", url)
+        self.assertIn("options=-c%20role%3Dalpha_user", url)
+        self.assertNotIn("REASSIGN OWNED", proc.stdout)
+
+    def test_dedicated_box_migrator_dry_run_does_not_reassign(self) -> None:
+        proc = self.provision("--project", "alpha", "--app", "migweb", "prod", "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("preferred SET ROLE alpha_user", proc.stdout)
+        self.assertIn("falls back to instance ROOT", proc.stdout)
+        self.assertNotIn("REASSIGN OWNED BY", proc.stdout)
 
     def test_cross_instance_app_provisions_on_owning_box_into_consumer_vault(self) -> None:
         proc = self.provision("--project", "shared", "--app", "crossapp", "prod", "--reason", "t")
@@ -359,6 +396,39 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("crossapp", url)
         self.assertIn("@ext-host:", url)
         self.assertIn("/mem_x", url)
+
+    def test_roles_requires_app_mode(self) -> None:
+        proc = self.provision("--project", "alpha", "--roles", "app", "prod", "--dry-run")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--roles is only valid with --app", proc.stderr)
+
+    def test_roles_rejects_unknown_kind(self) -> None:
+        proc = self.provision(
+            "--project", "shared", "--app", "memsvc", "--roles", "owner", "prod", "--dry-run"
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("app, ro, migrator", proc.stderr)
+
+    def test_roles_migrator_dry_run_skips_the_app_login(self) -> None:
+        proc = self.provision(
+            "--project", "shared", "--app", "memsvc", "--roles", "migrator", "prod", "--dry-run"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("memsvc_migrator", proc.stdout)
+        self.assertIn("op://SHAREDV-sensitive/Postgres prod/memsvc_migrator", proc.stdout)
+        self.assertNotIn("memsvc_app", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_roles_migrator_live_does_not_rotate_the_app_password(self) -> None:
+        proc = self.provision(
+            "--project", "shared", "--app", "memsvc", "--roles", "migrator", "prod",
+            "--reason", "t",
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc_migrator")
+        self.assertIn("memsvc_migrator", url)
+        app_path = self.sb.state / "SHAREDV-sensitive__Postgres prod__memsvc"
+        self.assertFalse(app_path.exists())
 
     def test_cross_instance_dry_run_names_owning_instance(self) -> None:
         proc = self.provision("--project", "shared", "--app", "crossapp", "prod", "--dry-run")

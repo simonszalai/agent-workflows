@@ -16,7 +16,7 @@ INSTALLER = ROOT / "bin/install-agent-workflows"
 class InstallerTest(unittest.TestCase):
     def source_repo(self, root: Path) -> Path:
         source = root / "source"
-        for name in ("agents", "commands", "skills", "hooks", "workflows", "bin", "config"):
+        for name in ("agents", "commands", "skills", "hooks", "bin", "config"):
             (source / name).mkdir(parents=True, exist_ok=True)
         for relative in (
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",

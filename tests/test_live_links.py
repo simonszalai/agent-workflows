@@ -13,9 +13,14 @@ LINKER = ROOT / "bin/link-agent-workflows-live"
 
 
 class LiveLinksTest(unittest.TestCase):
+    def test_repo_has_required_source_directories(self) -> None:
+        for name in ("agents", "skills", "hooks", "bin"):
+            self.assertTrue((ROOT / name).is_dir(), name)
+        self.assertFalse((ROOT / "workflows").exists())
+
     def source_tree(self, root: Path) -> Path:
         source = root / "agent-workflows"
-        for name in ("agents", "skills", "hooks", "workflows", "bin"):
+        for name in ("agents", "skills", "hooks", "bin"):
             (source / name).mkdir(parents=True)
         (source / "agents/builder.md").write_text("builder")
         (source / "skills/example").mkdir()
@@ -44,7 +49,7 @@ class LiveLinksTest(unittest.TestCase):
             external.mkdir()
             (source / "skills/external").symlink_to(external)
             store = home / ".local/share/agent-workflows/current"
-            for name in ("agents", "skills", "hooks", "workflows", "bin"):
+            for name in ("agents", "skills", "hooks", "bin"):
                 (store / name).mkdir(parents=True)
             (store / "skills/example").mkdir()
 
@@ -130,6 +135,35 @@ class LiveLinksTest(unittest.TestCase):
             self.assertTrue(personal_skill.is_dir())
             self.assertEqual(unrelated_bin.read_text(), "keep")
             self.assertTrue(os.access(unrelated_bin, os.X_OK))
+
+    def test_removes_stale_claude_workflows_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_tree(root)
+            home = root / "home"
+            stale = home / ".claude/workflows"
+            stale.parent.mkdir(parents=True)
+            stale.symlink_to(source / "workflows")
+
+            result = self.run_linker(source, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(stale.exists())
+            self.assertFalse(stale.is_symlink())
+            self.assertEqual((home / ".cursor/skills").resolve(), (source / "skills").resolve())
+
+    def test_leaves_unmanaged_claude_workflows_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_tree(root)
+            home = root / "home"
+            personal = home / ".claude/workflows"
+            personal.mkdir(parents=True)
+            (personal / "mine.md").write_text("keep")
+
+            result = self.run_linker(source, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((personal / "mine.md").is_file())
+            self.assertFalse(personal.is_symlink())
 
     def test_refuses_bin_collision_before_mutating_roots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

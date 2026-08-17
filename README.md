@@ -30,7 +30,7 @@ git clone git@github.com:simonszalai/agent-workflows.git ~/dev/agent-workflows
 ~/dev/agent-workflows/bin/link-agent-workflows-live
 ```
 
-The live linker makes the dedicated roots (`~/.claude/{agents,skills,hooks,workflows}`,
+The live linker makes the dedicated roots (`~/.claude/{agents,skills,hooks}`,
 `~/.agents/skills`, `~/.codex/hooks`, and `~/.cursor/{agents,skills,hooks}`) folder
 symlinks to the checkout. Adding any file or skill directory under the corresponding
 repository folder is therefore visible immediately, without rerunning an installer. Codex's

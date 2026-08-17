@@ -545,6 +545,13 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
                 self.assertIn(name, self.SOURCE)
         self.assertGreaterEqual(self.SOURCE.count("with_sid_render_key"), 7)
 
+    def test_migrator_field_is_a_first_class_scope(self) -> None:
+        self.assertIn("${appslug_upper}_MIGRATOR", self.SOURCE)
+        self.assertIn('SCOPE_KIND="migrator"', self.SOURCE)
+        self.assertIn('SET_ROLE_TARGET="$TABLE_OWNER"', self.SOURCE)
+        self.assertIn('SET_ROLE_TARGET="$(printf \'%s\' "$INSTANCE_CFG" | jq -r \'.roles.owner // empty\')"', self.SOURCE)
+        self.assertIn('-v set_role_target="$SET_ROLE_TARGET"', self.SOURCE)
+
     def test_autodev_dashboard_repo_maps_to_the_autodev_render_key(self) -> None:
         import subprocess
 
