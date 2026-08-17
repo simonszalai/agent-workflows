@@ -26,7 +26,9 @@ DESTINATIONS = (
     (".claude/agents", "agents"), (".claude/commands", "commands"),
     (".claude/skills", "skills"), (".claude/hooks", "hooks"),
     (".claude/workflows", "workflows"), (".agents/skills", "skills"),
-    (".codex/skills", "skills"), (".codex/hooks", "hooks"), (".local/bin", "bin"),
+    (".codex/skills", "skills"), (".codex/hooks", "hooks"),
+    (".cursor/agents", "agents"), (".cursor/skills", "skills"),
+    (".cursor/hooks", "hooks"), (".local/bin", "bin"),
 )
 COMMIT_RE = re.compile(r"^[0-9a-f]{40,64}$")
 SECURITY_FLOOR_MARKER = Path("bin/.protected-route-security-floor")

@@ -1,7 +1,7 @@
 <!-- mem:project=autodev repo=agent-workflows -->
 # Universal Development Conventions
 
-Shared conventions for all projects using agent workflows in Claude Code and Codex.
+Shared conventions for all projects using agent workflows in Claude Code, Codex, and Cursor.
 
 ## Agent Rules (Critical - Never Violate)
 
@@ -71,7 +71,7 @@ project-prefixed skills (e.g. `ts-`) may. Project-level files override user-leve
 
 | Environment     | Mechanism                                      | Direction |
 | --------------- | ---------------------------------------------- | --------- |
-| Local dev       | `~/.claude`, `~/.agents`, `~/.codex` symlinks  | Two-way   |
+| Local dev       | `~/.claude`, `~/.agents`, `~/.codex`, `~/.cursor` symlinks | Two-way |
 | NanoClaw        | Volume mount from agent-workflows              | Two-way   |
 | Cloud sessions  | SessionStart copies agent-workflows            | One-way   |
 

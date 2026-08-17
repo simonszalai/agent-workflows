@@ -22,6 +22,7 @@ def resolve_live_repo(explicit: Path | None) -> Path | None:
         Path.home() / ".local/bin/session-usage-report",
         Path.home() / ".agents/skills/compound",
         Path.home() / ".claude/skills/compound",
+        Path.home() / ".cursor/skills/compound",
     )
     for candidate in candidates:
         if not candidate.exists() and not candidate.is_symlink():
