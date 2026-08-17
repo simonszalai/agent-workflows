@@ -8,12 +8,14 @@ live. Do NOT just open a raw PR.
 
 1. Resolve the autodev ticket ID for this branch (branch name, commit prefixes like
    `fix(B0123)`/`feat(F0140)`, or an autodev-memory search).
-2. If a ticket is found AND the `/auto-deploy` skill is available, run `/auto-deploy <TICKET>`.
-   It creates the PR if one doesn't exist, waits for CI, merges, runs the project's deploy
-   steps, and advances the ticket status. Respect the ticket's target environment (staging vs
-   production from its status) — do not override it.
-3. If you cannot resolve a ticket, or `/auto-deploy` is not applicable to this repo, fall back
-   to opening a normal PR and explicitly warn that no autodev ticket status was updated.
+2. Run `/ticket-deploy` from `~/dev/agent-workflows/skills/ticket-deploy` (or
+   `~/.agents/skills/ticket-deploy`). Do not search Conductor workspace copies.
+   - Ticket found: `/ticket-deploy <TICKET> <target>` where target is `staging`,
+     `prod`, or `full`. Respect the ticket's target environment — do not override it.
+     This creates the PR if needed, waits for CI, lands, deploys, and advances ticket status.
+   - No ticket: `/ticket-deploy` (local checks + CI until green). Do not invent a ticket.
+3. If `/ticket-deploy` is unavailable, open a normal PR and warn that no autodev
+   ticket status was updated.
 """
 rename_branch = """When Conductor asks you to rename/generate a workspace branch, use this branch format:
 <TICKET>-<short-kebab-summary>-<YYYY-MM-DD>
