@@ -105,6 +105,46 @@ test("routed mode selects bearer from the checked-in URL prefix", async (t) => {
 	assert.equal(JSON.parse(upstream.requests[0].body).project, "ts", "server-side restricted bearer owns pinning")
 })
 
+test("routed mode skips routes whose auth env is unset and still serves the rest", async (t) => {
+	const upstream = await startUpstream()
+	t.after(() => new Promise((resolve) => upstream.server.close(resolve)))
+	const proxyPort = await freePort()
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-proxy-routes-"))
+	t.after(() => fs.rm(tempDir, { recursive: true, force: true }))
+	const routesFile = path.join(tempDir, "routes.json")
+	await fs.writeFile(routesFile, JSON.stringify({ routes: [
+		{ prefix: "/autodev", upstream: `http://127.0.0.1:${upstream.port}`, authEnv: "AUTODEV_TOKEN" },
+		{ prefix: "/ts", upstream: `http://127.0.0.1:${upstream.port}`, authEnv: "TS_TOKEN" },
+	] }))
+	const child = spawn(process.execPath, [proxyPath, "test-skip-unset"], {
+		env: {
+			...process.env,
+			MCP_PROXY_PORT: String(proxyPort),
+			MCP_PROXY_ROUTES_FILE: routesFile,
+			MCP_PROXY_RETRY_SECS: "0",
+			AUTODEV_TOKEN: "",
+			TS_TOKEN: "ts-secret",
+		},
+		stdio: "ignore",
+	})
+	t.after(() => stop(child))
+	await waitForPort(proxyPort, child)
+
+	let response = await fetch(`http://127.0.0.1:${proxyPort}/ts/mcp`, {
+		method: "POST",
+		body: "{}",
+	})
+	assert.equal(response.status, 200)
+	response = await fetch(`http://127.0.0.1:${proxyPort}/autodev/mcp`, {
+		method: "POST",
+		body: "{}",
+	})
+	assert.equal(response.status, 404)
+	assert.deepEqual(upstream.requests.map(({ url, authorization }) => ({ url, authorization })), [
+		{ url: "/mcp", authorization: "Bearer ts-secret" },
+	])
+})
+
 test("routed mode has no default route and blocks discovery probes", async (t) => {
 	const upstream = await startUpstream()
 	t.after(() => new Promise((resolve) => upstream.server.close(resolve)))

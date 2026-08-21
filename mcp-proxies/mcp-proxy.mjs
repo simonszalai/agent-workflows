@@ -107,7 +107,7 @@ if (TRANSFORM_PATH) {
 	}
 }
 
-const routes = routeSpecs.map((spec) => {
+const routes = routeSpecs.flatMap((spec) => {
 	let upstream
 	try {
 		upstream = new URL(spec.upstream)
@@ -116,9 +116,15 @@ const routes = routeSpecs.map((spec) => {
 	}
 	if (!["http:", "https:"].includes(upstream.protocol)) fatal(`route ${spec.prefix} upstream must be HTTP(S)`)
 	const token = process.env[spec.authEnv] || ""
-	if (!token && !spec.authOptional) fatal(`${spec.authEnv} (the token itself) is unset for route ${spec.prefix}`)
+	if (!token && !spec.authOptional) {
+		// One pending/unreadable project token must not take down every other
+		// project's memory route. start-proxies.sh already skips the op read;
+		// we omit the route instead of refusing to bind.
+		console.error(`[${LABEL}] skipping route ${spec.prefix}: ${spec.authEnv} is unset`)
+		return []
+	}
 	const transport = upstream.protocol === "https:" ? https : http
-	return {
+	return [{
 		...spec,
 		upstream,
 		token,
@@ -126,8 +132,9 @@ const routes = routeSpecs.map((spec) => {
 		agent: new transport.Agent({ keepAlive: true }),
 		retrySecs: upstream.hostname === "127.0.0.1" ? Number(process.env.MCP_PROXY_RETRY_SECS || 90) : 0,
 		transformBody: spec.transformBody ? sharedTransform : null,
-	}
+	}]
 })
+if (routes.length === 0) fatal("no MCP proxy routes have credentials")
 
 function selectRoute(requestUrl) {
 	const incoming = new URL(requestUrl || "/", "http://127.0.0.1")

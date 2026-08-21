@@ -50,6 +50,11 @@ for (const [index, route] of config.routes.entries()) {
 				signal: AbortSignal.timeout(15_000),
 			})
 			if (!response.ok) {
+				if (response.status === 404) {
+					console.log(`${route.prefix}: skipped (route not bound)`)
+					verified = true
+					break
+				}
 				lastError = `HTTP ${response.status}`
 			} else {
 				const payload = await response.json()

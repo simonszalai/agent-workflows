@@ -67,7 +67,13 @@ load_secret_refs() {
     [ -n "$op_token" ] || { log "ERROR: Keychain service account missing: ${keychain}"; return 1; }
     secret="$(OP_SERVICE_ACCOUNT_TOKEN="$op_token" op read --no-newline "$ref" 2>/dev/null || true)"
     op_token=""
-    [ -n "$secret" ] || { log "ERROR: credential is unreadable: ${name}"; return 1; }
+    if [ -z "$secret" ]; then
+      # mcp-proxy.mjs omits routes whose auth env is empty. Failing closed here
+      # used to take down every project's AutoDEV route when one vault field was
+      # pending (AUTODEV Autodev memory has no api_token).
+      log "WARN: credential is unreadable, skipping: ${name}"
+      continue
+    fi
     printf -v "$name" '%s' "$secret"
     export "$name"
     secret=""

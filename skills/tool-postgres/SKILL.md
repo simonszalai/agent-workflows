@@ -57,6 +57,13 @@ non-sensitive `op://.../value` references are available; a project or tier witho
 fails closed. For deliberate work outside the registered repository, both `--project <id>` and
 `--allow-cross-project` are required.
 
+If `psql-cli` succeeds, a failing repo-local wrapper (`scripts/db/sql.sh`,
+`scripts/secrets/dev-env`) is a stale-wrapper problem, not a missing 1Password token.
+Those wrappers have lagged Keychain names (`op-dev-token` vs per-project `op-ts-token`)
+and pre-regrouping item names (`PROD_POSTGRES_URL_RO` vs `Postgres prod RO`). Diagnose
+with `psql-cli context <tier>` then `psql-cli <tier> "SELECT 1 AS ok"`. Do not invent a
+new database transport.
+
 Credentials resolve lazily through the selected project's service-account environment/Keychain
 profile and the audited `bin/op` shim. The URI is parsed into dedicated libpq `PG*` environment
 variables for `psql`; it is never put in argv, a file, or logs. Output defaults to a 50 KiB cap
