@@ -37,8 +37,8 @@ the target. `prod` accepts alias `production`.
 - No ticket: target is optional. Omit it to stop after the PR is merged. `staging` / `prod` /
   `full` still run project deploy steps after the merge.
 - Standalone tickets only. Epic step/source tickets land on their milestone integration
-  branch and are gated by `/ticket-verify --epic`; refuse them here and say so. No ticket
-  means this check does not apply.
+  branch and are gated by `/ticket-verify --epic` (orchestrated by `/epic-flow`); refuse them
+  here and say so. No ticket means this check does not apply.
 
 ## Authorization
 

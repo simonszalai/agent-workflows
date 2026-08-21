@@ -46,7 +46,8 @@ secrets/schema/infrastructure/cost beyond the accepted plan.
   workspace target branch is a hint, not permission to bypass that classification.
 - Epic step tickets: honor the parent epic's milestone contracts
   (`../references/epic-lifecycle.md`), land on the milestone integration branch, set `merged`,
-  and stop — the epic/milestone gate (`/ticket-verify --epic`) owns verification and promotion.
+  and stop — `/epic-flow` owns milestone progression; the epic/milestone gate (`/ticket-verify
+  --epic`) owns verification and promotion.
   Never deploy or promote a partial milestone from a single step.
 
 ## Process
