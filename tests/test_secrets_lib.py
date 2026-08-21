@@ -61,6 +61,28 @@ class ManifestValidationTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("unknown kind", proc.stderr)
 
+    def test_hermes_kind_validates_with_abs_dest_and_ssh(self) -> None:
+        self.sb.write_manifest(
+            "hermes\t/etc/hermes-mcp/x.token\tNAME\top://V/I/value\tself\n",
+            hermes={"ssh": "hermes"},
+        )
+        proc = bash_lib("config_validate", self.sb.env(), config=str(self.config))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_hermes_relative_dest_rejects(self) -> None:
+        self.sb.write_manifest(
+            "hermes\tx.token\tNAME\top://V/I/value\tself\n",
+            hermes={"ssh": "hermes"},
+        )
+        proc = bash_lib("config_validate", self.sb.env(), config=str(self.config))
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("absolute file path", proc.stderr)
+
+    def test_hermes_route_without_ssh_rejects(self) -> None:
+        proc = self.validate("hermes\t/etc/hermes-mcp/x.token\tNAME\top://V/I/value\tself\n")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("hermes.ssh", proc.stderr)
+
     def test_unknown_transform_rejects(self) -> None:
         proc = self.validate("github\ta/b\tNAME\top://V/I/value\trot13\n")
         self.assertEqual(proc.returncode, 1)

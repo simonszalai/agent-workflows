@@ -53,6 +53,30 @@ class SyncSecretsTest(unittest.TestCase):
         proc = self.sync("--dry-run")
         self.assertNotIn("prefect[", proc.stdout)
 
+    def test_hermes_channel_dry_run_is_credential_free(self) -> None:
+        self.sb.write_manifest(
+            "hermes\t/etc/hermes-mcp/autodev-memory.token\tMEM_TOKEN\top://TESTVAULT/ITEM/value\tself\n"
+            "hermes\t/etc/hermes-schedules/op.token\tOP_TOKEN\top://TESTVAULT/ITEM/value\tself\n",
+            hermes={"ssh": "testbox"},
+        )
+        proc = self.sync("--channel", "hermes", "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("hermes[/etc/hermes-mcp/autodev-memory.token] MEM_TOKEN", proc.stdout)
+        self.assertIn("restart hermes-autodev-mcp", proc.stdout)
+        # schedule tokens are read per timer run: no restart annotation
+        self.assertNotIn("op.token] OP_TOKEN <- op://TESTVAULT/ITEM/value (self) + restart", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_default_sweep_includes_hermes_rows(self) -> None:
+        self.sb.write_manifest(
+            "github\ttestorg/testrepo\tGH_TOKEN_A\top://TESTVAULT/ITEM/value\tself\n"
+            "hermes\t/etc/hermes-schedules/slack.token\tSLACK\top://TESTVAULT/ITEM/value\tself\n",
+            hermes={"ssh": "testbox"},
+        )
+        proc = self.sync("--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("hermes[/etc/hermes-schedules/slack.token] SLACK", proc.stdout)
+
     # --- usage / manifest gates ----------------------------------------------
 
     def test_missing_config_exits_2_with_clear_message(self) -> None:

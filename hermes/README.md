@@ -19,9 +19,16 @@ No secret values or secret-fetching commands are committed here.
 
 | Runtime credential | Canonical source | Root-only runtime file |
 |---|---|---|
-| TS autodev token | `TS/TS_AUTODEV_MEMORY_API_TOKEN` (`value`) | `/etc/hermes-mcp/autodev-memory.token` |
-| Conductor API key | `TS/CONDUCTOR_API_KEY` | `/etc/hermes-conductor/conductor-api.token` |
-| Slack token (schedule reporting) | `TS/TS_SLACK_MCP_USER_TOKEN` (`value`) | `/etc/hermes-schedules/slack.token` |
+| TS autodev token | `op://TS/Autodev memory/api_token` | `/etc/hermes-mcp/autodev-memory.token` |
+| Conductor API key | `op://TS/CONDUCTOR_API_KEY/value` | `/etc/hermes-conductor/conductor-api.token` |
+| Slack token (schedule reporting) | `op://TS/Slack/mcp_user_token` | `/etc/hermes-schedules/slack.token` |
+| TS 1Password service-account token | `op://TS/1Password service account/token` | `/etc/hermes-schedules/op.token` |
+
+These files are manifest-routed consumers (`kind: hermes` rows in
+`ts-prefect/secrets.yaml`, pushed by `secrets/lib/writers/hermes` over SSH with
+passwordless sudo): rotations and `sync-secrets` sweeps update them
+automatically, including a `hermes-autodev-mcp` / `hermes-conductor` restart
+where needed. Manual staging remains the bootstrap path only.
 
 Both runtime files must be regular, non-empty, `root:root` mode `0400`. systemd `LoadCredential`
 makes each secret readable only by its dedicated service. The `hermes` account and messaging
