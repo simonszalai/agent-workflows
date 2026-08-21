@@ -32,6 +32,7 @@ SHELL_FILES = (
     "secrets/lib/writers/github",
     "secrets/lib/writers/render",
     "secrets/lib/writers/prefect",
+    "secrets/lib/writers/hermes",
     "secrets/providers/self_minted.sh",
     "secrets/providers/manual.sh",
     "secrets/providers/postgres.sh",
@@ -286,7 +287,8 @@ class SecretsSandbox:
     def close(self) -> None:
         self._tmp.cleanup()
 
-    def write_manifest(self, content: str, rotation: dict | None = None) -> None:
+    def write_manifest(self, content: str, rotation: dict | None = None,
+                       hermes: dict | None = None) -> None:
         """Write the sandbox project secrets.yaml from TSV-style route rows.
 
         Rows convert field-for-field so malformed TSV becomes an equivalently
@@ -310,6 +312,8 @@ class SecretsSandbox:
             "rotation": self._rotation,
             "routes": routes,
         }
+        if hermes is not None:
+            doc["hermes"] = hermes
         (self.repo / "secrets.yaml").write_text(
             yaml.safe_dump(doc, sort_keys=False), encoding="utf-8"
         )

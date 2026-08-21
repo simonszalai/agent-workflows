@@ -131,6 +131,15 @@ op_read_ref() {
       guard_agent_shell || return $?
       "$OP_BIN" read --no-newline "$ref"
       ;;
+    "op://OP SA/"*)
+      # The service-account token vault is human-only BY DEFINITION: no
+      # service account may read its own (or a sibling's) auth token, so this
+      # vault lives on the canonical human account and never in the project
+      # registry. Route through the shim's canonical-human path; refuse agent
+      # shells like a sensitive read.
+      guard_agent_shell || return $?
+      op_desktop read --no-newline "$ref"
+      ;;
     op://*/*/*)
       # Non-sensitive -> a service-account token, never an ambient-op fallback
       # (that silently read from whatever account op defaulted to and produced

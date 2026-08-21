@@ -100,7 +100,7 @@ if mode == "pointer":
         print(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(path)), ext)))
     sys.exit(0)
 
-KINDS = {"github", "render", "prefect", "dev"}
+KINDS = {"github", "render", "prefect", "dev", "hermes"}
 TRANSFORM_PREFIXES = ("db=", "pgbouncer=", "asyncpg-internal=", "asyncpg-external=", "rehost=")
 bad = []
 
@@ -129,6 +129,12 @@ for i, r in enumerate(routes, 1):
             bad.append(f"route {i}: {name} must be a string")
     if kind not in KINDS:
         bad.append(f"route {i}: unknown kind {kind!r}")
+    if kind == "hermes":
+        # hermes DEST is the absolute root-only credential file path on the box.
+        if not dest.startswith("/"):
+            bad.append(f"route {i}: hermes dest must be an absolute file path, got {dest!r}")
+        if not isinstance(doc.get("hermes"), dict) or not doc["hermes"].get("ssh"):
+            bad.append(f"route {i}: hermes routes need top-level hermes.ssh (the box's SSH destination)")
     if not (ref.startswith("literal:") or ref.startswith("op://")):
         bad.append(f"route {i}: REF must be literal:<value> or op://<vault>/<item>/<field>, got {ref!r}")
     elif ref.startswith("op://") and len(ref[len("op://"):].split("/")) != 3:
@@ -307,6 +313,13 @@ config_health() {
 config_json() {
   _config_cache || return $?
   printf '%s\n' "$_CONFIG_DOC"
+}
+
+# config_hermes_ssh — the Hermes box's SSH destination (user@host or an ssh
+# alias). Empty when the project has no hermes section.
+config_hermes_ssh() {
+  _config_cache || return $?
+  jq -r '.hermes.ssh // empty' <<< "$_CONFIG_DOC"
 }
 
 # config_registry — synthesize the legacy registry JSON shape from the project

@@ -528,6 +528,30 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
         self.assertIn("PGKEEPALIVESINTERVAL=10", body)
         self.assertIn("PGKEEPALIVESCOUNT=6", body)
 
+    def test_exact_deploy_trigger_waits_for_idle_and_retries_202(self) -> None:
+        src = (ROOT / "secrets" / "lib" / "render-api.sh").read_text()
+        idle_start = src.index("render_wait_service_idle() {")
+        idle_end = src.index("\n}\n", idle_start)
+        idle = src[idle_start:idle_end]
+        self.assertIn("build_in_progress", idle)
+        self.assertIn("update_in_progress", idle)
+        trig_start = src.index("render_trigger_deploy_id() {")
+        trig_end = src.index("\n}\n", trig_start)
+        trig = src[trig_start:trig_end]
+        self.assertLess(trig.index("render_wait_service_idle"), trig.index("deployMode"))
+        self.assertIn("202", trig)
+        self.assertIn("retrying", trig)
+
+    def test_candidate_mutation_guard_compares_transformed_live_values(self) -> None:
+        # autodev-memory APP URLs share one login across DATABASE_URL_AUTODEV
+        # (self) and DATABASE_URL_GLOBAL / WORKFLOW_PRO (db=<name>). A raw
+        # DSN compare on resume treats those as an active-password change.
+        start = self.SOURCE.index("verify_sql_candidate_before_mutation() {")
+        end = self.SOURCE.index("\n}\n", start)
+        body = self.SOURCE[start:end]
+        self.assertIn("apply_transform", body)
+        self.assertIn("TARGET_TRANSFORMS[$i]", body)
+
     def test_service_env_reads_use_the_consumer_workspace_key(self) -> None:
         # Autodev services live in the autodev Render workspace; the shared
         # box's admin key is workflow-pro. Using that key for /services/<sid>
@@ -544,6 +568,14 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
             with self.subTest(fn=name):
                 self.assertIn(name, self.SOURCE)
         self.assertGreaterEqual(self.SOURCE.count("with_sid_render_key"), 7)
+
+    def test_app_scope_mapping_does_not_use_tsv(self) -> None:
+        start = self.SOURCE.index("while IFS= read -r app_json")
+        end = self.SOURCE.index("\n\t\t;;\n", start)
+        body = self.SOURCE[start:end]
+        self.assertNotIn("@tsv", body)
+        self.assertIn("migrator", body)
+        self.assertIn("jq -c", body)
 
     def test_migrator_field_is_a_first_class_scope(self) -> None:
         self.assertIn("${appslug_upper}_MIGRATOR", self.SOURCE)

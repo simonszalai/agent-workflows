@@ -12,7 +12,7 @@ argv, logs, or disk.
 | Piece | Location |
 |---|---|
 | Engine libraries (config loader, op reads, transforms, Render API, vault writes) | `secrets/lib/` |
-| Channel writers (github, render, prefect) | `secrets/lib/writers/` |
+| Channel writers (github, render, prefect, hermes) | `secrets/lib/writers/` |
 | Rotation providers (self_minted, manual, postgres, resend, openai, xai, aws_iam) | `secrets/providers/` |
 | Project config (routes + rotation + health, one per project) | `<primary-repo>/secrets.yaml` |
 | Non-primary repo pointer | `<repo>/secrets.yaml` containing `extends: ../<primary-repo>/secrets.yaml` |
@@ -35,13 +35,13 @@ unsupported REF, duplicate `(kind, dest, env)`, or a rotation entry whose ref
 has no route rejects the entire config (exit 1; missing file exit 2).
 
 ```
-- {repo: <name>, kind: github|render|prefect|dev, dest: <dest>, env: <ENVNAME>, ref: <REF>, transform: <TRANSFORM>}
+- {repo: <name>, kind: github|render|prefect|dev|hermes, dest: <dest>, env: <ENVNAME>, ref: <REF>, transform: <TRANSFORM>}
 ```
 
 | Field | Values |
 |---|---|
-| KIND | `github` \| `render` \| `prefect` \| `dev` |
-| DEST | github: `owner/repo`; render: service id `srv-...`/`crn-...`; prefect: `staging`\|`prod`; dev: profile name |
+| KIND | `github` \| `render` \| `prefect` \| `dev` \| `hermes` |
+| DEST | github: `owner/repo`; render: service id `srv-...`/`crn-...`; prefect: `staging`\|`prod`; dev: profile name; hermes: absolute credential file path on the box (top-level `hermes.ssh` names the SSH destination) |
 | ENVNAME | destination env-var / secret name (also the `--only` selector key) |
 | REF | `op://<vault>/<item>/<field>` (any field name) or `literal:<value>` |
 | TRANSFORM | `self`, `conn-id`, `db=<name>`, `pgbouncer=<host:port>/<db>`, `asyncpg-internal=<db>`, `asyncpg-external=<db>`, `rehost=<host[:port]>/<db>` |
@@ -131,7 +131,7 @@ secret, so a failed step is always safe to repeat.
 ```bash
 sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]] \
              [--changed 'op://Vault/Item[/field]'] [--reason TEXT] \
-             [--channel github|render|prefect] [--no-deploy] [--include-db]
+             [--channel github|render|prefect|hermes] [--no-deploy] [--include-db]
 ```
 
 - Default repo = the cwd's git toplevel; config = `<repo>/secrets.yaml` (or its `extends:` target)
@@ -139,7 +139,7 @@ sync-secrets [--repo <path>] [--dry-run] [--dest <DEST>] [--only NAME[,NAME...]]
 - Project layer (service-account token env/Keychain item, Render API key ref)
   resolves from the repo's git remote via `bin/project-context` — no ambient
   fallback, no hardcoded per-service key tables.
-- Default sweep = github + render. Prefect is explicit only and prompts on the
+- Default sweep = github + render + hermes. Prefect is explicit only and prompts on the
   prod tier. `dev` rows are never pushed (consumed by repo dev-env tooling).
 - `--changed`: exact REF equality, or `op://Vault/Item/` prefix when field-less
   — never bare substring. Cannot combine with `--channel`; excluded from
