@@ -29,14 +29,18 @@ is_cloud() {
 load_profile() {
   local profile
   profile="$($PROJECT_CONTEXT --cwd "$REPO_DIR" --tool autodev_memory)"
-  IFS=$'\t' read -r PROJECT ROUTE TOKEN_ENV TOKEN_REF < <(
-    PROFILE="$profile" python3 - <<'PY'
+  # A here-string, not process substitution: some cloud sandboxes ship no /dev/fd,
+  # and bash implements `< <(...)` via /dev/fd/N, which then fails before any
+  # credential is touched.
+  local fields
+  fields="$(PROFILE="$profile" python3 - <<'PY'
 import json, os
 profile = json.loads(os.environ["PROFILE"])
 memory = profile["tools"]["autodev_memory"]
 print(profile["project"], memory["route"], profile["service_account"]["token_env"], memory["token_ref"], sep="\t")
 PY
-  )
+  )"
+  IFS=$'\t' read -r PROJECT ROUTE TOKEN_ENV TOKEN_REF <<<"$fields"
   [ -n "$PROJECT" ] && [ -n "$ROUTE" ] && [ -n "$TOKEN_ENV" ] && [ -n "$TOKEN_REF" ]
 }
 
