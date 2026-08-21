@@ -41,9 +41,6 @@ Shared conventions for all projects using agent workflows in Claude Code, Codex,
 
 ## Scope and Response Style
 
-Load and follow the `autism` skill for all communication. Task-specific structured or verbatim
-output contracts still win.
-
 **Deliver what was asked, at the scope intended.** Make routine judgment calls yourself, and check
 in only when different readings of the request would lead to materially different work. If the
 request looks mistaken or a better approach exists, say so in a sentence and continue with the task
