@@ -120,45 +120,77 @@ render_get_env_value() { # service_id key -> value on stdout (CALLER MUST PIPE)
     | jq -re '.value | select(type == "string" and length > 0)'
 }
 
+# Latest-deploy status is idle (or there is no deploy). In-flight deploys make
+# POST /deploys return HTTP 202 with no id; waiting on "some deploy" can attest
+# a different change than the one this rotation staged.
+render_wait_service_idle() { # service_id
+  local sid="$1" status deadline
+  deadline=$(( $(date +%s) + ${RENDER_DEPLOY_TIMEOUT_SECONDS:-1800} ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    status="$(render_get "/services/${sid}/deploys?limit=1" | jq -r '.[0].deploy.status // .[0].status // empty')" || return 1
+    case "$status" in
+      ""|live|deactivated|build_failed|update_failed|canceled|pre_deploy_failed) return 0 ;;
+      created|queued|build_in_progress|update_in_progress|pre_deploy_in_progress)
+        echo "  render[$sid] waiting for in-flight deploy ($status) to finish" >&2
+        ;;
+      *)
+        echo "ERROR: render[$sid] latest deploy returned unknown status $status" >&2
+        return 1
+        ;;
+    esac
+    sleep "${RENDER_POLL_SECONDS:-10}"
+  done
+  echo "ERROR: render[$sid] still had an in-flight deploy before timeout" >&2
+  return 1
+}
+
 # Exact-deploy proof: the trigger must return HTTP 201 with a request-correlated
-# deploy id. A bodyless 202 is rejected — waiting on "some deploy" can attest a
-# different change than the one this rotation staged.
+# deploy id. A bodyless 202 is retried only after the service is idle again —
+# never by waiting on an uncorrelated deploy.
 render_trigger_deploy_id() { # service_id -> deploy id on stdout
-  local sid="$1" body_file status body id
+  local sid="$1" body_file status body id attempt=0
   local key="${RENDER_API_KEY:-}"
+  local max="${RENDER_DEPLOY_TRIGGER_RETRIES:-6}"
   [[ -n "$key" ]] || { echo "ERROR: RENDER_API_KEY not set (caller must resolve via render_key_ref_for)" >&2; return 3; }
-  body_file="$(mktemp "${TMPDIR:-/tmp}/render-deploy.XXXXXX")" || return $?
-  chmod 600 "$body_file"
 
-  status="$(curl --silent --show-error \
-    --request POST \
-    --url "https://api.render.com/v1/services/${sid}/deploys" \
-    --header "Accept: application/json" \
-    --header "Content-Type: application/json" \
-    --config <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
-    --data-binary '{"deployMode":"deploy_only"}' \
-    --output "$body_file" \
-    --write-out '%{http_code}')" || {
-      rm -f "$body_file"
-      return 1
-    }
-  body="$(cat "$body_file")"
-  rm -f "$body_file"
+  while [[ "$attempt" -lt "$max" ]]; do
+    attempt=$((attempt + 1))
+    render_wait_service_idle "$sid" || return 1
+    body_file="$(mktemp "${TMPDIR:-/tmp}/render-deploy.XXXXXX")" || return $?
+    chmod 600 "$body_file"
 
-  case "$status" in
-    201)
-      id="$(printf '%s' "$body" | jq -er '.id | select(type == "string" and length > 0)')" || return 1
-      printf %s "$id"
-      ;;
-    202)
-      echo "ERROR: render[$sid] accepted a deploy without a request-correlated id; exact deploy is unprovable" >&2
-      return 1
-      ;;
-    *)
-      echo "ERROR: render[$sid] deploy trigger returned HTTP $status" >&2
-      return 1
-      ;;
-  esac
+    status="$(curl --silent --show-error \
+      --request POST \
+      --url "https://api.render.com/v1/services/${sid}/deploys" \
+      --header "Accept: application/json" \
+      --header "Content-Type: application/json" \
+      --config <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
+      --data-binary '{"deployMode":"deploy_only"}' \
+      --output "$body_file" \
+      --write-out '%{http_code}')" || {
+        rm -f "$body_file"
+        return 1
+      }
+    body="$(cat "$body_file")"
+    rm -f "$body_file"
+
+    case "$status" in
+      201)
+        id="$(printf '%s' "$body" | jq -er '.id | select(type == "string" and length > 0)')" || return 1
+        printf %s "$id"
+        return 0
+        ;;
+      202)
+        echo "  render[$sid] deploy POST returned 202 (no id); waiting for idle and retrying ($attempt/$max)" >&2
+        ;;
+      *)
+        echo "ERROR: render[$sid] deploy trigger returned HTTP $status" >&2
+        return 1
+        ;;
+    esac
+  done
+  echo "ERROR: render[$sid] accepted a deploy without a request-correlated id; exact deploy is unprovable" >&2
+  return 1
 }
 
 render_wait_deploy_live() { # service_id deploy_id — live=0, terminal/unknown=1 (fail closed)
