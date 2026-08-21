@@ -89,7 +89,7 @@ EXPECTED_AUTODEV_MEMORY_PROFILES = {
     },
     "ts": {
         "route": "ts",
-        "token_ref": "op://TS/Autodev memory/api_token",
+        "token_ref": "op://TS/Autodev memory restricted/api_token",
     },
     "workflow-pro": {
         "route": "workflow-pro",

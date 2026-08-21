@@ -100,7 +100,7 @@
       },
       "autodev_memory": {
         "route": "ts",
-        "token_ref": "op://TS/Autodev memory/api_token"
+        "token_ref": "op://TS/Autodev memory restricted/api_token"
       },
       "render": {
         "api_key_ref": "op://TS/Render/api_key",

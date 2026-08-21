@@ -19,7 +19,7 @@ No secret values or secret-fetching commands are committed here.
 
 | Runtime credential | Canonical source | Root-only runtime file |
 |---|---|---|
-| TS autodev token | `op://TS/Autodev memory/api_token` | `/etc/hermes-mcp/autodev-memory.token` |
+| TS autodev token | `op://TS/Autodev memory restricted/api_token` | `/etc/hermes-mcp/autodev-memory.token` |
 | Conductor API key | `op://TS/CONDUCTOR_API_KEY/value` | `/etc/hermes-conductor/conductor-api.token` |
 | Slack token (schedule reporting) | `op://TS/Slack/mcp_user_token` | `/etc/hermes-schedules/slack.token` |
 | TS 1Password service-account token | `op://TS/1Password service account/token` | `/etc/hermes-schedules/op.token` |

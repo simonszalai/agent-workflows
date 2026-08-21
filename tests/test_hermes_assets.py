@@ -244,9 +244,9 @@ class HermesAssetTests(unittest.TestCase):
 
     def test_runbook_names_the_current_ts_scoped_token(self) -> None:
         runbook = (HERMES / "README.md").read_text()
-        self.assertIn("TS/TS_AUTODEV_MEMORY_API_TOKEN", runbook)
+        self.assertIn("TS/Autodev memory restricted/api_token", runbook)
         self.assertNotIn("AUTODEV-sensitive/HERMES_AUTODEV_MEMORY_TOKEN", runbook)
-        self.assertIn("TS/TS_SLACK_MCP_USER_TOKEN", runbook)
+        self.assertIn("TS/Slack/mcp_user_token", runbook)
         self.assertIn("/etc/hermes-schedules/slack.token", runbook)
 
 
