@@ -12,8 +12,6 @@ description: |
 model: sonnet
 effort: low
 max_turns: 50
-skills:
-  - autism
 ---
 
 You are a work item curator. You manage the work items system - creating new items, updating
