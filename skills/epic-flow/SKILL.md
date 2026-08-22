@@ -4,14 +4,18 @@ description: >-
   Autonomous epic orchestrator: plan and split the epic into milestone step tickets, then for
   each milestone run the step tickets through /ticket-flow, deploy the milestone to staging, and
   pass the /ticket-verify --epic gate; with `prod`, promote and verify production via
-  /ticket-promote --epic and /ticket-verify production --epic.
+  /ticket-promote --epic and /ticket-verify production --epic. One workspace orchestrates the
+  whole epic: steps and deploys in other repos run in Conductor workspaces it creates and
+  polls through the Conductor MCP.
 max_turns: 100
 ---
 
 # Epic Flow
 
 Execute an **entire epic** (or one milestone of it) with the correct MCP ceremony. The model does
-the work; this skill defines the sequencing and the hand-offs:
+the work; this skill defines the sequencing and the hand-offs. The session that runs this skill
+is the **orchestrator**; it lives in one repo's workspace (the *runner repo*) but owns every repo
+in the epic — work in other repos is dispatched to sibling Conductor workspaces (§Remote repos).
 
 ```text
 load epic -> plan + split (only if missing/stale)
@@ -40,6 +44,8 @@ milestone staging gate is an exact `PASS`. Never infer it.
 - `../references/epic-lifecycle.md` — milestones, contracts, evidence placement, `epic_status`
 - `../references/ticket-lifecycle.md` — epic-step ticket statuses
 - `../references/staging-autonomy.md` — what a milestone repair loop may do on its own
+- Conductor MCP (`mcp__conductor__*`: `create_workspace`, `create_session`, `send_message`,
+  `list_messages`, `get_session_status`, `list_project_workspaces`, `run_sql`) — remote repos
 
 ## Hard boundaries
 
@@ -57,6 +63,12 @@ milestone staging gate is an exact `PASS`. Never infer it.
   only through `/ticket-promote --epic` + `/ticket-verify production --epic`.
 - Any remediation that changes product code/config/auth is a new fix step ticket attached to the
   failing milestone and goes through `/ticket-flow` — never an untracked branch or inline patch.
+- Writes to another repo happen only inside a Conductor workspace for that repo. Never clone,
+  worktree, commit, push, or deploy a foreign repo from the orchestrator's filesystem (a
+  shallow read-only clone for reading contracts is fine). If no Conductor workspace can be
+  obtained, stop and report the exact command to run there — do not improvise.
+- Remote workspaces are workers, not orchestrators: they receive exactly one `/ticket-flow`,
+  `/ticket-deploy`, or `/ticket-verify` command per session and never `/epic-flow`.
 
 ## Process
 
@@ -66,10 +78,14 @@ Resolve project from `<!-- mem:project=X -->` and repo from the git remote. Load
 `get_epic(project, epic_id, detail="light")` once; fetch `plan` / `deployment_guide` /
 `verification_evidence` bodies with `detail="full"`, selected `artifact_types`, and a byte budget
 only when needed. Cache the response for the run and reload only after this run mutates the epic
-or a milestone completes. If the epic's repos don't include the current repo, stop and report.
+or a milestone completes.
 
 Record `epic_status`, milestones (order, `is_gate`, acceptance criteria, recorded gate verdicts),
-step tickets (status, repo, milestone, deps), and absorbed source tickets.
+step tickets (status, repo, milestone, deps), and absorbed source tickets. Record the **runner
+repo** (current git remote) and the set of **remote repos** = epic repos minus the runner repo.
+The runner repo need not be one of the epic's repos; then every step is remote. If remote repos
+exist and the Conductor MCP is unavailable in this session, say so up front and continue only
+through the plan/split phase (§2) — building would stop at the first remote step.
 
 ### 2. Plan and split (only when missing or stale)
 
@@ -109,22 +125,29 @@ For each milestone in order (or the single `--milestone`):
 1. **Skip check** — a recorded staging `PASS` whose included steps still match their landed
    commits is done; move on.
 2. **Build steps** — walk the step DAG in dependency waves. Each step runs as its own fresh
-   `/ticket-flow <ID>` (delegate to a subagent with only: epic id, milestone id, the milestone's
-   acceptance criteria, this step's contracts, and the integration target). Parallelize a wave
-   only when repos/write scopes don't overlap. A step is done when `/ticket-flow` reports it
-   `merged` on the integration target with plan artifact present. Already-`merged` steps are not
-   rebuilt.
+   `/ticket-flow <ID>` with only: epic id, milestone id, the milestone's acceptance criteria,
+   this step's contracts, and the integration target. Runner-repo steps are delegated to a
+   subagent; remote-repo steps are dispatched as a session in that repo's workspace
+   (§Remote repos). Parallelize a wave only when repos/write scopes don't overlap — different
+   repos always qualify, since they are separate workspaces. A step is done when the ticket is
+   `merged` on the integration target with plan artifact present (confirm with `get_ticket`,
+   not only the session's text). Already-`merged` steps are not rebuilt.
 3. **Deploy** — after all steps are `merged`, deploy the integration target to staging with
    `/ticket-deploy staging` (no-ticket mode: local health + CI + project staging deploy steps)
-   from the milestone's repo(s), in the order the deployment guide requires (schema first).
-   Merged code is not deployed runtime evidence; never skip this.
+   in every repo that has a step in this milestone, in the order the deployment guide requires
+   (schema first). Runner repo: run it here. Remote repos: one session per repo in its workspace
+   (§Remote repos), sequentially when the guide orders them, otherwise concurrently. Keep each
+   repo's deploy report (repo, integration-target sha, result, session link); the gate needs all
+   of them. Merged code is not deployed runtime evidence; never skip this.
 4. **Gate** — set `epic_status=to_verify_staging`, then run
-   `/ticket-verify staging --epic <E> --milestone <M> --no-promote`. Accept only an exact `PASS`
-   plus the three evidence artifact ids. A `PASS` missing an evidence destination re-enters the
-   verifier's evidence write, not the milestone.
+   `/ticket-verify staging --epic <E> --milestone <M> --no-promote` from the orchestrator (it
+   reads staging externally; no foreign checkout needed), passing the per-repo deploy reports
+   as context. Accept only an exact `PASS` plus the three evidence artifact ids. A `PASS`
+   missing an evidence destination re-enters the verifier's evidence write, not the milestone.
 5. **Repair** — on `FAIL`: classify with `staging-autonomy.md`. Infra/config repairs that are
-   `staging_safe` run directly, then re-deploy and re-verify. Code/config/auth fixes become a new
-   fix step ticket in this milestone run through `/ticket-flow`, then re-deploy and re-verify.
+   `staging_safe` run directly (in the owning repo's workspace), then re-deploy and re-verify.
+   Code/config/auth fixes become a new fix step ticket in this milestone run through
+   `/ticket-flow` (local or remote per its repo), then re-deploy and re-verify.
    Stop with `STOPPED` after two no-progress repair rounds; surface `BLOCKED` only for
    `human_required`/`agent_incapable`. Never advance past a failed gate.
 6. For milestones after the first, confirm the verifier included a regression subset of earlier
@@ -139,14 +162,52 @@ After the last milestone's `PASS`, set `epic_status=staging_verified`. Without `
 /ticket-verify production --epic <E>  # final gate; sets completed on PASS
 ```
 
-Relay their terminal reports verbatim. On production `FAIL`, remediation is a new fix step
-ticket through the milestone loop, then re-promote; never patch production inline.
+Relay their terminal reports verbatim. `/ticket-promote --epic` runs from the orchestrator for
+the runner repo and as one session per remote repo, in deployment-guide order; the final
+`/ticket-verify production --epic` runs once, from the orchestrator. On production `FAIL`,
+remediation is a new fix step ticket through the milestone loop, then re-promote; never patch
+production inline.
+
+## Remote repos
+
+Any step, deploy, repair, or promotion whose repo is not the runner repo runs in a Conductor
+workspace for that repo, driven through the Conductor MCP:
+
+1. **Workspace** — one per (epic, repo), reused for the whole run. Find an existing one first
+   (`list_project_workspaces` / `run_sql`, name `epic-<E>-<repo>`); otherwise
+   `create_workspace(repo=<repo URL or Conductor project>, branch=<integration target>,
+   name="epic-<E>-<repo>")` with the same agent/model/effort as the orchestrator unless the
+   repo's settings override it. Never archive it mid-run; report its deep link.
+2. **Session** — `create_session(workspace, prompt)` with exactly one command and its context:
+   `/ticket-flow <ID>` + epic id, milestone id, acceptance criteria, this step's contracts, and
+   the integration target; or `/ticket-deploy staging` (no ticket) for a milestone deploy; or
+   `/ticket-promote --epic <E>` for production. Nothing else — the worker must not re-plan the
+   epic or touch other milestones.
+3. **Poll** — `list_messages(session, after=<lastMessageId>)` plus `get_session_status`, on a
+   ScheduleWakeup/loop cadence matched to the work (minutes for a step, not seconds). Treat
+   the session's terminal report as the worker's claim and confirm the fact in the source of
+   truth: `get_ticket` status `merged` for steps, the deploy report's sha/result for deploys.
+   A session that asks a question gets one `send_message` answer only when the answer is
+   already in the orchestrator's context (contracts, acceptance criteria, integration target);
+   anything else is a blocker to surface, not something to invent.
+4. **Failure** — a session that errors, stalls past the reasonable bound for its command, or
+   ends without the expected status is retried once with a fresh session in the same workspace
+   and the prior report attached; the second failure is a `STOPPED`/`BLOCKED` for this
+   milestone, reported with the workspace link and last message.
+5. **Concurrency** — different repos in the same wave run as concurrent sessions; two sessions
+   never write the same repo's integration target at once.
+
+No Conductor MCP (local CLI, or the server is down): do not fall back to cloning the repo.
+Finish everything the runner repo can do for the current milestone, then stop with `WAITING`
+and the exact `/ticket-flow` / `/ticket-deploy` commands to run in a workspace for each remote
+repo; re-running `/epic-flow` afterwards resumes from ticket state.
 
 ## Output
 
 Report: epic id and mode; each milestone's gate verdict with canonical gate artifact id, per-step
 evidence artifact ids, and epic summary artifact id; step tickets and status changes; deploy /
-promote commands run; final `epic_status`; and the next command or exact blocker. Keep staging
+promote commands run per repo, with remote workspace/session deep links; final `epic_status`;
+and the next command or exact blocker. Keep staging
 success distinct from production success — only a production `PASS` with `epic_status=completed`
 is complete. End with a `Not verified:` line naming anything claimed but not exercised, e.g.:
 
@@ -154,6 +215,7 @@ is complete. End with a `Not verified:` line naming anything claimed but not exe
 Epic flow: E0007 (staging)
 M1: PASS  gate <id>; steps F0120 F0121 <ids>; summary <id>
 M2: PASS  gate <id>; steps F0122 <id>; summary <id>
+remote: ts-dashboard -> <workspace link> (F0121 session <link>, deploy session <link>)
 epic_status: staging_verified
 
 Not verified: production (run /epic-flow E0007 prod)
