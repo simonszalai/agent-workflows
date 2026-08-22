@@ -36,6 +36,26 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def default_working_directory() -> Path:
+    """Prefer the process cwd; use Conductor hints only outside a Git checkout.
+
+    GUI clients can start MCP children outside the repository, which is why the
+    Conductor path hints remain useful.  They must not override an actual Git
+    checkout, though: a shell can retain Conductor variables from a different
+    workspace while launching another client's MCP server.
+    """
+    current = Path.cwd()
+    if any((candidate / ".git").exists() for candidate in (current, *current.parents)):
+        return current
+    for name in ("CONDUCTOR_WORKSPACE_PATH", "CONDUCTOR_ROOT_PATH"):
+        value = os.environ.get(name)
+        if value:
+            candidate = Path(value).expanduser()
+            if candidate.exists():
+                return candidate
+    return current
+
+
 def encode_waf_fields(message: object) -> object:
     if not isinstance(message, dict) or message.get("method") != "tools/call":
         return message
@@ -148,15 +168,10 @@ class Bridge:
 
 
 def main() -> None:
-    default_cwd = Path(
-        os.environ.get("CONDUCTOR_ROOT_PATH")
-        or os.environ.get("CONDUCTOR_WORKSPACE_PATH")
-        or Path.cwd()
-    )
     parser = argparse.ArgumentParser(prog="mcp-bridge")
     parser.add_argument("server", choices=("autodev-memory",))
     parser.add_argument("--project", required=True)
-    parser.add_argument("--cwd", type=Path, default=default_cwd)
+    parser.add_argument("--cwd", type=Path, default=default_working_directory())
     args = parser.parse_args()
     try:
         rest_url, bearer = resolve_autodev_memory(args.project, args.cwd.resolve())
