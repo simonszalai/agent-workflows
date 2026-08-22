@@ -68,6 +68,14 @@ failures inside the same milestone, and succeeds only on a staging `PASS`. Final
 promotion/verification happens only after all staging gates pass; a build-only milestone handoff
 is not complete.
 
+One orchestrator session owns the whole epic. Multi-repo epics do not need a multi-repo
+checkout: every step/deploy/promotion in another repo runs in a Conductor workspace for that
+repo (one per epic×repo, branch = integration target), dispatched and polled through the
+Conductor MCP; the ticket system is the shared state, and each repo deploys its own integration
+target in deployment-guide order before the milestone gate runs once from the orchestrator.
+Writing to a repo from outside a workspace for that repo is never allowed (see
+`../epic-flow/SKILL.md` §Remote repos).
+
 ## Epic status vocabulary
 
 The epic itself carries an `epic_status` (set via `update_epic`), separate from its step
