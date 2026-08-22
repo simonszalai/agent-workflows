@@ -211,7 +211,8 @@ def render_toml(
 
 
 def render_json(
-    current: object, servers: list[Server], project: str | None, managed: set[str],
+    current: object, servers: list[Server], project: str | None, managed: set[str], *,
+    indent: int | str,
 ) -> str:
     if not isinstance(current, dict):
         fail("MCP JSON root must be an object")
@@ -223,7 +224,21 @@ def render_json(
         merged[server.name] = json_entry(server, project)
     value = dict(current)
     value["mcpServers"] = {name: merged[name] for name in sorted(merged)}
-    return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+    return json.dumps(value, indent=indent, ensure_ascii=False) + "\n"
+
+
+def json_indent(text: str) -> int | str:
+    """Keep the repository formatter's existing JSON indentation convention."""
+    for line in text.splitlines()[1:]:
+        if not line.strip():
+            continue
+        prefix = line[:len(line) - len(line.lstrip())]
+        if prefix.startswith("\t"):
+            return "\t"
+        if prefix:
+            return len(prefix)
+        break
+    return 2
 
 
 def read_text(path: Path) -> str:
@@ -272,10 +287,10 @@ def update(path: Path, desired: str, *, check: bool, private: bool) -> bool:
 
 def sync_json(
     path: Path, servers: list[Server], project: str | None, managed: set[str], *,
-    check: bool, private: bool,
+    check: bool, private: bool, indent: int | str,
 ) -> bool:
     current = load_json(path, missing={})
-    desired = render_json(current, servers, project, managed)
+    desired = render_json(current, servers, project, managed, indent=indent)
     return update(path, desired, check=check, private=private)
 
 
@@ -305,8 +320,18 @@ def sync_scope(
             "cursor": root / ".cursor/mcp.json",
             "grok": root / ".grok/config.toml",
         }
+    claude_text = read_text(paths["claude"])
+    cursor_text = read_text(paths["cursor"])
+    if user:
+        claude_indent = json_indent(claude_text)
+        cursor_indent = json_indent(cursor_text)
+    else:
+        project_indent = json_indent(claude_text or cursor_text)
+        claude_indent = project_indent
+        cursor_indent = project_indent
     changed = sync_json(
         paths["claude"], servers, project, managed, check=check, private=user,
+        indent=claude_indent,
     )
     changed |= sync_toml(
         paths["codex"], servers, project, managed,
@@ -314,6 +339,7 @@ def sync_scope(
     )
     changed |= sync_json(
         paths["cursor"], servers, project, managed, check=check, private=user,
+        indent=cursor_indent,
     )
     changed |= sync_toml(
         paths["grok"], servers, project, managed,
