@@ -20,7 +20,11 @@ is_cloud() {
 }
 
 download() {
-  local url="$1" destination="$2" temporary="${destination}.download.$$"
+  # Split declarations: bash expands every argument of one `local` command before
+  # any of its assignments take effect, so ${destination} on the same line is
+  # unbound under `set -u` and killed the whole cloud setup at the first download.
+  local url="$1" destination="$2"
+  local temporary="${destination}.download.$$"
   rm -f "$temporary"
   if ! curl --fail --silent --show-error --location "$url" --output "$temporary"; then
     rm -f "$temporary"

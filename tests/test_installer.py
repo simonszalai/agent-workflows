@@ -304,3 +304,32 @@ class InstallerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetupCloudShellTest(unittest.TestCase):
+    def test_download_helper_survives_set_u(self) -> None:
+        """`local a=$1 b=${a}...` on one line is unbound under bash `set -u`.
+
+        Bash expands every argument of a single `local` command before any of
+        its assignments take effect, so a same-line reference to an earlier
+        variable reads the outer (unset) scope. This killed the whole cloud
+        setup at the first download and left workspaces without skills.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "payload"
+            source.write_text("payload\n")
+            destination = root / "fetched"
+            script = ROOT / "bin/setup-agent-workflows-cloud"
+            result = subprocess.run(
+                [
+                    "bash", "-uc",
+                    'script="$1"; src="$2"; dest="$3"; set --; '
+                    'source "$script" >/dev/null; download "file://$src" "$dest"',
+                    "bash", str(script), str(source), str(destination),
+                ],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("unbound variable", result.stderr)
+            self.assertEqual(destination.read_text(), "payload\n")
