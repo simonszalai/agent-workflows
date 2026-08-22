@@ -2,9 +2,8 @@
   "schema_version": 1,
   "global_servers": {
     "conductor": {
-      "transport": "http",
-      "url": "https://api.conductor.build/mcp",
-      "auth": "oauth"
+      "transport": "stdio-bridge",
+      "profile": "conductor"
     },
     "context7": {
       "transport": "http",
