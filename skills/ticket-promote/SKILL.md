@@ -448,27 +448,36 @@ F0130   3      yes           (none)                    to_verify_prod  -
 F0131   4      NO            -                         staging_verified STOPPED: conflict pulled in unrelated F0129 work
 ```
 
-## Re-converge check (drain divergence debt)
+## Re-converge check (measure divergence debt; never widen scope)
 
-Per-ticket cherry-pick promotion only ADDS `main`/`staging` divergence — it never drains it, and
-squash-merged promotions behave identically: the code lands, but the staging commits never become
-ancestors of `main`, so they stay in `git log origin/main..origin/staging` permanently. Divergence
-therefore grows with every promotion, and the phantom commits hide the genuinely undeployed ones.
+Per-ticket cherry-pick promotion only ADDS `main`/`staging` ancestry divergence — it never drains
+it, and squash-merged promotions behave identically. The code lands, but the staging commits never
+become ancestors of `main`, so they stay in `git log origin/main..origin/staging`. Some of those
+commits are patch-equivalent phantom divergence; others may be genuine staging work intentionally
+withheld from production. A raw commit count cannot distinguish them.
 
 **Mandatory at the end of every run, in every mode** — not just after a schema exception:
 
-1. Measure `git rev-list --count origin/main..origin/staging` and record the number in the manifest.
-2. Run `/migration-parity-check` when the count is non-zero — content/patch equivalence and
-   per-env schema truth.
-3. Drain when the count exceeds 25, or the parity check reports residual schema divergence or
-   reconciliation debt from the schema gate: a full `staging->main` parity merge with a real
-   `--merge` commit. Never substitute squash or rebase — both create new SHAs with no ancestry
-   link, so they leave the debt in place while appearing to clear it. Do not carry the debt into
-   the next batch.
-4. If the repo forbids merge commits, the drain is impossible: STOP and report it as a repo-policy
-   blocker (Settings -> General -> Pull Requests -> Allow merge commits), never as a reason to
-   substitute squash.
-5. Record `parity: clean`, or the count plus the outstanding debt and how it will be drained.
+1. Measure `git rev-list --count origin/main..origin/staging` and record the raw diagnostic count
+   in the manifest.
+2. When the count is non-zero, run `/migration-parity-check` and classify the range as:
+   patch-equivalent/phantom commits, genuine approved commits in this promotion, and genuine
+   out-of-scope commits. Record the content/schema truth, not just the count.
+3. **Never widen a ticket/batch/epic promotion or block an otherwise isolated promotion solely
+   because the raw count exceeds 25.** Above 25 is a maintenance-warning threshold: report the
+   ancestry debt, but intentionally withheld or unverified staging work remains out of scope.
+4. A full `staging->main` parity merge is allowed only in explicit `--all-staging` mode, or when
+   the parity report proves that every out-of-scope staging commit is patch-equivalent to content
+   already on `main` and the resulting tree introduces no unapproved content. If any genuine
+   out-of-scope commit remains, do not merge; finish the isolated promotion and report the debt.
+5. Residual schema divergence or schema-gate reconciliation debt remains a correctness blocker
+   when it affects the promoted scope. STOP and name the exact schema debt and safe lane; do not
+   silently include unrelated staging work to repair it.
+6. When a parity merge is authorized, use a real `--merge` commit. Never substitute squash or
+   rebase — both create new SHAs with no ancestry link. If merge commits are forbidden, report the
+   repo-policy blocker, but only block a run that actually requires the authorized parity merge.
+7. Record `parity: clean`, or the raw count, classified genuine/phantom debt, and whether cleanup
+   is safe now or deferred because genuine staging work is intentionally withheld.
 
 *Example (ts-prefect, 2026-07-28):* the last real merge commit on `main` was 2026-07-15, and every
 promotion after it was a squash, so `main..staging` reached 165 commits while most of that code was
