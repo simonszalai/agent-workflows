@@ -22,11 +22,16 @@ SHELL_FILES = (
     "bin/sync-secrets",
     "bin/rotate-secret",
     "bin/dev-env",
+    "bin/import-render-env",
+    "bin/with-dev-env",
     "secrets/lib/config.sh",
+    "secrets/lib/provider-common.sh",
+    "secrets/lib/deploy-wait.sh",
     "secrets/lib/read.sh",
     "secrets/lib/derive.sh",
     "secrets/lib/render-api.sh",
     "secrets/lib/vault.sh",
+    "secrets/lib/writer-common.sh",
     "secrets/lib/db-url.sh",
     "secrets/lib/db-rotation.sh",
     "secrets/lib/writers/github",
@@ -39,7 +44,6 @@ SHELL_FILES = (
     "secrets/providers/postgres-rotate",
     "secrets/providers/resend.sh",
     "secrets/providers/openai.sh",
-    "secrets/providers/xai.sh",
     "secrets/providers/aws_iam.sh",
 )
 
@@ -143,11 +147,13 @@ case "$cmd" in
         vault=""; prev=""
         for a in "$@"; do [[ "$prev" == "--vault" ]] && vault="$a"; prev="$a"; done
         printf '['
-        first=1
+        first=1; seen=" "
         for fpath in "$state/${vault}__"*; do
           [[ -e "$fpath" ]] || continue
           base="$(basename "$fpath")"
           title="${base#"${vault}"__}"; title="${title%%__*}"
+          case "$seen" in *" $title "*) continue ;; esac   # one item per title (multi-field items)
+          seen="$seen$title "
           [[ $first -eq 1 ]] || printf ','
           printf '{"id":"id-%s","title":"%s"}' "$title" "$title"
           first=0
@@ -200,7 +206,11 @@ case "$cmd" in
         done < <(jq -r '.fields[].label' <<<"$json")
         printf '{"id":"%s"}\n' "$id"
         ;;
-      delete) : ;;
+      delete)
+        id="${3:-}"; vault=""; prev=""
+        for a in "$@"; do [[ "$prev" == "--vault" ]] && vault="$a"; prev="$a"; done
+        rm -f "$state/${vault}__${id#id-}__"*
+        ;;
       *) echo "fake op: unhandled item sub $sub" >&2; exit 1 ;;
     esac
     ;;
@@ -215,30 +225,90 @@ for a in "$@"; do
 done
 cat >/dev/null
 printf 'GH %s\n' "$*" >> "$FAKE_LOG"
+# Concurrency barrier: wait for the other channel's fake to start too.
+if [[ -n "${FAKE_BARRIER_DIR:-}" ]]; then
+  : > "$FAKE_BARRIER_DIR/gh"
+  n=0; until [[ -e "$FAKE_BARRIER_DIR/curl" ]]; do n=$((n+1)); [[ $n -lt 100 ]] || { echo "barrier: curl never started" >&2; exit 1; }; sleep 0.1; done
+fi
+# Transient failure injection: the first N calls fail like a gh 5xx.
+if [[ -n "${FAKE_GH_FAIL_TIMES:-}" ]]; then
+  f="${FAKE_OP_STATE:?}/.gh-fails"; n="$(cat "$f" 2>/dev/null || echo 0)"
+  if [[ "$n" -lt "$FAKE_GH_FAIL_TIMES" ]]; then echo $((n+1)) > "$f"; echo "HTTP 502: Bad Gateway (https://api.github.com/repos/x/actions/secrets/Y)" >&2; exit 1; fi
+fi
 """
 
 FAKE_CURL = r"""#!/usr/bin/env bash
 set -uo pipefail
-method="" url=""
+method="GET" url="" wout=""
 prev=""
 for a in "$@"; do
   case "$a" in val-*|SENTINEL_*) echo "LEAK: secret value on curl argv" >&2; exit 91 ;; esac
   [[ "$prev" == "--request" ]] && method="$a"
   [[ "$prev" == "--url" ]] && url="$a"
+  [[ "$prev" == "--write-out" ]] && wout="$a"
   prev="$a"
 done
 cat >/dev/null
 printf 'CURL %s %s\n' "$method" "$url" >> "$FAKE_LOG"
+if [[ -n "${FAKE_BARRIER_DIR:-}" ]]; then
+  : > "$FAKE_BARRIER_DIR/curl"
+  n=0; until [[ -e "$FAKE_BARRIER_DIR/gh" ]]; do n=$((n+1)); [[ $n -lt 100 ]] || { echo "barrier: gh never started" >&2; exit 1; }; sleep 0.1; done
+fi
 if [[ -n "${FAKE_CURL_FAIL_URL_SUBSTR:-}" ]] && [[ "$url" == *"${FAKE_CURL_FAIL_URL_SUBSTR}"* ]]; then
   echo "fake curl: injected failure for $url" >&2
   exit 22
 fi
-printf '{}'
+# Transient injection (first N matching calls): a curl network rc, or an HTTP 5xx.
+counted() { local f="${FAKE_OP_STATE:?}/.curl-$1" n; n="$(cat "$f" 2>/dev/null || echo 0)"; [[ "$n" -lt "$2" ]] || return 1; echo $((n+1)) > "$f"; }
+if [[ -n "${FAKE_CURL_RC_URL_SUBSTR:-}" && "$url" == *"${FAKE_CURL_RC_URL_SUBSTR}"* ]] && counted rc "${FAKE_CURL_RC_TIMES:-1}"; then
+  echo "fake curl: (56) Recv failure" >&2; exit "${FAKE_CURL_RC:-56}"
+fi
+status=200 body='{}'
+if [[ -n "${FAKE_CURL_5XX_URL_SUBSTR:-}" && "$url" == *"${FAKE_CURL_5XX_URL_SUBSTR}"* ]] && counted 5xx "${FAKE_CURL_5XX_TIMES:-1}"; then
+  status=503 body='{"message":"upstream unavailable"}'
+elif [[ "$method" == "POST" && "$url" == *"/deploys"* ]]; then
+  sid="${url##*/services/}"; sid="${sid%%/*}"; status=201 body="{\"id\":\"dep-$sid\"}"
+elif [[ "$method" == "GET" && "$url" == *"/env-vars/"* && -n "${FAKE_CURL_ENV_DIR:-}" && -f "$FAKE_CURL_ENV_DIR/${url##*/}" ]]; then
+  body="$(jq -Rs '{value: .}' < "$FAKE_CURL_ENV_DIR/${url##*/}")"
+elif [[ "$method" == "GET" && "$url" == *"/deploys?limit=1"* ]]; then
+  body='[{"deploy":{"id":"dep-old","status":"live"}}]'
+elif [[ "$method" == "GET" && "$url" == *"/deploys/"* ]]; then
+  body="{\"id\":\"${url##*/}\",\"status\":\"${FAKE_DEPLOY_STATUS:-live}\"}"
+fi
+printf '%s' "$body"
+if [[ -n "$wout" ]]; then wout="${wout//\\n/$'\n'}"; printf '%s' "${wout//%\{http_code\}/$status}"; fi
+"""
+
+FAKE_SSH = r"""#!/usr/bin/env bash
+set -uo pipefail
+for a in "$@"; do
+  case "$a" in *val-*|*SENTINEL_*) echo "LEAK: secret value on ssh argv" >&2; exit 91 ;; esac
+done
+printf 'SSH %s\n' "$*" >> "$FAKE_LOG"
+last="${!#}"
+case "$last" in
+  "sudo -n true") exit 0 ;;
+  *"sudo -n sh -c"*)
+    # Batch mode: answer OK per path line, RESTARTED per unit (simulated box).
+    while IFS=' ' read -r path sum b64; do
+      if [[ "$path" == RESTART ]]; then for u in $sum $b64; do echo "RESTARTED $u"; done; continue; fi
+      printf '%s' "$b64" | base64 -d > "${FAKE_SSH_DIR:?}/$(basename "$path")"
+      echo "OK $path"
+    done
+    ;;
+  *) cat >/dev/null; exit 1 ;;
+esac
 """
 
 FAKE_SECURITY = r"""#!/usr/bin/env bash
 printf 'SECURITY %s\n' "$*" >> "$FAKE_LOG"
 exit 1
+"""
+
+# uv double for the prefect writer's block-save entrypoint (logs argv only).
+FAKE_UV = r"""#!/usr/bin/env bash
+printf 'UV %s\n' "$*" >> "$FAKE_LOG"
+exit "${FAKE_UV_EXIT:-0}"
 """
 
 FAKE_SYNC = r"""#!/usr/bin/env bash
@@ -278,7 +348,9 @@ class SecretsSandbox:
             ("gh", FAKE_GH),
             ("curl", FAKE_CURL),
             ("security", FAKE_SECURITY),
+            ("ssh", FAKE_SSH),
             ("sync-secrets-fake", FAKE_SYNC),
+            ("uv", FAKE_UV),
         ):
             path = self.fakebin / name
             path.write_text(body, encoding="utf-8")

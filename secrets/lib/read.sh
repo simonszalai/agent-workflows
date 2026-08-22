@@ -104,19 +104,64 @@ ref_vault() {
   printf '%s' "${rest%%/*}"
 }
 
-sa_token() { # project service-account token from env or Keychain -> stdout (or rc 3)
-  local tok=""
-  if [[ -n "${SECRETS_SA_TOKEN_ENV:-}" ]]; then
-    tok="${!SECRETS_SA_TOKEN_ENV:-}"
+# Keychain account under which project SA tokens are stored. One helper for
+# every bin (override: SECRETS_SA_KEYCHAIN_ACCOUNT).
+sa_token_account() { printf %s "${SECRETS_SA_KEYCHAIN_ACCOUNT:-${USER:-$(id -un)}}"; }
+
+# Project service-account token from env or Keychain -> stdout (rc 3 when
+# absent). Cached in _SA_TOKEN for the rest of the process; callers that
+# resolve many refs in subshells call `sa_token >/dev/null` once in the main
+# shell so the Keychain is read once, not per ref.
+sa_token() {
+  if [[ -z "${_SA_TOKEN:-}" ]]; then
+    local tok=""
+    if [[ -n "${SECRETS_SA_TOKEN_ENV:-}" ]]; then
+      tok="${!SECRETS_SA_TOKEN_ENV:-}"
+    fi
+    if [[ -z "$tok" && -n "${SECRETS_SA_KEYCHAIN_ITEM:-}" ]]; then
+      tok="$(security find-generic-password -s "$SECRETS_SA_KEYCHAIN_ITEM" -a "$(sa_token_account)" -w 2>/dev/null || true)"
+    fi
+    if [[ -z "$tok" ]]; then
+      echo "ERROR: no project service-account token (\$${SECRETS_SA_TOKEN_ENV:-<unset>} or Keychain ${SECRETS_SA_KEYCHAIN_ITEM:-<unset>}). Run via sync-secrets so project-context wires the project layer." >&2
+      return 3
+    fi
+    _SA_TOKEN="$tok"
   fi
-  if [[ -z "$tok" && -n "${SECRETS_SA_KEYCHAIN_ITEM:-}" ]]; then
-    tok="$(security find-generic-password -s "$SECRETS_SA_KEYCHAIN_ITEM" -a simon -w 2>/dev/null || true)"
-  fi
-  if [[ -z "$tok" ]]; then
-    echo "ERROR: no project service-account token (\$${SECRETS_SA_TOKEN_ENV:-<unset>} or Keychain ${SECRETS_SA_KEYCHAIN_ITEM:-<unset>}). Run via sync-secrets so project-context wires the project layer." >&2
-    return 3
-  fi
-  printf %s "$tok"
+  printf %s "$_SA_TOKEN"
+}
+
+# --- bounded retry for transient failures ----------------------------------
+# retry_transient CMD ARGS... — run CMD, retrying on transient failure with
+# exponential backoff (RETRY_MAX attempts after the first, default 4;
+# RETRY_BASE_SECONDS base, default 2). The command's stdin body comes from
+# $RETRY_STDIN (env, never argv) and is re-fed on every attempt — a piped
+# stdin is consumed by the first try. Transient means:
+#   * curl network rc 7/28/35/56,
+#   * rc 75 (EX_TEMPFAIL) — a wrapped helper saw HTTP 429/5xx,
+#   * stderr matching RETRY_TRANSIENT_PATTERN (gh: HTTP 429/5xx, timeouts,
+#     connection resets).
+# stderr of the final attempt is replayed; earlier attempts print one line.
+RETRY_TRANSIENT_PATTERN="${RETRY_TRANSIENT_PATTERN:-HTTP (429|5[0-9][0-9])|rate limit|timed out|timeout|connection reset|unexpected EOF|TLS handshake|temporarily unavailable}"
+retry_is_transient() { # rc errfile
+  case "$1" in 7|28|35|56|75) return 0 ;; esac
+  [[ "$1" -ne 0 ]] && grep -Eqi "$RETRY_TRANSIENT_PATTERN" "$2"
+}
+retry_transient() { # cmd args...
+  local attempt=0 max="${RETRY_MAX:-4}" base="${RETRY_BASE_SECONDS:-2}" rc errf
+  errf="$(mktemp "${TMPDIR:-/tmp}/retry.XXXXXX")" || return 1
+  while :; do
+    rc=0
+    printf %s "${RETRY_STDIN:-}" | "$@" 2>"$errf" || rc=$?
+    if [[ "$rc" -ne 0 && "$attempt" -lt "$max" ]] && retry_is_transient "$rc" "$errf"; then
+      attempt=$((attempt + 1))
+      echo "  transient failure (rc $rc: $(head -n1 "$errf")) — retry $attempt/$max in $((base << attempt))s" >&2
+      sleep $((base << attempt))
+      continue
+    fi
+    cat "$errf" >&2
+    rm -f "$errf"
+    return "$rc"
+  done
 }
 
 # --- 1Password read with sensitivity-aware auth ----------------------------

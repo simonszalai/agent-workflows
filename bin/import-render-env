@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# import-render-env — self-heal MISSING vault items from the live Render env.
+# Port of amaru-web/scripts/secrets/import-from-render onto the project config.
+#
+# For every render route whose op:// ITEM does not exist yet, read the CURRENT
+# value of that env var from the route's live Render service and create the
+# vault item from it. Create-only: an existing item is NEVER touched — 1Password
+# stays the source of truth and this is purely the bootstrap/migration
+# direction. Idempotent: a second run finds nothing missing and creates nothing.
+#
+# Values flow Render API -> shell var -> op item JSON on stdin; nothing is
+# printed. Vault writes need the HUMAN account, so this runs from a human
+# terminal only (agent shells refused, exit 3).
+#
+# usage: import-render-env [--repo <path>] [--dry-run] [--reason TEXT]
+#   --dry-run   list what WOULD be created (ref <- service/env); lists vault
+#               item titles only, reads no values, writes nothing
+#
+# exit: 0 ok (or nothing missing) · 1 some items could not be imported ·
+#       2 usage/config · 3 agent shell
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
+# shellcheck source=../secrets/lib/read.sh
+source "$SECRETS_LIB/read.sh"
+# shellcheck source=../secrets/lib/vault.sh
+source "$SECRETS_LIB/vault.sh"
+# shellcheck source=../secrets/lib/render-api.sh
+source "$SECRETS_LIB/render-api.sh"
+# shellcheck source=../secrets/lib/config.sh
+source "$SECRETS_LIB/config.sh"
+
+repo="" dry=0 reason="${SENSITIVE_ACCESS_REASON:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="${2:?}"; shift 2 ;;
+    --repo=*) repo="${1#*=}"; shift ;;
+    --dry-run) dry=1; shift ;;
+    --reason) reason="${2:?}"; shift 2 ;;
+    --reason=*) reason="${1#*=}"; shift ;;
+    *) echo "usage: import-render-env [--repo <path>] [--dry-run] [--reason TEXT]" >&2; exit 2 ;;
+  esac
+done
+
+need jq
+if [[ -z "$repo" ]]; then
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "ERROR: not inside a git repo; pass --repo <path>" >&2; exit 2; }
+fi
+repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "ERROR: repo path does not exist" >&2; exit 2; }
+export _SECRETS_CONFIG="$repo"
+rows="$(config_rows render)" || exit $?
+
+# op:// rows only (literals have no vault item), deduped by ref: the first
+# service listed for a ref is its import source.
+refs=(); ref_sids=(); ref_envs=()
+seen_ref() { local rr="$1" j; for j in ${refs[@]+"${refs[@]}"}; do [[ "$j" == "$rr" ]] && return 0; done; return 1; }
+while IFS=$'\t' read -r _kind sid env r _transform; do
+  [[ "$r" == op://* ]] || continue
+  seen_ref "$r" && continue
+  refs+=("$r"); ref_sids+=("$sid"); ref_envs+=("$env")
+done <<< "$rows"
+
+guard_agent_shell || { echo "import-render-env needs a human terminal (vault item listing + writes)." >&2; exit 3; }
+
+# Which items are missing? vault_item_id lists titles only (never values).
+miss_refs=(); miss_sids=(); miss_envs=()
+i=0
+while [[ $i -lt ${#refs[@]} ]]; do
+  rc=0
+  vault_item_id "${refs[$i]}" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) ;;
+    1) miss_refs+=("${refs[$i]}"); miss_sids+=("${ref_sids[$i]}"); miss_envs+=("${ref_envs[$i]}") ;;
+    *) echo "ERROR: could not prove whether ${refs[$i]} exists (duplicate title or listing failure)." >&2; exit 1 ;;
+  esac
+  i=$((i + 1))
+done
+
+if [[ ${#miss_refs[@]} -eq 0 ]]; then
+  echo "import-render-env: nothing missing — the vault already covers every render ref."
+  exit 0
+fi
+
+if [[ "$dry" -eq 1 ]]; then
+  i=0
+  while [[ $i -lt ${#miss_refs[@]} ]]; do
+    echo "  would create ${miss_refs[$i]}  <-  render[${miss_sids[$i]}] ${miss_envs[$i]}"
+    i=$((i + 1))
+  done
+  exit 0
+fi
+
+need curl
+# Project layer: SA token for plain reads + the Render API key ref.
+ctx="$("$HERE/project-context" --cwd "$repo")" || exit 2
+SECRETS_SA_TOKEN_ENV="$(printf '%s' "$ctx" | jq -er '.service_account.token_env')" || exit 2
+SECRETS_SA_KEYCHAIN_ITEM="$(printf '%s' "$ctx" | jq -r '.service_account.keychain_item // ""')"
+SECRETS_RENDER_KEY_REF="$(printf '%s' "$ctx" | jq -r '.tools.render.api_key_ref // ""')"
+export SECRETS_SA_TOKEN_ENV SECRETS_SA_KEYCHAIN_ITEM SECRETS_RENDER_KEY_REF
+[[ -n "$reason" ]] && export SENSITIVE_ACCESS_REASON="$reason"
+RENDER_API_KEY="$(render_key_resolve "$(render_key_ref_for "${miss_sids[0]}")")" \
+  || { echo "ERROR: no Render API key" >&2; exit 1; }
+export RENDER_API_KEY
+
+fail=0
+i=0
+while [[ $i -lt ${#miss_refs[@]} ]]; do
+  r="${miss_refs[$i]}"; sid="${miss_sids[$i]}"; env="${miss_envs[$i]}"
+  i=$((i + 1))
+  val="$(render_get "/services/${sid}/env-vars?limit=100" | jq -r --arg k "$env" \
+        '[.[] | select(.envVar.key == $k)][0].envVar.value // empty')" \
+    || { echo "  $r: Render read FAILED (render[$sid] $env)" >&2; fail=1; continue; }
+  if [[ -z "$val" ]]; then
+    echo "  $r: MISSING at source too (render[$sid] has no $env) — seed manually" >&2
+    fail=1; continue
+  fi
+  if VAULT_VALUE="$val" vault_create_value "$r" >/dev/null; then
+    echo "  created $r  <-  render[$sid] $env"
+  else
+    echo "  $r: vault create FAILED" >&2
+    fail=1
+  fi
+  val=""
+done
+
+[[ "$fail" -eq 0 ]] || { echo "import-render-env: some items could not be imported (see above)." >&2; exit 1; }

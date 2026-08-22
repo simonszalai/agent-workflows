@@ -10,22 +10,24 @@
 #   db_run_psql_url url [args...]  # PG* env subshell exec psql -X (stdin flows)
 
 db_urldecode() {
+	# Literal backslashes are escaped first so %b only interprets the %XX bytes.
 	local s="${1//+/ }"
+	s="${s//\\/\\\\}"
 	printf '%b' "${s//%/\\x}"
 }
 
-db_parse_url() { # url -> DB_URL_{USER,PASS,HOST,PORT,DB,QUERY}
+db_parse_url() { # url -> DB_URL_{USER,PASS,HOST,PORT,DB,QUERY}; postgres[ql][+asyncpg]:// accepted
 	local url="$1"
-	[[ "$url" =~ ^postgres(ql)?://(([^:@/]+)(:([^@]*))?@)?([^:/?]+)(:([0-9]+))?/([^?]+)(\?(.*))?$ ]] || {
+	[[ "$url" =~ ^postgres(ql)?(\+asyncpg)?://(([^:@/]+)(:([^@]*))?@)?([^:/?]+)(:([0-9]+))?/([^?]+)(\?(.*))?$ ]] || {
 		echo "ERROR: database URL did not parse as postgres://[user[:pass]@]host[:port]/db" >&2
 		return 3
 	}
-	DB_URL_USER="${BASH_REMATCH[3]}"
-	DB_URL_PASS="${BASH_REMATCH[5]}"
-	DB_URL_HOST="${BASH_REMATCH[6]}"
-	DB_URL_PORT="${BASH_REMATCH[8]:-5432}"
-	DB_URL_DB="${BASH_REMATCH[9]}"
-	DB_URL_QUERY="${BASH_REMATCH[11]:-}"
+	DB_URL_USER="${BASH_REMATCH[4]}"
+	DB_URL_PASS="${BASH_REMATCH[6]}"
+	DB_URL_HOST="${BASH_REMATCH[7]}"
+	DB_URL_PORT="${BASH_REMATCH[9]:-5432}"
+	DB_URL_DB="${BASH_REMATCH[10]}"
+	DB_URL_QUERY="${BASH_REMATCH[12]:-}"
 }
 
 db_url_username() {
@@ -124,6 +126,10 @@ db_rehost_url() { # source_credentials_url target_host_url -> url
 	return 0
 }
 
+# Every session: TLS required unless the URL says otherwise (rotation and
+# provisioning sessions cross the Render external endpoint) and bounded
+# lock/statement timeouts so DDL can never hang behind an application lock
+# (override with DB_LOCK_TIMEOUT / DB_STATEMENT_TIMEOUT, Postgres durations).
 db_run_psql_url() { # url [psql args...] ; stdin flows through
 	local url="$1"
 	shift
@@ -133,12 +139,12 @@ db_run_psql_url() { # url [psql args...] ; stdin flows through
 	sslmode="$(db_query_option "$DB_URL_QUERY" sslmode 2>/dev/null || true)"
 	options="$(db_query_option "$DB_URL_QUERY" options 2>/dev/null || true)"
 	[[ -n "$options" ]] && options="$(db_urldecode "$options")"
+	options="${options:+$options }-c lock_timeout=${DB_LOCK_TIMEOUT:-15s} -c statement_timeout=${DB_STATEMENT_TIMEOUT:-120s}"
 	(
 		export PGHOST="$DB_URL_HOST" PGPORT="$DB_URL_PORT" PGDATABASE="$DB_URL_DB" PGCONNECT_TIMEOUT=15
 		if [[ -n "$DB_URL_USER" ]]; then export PGUSER="$(db_urldecode "$DB_URL_USER")"; fi
 		if [[ -n "$DB_URL_PASS" ]]; then export PGPASSWORD="$(db_urldecode "$DB_URL_PASS")"; fi
-		if [[ -n "$sslmode" ]]; then export PGSSLMODE="$sslmode"; fi
-		if [[ -n "$options" ]]; then export PGOPTIONS="$options"; fi
+		export PGSSLMODE="${sslmode:-require}" PGOPTIONS="$options"
 		exec "${PSQL_BIN:-psql}" -X "$@"
 	)
 }

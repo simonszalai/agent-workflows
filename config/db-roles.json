@@ -1,28 +1,28 @@
 {
   "$comment": [
     "Four-role Postgres credential split (root/owner/app/ro) across projects.",
-    "Secret names (no project prefix \u2014 vault scopes the project):",
-    "  {PROD|STAGING}_POSTGRES_URL_{ROOT|OWNER|APP|RO}",
-    "Vault routing (Amaru policy):",
-    "  prod write (ROOT/OWNER/APP) \u2192 <PROJECT>-sensitive",
-    "  prod RO + all staging \u2192 <PROJECT> regular (SA-readable)",
+    "Vault items are GROUPED per tier (vault scopes the project, the title the tier,",
+    "one field per principal):",
+    "  op://<PROJECT>-sensitive/Postgres prod/{root|owner|app|<app-slug>|<app-slug>_migrator}",
+    "  op://<PROJECT>/Postgres prod RO/{canonical|<app-slug>}   (ro principals)",
+    "  op://<PROJECT>/Postgres staging/{root|owner|app|ro|<app-slug>|<app-slug>_ro|<app-slug>_migrator}",
+    "Vault routing (Amaru policy): prod write -> <PROJECT>-sensitive; prod RO + all",
+    "staging -> <PROJECT> regular (SA-readable). admin_refs[tier].{root,owner} name the",
+    "box's break-glass root and admin owner fields explicitly (no convention fallback).",
     "Postgres login names always include the project slug (roles are catalog-global;",
-    "Workflow + Autodev share dpg-d66ig\u2026 so collisions matter).",
-    "Root username is the Render provider default and is NOT renamed.",
-    "Per-app principals (slice 3a): projects[].apps.<app-slug> declares one login pair",
-    "per application. Item naming stays flat for now (product-grouped items = slice 6):",
-    "  {PROD|STAGING}_POSTGRES_URL_{APPSLUG_UPPER}       (app login)",
-    "  {PROD|STAGING}_POSTGRES_URL_{APPSLUG_UPPER}_RO    (ro login, when present)",
-    "APPSLUG_UPPER = item_prefix minus its trailing underscore. Vault routing matches",
-    "the project items: prod app -> <PROJECT>-sensitive, staging app + every RO ->",
-    "<PROJECT> regular. instance: 'default' (own project's tiers) or",
-    "{project, tier_map} for cross-instance consumers \u2014 the role is created on the",
-    "OWNING project's box (admin via its owner credential) but the vault item is",
-    "written into the CONSUMER project's vault. databases: optional override of",
-    "which databases the grants (and the item URL's primary db) target; default is",
-    "the tier database plus extra_databases.",
+    "Workflow + Autodev share dpg-d66ig… so collisions matter).",
+    "Root username is the Render provider default and is NOT renamed; root and the",
+    "table owner are never rotation predecessors.",
+    "Per-app principals: projects[].apps.<app-slug> declares one login set per",
+    "application (roles.app / .ro / .migrator); the app slug is the vault field name",
+    "(item_prefix = SLUG_ for tooling that still prefixes env names).",
+    "instance: 'default' (own project's tiers) or {project, tier_map} for cross-instance",
+    "consumers — the role is created on the OWNING project's box (admin via its owner",
+    "credential) but the vault item is written into the CONSUMER project's vault.",
+    "databases: optional override of which databases the grants (and the item URL's",
+    "primary db) target; default is the tier database plus extra_databases.",
     "ts_scraper and ts_decrypt_proxy have NO DB rows in their manifests (checked",
-    "2026-08-07) \u2014 deliberately absent from ts.apps."
+    "2026-08-07) — deliberately absent from ts.apps."
   ],
   "projects": {
     "amaru": {
@@ -131,13 +131,13 @@
         }
       },
       "admin_refs": {
-        "staging": {
-          "root": "op://TS/STAGING_POSTGRES_URL_ROOT/value",
-          "owner": "op://TS/STAGING_POSTGRES_URL_OWNER/value"
-        },
         "prod": {
-          "root": "op://TS-sensitive/PROD_POSTGRES_URL_ROOT/value",
-          "owner": "op://TS-sensitive/PROD_POSTGRES_URL_OWNER/value"
+          "root": "op://TS-sensitive/Postgres prod/root",
+          "owner": "op://TS-sensitive/Postgres prod/owner"
+        },
+        "staging": {
+          "root": "op://TS/Postgres staging/root",
+          "owner": "op://TS/Postgres staging/owner"
         }
       }
     },
@@ -204,7 +204,7 @@
       "render_project": "workflow-pro",
       "slug": "autodev",
       "owner_kind": "sql_role",
-      "shared_instance_note": "Same Render Postgres as workflow-pro prod (dpg-d66ig\u2026). Creating a Render credential would flip the instance default away from workflow_owner \u2014 so autodev_owner is a SQL role provisioned as the shared admin, not a Render credential. Root remains the instance admin (render).",
+      "shared_instance_note": "Same Render Postgres as workflow-pro prod (dpg-d66ig…). Creating a Render credential would flip the instance default away from workflow_owner — so autodev_owner is a SQL role provisioned as the shared admin, not a Render credential. Root remains the instance admin (render).",
       "roles": {
         "owner": "autodev_owner",
         "app": "autodev_app",
@@ -251,7 +251,7 @@
           "databases": [
             "mem_ts"
           ],
-          "note": "SQL role on the TS prod box (admin via ts owner credential); item written into the AUTODEV vault \u2014 the consumer owns its credential. migrator on the TS prod box for mem_ts. Provisioned via the ts owner credential, stored in the AUTODEV vault: autodev owns the credential it runs with, so a TS owner rotation can never strand autodev-memory. ro: read-only principal for the autodev-dashboard schema-drift CI gate against mem_ts, replacing the borrowed op://TS/Postgres prod RO/canonical."
+          "note": "SQL role on the TS prod box (admin via ts owner credential); item written into the AUTODEV vault — the consumer owns its credential. migrator on the TS prod box for mem_ts. Provisioned via the ts owner credential, stored in the AUTODEV vault: autodev owns the credential it runs with, so a TS owner rotation can never strand autodev-memory. ro: read-only principal for the autodev-dashboard schema-drift CI gate against mem_ts, replacing the borrowed op://TS/Postgres prod RO/canonical."
         },
         "autodev_mem_amaru": {
           "roles": {

@@ -8,6 +8,9 @@ from secrets_common import ROOT, SENSITIVE_MANIFEST, SecretsSandbox, run
 
 SYNC = str(ROOT / "bin" / "sync-secrets")
 RENDER_WRITER = str(ROOT / "secrets" / "lib" / "writers" / "render")
+GITHUB_WRITER = str(ROOT / "secrets" / "lib" / "writers" / "github")
+PREFECT_WRITER = str(ROOT / "secrets" / "lib" / "writers" / "prefect")
+HERMES_WRITER = str(ROOT / "secrets" / "lib" / "writers" / "hermes")
 
 # Canonical DB env names are owned by the postgres tooling, never plain sync.
 DB_GUARD_MANIFEST = "\n".join(
@@ -49,9 +52,32 @@ class SyncSecretsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.sb.log_lines(), [])
 
-    def test_default_sweep_never_includes_prefect(self) -> None:
+    def test_default_sweep_includes_both_prefect_tiers(self) -> None:
         proc = self.sync("--dry-run")
-        self.assertNotIn("prefect[", proc.stdout)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("prefect[staging] PF_ONE", proc.stdout)
+        self.assertIn("no prefect:prod rows", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
+
+    def test_prod_prefect_tier_runs_last_and_needs_confirmation_or_assume_yes(self) -> None:
+        self.sb.write_manifest(
+            "render\tsrv-alpha\tALPHA_ONE\top://TESTVAULT/ITEM/value\tself\n"
+            "prefect\tstaging\tPF_ONE\top://TESTVAULT/ITEM/value\tself\n"
+            "prefect\tprod\tPF_PROD\top://TESTVAULT/ITEM/value\tself\n"
+        )
+        # no tty, no SECRETS_ASSUME_YES: the prod tier aborts (exit 3), staging saved
+        proc = run([SYNC, "--repo", str(self.sb.repo), "--reason", "t"], self.sb.env(), stdin="")
+        self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
+        self.assertIn("Aborted", proc.stderr)
+        self.assertEqual(len([l for l in self.sb.log_lines() if l.startswith("UV ")]), 1)
+        self.assertLess(proc.stdout.index("== sync-secrets: render"),
+                        proc.stdout.index("== sync-secrets: prefect:prod"))
+        # a confirmed rotation (rotate-secret exports SECRETS_ASSUME_YES=1) saves both tiers
+        self.sb.log_path.write_text("", encoding="utf-8")
+        proc = self.sync("--reason", "t", env=self.sb.env(SECRETS_ASSUME_YES="1"))
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertEqual(len([l for l in self.sb.log_lines() if l.startswith("UV ")]), 2)
+        self.assertIn("save_blocks.py --yes", "\n".join(self.sb.log_lines()))
 
     def test_hermes_channel_dry_run_is_credential_free(self) -> None:
         self.sb.write_manifest(
@@ -96,7 +122,19 @@ class SyncSecretsTest(unittest.TestCase):
         )
         proc = self.sync("--changed", "op://TESTVAULT/ONLYPF/value", "--reason", "t")
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
-        self.assertIn("routes only to", proc.stdout)
+        # prefect is a default channel: the staging tier saved its block
+        self.assertEqual(len([l for l in self.sb.log_lines() if l.startswith("UV ")]), 1)
+        self.assertFalse(any("CURL PUT" in l for l in self.sb.log_lines()))
+
+    def test_changed_ref_with_only_dev_rows_is_a_fact_not_a_failure(self) -> None:
+        self.sb.write_manifest(
+            "dev\tprofile\tDB_URL\top://TESTVAULT/ONLYDEV/value\tself\n"
+            "render\tsrv-alpha\tOTHER\top://TESTVAULT/ITEM/value\tself\n"
+        )
+        proc = self.sync("--changed", "op://TESTVAULT/ONLYDEV/value", "--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("routes only to dev", proc.stdout)
+        self.assertEqual(self.sb.log_lines(), [])
 
     def test_changed_ref_matching_nothing_still_errors(self) -> None:
         proc = self.sync("--changed", "op://TESTVAULT/TYPO/value", "--reason", "t")
@@ -106,7 +144,7 @@ class SyncSecretsTest(unittest.TestCase):
     def test_malformed_manifest_fails_whole_file_before_any_action(self) -> None:
         self.sb.write_manifest("github\ta/b\tNAME\top://V/I/value\n")
         proc = self.sync()
-        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.returncode, 2)
         self.assertEqual(self.sb.log_lines(), [])
 
     def test_changed_cannot_combine_with_channel(self) -> None:
@@ -299,6 +337,197 @@ class SyncSecretsTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 3)
         self.assertIn("no project service-account token", proc.stderr)
         self.assertFalse(any("CURL" in l or l.startswith("GH") for l in self.sb.log_lines()))
+
+    # --- render diff-before-PUT / deploy correlation ----------------------------
+
+    def _env_dir(self, **values: str):
+        d = self.sb.root / "render-env"
+        d.mkdir(exist_ok=True)
+        for name, value in values.items():
+            (d / name).write_text(value, encoding="utf-8")
+        return str(d)
+
+    def test_unchanged_values_are_not_put_and_untouched_services_do_not_deploy(self) -> None:
+        # srv-beta already holds both of its values; srv-alpha differs.
+        envd = self._env_dir(BETA_ONE="val-ITEM2-value", BETA_LIT="plain-config")
+        proc = self.sync("--reason", "t", env=self.sb.env(FAKE_CURL_ENV_DIR=envd))
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertEqual(self.put_envnames(), {"ALPHA_ONE", "ALPHA_TWO"})
+        self.assertIn("render[srv-beta] BETA_ONE  unchanged", proc.stdout)
+        self.assertIn("render[srv-beta] no changes — deploy skipped", proc.stdout)
+        deploys = [l for l in self.sb.log_lines() if "CURL POST" in l and "/deploys" in l]
+        self.assertEqual(len(deploys), 1)
+        self.assertIn("srv-alpha", deploys[0])
+
+    def test_all_values_unchanged_means_zero_deploys(self) -> None:
+        envd = self._env_dir(ALPHA_ONE="val-ITEM-value", ALPHA_TWO="val-OTHER-value",
+                             BETA_ONE="val-ITEM2-value", BETA_LIT="plain-config")
+        proc = self.sync("--reason", "t", "--channel", "render",
+                         env=self.sb.env(FAKE_CURL_ENV_DIR=envd))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.put_envnames(), set())
+        self.assertFalse(any("/deploys" in l and "POST" in l for l in self.sb.log_lines()))
+
+    def test_rotation_deploys_every_touched_service_even_when_unchanged(self) -> None:
+        # Under a rotation ($SYNC_DEPLOYS_FILE set) a resumed fan-out must
+        # redeploy services whose values were already saved by the failed
+        # attempt, or prove_live would pass against the OLD instance.
+        envd = self._env_dir(ALPHA_ONE="val-ITEM-value", ALPHA_TWO="val-OTHER-value",
+                             BETA_ONE="val-ITEM2-value", BETA_LIT="plain-config")
+        out = self.sb.root / "deploys.tsv"
+        proc = self.sync("--reason", "t", "--channel", "render",
+                         env=self.sb.env(FAKE_CURL_ENV_DIR=envd, SYNC_DEPLOYS_FILE=str(out)))
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertEqual(self.put_envnames(), set())
+        self.assertIn("deploying anyway", proc.stdout)
+        rows = sorted(l.split("\t") for l in out.read_text().splitlines())
+        self.assertEqual(rows, [["srv-alpha", "dep-srv-alpha"], ["srv-beta", "dep-srv-beta"]])
+
+    def test_deploy_ids_are_recorded_to_sync_deploys_file(self) -> None:
+        out = self.sb.root / "deploys.tsv"
+        proc = self.sync("--reason", "t", "--channel", "render",
+                         env=self.sb.env(SYNC_DEPLOYS_FILE=str(out)))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = sorted(l.split("\t") for l in out.read_text().splitlines())
+        self.assertEqual(rows, [["srv-alpha", "dep-srv-alpha"], ["srv-beta", "dep-srv-beta"]])
+        self.assertIn("deploy triggered (dep-srv-alpha)", proc.stdout)
+
+    def test_env_only_deploys_use_deploy_only_mode(self) -> None:
+        # The deploy POST body travels via stdin; the fake logs only method+url,
+        # so prove the mode through the helper itself.
+        script = (
+            f'source "{ROOT}/secrets/lib/read.sh"; source "{ROOT}/secrets/lib/render-api.sh"; '
+            'RENDER_API_KEY=k; curl() { case "$*" in *limit=1*) cat >/dev/null; printf "[]\\n200" ;; '
+            '*) cat > "$FAKE_OP_STATE/body"; printf \'{"id":"dep-1"}\\n201\' ;; esac; }; '
+            'render_trigger_deploy_id srv-x'
+        )
+        proc = run(["bash", "-c", script], self.sb.env())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "dep-1")
+        self.assertIn('"deployMode":"deploy_only"', (self.sb.state / "body").read_text())
+
+    # --- retries ------------------------------------------------------------------
+
+    def test_transient_curl_rc_is_retried_and_the_put_succeeds(self) -> None:
+        env = self.sb.env(FAKE_CURL_RC_URL_SUBSTR="env-vars/ALPHA_ONE", FAKE_CURL_RC="56",
+                          FAKE_CURL_RC_TIMES="2", RETRY_BASE_SECONDS="0")
+        proc = self.sync("--reason", "t", "--channel", "render", "--only", "ALPHA_ONE", env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("ALPHA_ONE  OK", proc.stdout)
+        puts = [l for l in self.sb.log_lines() if "CURL PUT" in l]
+        # 2 injected failures are spent on the GET+PUT pair; the PUT still lands
+        self.assertGreaterEqual(len(puts), 1)
+
+    def test_http_5xx_on_put_is_retried_then_succeeds(self) -> None:
+        env = self.sb.env(FAKE_CURL_5XX_URL_SUBSTR="env-vars/ALPHA_ONE", FAKE_CURL_5XX_TIMES="3",
+                          RETRY_BASE_SECONDS="0")
+        proc = self.sync("--reason", "t", "--channel", "render", "--only", "ALPHA_ONE", env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        calls = [l for l in self.sb.log_lines() if "env-vars/ALPHA_ONE" in l]
+        self.assertGreaterEqual(len(calls), 4)  # 3 x 503 + the one that landed
+        self.assertTrue(any("/deploys" in l for l in self.sb.log_lines()))
+
+    def test_exhausted_5xx_retries_fail_the_row_and_trigger_no_deploy(self) -> None:
+        env = self.sb.env(FAKE_CURL_5XX_URL_SUBSTR="env-vars/ALPHA_ONE", FAKE_CURL_5XX_TIMES="99",
+                          RETRY_BASE_SECONDS="0", RETRY_MAX="1")
+        proc = self.sync("--reason", "t", "--channel", "render", env=env)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("PUT FAILED", proc.stderr)
+        self.assertIn("HTTP 503", proc.stderr)
+        self.assertNotIn("upstream unavailable\n", proc.stderr.replace("HTTP 503: ", "", 1))
+        self.assertFalse(any("/deploys" in l and "POST" in l for l in self.sb.log_lines()))
+
+    def test_gh_transient_http_error_is_retried(self) -> None:
+        env = self.sb.env(FAKE_GH_FAIL_TIMES="2", RETRY_BASE_SECONDS="0")
+        proc = self.sync("--reason", "t", "--channel", "github", env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertEqual(len([l for l in self.sb.log_lines() if l.startswith("GH secret set")]), 3)
+        self.assertIn("GH_TOKEN_A  OK", proc.stdout)
+
+    def test_github_rows_are_all_attempted_and_failures_collected(self) -> None:
+        self.sb.write_manifest(
+            "github\ttestorg/testrepo\tA_ONE\top://TESTVAULT/ITEM/value\tself\n"
+            "github\ttestorg/testrepo\tA_TWO\top://TESTVAULT/ITEM2/value\tself\n"
+            "github\ttestorg/testrepo\tA_THREE\top://TESTVAULT/OTHER/value\tself\n"
+        )
+        # a non-transient gh failure on the first call only
+        gh = self.sb.fakebin / "gh"
+        gh.write_text(
+            gh.read_text().replace('>> "$FAKE_LOG"\n',
+                '>> "$FAKE_LOG"\nif [[ "$*" == *A_ONE* ]]; then echo "permission denied" >&2; exit 1; fi\n', 1),
+            encoding="utf-8")
+        proc = self.sync("--reason", "t", "--channel", "github", env=self.sb.env(SYNC_PUT_CONCURRENCY="1"))
+        self.assertEqual(proc.returncode, 1)
+        sets = [l for l in self.sb.log_lines() if l.startswith("GH secret set")]
+        self.assertEqual(len(sets), 3)  # every row attempted; no retry of a hard failure
+        self.assertIn("A_ONE: SET FAILED", proc.stderr)
+        self.assertIn("A_TWO  OK", proc.stdout)
+
+    def test_put_concurrency_is_validated(self) -> None:
+        proc = self.sync("--reason", "t", "--channel", "render", env=self.sb.env(SYNC_PUT_CONCURRENCY="lots"))
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("SYNC_PUT_CONCURRENCY", proc.stderr)
+        self.assertFalse(any("CURL" in l for l in self.sb.log_lines()))
+
+    # --- concurrency across channels ------------------------------------------------
+
+    def test_channels_run_concurrently(self) -> None:
+        # Each fake blocks until the OTHER channel's fake has started: a
+        # sequential github-then-render run deadlocks into the fakes' timeout.
+        barrier = self.sb.root / "barrier"
+        barrier.mkdir()
+        proc = self.sync("--reason", "t", env=self.sb.env(FAKE_BARRIER_DIR=str(barrier)))
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("GH_TOKEN_A  OK", proc.stdout)
+        self.assertIn("ALPHA_ONE  OK", proc.stdout)
+        # output is replayed per channel, in channel order, never interleaved
+        self.assertLess(proc.stdout.index("== sync-secrets: github"), proc.stdout.index("== sync-secrets: render"))
+
+    def test_prefect_channel_count_is_tier_scoped_like_its_writer(self) -> None:
+        # Only a PROD prefect row exists: the staging tier must report "no
+        # rows" rather than launching the writer on zero rows.
+        self.sb.write_manifest("prefect\tprod\tPF_PROD\top://TESTVAULT/ITEM/value\tself\n")
+        proc = self.sync("--channel", "prefect", "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("no prefect:staging rows", proc.stdout)
+        self.assertIn("prefect[prod] PF_PROD", proc.stdout)
+        proc = self.sync("--channel", "prefect", "--dest", "staging", "--dry-run")
+        self.assertIn("no prefect:staging rows", proc.stdout)
+        self.assertNotIn("PF_PROD", proc.stdout)
+        proc = self.sync("--channel", "prefect", "--dest", "srv-x", "--dry-run")
+        self.assertEqual(proc.returncode, 2)
+
+    # --- prefect env-name validation ------------------------------------------------
+
+    def test_prefect_refuses_reserved_or_malformed_env_names(self) -> None:
+        for name in ("PATH", "lower", "1BAD", "LD_PRELOAD"):
+            with self.subTest(name):
+                self.sb.write_manifest(f"prefect\tstaging\t{name}\top://TESTVAULT/ITEM/value\tself\n")
+                env = self.sb.env(_SECRETS_CONFIG=str(self.sb.repo))
+                proc = run([PREFECT_WRITER, "--repo", str(self.sb.repo), "--dry-run"], env)
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertEqual(self.sb.log_lines(), [])
+
+    # --- hermes batch over one ssh session ----------------------------------------
+
+    def test_hermes_writes_the_batch_in_one_remote_script(self) -> None:
+        self.sb.write_manifest(
+            "hermes\t/etc/hermes-mcp/autodev-memory.token\tMEM_TOKEN\top://TESTVAULT/ITEM/value\tself\n"
+            "hermes\t/etc/hermes-schedules/op.token\tOP_TOKEN\top://TESTVAULT/ITEM2/value\tself\n",
+            hermes={"ssh": "testbox"},
+        )
+        box = self.sb.root / "box"
+        box.mkdir()
+        proc = self.sync("--channel", "hermes", "--reason", "t", env=self.sb.env(FAKE_SSH_DIR=str(box)))
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        ssh_calls = [l for l in self.sb.log_lines() if l.startswith("SSH ")]
+        self.assertEqual(len(ssh_calls), 2)  # reachability probe + ONE batch script
+        self.assertIn("mktemp", self.sb.log_path.read_text())
+        self.assertEqual((box / "autodev-memory.token").read_text(), "val-ITEM-value")
+        self.assertEqual((box / "op.token").read_text(), "val-ITEM2-value")
+        self.assertIn("autodev-memory.token] MEM_TOKEN  OK", proc.stdout)
+        self.assertIn("restarted hermes-autodev-mcp", proc.stdout)
+        self.assertNotIn("val-", proc.stdout + proc.stderr)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,11 @@
 #   rotation_trigger_deploy sid               -> deploy id on stdout
 #   rotation_wait_deploy sid deploy_id
 #   rotation_probe_service sid
-#   all_old_logins                            -> one predecessor login per line
 #   render_get path                           -> Render API GET (render-api.sh)
 # Global aligned arrays: ROTATION_SIDS, ROTATION_ENVS, ROTATION_NEW_VALUES.
+# Inventory scan globals: ROTATION_PREDECESSORS (space-separated logins),
+# ROTATION_INSTANCE_MARKERS (space-separated host markers), ROTATION_DECLARED_DESTS
+# (space-separated "sid/ENV" the fan-out is known to reach).
 
 rotation_unique_services() {
 	local sid seen=""
@@ -167,22 +169,47 @@ rotation_activate() {
 
 rotation_urlencode() { jq -nr --arg value "$1" '$value|@uri'; }
 
-# Exhaustive undeclared-consumer inventory: word-boundary scan for every
-# predecessor login across every Render service env var / secret file (cursor
-# paginated, previews included) and every env group. Fail-closed shape checks;
-# unprovable completeness returns 2, a found reference returns 1.
+# Clean-inventory cache: one rotate-project sweep re-runs the scan for every
+# --resume/finalize of the same entry. A clean result (rc 0) is remembered per
+# ROTATE_SWEEP_ID + workspace label + markers + predecessor set; nothing else is
+# cached and no value is written.
+render_inventory_clean_cached() { # label — same rc as render_inventory_has_predecessor
+	local dir="${ROTATE_INVENTORY_CACHE_DIR:-}" sweep="${ROTATE_SWEEP_ID:-}" key file=""
+	if [[ -n "$dir" && -n "$sweep" ]]; then
+		key="$(printf '%s\n' "$sweep" "$1" "${ROTATION_INSTANCE_MARKERS:-}" "${ROTATION_PREDECESSORS:-}" \
+			| openssl dgst -sha256 | awk '{print $NF}')"
+		file="$dir/inventory-$key"
+		[[ -f "$file" ]] && { echo "  render: inventory for $1 already proven clean in sweep $sweep (cached)"; return 0; }
+	fi
+	render_inventory_has_predecessor || return $?
+	[[ -z "$file" ]] || { mkdir -p "$dir" && chmod 700 "$dir" && : > "$file"; }
+}
+
+# Exhaustive consumer inventory: word-boundary scan for every predecessor login
+# across every Render service env var / secret file (cursor paginated, previews
+# included) and every env group. Fail-closed shape checks; unprovable
+# completeness returns 2, a found reference returns 1 (declared consumers the
+# fan-out has not reached yet are reported as such, the rest as undeclared).
 render_inventory_has_predecessor() {
 	local regex="" user service_cursor="" service_page service_ids sid env_cursor env_page secret_cursor secret_page
-	local group_page group_ids gid group_detail matches found=0 next length pages=0 env_pages secret_pages marker
+	local group_page group_ids gid group_detail matches found=0 next length pages=0 env_pages secret_pages markers
 	# A predecessor login is only dangerous where it can authenticate: a value
-	# must ALSO reference this instance's host (db id marker) to count. Bare
-	# role names in EXPECTED_DB_ROLE-style vars or same-named logins on other
-	# instances are not credentials for this box. Fail closed without a marker.
-	marker="${ROTATION_INSTANCE_MARKER:-}"
-	[[ -n "$marker" ]] || { echo "ERROR: ROTATION_INSTANCE_MARKER is unset; cannot scope the predecessor scan." >&2; return 2; }
-	while IFS= read -r user; do regex="${regex:+$regex|}$user"; done < <(all_old_logins)
-	[[ -n "$regex" ]] || return 1
+	# must ALSO reference this instance (db id host marker or a pgbouncer host
+	# routed for it). Bare role names in EXPECTED_DB_ROLE-style vars or
+	# same-named logins on other instances are not credentials for this box.
+	markers="${ROTATION_INSTANCE_MARKERS:-}"
+	[[ -n "${markers// /}" ]] || { echo "ERROR: ROTATION_INSTANCE_MARKERS is unset; cannot scope the predecessor scan." >&2; return 2; }
+	for user in ${ROTATION_PREDECESSORS:-}; do regex="${regex:+$regex|}$user"; done
+	[[ -n "$regex" ]] || return 0
 	regex="(^|[^A-Za-z0-9_])(${regex})([^A-Za-z0-9_]|$)"
+	_inventory_hit() { # sid kind name
+		if [[ " ${ROTATION_DECLARED_DESTS:-} " == *" $1/$3 "* ]]; then
+			echo "ERROR: declared consumer render[$1] $2 $3 still references a predecessor (fan-out not applied yet)" >&2
+		else
+			echo "ERROR: undeclared consumer: predecessor reference remains at render[$1] $2 $3" >&2
+		fi
+		found=1
+	}
 
 	while :; do
 		service_page="$(render_get "/services?limit=100&includePreviews=true${service_cursor:+&cursor=$(rotation_urlencode "$service_cursor")}")" || return 2
@@ -201,8 +228,9 @@ render_inventory_has_predecessor() {
 					(.envVar.key | type) == "string" and (.envVar.value | type) == "string"
 					and (.cursor | type) == "string" and (.cursor | length) > 0)' \
 					< <(printf '%s' "$env_page") >/dev/null || { echo "ERROR: render[$sid] env inventory response shape is invalid." >&2; return 2; }
-				matches="$(printf '%s' "$env_page" | jq -r --arg re "$regex" --arg marker "$marker" '.[] | select((.envVar.value | test($re)) and (.envVar.value | contains($marker))) | .envVar.key')" || return 2
-				while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: predecessor reference remains at render[$sid] env $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
+				matches="$(printf '%s' "$env_page" | jq -r --arg re "$regex" --arg markers "$markers" '($markers | split(" ") | map(select(length > 0))) as $ms
+					| .[] | select((.envVar.value | test($re)) and (.envVar.value as $v | any($ms[]; . as $m | $v | contains($m)))) | .envVar.key')" || return 2
+				while IFS= read -r match; do [[ -n "$match" ]] && _inventory_hit "$sid" env "$match"; done < <(printf '%s\n' "$matches")
 				next="$(printf '%s' "$env_page" | jq -r 'if length == 0 then "" else .[-1].cursor // "" end')" || return 2
 				length="$(printf '%s' "$env_page" | jq -r 'length')" || return 2
 				[[ "$length" -gt 0 ]] || break
@@ -220,8 +248,9 @@ render_inventory_has_predecessor() {
 					(.secretFile.name | type) == "string" and (.secretFile.content | type) == "string"
 					and (.cursor | type) == "string" and (.cursor | length) > 0)' \
 					< <(printf '%s' "$secret_page") >/dev/null || { echo "ERROR: render[$sid] secret-file inventory response shape is invalid." >&2; return 2; }
-				matches="$(printf '%s' "$secret_page" | jq -r --arg re "$regex" --arg marker "$marker" '.[] | select((.secretFile.content | test($re)) and (.secretFile.content | contains($marker))) | .secretFile.name')" || return 2
-				while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: predecessor reference remains at render[$sid] secret-file $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
+				matches="$(printf '%s' "$secret_page" | jq -r --arg re "$regex" --arg markers "$markers" '($markers | split(" ") | map(select(length > 0))) as $ms
+					| .[] | select((.secretFile.content | test($re)) and (.secretFile.content as $v | any($ms[]; . as $m | $v | contains($m)))) | .secretFile.name')" || return 2
+				while IFS= read -r match; do [[ -n "$match" ]] && _inventory_hit "$sid" secret-file "$match"; done < <(printf '%s\n' "$matches")
 				next="$(printf '%s' "$secret_page" | jq -r 'if length == 0 then "" else .[-1].cursor // "" end')" || return 2
 				length="$(printf '%s' "$secret_page" | jq -r 'length')" || return 2
 				[[ "$length" -gt 0 ]] || break
@@ -259,10 +288,11 @@ render_inventory_has_predecessor() {
 			and all(.envVars[]; (.key | type) == "string" and (.value | type) == "string")
 			and all(.secretFiles[]; (.name | type) == "string" and (.content | type) == "string")' \
 			< <(printf '%s' "$group_detail") >/dev/null || { echo "ERROR: render env-group[$gid] detail response shape is invalid." >&2; return 2; }
-		matches="$(jq -r --arg re "$regex" --arg marker "$marker" '
-			(.envVars[] | select((.value | test($re)) and (.value | contains($marker))) | "env " + .key),
-			(.secretFiles[] | select((.content | test($re)) and (.content | contains($marker))) | "secret-file " + .name)' < <(printf '%s' "$group_detail"))" || return 2
-		while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: predecessor reference remains at render env-group[$gid] $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
+		matches="$(jq -r --arg re "$regex" --arg markers "$markers" '($markers | split(" ") | map(select(length > 0))) as $ms
+			| def hit: . as $v | ($v | test($re)) and any($ms[]; . as $m | $v | contains($m));
+			(.envVars[] | select(.value | hit) | "env " + .key),
+			(.secretFiles[] | select(.content | hit) | "secret-file " + .name)' < <(printf '%s' "$group_detail"))" || return 2
+		while IFS= read -r match; do [[ -n "$match" ]] && { echo "ERROR: undeclared consumer: predecessor reference remains at render env-group[$gid] $match" >&2; found=1; }; done < <(printf '%s\n' "$matches")
 		group_detail=""
 	done < <(printf '%s\n' "$group_ids")
 

@@ -106,6 +106,10 @@ class SensitiveAccessFixture:
         shutil.copy2(
             ROOT / "config" / "project-tools.json", config_dir / "project-tools.json"
         )
+        # bin/op and bin/op-env source the engine's read.sh (sa_token_account).
+        lib_dir = self.root / "secrets" / "lib"
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "secrets" / "lib" / "read.sh", lib_dir / "read.sh")
         shutil.copy2(ROOT / "bin" / "op", self.op)
         self.op.chmod(0o755)
         shutil.copy2(ROOT / "bin" / "op-env", self.op_env)

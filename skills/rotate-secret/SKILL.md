@@ -22,43 +22,56 @@ each project's `secrets.yaml` (rotation section), docs in `docs/secrets.md`.
    when known) and a human terminal: live rotations refuse agent shells
    (exit 3). Non-interactive runs additionally need `--yes`.
 4. **Interpret exit codes; do not freeform-recover:**
-   - `0` — rotated: vault write verified, consumer fan-out synced, predecessor
-     cleaned up (dual-key providers).
-   - `2` — usage / unknown entry / unknown provider; for postgres also
-     rotation-state mismatch or advisory-lock contention. Nothing changed.
+   - `0` — rotated: vault write verified, fan-out synced, deploys live +
+     health gate passed, predecessor retired (finalize).
+   - `2` — usage / unknown entry / invalid config / finalize-state refusal
+     ("unfinished rotation for <id>; rerun with --resume (or --finalize)");
+     postgres lock contention. Nothing changed.
    - `3` — playbook printed or precondition refused (MANUAL provider,
-     unconfigured dual provider, sql_role owner scope, unregistered health
-     URL), nothing changed. Show the output and offer `--complete` (step 5).
-   - `4` — provider or verify error, safe state (vault consistent; postgres:
-     paused before promotion, both logins valid — `--resume`). Report the
-     script output verbatim.
-   - `5` — vault holds the NEW value but a post-vault step failed: consumer
-     sync (the script prints the exact idempotent re-sync commands) or
-     postgres retirement proof (`--resume` after fixing the reported problem).
+     SYNC-only entry without provider config, aws reconcile refusal, sql_role
+     owner scope, unregistered health URL), nothing changed. Show the output;
+     offer `--complete` only when the output says so (step 5).
+   - `4` — provider or verify error, safe state (vault consistent). Report the
+     script output verbatim; if it says the vault already holds the NEW value
+     (verify failed after the mint) the recovery is `--resume`.
+   - `5` — vault holds the NEW value but fan-out / hook / wait-live failed:
+     the recovery is `--resume` (skips the mint, redoes fan-out, waits,
+     finalizes). `--finalize` is refused (exit 5) until a fan-out completed.
      Never improvise a different recovery.
+   - `6` — rotation complete, predecessor cleanup pending (revoke/delete
+     failed or deploys not yet proven): rerun with `--finalize`; it is
+     idempotent (already-deleted predecessors are fine).
+   Every rotation is two-stage: the predecessor stays valid until finalize,
+   which runs only after the consumers are proven on the new value.
+   `--no-finalize` stops after fan-out (rotate-project uses it), `--finalize`
+   runs only the retirement from persisted state.
 5. **Manual completion.** After the operator minted the new value externally:
    `printf %s '<new-value>' | rotate-secret --ref '...' --reason '...' --complete`
-   — reads stdin once, writes the vault item in place, fans out sync.
+   — reads stdin once, writes the vault item in place, fans out sync. Only
+   providers declaring `PROVIDER_ACCEPTS_COMPLETE=1` accept it: `manual`, and
+   resend/openai/aws_iam entries that are SYNC-only (no provider config).
 
 **Never echo, log, or capture a secret value.** Values flow op → pipe →
 destination only. If a value is ever printed, treat the credential as exposed
 and rotate it.
 
-## Providers (slice 4a)
+## Providers
 
-| provider | mode | flags | what happens | overlap behaviour | failure recovery | verify |
-|---|---|---|---|---|---|---|
-| `self_minted` | SELF_MINTED | — | mints `openssl rand` (registry `generate`: hex/base64, bytes), writes vault by immutable id, fans out sync | old value dies as consumers redeploy (seconds of overlap) | exit 4 = vault safe, retry; exit 5 = re-run printed sync legs | vault re-read; entry `verify` prose after redeploy |
-| `manual` | MANUAL | `--complete` | prints the registry playbook, exits 3, changes nothing; `--complete` does vault write + fan-out | per playbook; some entries need `--accept-brief-outage` | re-run `--complete` (idempotent by value) | per entry `verify` |
-| `postgres` | DUAL_KEY | `--resume`, `--keep-old` | central dual-principal rotator: versioned candidate login → batch PUT to registry consumers → exact deploys → health probes → canonical promotion → drain + full Render inventory → reversible fence → retirement. Fail-closed `health_urls` config; ROOT and `sql_role` owners (autodev shared box) refuse (exit 3) | zero downtime: both principals valid until retirement; ≥120 s mandatory drain grace | value-free state file per `<project>-<tier>`; exit 2 = lock/state contention; exit 4 = paused before promotion; exit 5 = promoted, retirement unproven — always `--resume`, never improvise | deploy-id proofs + `{status:"ok", databaseRoleSafe:true}` health + canonical byte-equality, all inside the rotator |
-| `resend` | DUAL_KEY | — | snapshots old key ids by `config.key_name` prefix, creates a new key, vault-replace, sync, verify, deletes ONLY the snapshotted ids | both keys valid until finalize; consumers converge on deploy | exit 3 = no `config.key_name`, use `--complete`; exit 4 after success message = predecessor cleanup failed, delete in dashboard | entry `verify_command`, else `config.canary` send with the new key, else vault re-read |
-| `openai` | DUAL_KEY | — | dual via Admin API project service accounts (`config.admin_key_ref` + `config.project_id`); prefix-named predecessors deleted in finalize | both keys valid until finalize | exit 3 = unconfigured (playbook + `--complete`); dashboard-minted originals need manual deletion | entry `verify_command`, else GET /v1/models with the new key |
-| `xai` | MANUAL | `--complete` | always exit 3: no confirmed xAI key-management API shape (management key only drives xai-sdk collections gRPC) — console rotation + `--complete` | operator-controlled | re-run `--complete`; prefect rows need explicit `--channel prefect` | consumers work with new key BEFORE console deletion |
-| `aws_iam` | DUAL_KEY | — | id+secret rotated as a PAIR: refuses if the IAM user has an unknown second key, creates the new pair, writes BOTH vault items before any sync (`sync_refs` lists both), verifies, then Inactive→delete the old key in finalize | both keys valid until finalize; deploy-last delivers both envs in one deploy | exit 3 = unconfigured or two-key conflict (nothing changed); cleanup failure leaves old key Inactive/valid — finish in console | entry `verify_command`, else `sts get-caller-identity` with the new pair |
+Auto-rotation = the provider file exists AND `provider_auto_ready` (its
+`config.*` suffices); otherwise the entry is SYNC-only (rotate-project only
+re-pushes the vault value; a live rotate-secret prints the playbook).
 
-Verification: dual-key providers never destroy the predecessor before their
-verify step AND the consumer fan-out both succeeded (`provider_finalize`).
-Entry `verify` fields describe the behavioural check to run after redeploy.
+| provider | mode | auto when | rotate | finalize (`provider_finalize <json>`) | verify |
+|---|---|---|---|---|---|
+| `self_minted` | SELF_MINTED | always | `openssl rand` per `generate`, in-place vault write | nothing (old value dies as consumers redeploy) | vault re-read; `verify_command` if set |
+| `manual` | MANUAL | never | prints the registry playbook, exit 3; `--complete` writes vault + fans out | operator retires the old credential in the UI after consumers verified | `verify_command` if set |
+| `postgres` | DUAL_KEY | always | central dual-principal rotator: candidate login → PUT/deploy/probe → promotion (predecessor stays valid) | rotator resume path: drain → inventory → retire | deploy proofs + health `{status:"ok", databaseRoleSafe:true}` |
+| `resend` | DUAL_KEY | `config.key_name` | predecessors = keys named exactly `<key_name> <ts>`; create; vault-replace | deletes the recorded ids with the NEW key; 404 fine | `verify_command` / `config.canary` send / vault re-read |
+| `openai` | DUAL_KEY | `config.admin_key_ref` + `config.project_id` | Admin API service account `<sa_prefix>-<ts>`; predecessors across all pages | deletes recorded service accounts; dashboard-minted originals by hand | `verify_command` / `GET /v1/models` |
+| `aws_iam` | DUAL_KEY | `config.iam_user` + `config.secret_ref` + (`profile` or admin refs) | id+secret PAIR written in one locked write; exactly one extra key on the user → reconcile (vault pair must pass STS) instead of refusing | Inactive→delete the recorded key id; failure = exit 6, `--finalize` retries | `verify_command` (gets `ROTATE_NEW_VALUE` + `ROTATE_NEW_SECRET_VALUE`) / STS |
+
+xAI keys are `provider: manual` entries with a console playbook (no
+key-management API is confirmed).
 
 ## sync-secrets (per-repo push)
 
@@ -82,9 +95,10 @@ sync-secrets --repo /Users/simon/dev/amaru-web --dry-run
   `secrets.yaml`). The rotation fan-out then sweeps that project too; without it
   only the owning project is swept and the other project's destinations keep the
   retired value. `--dry-run` prints the extra legs and cross-project consumers.
-- Default sweep = `github` + `render`. **Prefect is explicit only**
-  (`--channel prefect`; prod tier prompts for confirmation) and is excluded
-  from `--changed` fan-out.
+- Default sweep = `github` + `render` + `hermes` + `prefect` (both tiers; the
+  prod prefect tier prompts for confirmation unless `SECRETS_ASSUME_YES=1`,
+  which rotate-secret/rotate-project export); `--channel` restricts to one
+  (`--channel prefect --dest staging|prod` for a single tier).
 - `--changed` matches REF by exact equality, or by `op://Vault/Item/` prefix
   when given without a field — never bare substring.
 - Idempotent, upsert-only, never deletes. `--dry-run` reads nothing, writes

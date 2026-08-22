@@ -41,7 +41,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
 OP_BIN="${OP_BIN:-$HERE/op}"
+# shellcheck source=../secrets/lib/read.sh
+source "$HERE/../secrets/lib/read.sh"
 RENDER_CLI="${RENDER_CLI:-$HERE/render-cli}"
+# shellcheck source=../secrets/lib/db-url.sh
+source "${SECRETS_LIB:-$HERE/../secrets/lib}/db-url.sh"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: missing dependency: $1" >&2; exit 2; }; }
 
@@ -74,10 +78,8 @@ guard_agent_shell() {
 # SA token for non-sensitive op reads (optional; human account used for all vault writes).
 sa_token_for_keychain() {
   local item="$1"
-  security find-generic-password -s "$item" -a simon -w 2>/dev/null || true
+  security find-generic-password -s "$item" -a "$(sa_token_account)" -w 2>/dev/null || true
 }
-
-urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
 
 parse_url() {
   local url="$1"
@@ -89,22 +91,8 @@ parse_url() {
   U_PORT="${BASH_REMATCH[8]:-5432}" U_DB="${BASH_REMATCH[9]}" U_QUERY="${BASH_REMATCH[11]:-}"
 }
 
-run_psql_url() {
-  local url="$1"; shift
-  local U_USER U_PASS U_HOST U_PORT U_DB U_QUERY
-  parse_url "$url" || return $?
-  local sslmode="" options=""
-  [[ "$U_QUERY" =~ (^|\&)sslmode=([^&]+) ]] && sslmode="${BASH_REMATCH[2]}" || :
-  [[ "$U_QUERY" =~ (^|\&)options=([^&]+) ]] && options="$(urldecode "${BASH_REMATCH[2]}")" || :
-  (
-    export PGHOST="$U_HOST" PGPORT="$U_PORT" PGDATABASE="$U_DB" PGCONNECT_TIMEOUT=15
-    if [[ -n "$U_USER" ]]; then export PGUSER="$(urldecode "$U_USER")"; fi
-    if [[ -n "$U_PASS" ]]; then export PGPASSWORD="$(urldecode "$U_PASS")"; fi
-    if [[ -n "$sslmode" ]]; then export PGSSLMODE="$sslmode"; fi
-    if [[ -n "$options" ]]; then export PGOPTIONS="$options"; fi
-    exec psql -X "$@"
-  )
-}
+# TLS + lock/statement timeouts come from db_run_psql_url (secrets/lib/db-url.sh).
+run_psql_url() { db_run_psql_url "$@"; }
 
 compose_url() {
   local owner_url="$1" user="$2" pass="$3"
@@ -345,10 +333,32 @@ render_conninfo_urls() {
   [[ -n "$EXT_URL" && "$EXT_URL" != null && -n "$INT_URL" && "$INT_URL" != null ]] || return 3
 }
 
+# A capability that postgres-rotate has versioned is NOLOGIN with
+# <role>_login_* logins beneath it. Re-enabling LOGIN on it with a fresh
+# password would put a credential into the vault that no live consumer holds
+# and that the next rotation cannot account for. Refuse; rotate-secret owns it.
+sql_refuse_rotated_capability() { # admin_url role
+  local admin_url="$1" role="$2" rotated
+  rotated="$(ROLE_NAME="$role" run_psql_url "$admin_url" -q -t -A -v ON_ERROR_STOP=1 <<'SQL'
+\set role_name `printf %s "$ROLE_NAME"`
+SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role_name' AND NOT rolcanlogin)
+             AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname LIKE :'role_name' || '\_login\_%')
+       THEN 'rotated' ELSE 'plain' END
+SQL
+)" || return 3
+  [[ "$(printf '%s' "$rotated" | tr -d '[:space:]')" != "rotated" ]] || {
+    echo "ERROR: $role is a rotated capability (NOLOGIN with ${role}_login_* versions); refusing to re-enable LOGIN on it." >&2
+    echo "       Rotate it with: rotate-secret --ref <its op:// ref> --reason ..." >&2
+    return 3
+  }
+}
+
 sql_provision_roles() {
   # stdin not used; runs as owner_url. Creates/rotates APP_ROLE and RO_ROLE.
   local owner_url="$1" database="$2"
   local app_pw ro_pw
+  sql_refuse_rotated_capability "$owner_url" "$APP_ROLE" || return $?
+  sql_refuse_rotated_capability "$owner_url" "$RO_ROLE" || return $?
   app_pw="$(openssl rand -hex 24)"
   ro_pw="$(openssl rand -hex 24)"
   APP_PW="$app_pw" RO_PW="$ro_pw" APP_ROLE="$APP_ROLE" RO_ROLE="$RO_ROLE" \
@@ -448,6 +458,7 @@ compose_url_db() { # base_url user pass db -> URL on another database, same host
 
 sql_provision_app_login() { # admin_url role pw — CREATE/ALTER the LOGIN role
   local admin_url="$1" role="$2" pw="$3"
+  sql_refuse_rotated_capability "$admin_url" "$role" || return $?
   ROLE_NAME="$role" ROLE_PW="$pw" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
 \set role_name `printf %s "$ROLE_NAME"`
 \set role_pw `printf %s "$ROLE_PW"`
@@ -490,7 +501,7 @@ SQL
 #                    impossible (no ADMIN OPTION).
 #   dedicated      — the migrator itself. Render Postgres has no superuser,
 #                    so GRANT table_owner is not a provision primitive;
-#                    consumer-DB objects are REASSIGNed.
+#                    consumer-DB relations are transferred per relation.
 sql_grant_migrator_on_db() { # admin_url_for_db role — CONNECT + CREATE only
   local admin_url="$1" role="$2"
   ROLE_NAME="$role" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
@@ -543,19 +554,47 @@ SELECT pg_has_role(:'role_name', 'USAGE')
 SQL
 }
 
-# REASSIGN requires privileges of BOTH roles. inherit=f ADMIN membership
-# (the PG 16 creator record) is not enough. Caller must flip INHERIT on
-# first, then connect as from_role.
-sql_reassign_owned_on_db() { # admin_url_as_from from_role to_role
-  local admin_url="$1" from_role="$2" to_role="$3"
+sql_database_owner() { # admin_url -> datdba role name of the session database
+  run_psql_url "$1" -q -t -A -v ON_ERROR_STOP=1 -c 'SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database()' \
+    | tr -d '[:space:]'
+}
+
+# Ownership transfer scoped to the SESSION DATABASE: tables, partitioned tables,
+# sequences, views, materialized views, foreign tables and composite/enum/
+# domain types owned by from_role move to to_role, one ALTER ... OWNER TO each.
+# Never REASSIGN OWNED: that also moves the database itself, schemas, functions
+# and objects in other databases the admin happens to own. Requires privileges
+# of BOTH roles (inherit=f ADMIN membership is not enough — caller flips
+# INHERIT first) and verifies pg_database.datdba is unchanged afterwards.
+sql_transfer_owned_relations_on_db() { # admin_url_as_from from_role to_role
+  local admin_url="$1" from_role="$2" to_role="$3" datdba_before datdba_after
   [[ "$from_role" != "$to_role" ]] || return 0
-  FROM_ROLE="$from_role" TO_ROLE="$to_role" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
+  datdba_before="$(sql_database_owner "$admin_url")" || return 3
+  FROM_ROLE="$from_role" TO_ROLE="$to_role" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL' || return 3
 \set from_role `printf %s "$FROM_ROLE"`
 \set to_role `printf %s "$TO_ROLE"`
-SELECT format('REASSIGN OWNED BY %I TO %I', :'from_role', :'to_role')
-WHERE to_regrole(:'from_role') IS NOT NULL
-  AND to_regrole(:'to_role') IS NOT NULL \gexec
+SELECT format('ALTER %s %I.%I OWNER TO %I',
+              CASE c.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
+                             WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END,
+              n.nspname, c.relname, :'to_role')
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p','S','v','m','f')
+  AND c.relowner = to_regrole(:'from_role')
+  AND to_regrole(:'to_role') IS NOT NULL
+ORDER BY c.relkind, n.nspname, c.relname \gexec
+SELECT format('ALTER TYPE %I.%I OWNER TO %I', n.nspname, t.typname, :'to_role')
+FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+WHERE t.typowner = to_regrole(:'from_role')
+  AND to_regrole(:'to_role') IS NOT NULL
+  AND t.typtype IN ('c','e','d','r')
+  AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.reltype = t.oid)
+  AND n.nspname NOT IN ('pg_catalog','information_schema') \gexec
 SQL
+  datdba_after="$(sql_database_owner "$admin_url")" || return 3
+  [[ "$datdba_before" == "$datdba_after" ]] || {
+    echo "ERROR: database owner changed during ownership transfer ($datdba_before -> $datdba_after); investigate before continuing." >&2
+    return 3
+  }
 }
 
 is_owner_principal() { # username expected_owner_cred
@@ -714,7 +753,7 @@ provision_app_tier() {
     [[ "$do_migrator" -eq 1 ]] && {
       echo "  would create/rotate LOGIN $migrator_role (preferred SET ROLE $mig_set_role on: ${dbs[*]})"
       echo "  would upsert op://$app_vault/$app_item/${app_field}_migrator"
-      echo "  would REASSIGN OWNED BY $own_table_owner TO $mig_set_role on: ${dbs[*]}"
+      echo "  would transfer ownership of $own_table_owner relations to $mig_set_role on: ${dbs[*]} (per relation; database owner unchanged)"
     }
     return 0
   fi
@@ -747,20 +786,20 @@ provision_app_tier() {
     echo "  admin session verified (current_user=$own_table_owner, login=$admin_user)"
   fi
 
-  local effective_mig_set_role="$mig_set_role" need_reassign=1
+  local effective_mig_set_role="$mig_set_role"
 
   grant_migrator_set_role() { # grant_url db_name
     local grant_url="$1"
     sql_grant_role_membership "$grant_url" "$effective_mig_set_role" "$migrator_role"
   }
 
-  reassign_with_temp_membership() { # admin_as_table_owner _plain_unused db
-    local as_owner_url="$1" db_name="$3"
+  transfer_with_temp_membership() { # admin_as_table_owner db
+    local as_owner_url="$1" db_name="$2"
     local usage=""
-    echo "  REASSIGN OWNED BY $own_table_owner TO $effective_mig_set_role on $db_name"
+    echo "  transfer ownership of $own_table_owner relations to $effective_mig_set_role on $db_name"
     # from_role (render/ts_user/amaru_db_user) already has inherit=f ADMIN on
-    # the target. Flip INHERIT so REASSIGN as SET ROLE from_role is legal,
-    # then restore the creator-record flags.
+    # the target. Flip INHERIT so ALTER ... OWNER TO as SET ROLE from_role is
+    # legal, then restore the creator-record flags.
     sql_alter_membership_options "$as_owner_url" "$effective_mig_set_role" \
       "$own_table_owner" TRUE TRUE
     usage="$(sql_has_role_usage "$as_owner_url" "$effective_mig_set_role" | tr -d '[:space:]')"
@@ -770,7 +809,7 @@ provision_app_tier() {
       echo "ERROR: after GRANT INHERIT, $own_table_owner still has no USAGE on $effective_mig_set_role" >&2
       return 3
     fi
-    if ! sql_reassign_owned_on_db "$as_owner_url" "$own_table_owner" "$effective_mig_set_role"; then
+    if ! sql_transfer_owned_relations_on_db "$as_owner_url" "$own_table_owner" "$effective_mig_set_role"; then
       sql_alter_membership_options "$as_owner_url" "$effective_mig_set_role" \
         "$own_table_owner" FALSE FALSE || true
       return 3
@@ -792,16 +831,13 @@ provision_app_tier() {
       case "$kind" in
         ro) sql_grant_ro_on_db "$db_admin_url" "$role" ;;
         migrator)
-          local mig_grant_url="$db_admin_url" mig_plain_url
-          mig_plain_url="$(compose_url_db "$EXT_URL" "$admin_user" "$admin_pass" "$d")"
+          local mig_grant_url="$db_admin_url"
           if [[ "$own_owner_kind" == "sql_role" ]]; then
             mig_grant_url="$(with_owner_options "$db_admin_url" "$own_table_owner")"
           fi
           sql_grant_migrator_on_db "$mig_grant_url" "$role"
           grant_migrator_set_role "$mig_grant_url" "$d"
-          if [[ "$need_reassign" -eq 1 ]]; then
-            reassign_with_temp_membership "$mig_grant_url" "$mig_plain_url" "$d"
-          fi
+          transfer_with_temp_membership "$mig_grant_url" "$d"
           ;;
         *) sql_grant_app_on_db "$db_admin_url" "$role" ;;
       esac
@@ -856,7 +892,7 @@ provision_app_tier() {
       return 3
     }
     echo "  verified $migrator_role (session runs as $effective_mig_set_role)"
-    if [[ "$need_reassign" -eq 1 ]]; then
+    {
       local def_app_role def_ro_role
       while IFS= read -r def_app_role; do
         [[ -n "$def_app_role" ]] || continue
@@ -881,7 +917,7 @@ provision_app_tier() {
         ] | map(select(. != "")) | unique | .[]
       ' "$CONFIG")
       echo "  default privileges as $mig_set_role for same-instance app/ro roles"
-    fi
+    }
     UPSERT_VALUE="$mig_url_stored" vault_upsert "$app_vault" "$app_item" "${app_field}_migrator"
   fi
   echo "  done $tier (app $APP)"

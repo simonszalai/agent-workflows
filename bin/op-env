@@ -12,6 +12,9 @@ if [[ $# -eq 0 ]]; then
 fi
 
 OP_BIN="${OP_BIN:-op}"
+_lib_dir="${BASH_SOURCE[0]%/*}"; [[ "$_lib_dir" == "${BASH_SOURCE[0]}" ]] && _lib_dir="."
+# shellcheck source=../secrets/lib/read.sh
+source "$(cd "$_lib_dir" && pwd)/../secrets/lib/read.sh"
 ENV_FILE="${ENV_FILE:-.env}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -205,10 +208,10 @@ if [[ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]]; then
       echo "config/project-tools.json, or split the file per project." >&2
       exit 5
     fi
-    token="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+    token="$(security find-generic-password -s "$keychain_item" -a "$(sa_token_account)" -w 2>/dev/null || true)"
     if [[ -z "$token" ]]; then
       echo "op-env: no service-account token for $ENV_FILE." >&2
-      echo "Store it with: security add-generic-password -U -s $keychain_item -a simon -w" >&2
+      echo "Store it with: security add-generic-password -U -s $keychain_item -a $(sa_token_account) -w" >&2
       exit 6
     fi
     export OP_SERVICE_ACCOUNT_TOKEN="$token"
