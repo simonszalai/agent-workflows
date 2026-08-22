@@ -29,6 +29,12 @@ class McpProxyConfigurationTest(unittest.TestCase):
         self.assertTrue((PROXIES / "mcp-proxy.mjs").is_file())
         self.assertTrue((PROXIES / "waf-encode.mjs").is_file())
 
+    def test_session_hook_documents_inline_auth_not_retired_client_proxy(self) -> None:
+        hook = (ROOT / "hooks/autodev-memory-session-start.sh").read_text()
+        self.assertIn("Authentication is resolved inline", hook)
+        self.assertNotIn("project-routed loopback proxy", hook)
+        self.assertNotIn("AUTODEV_MEMORY_API_TOKEN", hook)
+
 
 if __name__ == "__main__":
     unittest.main()
