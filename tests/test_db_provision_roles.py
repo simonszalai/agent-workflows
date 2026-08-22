@@ -133,19 +133,23 @@ for a in "$@"; do
   case "$a" in *pw-*) echo "LEAK: password on psql argv" >&2; exit 90 ;; esac
 done
 stdin=$(cat || true)
-printf 'PSQL user=%s db=%s options=%s args=%s\n' \
-  "${PGUSER:-}" "${PGDATABASE:-}" "${PGOPTIONS:-}" "$*" >> "$FAKE_LOG"
+printf 'PSQL user=%s db=%s options=%s sslmode=%s args=%s\n' \
+  "${PGUSER:-}" "${PGDATABASE:-}" "${PGOPTIONS:-}" "${PGSSLMODE:-}" "$*" >> "$FAKE_LOG"
 case "$*" in
   *_provision_ro_probe*) exit 1 ;;
   *"SELECT current_user"*)
     cu="${PGUSER:-}"
-    case "${PGOPTIONS:-}" in *role=*) cu="${PGOPTIONS##*role=}" ;; esac
+    case "${PGOPTIONS:-}" in *role=*) cu="${PGOPTIONS##*role=}"; cu="${cu%% *}" ;; esac
     printf '%s\n' "$cu"
     exit 0
     ;;
 esac
 case "$stdin" in
   *pg_has_role*) printf 't\n' ;;
+  *"THEN 'rotated' ELSE 'plain'"*) printf '%s\n' "${FAKE_PSQL_ROTATED:-plain}" ;;
+esac
+case "$*" in
+  *"pg_get_userbyid(datdba)"*) printf '%s\n' "${FAKE_PSQL_DATDBA:-render}" ;;
 esac
 exit 0
 """
@@ -257,13 +261,69 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = subprocess.run(["bash", "-n", BIN], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
-    def test_reassign_flips_inherit_and_does_not_skip_on_member(self) -> None:
+    def test_transfer_flips_inherit_and_does_not_skip_on_member(self) -> None:
         src = Path(BIN).read_text(encoding="utf-8")
         self.assertIn("sql_alter_membership_options", src)
         self.assertIn("WITH INHERIT %s, SET %s", src)
         self.assertNotIn("WITH INHERIT %s, SET %s, ADMIN %s", src)
         alter = src.split("sql_alter_membership_options()", 1)[1].split("sql_has_role_usage", 1)[0]
         self.assertNotIn("pg_has_role", alter)
+
+    def test_ownership_transfer_is_per_relation_with_datdba_guard(self) -> None:
+        """C4: REASSIGN OWNED also moves the database, schemas, functions and
+        objects in other databases the admin owns. Provisioning transfers the
+        table owner's relations of the session database one ALTER at a time
+        and proves pg_database.datdba did not move."""
+        src = Path(BIN).read_text(encoding="utf-8")
+        self.assertNotIn("REASSIGN OWNED BY %I", src)
+        body = src.split("sql_transfer_owned_relations_on_db()", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("ALTER %s %I.%I OWNER TO %I", body)
+        for kind in ("'SEQUENCE'", "'VIEW'", "'MATERIALIZED VIEW'", "'FOREIGN TABLE'", "'TABLE'"):
+            self.assertIn(kind, body)
+        self.assertIn("relkind IN ('r','p','S','v','m','f')", body)
+        self.assertIn("ALTER TYPE %I.%I OWNER TO %I", body)
+        self.assertIn("c.relowner = to_regrole(:'from_role')", body)
+        self.assertLess(body.index("datdba_before="), body.index("ALTER %s %I.%I OWNER TO"))
+        self.assertIn('[[ "$datdba_before" == "$datdba_after" ]]', body)
+        self.assertIn("pg_get_userbyid(datdba)", src)
+        # rotation never transfers ownership
+        rotator = (ROOT / "secrets" / "providers" / "postgres-rotate").read_text(encoding="utf-8")
+        self.assertNotIn("REASSIGN OWNED", rotator)
+        self.assertNotIn("OWNER TO", rotator)
+
+    def test_ownership_transfer_refuses_when_database_owner_moves(self) -> None:
+        # The guard compares datdba before/after; a fake whose answer flips
+        # between the two reads must abort the migrator provisioning.
+        fake = (self.sb.fakebin / "psql").read_text(encoding="utf-8").replace(
+            'printf \'%s\\n\' "${FAKE_PSQL_DATDBA:-render}"',
+            'n="$(cat "$FAKE_LOG.datdba" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$FAKE_LOG.datdba"; printf \'owner%s\\n\' "$n"',
+        )
+        (self.sb.fakebin / "psql").write_text(fake, encoding="utf-8")
+        proc = self.provision("--project", "shared", "--app", "memsvc", "prod", "--reason", "t")
+        self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
+        self.assertIn("database owner changed during ownership transfer", proc.stderr)
+
+    def test_provision_refuses_to_re_login_a_rotated_capability(self) -> None:
+        # L4: a rotated capability is NOLOGIN with <role>_login_* versions;
+        # re-enabling LOGIN with a fresh password would leave a credential no
+        # consumer holds and the rotator cannot account for.
+        proc = self.provision("--project", "alpha", "--app", "web", "prod", "--reason", "t",
+                              env=self.env(FAKE_PSQL_ROTATED="rotated"))
+        self.assertEqual(proc.returncode, 3, proc.stderr + proc.stdout)
+        self.assertIn("rotated capability", proc.stderr)
+        self.assertIn("rotate-secret", proc.stderr)
+        log = "\n".join(self.sb.log_lines())
+        self.assertNotIn("OP item", log)
+        # no CREATE/ALTER ROLE batch reached psql (the refusal query is the only stdin batch)
+        self.assertNotIn("user=web_app", log)
+
+    def test_psql_sessions_require_tls_and_carry_timeouts(self) -> None:
+        proc = self.provision("--project", "alpha", "--app", "web", "prod", "--reason", "t")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        log = "\n".join(self.sb.log_lines())
+        self.assertIn("lock_timeout=", log)
+        self.assertIn("statement_timeout=", log)
+        self.assertIn("sslmode=require", log)
 
     def test_list_shows_apps_per_project(self) -> None:
         proc = self.provision("--list")
@@ -358,7 +418,7 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         # GRANT render is impossible (no ADMIN OPTION). Grants span every db.
         self.assertIn("USER=MEMSVC_MIGRATOR DB=MEM_SHARED OPTIONS=-C ROLE=SHARED_OWNER", log.upper())
         self.assertIn("DB=MEM_EXTRA", log.upper())
-        self.assertIn("REASSIGN OWNED BY render TO shared_owner", proc.stdout)
+        self.assertIn("transfer ownership of render relations to shared_owner", proc.stdout)
         url = self.stored("SHAREDV-sensitive", "Postgres prod", "memsvc_migrator")
         self.assertIn("memsvc_migrator", url)
         self.assertIn("options=-c%20role%3Dshared_owner", url)
@@ -373,7 +433,7 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("memsvc_migrator", proc.stdout)
         self.assertIn("preferred SET ROLE shared_owner", proc.stdout)
-        self.assertIn("REASSIGN OWNED BY render TO shared_owner", proc.stdout)
+        self.assertIn("transfer ownership of render relations to shared_owner", proc.stdout)
         self.assertIn("op://SHAREDV-sensitive/Postgres prod/memsvc_migrator", proc.stdout)
         self.assertEqual(self.sb.log_lines(), [])
 
@@ -389,7 +449,7 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         proc = self.provision("--project", "alpha", "--app", "migweb", "prod", "--dry-run")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("preferred SET ROLE migweb_migrator", proc.stdout)
-        self.assertIn("REASSIGN OWNED BY alpha_user TO migweb_migrator", proc.stdout)
+        self.assertIn("transfer ownership of alpha_user relations to migweb_migrator", proc.stdout)
         self.assertNotIn("instance ROOT", proc.stdout)
 
     def test_cross_instance_app_provisions_on_owning_box_into_consumer_vault(self) -> None:

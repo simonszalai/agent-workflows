@@ -6,6 +6,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_CONTEXT="$HERE/project-context"
 OP_WRAPPER="$HERE/op"
+# shellcheck source=../secrets/lib/read.sh
+source "$HERE/../secrets/lib/read.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -221,7 +223,7 @@ else
   # indirection is safe. eval keeps macOS bash 3.2 happy; ${!name:-} does not work there.
   eval "sa_token=\${$token_env:-}"
   if [[ -z "$sa_token" && -n "$keychain_item" && "$(uname -s)" == "Darwin" ]]; then
-    sa_token="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+    sa_token="$(security find-generic-password -s "$keychain_item" -a "$(sa_token_account)" -w 2>/dev/null || true)"
   fi
   [[ -n "$sa_token" ]] || fail \
     "no 1Password service-account token for project '$project': set $token_env${keychain_item:+ or store it in the Mac Keychain as $keychain_item}" 3

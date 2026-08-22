@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# with-dev-env — thin launcher over bin/dev-env for local commands (package.json
+# scripts, Conductor run commands). Resolves the repo's dev profile from the
+# project config and runs the command with that env in the child process only:
+# nothing is written to disk, nothing is echoed, argv and exit status pass
+# through. Port of workflow_pro/scripts/secrets/with-dev-env.
+#
+#   with-dev-env [--repo <path>] [--profile <name>] [--no-sensitive] [--refresh] <command...>
+#   e.g. with-dev-env bun run dev:raw
+#
+# Profile: --profile, else $WITH_DEV_ENV_PROFILE, else the project's single dev
+# profile (more than one -> exit 2, name it). Agent shells cannot perform the
+# Touch ID leg: without explicit flags they get --no-sensitive so local checks
+# keep working; a command that needs a sensitive value fails closed itself.
+case "$-" in *x*) set +x ;; esac
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
+# shellcheck source=../secrets/lib/config.sh
+source "$SECRETS_LIB/config.sh"
+
+usage() {
+  echo "usage: with-dev-env [--repo <path>] [--profile <name>] [--no-sensitive] [--refresh] <command...>" >&2
+  exit 2
+}
+
+repo="" profile="${WITH_DEV_ENV_PROFILE:-}" explicit=0
+flags=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) repo="${2:?}"; shift 2 ;;
+    --repo=*) repo="${1#*=}"; shift ;;
+    --profile) profile="${2:?}"; shift 2 ;;
+    --profile=*) profile="${1#*=}"; shift ;;
+    --no-sensitive|--refresh) flags+=("$1"); explicit=1; shift ;;
+    --) shift; break ;;
+    -h|--help) usage ;;
+    -*) echo "ERROR: unknown flag $1" >&2; usage ;;
+    *) break ;;
+  esac
+done
+[[ $# -gt 0 ]] || usage
+
+if [[ -z "$repo" ]]; then
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "ERROR: not inside a git repo; pass --repo <path>" >&2; exit 2; }
+fi
+repo="$(cd "$repo" 2>/dev/null && pwd)" || { echo "ERROR: repo path does not exist" >&2; exit 2; }
+export _SECRETS_CONFIG="$repo"
+
+if [[ -z "$profile" ]]; then
+  profiles="$(config_dests dev)" || exit $?
+  case "$(printf '%s\n' "$profiles" | grep -c .)" in
+    0) echo "ERROR: the project config has no dev profiles" >&2; exit 2 ;;
+    1) profile="$profiles" ;;
+    *) echo "ERROR: several dev profiles ($(printf '%s' "$profiles" | tr '\n' ' ')) — pass --profile <name>" >&2; exit 2 ;;
+  esac
+fi
+
+if [[ "$explicit" -eq 0 ]] \
+   && [[ -n "${CODEX_THREAD_ID:-}${CODEX_CI:-}${CODEX_WORKING_DIR:-}${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}" ]]; then
+  flags+=(--no-sensitive)
+fi
+exec "$HERE/dev-env" --repo "$repo" "$profile" ${flags[@]+"${flags[@]}"} -- "$@"

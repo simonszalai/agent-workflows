@@ -26,6 +26,8 @@ METHOD="$1"; APIPATH="$2"; shift 2
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_CONTEXT="$HERE/project-context"
+# shellcheck source=../secrets/lib/read.sh
+source "$HERE/../secrets/lib/read.sh"
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required" >&2; exit 3; }
 [ -x "$PROJECT_CONTEXT" ] || { echo "ERROR: missing project resolver: $PROJECT_CONTEXT" >&2; exit 3; }
 
@@ -40,7 +42,7 @@ client_secret_ref="$(jq -er '.tools.tailscale.oauth_client_secret_ref' <<<"$cont
 # indirection is safe. eval keeps macOS bash 3.2 happy; ${!name:-} does not work there.
 eval "tok=\${$token_env:-}"
 if [ -z "$tok" ] && [ -n "$keychain_item" ] && [ "$(uname -s)" = "Darwin" ]; then
-  tok="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null || true)"
+  tok="$(security find-generic-password -s "$keychain_item" -a "$(sa_token_account)" -w 2>/dev/null || true)"
 fi
 [ -n "$tok" ] || {
   echo "ERROR: no 1Password service-account token for project '$project': set $token_env${keychain_item:+ or store it in the Mac Keychain as $keychain_item}." >&2

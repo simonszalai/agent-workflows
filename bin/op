@@ -43,6 +43,8 @@ LOG="$LOG_DIR/op-audit.log"
 script_dir="${BASH_SOURCE[0]%/*}"
 [[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
 HERE="$(cd "$script_dir" && pwd)"
+# shellcheck source=../secrets/lib/read.sh
+source "$HERE/../secrets/lib/read.sh"
 
 resolve_real_op() {
   local path_entry=""
@@ -640,14 +642,14 @@ else
       echo "OP_SERVICE_ACCOUNT_TOKEN / --account for a deliberate non-registry read." >&2
       exit 5
     fi
-    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s "$keychain_item" -a simon -w 2>/dev/null)"
+    OP_SERVICE_ACCOUNT_TOKEN="$(security find-generic-password -s "$keychain_item" -a "$(sa_token_account)" -w 2>/dev/null)"
     if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
       printf '%s pid=%s parent=%s<-%s status=BLOCKED missing-service-account-token vault=%s item=%s\n' \
         "$(date '+%F %T')" "$$" "$parent" "$gparent" \
         "$(printf '%s' "$requested_vault" | tr '\r\n\t' '   ' | cut -c1-220)" \
         "$keychain_item" >> "$LOG" 2>/dev/null
       echo "ERROR: no service-account token for vault '$requested_vault'." >&2
-      echo "Store it with: security add-generic-password -U -s $keychain_item -a simon -w" >&2
+      echo "Store it with: security add-generic-password -U -s $keychain_item -a $(sa_token_account) -w" >&2
       exit 6
     fi
     export OP_SERVICE_ACCOUNT_TOKEN

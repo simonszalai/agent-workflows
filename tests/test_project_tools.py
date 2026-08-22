@@ -199,6 +199,10 @@ class ProjectToolsTest(unittest.TestCase):
         self.op_token_log = self.root / "op-token.log"
         self.tool_bin = self.root / "bin"
         self.tool_bin.mkdir()
+        # the wrappers source the engine's read.sh (sa_token_account)
+        lib_dir = self.root / "secrets" / "lib"
+        lib_dir.mkdir(parents=True)
+        shutil.copy2(ROOT / "secrets" / "lib" / "read.sh", lib_dir / "read.sh")
         self.wrapper = self.tool_bin / "render-cli"
         shutil.copy2(RENDER_CLI, self.wrapper)
         self.resend_wrapper = self.tool_bin / "resend-cli"

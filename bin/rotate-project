@@ -1,51 +1,60 @@
 #!/usr/bin/env bash
 # rotate-project — one-command full rotation sweep for a project.
 #
-# Runs every rotation entry of the project secrets.yaml through
-# rotate-secret in a safe order, verifying consumer health after each entry:
+# Runs every rotation entry of the project secrets.yaml through rotate-secret
+# (two-stage: rotate → fan-out → deploys live + health → finalize) in a safe
+# order:
 #
-#   1. staging postgres              dest+lock waves; first entry --keep-old (canary)
-#   2. SELF_MINTED + provider        parallel saves (same 1Password item sequential);
-#                                    then one deploy per touched service, live-wait
-#                                    in parallel. Provider entries without a mint
-#                                    handler SYNC the current vault value.
-#   3. prod postgres                 dest+lock waves (same Render dest or instance
-#                                    advisory lock stay sequential)
+#   1   staging postgres    dest+lock+item-disjoint waves; each entry is rotated,
+#                           health-gated, then finalized — except the CANARY (the
+#                           first staging postgres entry), whose predecessor stays
+#                           valid until the very end of the sweep (rollback window)
+#   2a  staging non-postgres  parallel save-only rotations (same 1Password item
+#   2b  prod non-postgres     sequential); then ONE deploy per touched service,
+#                           deploys live, health, then finalize per entry
+#   3   prod postgres       waves, as phase 1 (no canary)
 #
-# Stops on the first failure. Rerunning the SAME command resumes the unfinished
-# sweep: completed entries are not reminted, batched dests whose values were
-# already saved are redeployed, postgres --resume still applies. A finished
-# sweep deletes the checkpoint so the next invocation is a new rotation.
-# --fresh discards the checkpoint and starts over. Values never reach stdout
-# or argv.
+# Stops on the first rotation failure. Rerunning the SAME command resumes the
+# unfinished sweep from its checkpoint: completed entries are not reminted,
+# deferred deploys are retriggered, pending finalizes are retried. A finished
+# sweep deletes the checkpoint. --fresh discards a checkpoint (refused while it
+# still holds deferred deploys/finalizes). Values never reach stdout or argv.
 #
 # Two entry actions:
-#   ROTATE — postgres and self-minted entries mint/stage a NEW credential
-#            automatically (nothing to do by hand).
-#   SYNC   — provider-minted entries (AWS, Resend, ...) push whatever value the
-#            1Password item currently holds to every consumer. To rotate one,
-#            update the item in 1Password first, then run the sweep (or filter
-#            to just that entry with --only).
-# Every run covers all selected entries; --only/--skip/--tier narrow the run.
+#   ROTATE — the provider mints/stages a NEW credential automatically
+#            (postgres, self-minted, configured resend/openai/aws_iam, hook: full).
+#   SYNC   — manual / unconfigured providers: push whatever value the 1Password
+#            item currently holds to every consumer. To rotate one, update the
+#            item in 1Password first, then run the sweep (or --only that entry).
 #
 # usage:
 #   rotate-project <amaru|ts|workflow-pro|autodev> --reason "<why>"
 #                  [--dry-run] [--tier staging|prod|all]
 #                  [--skip id[,id...]] [--only id[,id...]] [--fresh]
 #
-# exit codes: 0 all entries rotated+verified, 1 a rotation or health check
-#   failed (state printed), 2 usage/config, 3 agent-shell refusal.
+# exit codes: 0 all entries rotated+verified, 1 a rotation, deploy, health check
+#   or finalize failed (state printed; rerun resumes), 2 usage/config/checkpoint
+#   refusal, 3 agent-shell refusal.
 case "$-" in *x*) set +x ;; esac
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SECRETS_LIB="${SECRETS_LIB:-$HERE/../secrets/lib}"
+PROVIDERS_DIR="${SECRETS_PROVIDERS_DIR:-$HERE/../secrets/providers}"
 ROTATE="${ROTATE_SECRET:-$HERE/rotate-secret}"
+SYNC="${SYNC_SECRETS:-$HERE/sync-secrets}"
+PG_ROTATOR="${POSTGRES_ROTATE_BIN:-$HERE/../secrets/providers/postgres-rotate}"
 
 # shellcheck source=../secrets/lib/config.sh
 source "$SECRETS_LIB/config.sh"
+# shellcheck source=../secrets/lib/read.sh
+source "$SECRETS_LIB/read.sh"
+# shellcheck source=../secrets/lib/render-api.sh
+source "$SECRETS_LIB/render-api.sh"
+# shellcheck source=../secrets/lib/deploy-wait.sh
+source "$SECRETS_LIB/deploy-wait.sh"
 
-usage() { sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 repo="" project="" reason="" dry=0 tier="all" skip="" only="" fresh=0
 while [[ $# -gt 0 ]]; do
@@ -69,16 +78,11 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$project" ]] || usage
 [[ -n "$reason" || "$dry" -eq 1 ]] || { echo "ERROR: --reason is required for a live sweep." >&2; exit 2; }
-# Child rotate-secret / sync-secrets processes each export their own reason, but
-# this orchestrator ALSO resolves sensitive refs directly — the Render API key
-# for deploy finalization lives in <PROJECT>-sensitive. Without the reason in the
-# environment, the shim refuses (exit 3) after every value has already been
-# saved, so the sweep dies with the deploys untriggered.
+# This orchestrator resolves sensitive refs itself (the Render API key for
+# deploys lives in <PROJECT>-sensitive); the shim needs the reason in the env.
 [[ -n "$reason" ]] && export SENSITIVE_ACCESS_REASON="$reason"
 case "$tier" in staging|prod|all) ;; *) echo "ERROR: --tier must be staging|prod|all" >&2; exit 2 ;; esac
-command -v jq >/dev/null || { echo "ERROR: missing dependency: jq" >&2; exit 2; }
-# Project config discovery: run from any repo of the project (or --repo). The
-# synthesized registry derives every entry's consumers from the routes.
+need jq
 if [[ -z "$repo" ]]; then
   repo="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || { echo "ERROR: not inside a git repo; pass --repo <path>" >&2; exit 2; }
@@ -92,42 +96,70 @@ if [[ -n "$config_project" && "$project" != "$config_project" ]]; then
   echo "ERROR: project '$project' requested but $repo belongs to project '$config_project'" >&2
   exit 2
 fi
+[[ "$dry" -eq 1 ]] || guard_agent_shell || exit 3
 
-# Entry selection + phase classification. Staging-ness comes from the ref's
-# item name (environment is encoded in item titles across every vault).
+# --- output helpers ----------------------------------------------------------
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_RUN=$'\033[36m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
+else
+  C_OK=""; C_ERR=""; C_RUN=""; C_DIM=""; C_BOLD=""; C_OFF=""
+fi
+fmt_dur() { local t="$1"; if [[ "$t" -ge 60 ]]; then printf '%dm%02ds' $((t/60)) $((t%60)); else printf '%ds' "$t"; fi; }
+phase_label() { case "$1" in 1) printf 'phase 1' ;; 2) printf 'phase 2a' ;; 3) printf 'phase 2b' ;; 4) printf 'phase 3' ;; esac; }
+
+# --- plan: phase classification + auto (provider file exists && auto_ready) ---
+# Staging-ness comes from the ref's item name (environment is encoded in item
+# titles across every vault). Phases: 1 staging postgres, 2 staging non-postgres,
+# 3 prod non-postgres, 4 prod postgres.
 plan_json="$(jq -c --arg p "$project" '
   [.secrets[] | select(.project == $p)
-   | . + {staging: ((.ref // "") | test("staging"; "i")),
-          auto: (.provider == "postgres" or .mode == "SELF_MINTED" or (.automated // false)),
-          phase: (if .provider == "postgres" and ((.ref // "") | test("staging"; "i")) then 1
-                  elif .provider != "postgres" then 2
-                  else 3 end)}]
+   | ((.ref // "") | test("staging"; "i")) as $st
+   | . + {staging: $st,
+          phase: (if .provider == "postgres" then (if $st then 1 else 4 end)
+                  else (if $st then 2 else 3 end) end)}]
   | sort_by(.phase)' "$REGISTRY")"
 count="$(jq 'length' <<< "$plan_json")"
 [[ "$count" -gt 0 ]] || { echo "ERROR: no registry entries for project '$project'." >&2; exit 2; }
 
-in_csv() { local needle="$1" csv="$2"; [[ ",$csv," == *",$needle,"* ]]; }
-
-health_gate() { # entry json -> verify every consumer dest registered in health_urls
-  local entry="$1" dest url body ok=1
-  while IFS= read -r dest; do
-    url="$(jq -r --arg d "$dest" '.health_urls[$d] // empty' "$REGISTRY")"
-    [[ -n "$url" && "$url" != "deploy-only" ]] || continue
-    if body="$(curl -sf --max-time 30 "$url")"; then
-      if jq -e 'has("databaseRoleSafe")' <<< "$body" >/dev/null 2>&1 \
-         && ! jq -e '.status == "ok" and .databaseRoleSafe == true' <<< "$body" >/dev/null; then
-        echo "  HEALTH FAIL $dest ($url): $body" >&2; ok=0
-      else
-        echo "  health ok: $dest"
-      fi
-    else
-      echo "  HEALTH FAIL $dest ($url): unreachable/non-200" >&2; ok=0
-    fi
-  done < <(jq -r '.consumers[]?.dest' <<< "$entry" | sort -u)
-  [[ "$ok" -eq 1 ]]
+entry_auto() { # entry json -> rc 0 when the provider can mint this entry automatically
+  local entry="$1" provider file
+  [[ "$(jq -r '.hook // ""' <<< "$entry")" == "full" ]] && return 0
+  provider="$(jq -r '.provider' <<< "$entry")"
+  file="$PROVIDERS_DIR/$provider.sh"
+  [[ -f "$file" ]] || return 1
+  (
+    export ROTATE_ENTRY_JSON="$entry"
+    ROTATE_ID="$(jq -r '.id' <<< "$entry")"; ROTATE_REF="$(jq -r '.ref' <<< "$entry")"
+    ROTATE_PROVIDER="$provider"; ROTATE_PROJECT="$project"
+    export ROTATE_ID ROTATE_REF ROTATE_PROVIDER ROTATE_PROJECT
+    # shellcheck disable=SC1090
+    source "$file" && provider_auto_ready
+  ) >/dev/null 2>&1
 }
+auto_ids='[]'
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] || continue
+  entry_auto "$entry" && auto_ids="$(jq -c --arg id "$(jq -r '.id' <<< "$entry")" '. + [$id]' <<< "$auto_ids")"
+done < <(jq -c '.[]' <<< "$plan_json")
+plan_json="$(jq -c --argjson auto "$auto_ids" '[.[] | . + {auto: (.id as $id | $auto | index($id) != null)}]' <<< "$plan_json")"
 
-# Filter the plan down to what this invocation actually runs.
+# --only/--skip must name real entries: a typo must never silently narrow a sweep.
+validate_ids() { # flag csv
+  local flag="$1" csv="$2" id unknown=()
+  [[ -n "$csv" ]] || return 0
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    jq -e --arg id "$id" 'any(.[]; .id == $id)' <<< "$plan_json" >/dev/null || unknown+=("$id")
+  done < <(tr ',' '\n' <<< "$csv")
+  [[ ${#unknown[@]} -eq 0 ]] || {
+    echo "ERROR: $flag names unknown rotation id(s): ${unknown[*]}" >&2
+    echo "Known ids: $(jq -r '[.[].id] | join(" ")' <<< "$plan_json")" >&2
+    exit 2
+  }
+}
+validate_ids --only "$only"
+validate_ids --skip "$skip"
+
 run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
   def incsv($csv): ($csv | split(",")) as $l | . as $x | ($l | index($x)) != null;
   [.[] | select(($only == "" or (.id | incsv($only)))
@@ -137,280 +169,96 @@ run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
          else true end))]' <<< "$plan_json")"
 run_count="$(jq 'length' <<< "$run_json")"
 skipped=$((count - run_count))
+[[ "$run_count" -gt 0 ]] || { echo "ERROR: the selection (tier=$tier only='$only' skip='$skip') matches no entries." >&2; exit 2; }
 
-# Sweep checkpoint: unfinished runs persist completed/minted entry ids and
-# batched dests so a rerun does not remint SELF_MINTED secrets or restart a
-# finished postgres rotation. Value-free (ids and service ids only).
-SWEEP_STATE_DIR="${ROTATE_PROJECT_STATE_DIR:-$HOME/.local/state/agent-workflows/rotate-project}"
-SWEEP_STATE="$SWEEP_STATE_DIR/${project}.state"
-COMPLETED_IDS=()
-MINTED_IDS=()
-PENDING_SIDS=()
-sweep_has_id() { local needle="$1" x; for x in "${COMPLETED_IDS[@]-}" "${MINTED_IDS[@]-}"; do [[ "$x" == "$needle" ]] && return 0; done; return 1; }
-sweep_ids_json() { # args -> JSON string array
-  if [[ $# -eq 0 ]]; then printf '[]\n'; return 0; fi
-  jq -n '$ARGS.positional' --args -- "$@"
-}
-sweep_state_save() {
-  local completed minted pending
-  mkdir -p "$SWEEP_STATE_DIR"
-  chmod 700 "$SWEEP_STATE_DIR" 2>/dev/null || true
-  if [[ ${#COMPLETED_IDS[@]} -gt 0 ]]; then completed="$(sweep_ids_json "${COMPLETED_IDS[@]}")"; else completed='[]'; fi
-  if [[ ${#MINTED_IDS[@]} -gt 0 ]]; then minted="$(sweep_ids_json "${MINTED_IDS[@]}")"; else minted='[]'; fi
-  if [[ ${#PENDING_SIDS[@]} -gt 0 ]]; then pending="$(sweep_ids_json "${PENDING_SIDS[@]}")"; else pending='[]'; fi
-  jq -n --arg p "$project" --arg t "$tier" --arg c "${CANARY_REF:-}" \
-    --argjson completed "$completed" --argjson minted "$minted" --argjson pendingDests "$pending" \
-    '{stateVersion:1, project:$p, tier:$t, canaryRef:$c, completed:$completed, minted:$minted, pendingDests:$pendingDests}' \
-    > "$SWEEP_STATE"
-  chmod 600 "$SWEEP_STATE"
-}
-sweep_state_load() {
-  local json
-  COMPLETED_IDS=(); MINTED_IDS=(); PENDING_SIDS=()
-  [[ -f "$SWEEP_STATE" ]] || return 0
-  json="$(cat "$SWEEP_STATE")" || return 1
-  printf '%s' "$json" | jq -e --arg p "$project" '.stateVersion == 1 and .project == $p' >/dev/null || {
-    echo "ERROR: sweep checkpoint $SWEEP_STATE is malformed or for another project." >&2
-    return 1
-  }
-  while IFS= read -r x; do [[ -n "$x" ]] && COMPLETED_IDS+=("$x"); done < <(jq -r '.completed[]?' <<<"$json")
-  while IFS= read -r x; do [[ -n "$x" ]] && MINTED_IDS+=("$x"); done < <(jq -r '.minted[]?' <<<"$json")
-  while IFS= read -r x; do [[ -n "$x" ]] && PENDING_SIDS+=("$x"); done < <(jq -r '.pendingDests[]?' <<<"$json")
-  CANARY_REF="$(jq -r '.canaryRef // empty' <<<"$json")"
-}
-sweep_state_clear() { rm -f "$SWEEP_STATE"; }
-sweep_mark_completed() { COMPLETED_IDS+=("$1"); sweep_state_save; }
-sweep_mark_minted() { MINTED_IDS+=("$1"); sweep_state_save; }
-sweep_capture_pending_dests() {
-  PENDING_SIDS=()
-  [[ -s "$logdir/pending-dests" ]] || { sweep_state_save; return 0; }
-  while IFS= read -r x; do [[ -n "$x" ]] && PENDING_SIDS+=("$x"); done < <(sort -u "$logdir/pending-dests")
-  sweep_state_save
-}
-sweep_promote_minted() {
-  local x
-  for x in "${MINTED_IDS[@]-}"; do [[ -n "$x" ]] && COMPLETED_IDS+=("$x"); done
-  MINTED_IDS=()
-  PENDING_SIDS=()
-  sweep_state_save
-}
-# --- output helpers (concise per-entry status; full logs only on failure) ----
-if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-  C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_RUN=$'\033[36m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
-else
-  C_OK=""; C_ERR=""; C_RUN=""; C_DIM=""; C_BOLD=""; C_OFF=""
-fi
-fmt_dur() { local t="$1"; if [[ "$t" -ge 60 ]]; then printf '%dm%02ds' $((t/60)) $((t%60)); else printf '%ds' "$t"; fi; }
-log_highlights() { # concise facts pulled from a full entry log
-  grep -E '^\s*(vault: updated|vault: created op|db: retired|drain: predecessor|render\[[^]]*\] deploy |minted new|health ok:)' "$1" \
-    | sed -E 's/^ */    /' | sort -u | head -6 || true
-}
-# A successful entry has two very different meanings, and rendering both as a
-# bare ✓ let "nothing was rotated" read as "rotated". ROTATE entries mint a new
-# credential; SYNC entries (manual/unconfigured providers) only push the value
-# the vault already holds, so the credential is unchanged and any actual
-# rotation is still owed to the operator.
-entry_ok() { # id, seconds, logf, kind(rotated|synced)
-  if [[ "${4:-rotated}" == "synced" ]]; then
-    echo "${C_OK}≡${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2")) — synced only, credential NOT rotated${C_OFF}"
-  else
-    echo "${C_OK}✓${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2"))${C_OFF}"
-  fi
-  log_highlights "$3"
-}
-entry_fail() { # id, rc, seconds, logf
-  echo "${C_ERR}✗ ${C_BOLD}$1${C_OFF}${C_ERR} failed (rc=$2, $(fmt_dur "$3"))${C_OFF}"
-  echo "${C_DIM}  ── last log lines ──${C_OFF}"
-  tail -12 "$4" | sed 's/^/  /'
-  echo "${C_DIM}  full log: $4${C_OFF}"
-}
-# entry_kind ENTRY_JSON -> rotated|synced. `auto` entries run a provider that
-# mints a new credential; the rest only fan the current vault value out.
-entry_kind() {
-  if [[ "$(jq -r '.auto' <<< "$1")" == "true" ]]; then printf 'rotated'; else printf 'synced'; fi
-}
-
-RESULT_IDS=(); RESULT_STATES=(); RESULT_TIMES=(); RESULT_KINDS=()
-record_result() { RESULT_IDS+=("$1"); RESULT_STATES+=("$2"); RESULT_TIMES+=("$3"); RESULT_KINDS+=("${4:-rotated}"); }
-
-summary_and_exit() { # exit code
-  local code="$1" i=0 state kind mark note total=$SECONDS
-  local rotated_n=0 synced_n=0
-  echo
-  echo "${C_BOLD}── rotate-project $project summary ──${C_OFF}"
-  for id in "${RESULT_IDS[@]-}"; do
-    [[ -n "$id" ]] || continue
-    state="${RESULT_STATES[$i]}"; kind="${RESULT_KINDS[$i]}"; note=""
-    if [[ "$state" != "ok" ]]; then
-      mark="${C_ERR}✗${C_OFF}"
-    elif [[ "$kind" == "synced" ]]; then
-      mark="${C_OK}≡${C_OFF}"
-      note="  ${C_DIM}synced only — credential NOT rotated${C_OFF}"
-      synced_n=$((synced_n + 1))
-    else
-      mark="${C_OK}✓${C_OFF}"
-      rotated_n=$((rotated_n + 1))
-    fi
-    printf '  %b %-45s %s%b\n' "$mark" "$id" "$(fmt_dur "${RESULT_TIMES[$i]}")" "$note"
-    i=$((i + 1))
-  done
-  if [[ "$code" -eq 0 ]]; then
-    sweep_state_clear
-    local synced_note=""
-    [[ "$synced_n" -gt 0 ]] && synced_note=", ${C_BOLD}$synced_n synced only${C_OFF}"
-    echo "  ${C_OK}${C_BOLD}$rotated_n rotated+verified${C_OFF}${synced_note} ${C_DIM}in $(fmt_dur "$total") ($skipped filtered out)${C_OFF}"
-    if [[ "$synced_n" -gt 0 ]]; then
-      echo "  ${C_DIM}synced entries pushed the value the vault already held; rotate them at their source (see each entry's playbook).${C_OFF}"
-    fi
-  else
-    sweep_state_save
-    echo "  ${C_ERR}${C_BOLD}stopped after a failure${C_OFF} ${C_DIM}— rerun the same command to resume (completed entries are not reminted)${C_OFF}"
-  fi
-  exit "$code"
-}
-
-# Stamp postgres entries with lockKey (admin project/tier of the physical box)
-# and renderDests so phase 1/3 can run disjoint groups in parallel. Missing
-# db-roles.json leaves lockKey=unknown → one postgres per wave (sequential).
+# Stamp postgres entries with lockKey (admin project/tier of the physical box,
+# from the rotator — the single source of that derivation) and renderDests, so
+# the postgres phases can run disjoint groups in parallel. Any failure is fatal:
+# a silently unknown lock would either serialize everything or race two
+# rotations on one instance.
 annotate_postgres_keys() {
-  local db_roles="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
-  [[ -f "$db_roles" ]] || return 0
-  run_json="$(printf '%s' "$run_json" | python3 -c '
-import json, sys
-roles = json.load(open(sys.argv[1]))
-entries = json.load(sys.stdin)
-
-def lock_key(entry):
-    if entry.get("provider") != "postgres":
-        return ""
-    ref = entry.get("ref") or ""
-    project = entry.get("project") or ""
-    parts = ref.split("/")
-    if len(parts) < 5 or not ref.startswith("op://"):
-        return "unknown"
-    title, field = parts[3], parts[4]
-    title_l = title.lower()
-    if "staging" in title_l:
-        tier = "staging"
-    elif title_l.startswith("postgres") or title.startswith("PROD_"):
-        tier = "prod"
-    else:
-        return "unknown"
-    proj = (roles.get("projects") or {}).get(project) or {}
-    base = field.lower()
-    for suffix in ("_migrator", "_ro"):
-        if base.endswith(suffix):
-            base = base[: -len(suffix)]
-            break
-    inst_p, inst_t = project, tier
-    for app in (proj.get("apps") or {}).values():
-        prefix = (app.get("item_prefix") or "").rstrip("_").lower()
-        if prefix == base:
-            inst = app.get("instance") or {}
-            inst_p = inst.get("project") or project
-            inst_t = (inst.get("tier_map") or {}).get(tier) or tier
-            break
-    box = ((roles.get("projects") or {}).get(inst_p) or {}).get("tiers", {}).get(inst_t) or {}
-    admin = (box.get("admin_via") or {}).get("project") or inst_p
-    return "%s/%s" % (admin, inst_t)
-
-def dests(entry):
-    out = []
-    for c in entry.get("consumers") or []:
-        d = str(c.get("dest") or "")
-        if d.startswith("srv-") or d.startswith("crn-"):
-            out.append(d)
-    return sorted(set(out))
-
-for e in entries:
-    e["lockKey"] = lock_key(e)
-    e["renderDests"] = dests(e)
-print(json.dumps(entries, separators=(",", ":")))
-' "$db_roles")" || return 1
+  local annotated='[]' entry id provider key dests
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    provider="$(jq -r '.provider' <<< "$entry")"
+    key=""
+    if [[ "$provider" == "postgres" ]]; then
+      id="$(jq -r '.id' <<< "$entry")"
+      [[ -x "$PG_ROTATOR" ]] || { echo "ERROR: postgres rotator not found: $PG_ROTATOR" >&2; return 1; }
+      key="$(ROTATE_ENTRY_JSON="$entry" ROTATE_ID="$id" ROTATE_REF="$(jq -r '.ref' <<< "$entry")" \
+             ROTATE_PROVIDER=postgres ROTATE_PROJECT="$project" "$PG_ROTATOR" --print-lock-key)" \
+        || { echo "ERROR: could not derive the instance lock key for $id (postgres-rotate --print-lock-key failed)" >&2; return 1; }
+      [[ -n "$key" ]] || { echo "ERROR: empty lock key for $id" >&2; return 1; }
+    fi
+    dests="$(jq -c '[.consumers[]?.dest | select(test("^(srv|crn)-"))] | unique' <<< "$entry")"
+    annotated="$(jq -c --argjson e "$entry" --arg k "$key" --argjson d "$dests" \
+      '. + [$e + {lockKey: $k, renderDests: $d}]' <<< "$annotated")"
+  done < <(jq -c '.[]' <<< "$run_json")
+  run_json="$annotated"
 }
+annotate_postgres_keys || exit 2
+ALL_JSON="$run_json"   # annotated, unfiltered: lookups for ids completed by earlier runs
 
-# One dest-disjoint + lock-disjoint wave. $.cdest is invalid jq — the reduce
-# accumulator is `.`, saved as $acc before the conflict predicate (which would
-# otherwise replace `.` with a boolean).
-split_postgres_wave() { # $1 = json array of annotated entries -> {now, later}
-  jq -c '
-    def dests: (.renderDests // []);
-    def lock: (.lockKey // "unknown");
-    . as $all
-    | reduce range(0; length) as $i ({cdest: [], clock: [], now: [], later: []};
-        . as $acc
-        | ($all[$i] | dests) as $d
-        | ($all[$i] | lock) as $k
-        | (
-            ($d | any(. as $x | $acc.cdest | index($x) != null))
-            or (($k != "unknown") and ($acc.clock | index($k) != null))
-            or (($k == "unknown") and (($acc.now | length) > 0))
-            or (($k != "unknown") and ($acc.now | any((.lockKey // "unknown") == "unknown")))
-          ) as $conflict
-        | if $conflict
-          then $acc | .later += [$all[$i]]
-          else $acc
-               | .now += [$all[$i]]
-               | .cdest += $d
-               | if $k != "unknown" then .clock += [$k] else . end
-          end)
-    | {now: .now, later: .later}' <<< "$1"
-}
-
-postgres_wave_labels() { # $1 = phase json -> {id: "wave i/n · parallel xN"}
-  local remaining="${1:-[]}" waves='[]' split
-  [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]] || { printf '{}\n'; return 0; }
+# --- waves ---------------------------------------------------------------------
+# Entries whose refs live in the SAME 1Password item never run concurrently
+# (each edit replaces the whole item; parallel writers race on the version).
+# Postgres entries additionally stay sequential when they share a Render dest
+# (overlapping exact deploys) or the instance advisory lock.
+compute_waves() { # $1 = json array of annotated entries, $2 = postgres(0|1) -> json array of waves
+  local remaining="$1" pg="$2" waves='[]' split
   while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
-    split="$(split_postgres_wave "$remaining")"
+    split="$(jq -c --argjson pg "$pg" '
+      def items: ([.ref] + (.sync_refs // [])) | map(select(startswith("op://")) | sub("^op://"; "") | sub("/[^/]*$"; ""));
+      . as $all
+      | reduce range(0; length) as $i ({citem: [], cdest: [], clock: [], now: [], later: []};
+          . as $acc
+          | ($all[$i] | items) as $mine
+          | ($all[$i] | .renderDests // []) as $d
+          | ($all[$i] | .lockKey // "") as $k
+          | (
+              ($mine | any(. as $x | $acc.citem | index($x) != null))
+              or ($pg == 1 and ($d | any(. as $x | $acc.cdest | index($x) != null)))
+              or ($pg == 1 and $k != "" and ($acc.clock | index($k) != null))
+            ) as $conflict
+          | if $conflict then $acc | .later += [$all[$i]]
+            else $acc | .now += [$all[$i]] | .citem += $mine | .cdest += $d
+                 | (if $k != "" then .clock += [$k] else . end)
+            end)
+      | {now: .now, later: .later}' <<< "$remaining")"
     waves="$(jq -c --argjson w "$(jq -c '.now' <<< "$split")" '. + [$w]' <<< "$waves")"
     remaining="$(jq -c '.later' <<< "$split")"
   done
-  jq -c '
+  printf '%s\n' "$waves"
+}
+# Waves are computed ONCE per phase; the dry-run prints exactly what a live
+# run executes.
+WAVES_1="$(compute_waves "$(jq -c '[.[] | select(.phase == 1)]' <<< "$run_json")" 1)"
+WAVES_2="$(compute_waves "$(jq -c '[.[] | select(.phase == 2)]' <<< "$run_json")" 0)"
+WAVES_3="$(compute_waves "$(jq -c '[.[] | select(.phase == 3)]' <<< "$run_json")" 0)"
+WAVES_4="$(compute_waves "$(jq -c '[.[] | select(.phase == 4)]' <<< "$run_json")" 1)"
+waves_for_phase() { case "$1" in 1) printf '%s' "$WAVES_1" ;; 2) printf '%s' "$WAVES_2" ;; 3) printf '%s' "$WAVES_3" ;; 4) printf '%s' "$WAVES_4" ;; esac; }
+wave_labels() { # phase -> {id: "phase X · wave i/n · parallel xN"}
+  jq -c --arg ph "$(phase_label "$1")" '
     . as $waves | ($waves | length) as $n
     | [range(0; $n) as $i
        | ($waves[$i] | length) as $bn
        | $waves[$i][]
        | {key: .id,
-          value: ("wave \($i+1)/\($n)" + (if $bn > 1 then " · parallel x\($bn)" else "" end))}]
-    | from_entries' <<< "$waves"
+          value: ($ph + " · wave \($i+1)/\($n)" + (if $bn > 1 then " · parallel x\($bn)" else "" end))}]
+    | from_entries' <<< "$(waves_for_phase "$1")"
 }
-
-annotate_postgres_keys || echo "${C_DIM}postgres lock annotation skipped${C_OFF}" >&2
+# The canary is the first entry of the first staging-postgres wave, fixed at
+# plan time (never reassigned; a resumed sweep keeps the checkpointed ref).
+PLAN_CANARY_REF="$(jq -r '.[0][0].ref // empty' <<< "$WAVES_1")"
 
 echo "${C_BOLD}rotate-project $project${C_OFF} — $run_count of $count entries ${C_DIM}(tier=$tier, $skipped filtered out)${C_OFF}"
 
 # --- dry-run: render the full plan (credential-free) and exit ----------------
-finalize_canary() {
-  # A --keep-old canary leaves one predecessor login valid as the sweep's
-  # rollback window. Once every entry succeeded there is nothing to roll back
-  # to, so retire it (idempotent: no state file -> immediate no-op).
-  [[ -n "${CANARY_REF:-}" ]] || return 0
-  echo "${C_RUN}⟳${C_OFF} finalizing canary ${C_DIM}(retiring the kept predecessor login)${C_OFF}"
-  local logf="$logdir/canary-finalize.log"; : > "$logf"
-  if "$ROTATE" --ref "$CANARY_REF" --reason "$reason [canary finalize]" --yes --resume >> "$logf" 2>&1; then
-    echo "${C_OK}✓${C_OFF} canary predecessor retired"
-  elif grep -q "no resumable .* rotation state" "$logf"; then
-    # A mid-sweep resume of the canary entry already ran the full retirement
-    # (resume does not re-apply --keep-old), so there is nothing left to
-    # finalize — that is completion, not failure.
-    echo "${C_OK}✓${C_OFF} canary already finalized ${C_DIM}(predecessor was retired during the sweep)${C_OFF}"
-  else
-    echo "${C_ERR}✗ canary finalize failed — predecessor login remains valid (safe).${C_OFF}"
-    tail -8 "$logf" | sed 's/^/  /'
-    return 1
-  fi
-}
-
 if [[ "$dry" -eq 1 ]]; then
-  _w1="$(postgres_wave_labels "$(jq -c '[.[] | select(.phase == 1)]' <<< "$run_json")")"
-  _w3="$(postgres_wave_labels "$(jq -c '[.[] | select(.phase == 3)]' <<< "$run_json")")"
-  # `${var:-{}}` is parsed as default `{` plus a leftover `}` — never use
-  # braces inside a `${var:-...}` default.
-  [[ -n "$_w1" ]] || _w1='{}'
-  [[ -n "$_w3" ]] || _w3='{}'
-  pg_wave_labels="$(jq -n -c --argjson a "$_w1" --argjson b "$_w3" '$a + $b')"
+  labels="$(jq -n -c --argjson a "$(wave_labels 1)" --argjson b "$(wave_labels 2)" \
+                     --argjson c "$(wave_labels 3)" --argjson d "$(wave_labels 4)" '$a + $b + $c + $d')"
   render_plan_section() { # title, color, entries json
-    local title="$1" color="$2" entries="$3" n entry id provider mode phase staging how ref dest env label host
+    local title="$1" color="$2" entries="$3" n entry id provider staging how ref dest env label host plan hookm tierlabel kind src disabled
     n="$(jq 'length' <<< "$entries")"
     [[ "$n" -gt 0 ]] || return 0
     echo
@@ -418,55 +266,49 @@ if [[ "$dry" -eq 1 ]]; then
     while IFS= read -r entry; do
       id="$(jq -r '.id' <<< "$entry")"
       provider="$(jq -r '.provider' <<< "$entry")"
-      mode="$(jq -r '.mode' <<< "$entry")"
-      phase="$(jq -r '.phase' <<< "$entry")"
       staging="$(jq -r '.staging' <<< "$entry")"
-      if [[ "$phase" == "1" || "$phase" == "3" ]]; then
-        how="$(jq -r --arg id "$id" '.[$id] // "dest+lock waves"' <<< "$pg_wave_labels")"
-      else
-        how="parallel · save-only, one deploy per service"
-      fi
-      local tierlabel="prod"; [[ "$staging" == "true" ]] && tierlabel="staging"
-      local plan=""
-      case "$provider" in
-        postgres)
-          if [[ "$phase" == "1" && "${dry_canary_flagged:-0}" -eq 0 ]]; then
-            dry_canary_flagged=1
-            plan="stage new versioned DB login → deploy → health-gate; keep predecessor as rollback (canary), auto-retired after the sweep succeeds"
-          else
-            plan="stage new versioned DB login → deploy → health-gate → drain + retire predecessor"
-          fi ;;
-        self_minted) plan="mint $(jq -r '(.generate.format // "hex") + "/" + ((.generate.bytes // 32)|tostring)' <<< "$entry") automatically → sync consumers → deploy once per service" ;;
-        *) plan="SYNC the item's current 1Password value → consumers → one deploy per service (update the item in 1Password first to rotate it)" ;;
-      esac
-      echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${tierlabel} · ${how}${C_OFF}"
-      local disabled
-      disabled="$(jq -r '.disabled_reason // ""' <<< "$entry")"
-      if [[ -n "$disabled" ]]; then
-        echo "    ${C_ERR}DISABLED${C_OFF} ${C_DIM}$disabled${C_OFF}"
-      fi
-      local hookm
+      ref="$(jq -r '.ref' <<< "$entry")"
+      how="$(jq -r --arg id "$id" '.[$id] // ""' <<< "$labels")"
+      tierlabel="prod"; [[ "$staging" == "true" ]] && tierlabel="staging"
       hookm="$(jq -r '.hook // ""' <<< "$entry")"
-      [[ "$hookm" == "full" ]] && plan="repo hook owns the rotation (see hook line) → engine fan-out re-syncs consumers"
+      if [[ "$hookm" == "full" ]]; then
+        plan="repo hook owns the rotation (see hook line) → engine fan-out re-syncs consumers → deploys live + health"
+      elif [[ "$provider" == "postgres" ]]; then
+        if [[ "$ref" == "$PLAN_CANARY_REF" ]]; then
+          plan="stage new versioned DB login → deploy → health-gate; keep predecessor as rollback (canary), retired after the sweep succeeds"
+        else
+          plan="stage new versioned DB login → deploy → health-gate → finalize: drain + retire predecessor"
+        fi
+      elif [[ "$(jq -r '.auto' <<< "$entry")" == "true" ]]; then
+        if [[ "$provider" == "self_minted" ]]; then
+          plan="mint $(jq -r '(.generate.format // "hex") + "/" + ((.generate.bytes // 32)|tostring)' <<< "$entry") automatically → save to consumers → one deploy per service → live + health → finalize"
+        else
+          plan="mint a new credential at $provider (predecessor stays valid) → save to consumers → one deploy per service → live + health → finalize retires the predecessor"
+        fi
+      else
+        plan="SYNC the item's current 1Password value → consumers → one deploy per service (update the item in 1Password first to rotate it)"
+      fi
+      echo "  ${C_BOLD}${id}${C_OFF} ${C_DIM}${provider} · ${tierlabel} · ${how}${C_OFF}"
+      disabled="$(jq -r '.disabled_reason // ""' <<< "$entry")"
+      [[ -z "$disabled" ]] || echo "    ${C_ERR}DISABLED${C_OFF} ${C_DIM}$disabled${C_OFF}"
       echo "    ${C_DIM}plan${C_OFF}  $plan"
       if [[ -n "$hookm" ]]; then
-        if [[ -x "$repo/scripts/secrets/rotate-hook" ]]; then
+        local hook_repo hook_bin
+        hook_repo="$(config_repo_path "$(jq -r '.owner_repo // ""' <<< "$entry")" 2>/dev/null || printf '%s' "$repo")"
+        hook_bin="$hook_repo/scripts/secrets/rotate-hook"
+        if [[ -x "$hook_bin" ]]; then
           if [[ "$hookm" == "full" ]]; then
-            echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}rotation delegated to scripts/secrets/rotate-hook (repo-specific)${C_OFF}"
+            echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}rotation delegated to $hook_bin${C_OFF}"
           else
-            echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}repo-specific activation via scripts/secrets/rotate-hook (runs inside the rotation window)${C_OFF}"
+            echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}repo-specific activation via $hook_bin (runs inside the rotation window)${C_OFF}"
           fi
-          ROTATE_ENTRY_JSON="$entry" "$repo/scripts/secrets/rotate-hook" plan 2>/dev/null | sed "s/^/    ${C_DIM}      /;s/\$/${C_OFF}/" || true
+          ROTATE_ENTRY_JSON="$entry" "$hook_bin" plan 2>/dev/null | sed "s/^/    ${C_DIM}      /;s/\$/${C_OFF}/" || true
         else
-          echo "    ${C_ERR}hook MISSING${C_OFF} ${C_DIM}entry declares hook: $hookm but $repo/scripts/secrets/rotate-hook is absent — rotate-secret will refuse${C_OFF}"
+          echo "    ${C_ERR}hook MISSING${C_OFF} ${C_DIM}entry declares hook: $hookm but $hook_bin is absent — rotate-secret will refuse${C_OFF}"
         fi
-      elif [[ -x "$repo/scripts/secrets/rotate-hook" && "$provider" != "postgres" ]] \
-           && jq -e '[.routes[]? | select(.kind=="prefect")] | length > 0' <<< "$entry" >/dev/null; then
-        echo "    ${C_RUN}hook${C_OFF}  ${C_DIM}post-sync: repo hook saves the Prefect block tier(s) after the fan-out${C_OFF}"
       fi
       # Every map row comes from the routes that share the entry's ref(s) —
       # derived, never restated, so it can neither under- nor over-report.
-      local kind src
       while IFS=$'\t' read -r kind dest env src; do
         [[ -n "$dest" ]] || continue
         case "$kind" in
@@ -481,10 +323,8 @@ if [[ "$dry" -eq 1 ]]; then
       echo
     done < <(jq -c '.[]' <<< "$entries")
   }
-  auto_json="$(jq -c '[.[] | select(.auto)]' <<< "$run_json")"
-  sync_json="$(jq -c '[.[] | select(.auto | not)]' <<< "$run_json")"
-  render_plan_section "ROTATE — new credentials minted automatically" "$C_OK" "$auto_json"
-  render_plan_section "SYNC — pushes the current 1Password value to consumers" "$C_RUN" "$sync_json"
+  render_plan_section "ROTATE — new credentials minted automatically" "$C_OK" "$(jq -c '[.[] | select(.auto)]' <<< "$run_json")"
+  render_plan_section "SYNC — pushes the current 1Password value to consumers" "$C_RUN" "$(jq -c '[.[] | select(.auto | not)]' <<< "$run_json")"
   echo
 
   # ── preflight: verify every op:// field the sweep will READ actually exists.
@@ -493,20 +333,17 @@ if [[ "$dry" -eq 1 ]]; then
   # unchecked rather than prompting during a dry run. ROTATE_PREFLIGHT=0 skips.
   if [[ "${ROTATE_PREFLIGHT:-1}" == "1" ]]; then
     db_roles="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
-    admin_vault="" admin_vault_sensitive=""
+    admin_vault="" admin_vault_sensitive="" admin_root_staging="" admin_root_prod=""
     if [[ -f "$db_roles" ]]; then
       admin_vault="$(jq -r --arg p "$project" '.projects[$p].vault // empty' "$db_roles")"
       admin_vault_sensitive="$(jq -r --arg p "$project" '.projects[$p].vault_sensitive // empty' "$db_roles")"
-    fi
-    # every ref the run touches: entry ref, sync_refs, provider config refs,
-    # route refs — plus the postgres control root ref per tier.
-    admin_root_staging="" admin_root_prod=""
-    if [[ -f "$db_roles" ]]; then
       admin_root_staging="$(jq -r --arg p "$project" '.projects[$p].admin_refs.staging.root // empty' "$db_roles")"
       admin_root_prod="$(jq -r --arg p "$project" '.projects[$p].admin_refs.prod.root // empty' "$db_roles")"
     fi
     [[ -n "$admin_root_staging" || -z "$admin_vault" ]] || admin_root_staging="op://$admin_vault/Postgres staging/root"
     [[ -n "$admin_root_prod" || -z "$admin_vault_sensitive" ]] || admin_root_prod="op://$admin_vault_sensitive/Postgres prod/root"
+    # every ref the run touches: entry ref, sync_refs, provider config refs,
+    # route refs — plus the postgres control root ref per tier.
     needed="$(jq -r --arg rs "$admin_root_staging" --arg rp "$admin_root_prod" '
       [.[] | ( [.ref] + (.sync_refs // [])
               + [(.config.secret_ref // empty)]
@@ -519,8 +356,8 @@ if [[ "$dry" -eq 1 ]]; then
     while IFS= read -r vault_item; do
       [[ -n "$vault_item" ]] || continue
       pf_vault="${vault_item%%/*}"; pf_item="${vault_item#*/}"
-      pf_fields="$(printf '%s
-' "$needed" | awk -F/ -v v="$pf_vault" -v i="$pf_item"         '{ rest=substr($0,6); vv=rest; sub("/.*","",vv); it=rest; sub("^[^/]*/","",it); f=it; sub("/[^/]*$","",it); sub(".*/","",f); if (vv==v && it==i) print f }' | sort -u)"
+      pf_fields="$(printf '%s\n' "$needed" | awk -F/ -v v="$pf_vault" -v i="$pf_item" \
+        '{ rest=substr($0,6); vv=rest; sub("/.*","",vv); it=rest; sub("^[^/]*/","",it); f=it; sub("/[^/]*$","",it); sub(".*/","",f); if (vv==v && it==i) print f }' | sort -u)"
       if [[ "$pf_vault" == *-sensitive ]]; then
         pf_unchecked=$((pf_unchecked+1))
         echo "  ${C_DIM}preflight: $pf_vault/$pf_item — unchecked (Touch ID vault; verified at run time)${C_OFF}"
@@ -530,8 +367,7 @@ if [[ "$dry" -eq 1 ]]; then
         echo "  ${C_ERR}preflight FAIL: item '$pf_vault/$pf_item' is missing or unreadable${C_OFF}" >&2
         pf_fail=1; continue
       fi
-      pf_have="$(printf '%s' "$pf_json" | jq -r '[.fields[].label] | join("
-")')"
+      pf_have="$(printf '%s' "$pf_json" | jq -r '[.fields[].label] | join("\n")')"
       pf_json=""
       while IFS= read -r pf_f; do
         [[ -n "$pf_f" ]] || continue
@@ -541,8 +377,7 @@ if [[ "$dry" -eq 1 ]]; then
         fi
       done <<< "$pf_fields"
       pf_checked=$((pf_checked+1))
-    done < <(printf '%s
-' "$needed" | sed 's|^op://||; s|/[^/]*$||' | sort -u)
+    done < <(printf '%s\n' "$needed" | sed 's|^op://||; s|/[^/]*$||' | sort -u)
     echo
     if [[ "$pf_fail" -eq 1 ]]; then
       echo "${C_ERR}${C_BOLD}✗ PREFLIGHT FAIL${C_OFF}${C_ERR} — a live sweep would stop on the missing refs above.${C_OFF}" >&2
@@ -554,305 +389,432 @@ if [[ "$dry" -eq 1 ]]; then
   exit 0
 fi
 
-
-SYNC="${SYNC_SECRETS:-$HERE/sync-secrets}"
-
-sync_one() { # entry json, log file: push the CURRENT vault value(s) to consumers
-  local entry="$1" logf="$2" ref rc=0 r
-  while IFS= read -r r; do
-    [[ -n "$r" ]] || continue
-    while IFS= read -r ref; do
-      [[ -n "$ref" ]] || continue
-      "$SYNC" --repo "$repo" --changed "$ref" --reason "$reason [$(jq -r '.id' <<< "$entry")]" --no-deploy >> "$logf" 2>&1 || rc=$?
-    done < <(jq -r '(.sync_refs // [.ref]) | .[]' <<< "$entry")
-  done < <(printf 'x\n')
-  if [[ "$rc" -eq 0 ]]; then
-    jq -r '.consumers[]?.dest | select(test("^(srv|crn)-"))' <<< "$entry" >> "$logdir/pending-dests"
-  fi
-  return "$rc"
+# --- sweep checkpoint ------------------------------------------------------------
+# Unfinished runs persist completed/minted entry ids, deferred deploy dests,
+# pending finalizes, the canary ref and the selection, so a rerun resumes
+# exactly. Value-free (ids and service ids only). The pending lists live in
+# files under the run's log dir (children append to them); the checkpoint is
+# always written from those files.
+SWEEP_STATE_DIR="${ROTATE_PROJECT_STATE_DIR:-$HOME/.local/state/agent-workflows/rotate-project}"
+SWEEP_STATE="$SWEEP_STATE_DIR/${project}.state"
+logdir="$SWEEP_STATE_DIR/$project/logs/$(date +%Y%m%dT%H%M%S)-$$"
+mkdir -p "$logdir" && chmod 700 "$SWEEP_STATE_DIR" "$SWEEP_STATE_DIR/$project" "$SWEEP_STATE_DIR/$project/logs" "$logdir"
+PENDING_DESTS="$logdir/pending-dests"
+PENDING_FINALIZE="$logdir/pending-finalize"
+: > "$PENDING_DESTS"; : > "$PENDING_FINALIZE"
+# One sweep id + inventory cache for every rotate-secret of this run: the
+# postgres finalize inventory scan is proven clean once per sweep, not once per
+# entry (rotate-secret passes both through to the rotator).
+ROTATE_SWEEP_ID="$(basename "$logdir")"
+ROTATE_INVENTORY_CACHE_DIR="$logdir/inventory-cache"
+export ROTATE_SWEEP_ID ROTATE_INVENTORY_CACHE_DIR
+# A confirmed live sweep: the prod prefect tier of sync-secrets must not prompt.
+export SECRETS_ASSUME_YES=1
+COMPLETED_IDS=()
+MINTED_IDS=()
+CANARY_REF=""
+sweep_ids_json() { if [[ $# -eq 0 ]]; then printf '[]\n'; else jq -n '$ARGS.positional' --args -- "$@"; fi; }
+file_ids_json() { if [[ -s "$1" ]]; then sort -u "$1" | grep . | jq -R . | jq -s -c .; else printf '[]\n'; fi; }
+sweep_state_save() {
+  jq -n -c --arg p "$project" --arg t "$tier" --arg o "$only" --arg s "$skip" --arg c "$CANARY_REF" \
+    --argjson completed "$(sweep_ids_json ${COMPLETED_IDS[@]+"${COMPLETED_IDS[@]}"})" \
+    --argjson minted "$(sweep_ids_json ${MINTED_IDS[@]+"${MINTED_IDS[@]}"})" \
+    --argjson pendingDests "$(file_ids_json "$PENDING_DESTS")" \
+    --argjson pendingFinalize "$(file_ids_json "$PENDING_FINALIZE")" \
+    '{stateVersion:2, project:$p, selection:{tier:$t, only:$o, skip:$s}, canaryRef:$c,
+      completed:$completed, minted:$minted, pendingDests:$pendingDests, pendingFinalize:$pendingFinalize}' \
+    > "$SWEEP_STATE.tmp"
+  chmod 600 "$SWEEP_STATE.tmp" && mv "$SWEEP_STATE.tmp" "$SWEEP_STATE"
 }
-
-rotate_one() { # entry json, log file, extra flag or "", batched(0|1); returns rotate rc
-  local entry="$1" logf="$2" xtra="$3" batched="${4:-0}" id ref rc=0
-  id="$(jq -r '.id' <<< "$entry")"
-  ref="$(jq -r '.ref' <<< "$entry")"
-  if [[ "$(jq -r '.auto' <<< "$entry")" != "true" ]]; then
-    sync_one "$entry" "$logf"
-    return $?
-  fi
-  if [[ "$batched" -eq 1 ]]; then
-    # Save-only: values are written everywhere but Render deploys are deferred;
-    # the orchestrator deploys each touched service once per phase.
-    ROTATE_NO_DEPLOY=1 "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
-    if [[ "$rc" -eq 0 ]]; then
-      jq -r '.consumers[]?.dest | select(test("^(srv|crn)-"))' <<< "$entry" >> "$logdir/pending-dests"
+sweep_state_load() {
+  local json sel
+  [[ -f "$SWEEP_STATE" ]] || return 0
+  json="$(cat "$SWEEP_STATE")" || return 1
+  jq -e --arg p "$project" '.stateVersion == 2 and .project == $p' <<< "$json" >/dev/null || {
+    echo "ERROR: sweep checkpoint $SWEEP_STATE is malformed, from an older engine, or for another project — inspect and remove it by hand." >&2
+    return 1
+  }
+  if [[ "$fresh" -eq 1 ]]; then
+    local nd nf
+    nd="$(jq '.pendingDests | length' <<< "$json")"; nf="$(jq '.pendingFinalize | length' <<< "$json")"
+    if [[ "$nd" -gt 0 || "$nf" -gt 0 ]]; then
+      echo "ERROR: --fresh refused: the checkpoint still holds $nd deferred deploy(s) and $nf pending finalize(s)." >&2
+      echo "       Rerun WITHOUT --fresh (same selection) to drain them first; then --fresh starts over." >&2
+      return 1
     fi
+    rm -f "$SWEEP_STATE"
+    echo "${C_DIM}--fresh: discarded unfinished sweep checkpoint${C_OFF}"
+    return 0
+  fi
+  sel="$(jq -r '.selection | "tier=\(.tier) only=\(.only) skip=\(.skip)"' <<< "$json")"
+  if [[ "$sel" != "tier=$tier only=$only skip=$skip" ]]; then
+    echo "ERROR: the unfinished sweep checkpoint was created with a different selection ($sel);" >&2
+    echo "       rerun with that selection to resume it, or --fresh to discard it." >&2
+    return 1
+  fi
+  while IFS= read -r x; do [[ -n "$x" ]] && COMPLETED_IDS+=("$x"); done < <(jq -r '.completed[]?' <<< "$json")
+  while IFS= read -r x; do [[ -n "$x" ]] && MINTED_IDS+=("$x"); done < <(jq -r '.minted[]?' <<< "$json")
+  jq -r '.pendingDests[]?' <<< "$json" > "$PENDING_DESTS"
+  jq -r '.pendingFinalize[]?' <<< "$json" > "$PENDING_FINALIZE"
+  CANARY_REF="$(jq -r '.canaryRef // empty' <<< "$json")"
+}
+sweep_mark_completed() { COMPLETED_IDS+=("$1"); sweep_state_save; }
+sweep_mark_minted() { # id, entry json — the entry's Render dests become deferred deploys
+  MINTED_IDS+=("$1")
+  jq -r '.renderDests[]?' <<< "$2" >> "$PENDING_DESTS"
+  sweep_state_save
+}
+sweep_promote_minted() {
+  local x
+  for x in "${MINTED_IDS[@]-}"; do [[ -n "$x" ]] && COMPLETED_IDS+=("$x"); done
+  MINTED_IDS=()
+  sweep_state_save
+}
+pending_finalize_add() { printf '%s\n' "$1" >> "$PENDING_FINALIZE"; sweep_state_save; }
+pending_finalize_remove() { local tmp="$PENDING_FINALIZE.tmp"; grep -vxF "$1" "$PENDING_FINALIZE" > "$tmp" || true; mv "$tmp" "$PENDING_FINALIZE"; sweep_state_save; }
+
+log_highlights() { # concise facts pulled from a full entry log
+  grep -E '^\s*(vault: updated|vault: created op|db: retired|drain: predecessor|render\[[^]]*\] deploy |minted new|health ok:|finalize)' "$1" \
+    | sed -E 's/^ */    /' | sort -u | head -6 || true
+}
+# ROTATE entries mint a new credential; SYNC entries only push the value the
+# vault already holds — rendering both as a bare ✓ let "nothing was rotated"
+# read as "rotated".
+entry_ok() { # id, seconds, logf, kind(rotated|synced)
+  if [[ "${4:-rotated}" == "synced" ]]; then
+    echo "${C_OK}≡${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2")) — synced only, credential NOT rotated${C_OFF}"
   else
-    "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes ${xtra:+"$xtra"} >> "$logf" 2>&1 || rc=$?
-    if [[ "$rc" -eq 0 ]]; then
-      health_gate "$entry" >> "$logf" 2>&1 || rc=99
+    echo "${C_OK}✓${C_OFF} ${C_BOLD}$1${C_OFF} ${C_DIM}($(fmt_dur "$2"))${C_OFF}"
+  fi
+  log_highlights "$3"
+}
+entry_fail() { # id, rc, seconds, logf
+  echo "${C_ERR}✗ ${C_BOLD}$1${C_OFF}${C_ERR} failed (rc=$2, $(fmt_dur "$3"))${C_OFF}"
+  echo "${C_DIM}  ── last log lines ──${C_OFF}"
+  tail -12 "$4" | sed 's/^/  /'
+  echo "${C_DIM}  full log: $4${C_OFF}"
+}
+entry_kind() { if [[ "$(jq -r '.auto' <<< "$1")" == "true" ]]; then printf 'rotated'; else printf 'synced'; fi; }
+
+RESULT_IDS=(); RESULT_STATES=(); RESULT_TIMES=(); RESULT_KINDS=()
+record_result() { RESULT_IDS+=("$1"); RESULT_STATES+=("$2"); RESULT_TIMES+=("$3"); RESULT_KINDS+=("${4:-rotated}"); }
+
+summary_and_exit() { # exit code
+  local code="$1" i=0 state kind mark note total=$SECONDS rotated_n=0 synced_n=0 pending
+  echo
+  echo "${C_BOLD}── rotate-project $project summary ──${C_OFF}"
+  for id in "${RESULT_IDS[@]-}"; do
+    [[ -n "$id" ]] || continue
+    state="${RESULT_STATES[$i]}"; kind="${RESULT_KINDS[$i]}"; note=""
+    if [[ "$state" != "ok" ]]; then
+      mark="${C_ERR}✗${C_OFF}"
+    elif [[ "$kind" == "synced" ]]; then
+      mark="${C_OK}≡${C_OFF}"; note="  ${C_DIM}synced only — credential NOT rotated${C_OFF}"; synced_n=$((synced_n + 1))
+    else
+      mark="${C_OK}✓${C_OFF}"; rotated_n=$((rotated_n + 1))
     fi
+    printf '  %b %-45s %s%b\n' "$mark" "$id" "$(fmt_dur "${RESULT_TIMES[$i]}")" "$note"
+    i=$((i + 1))
+  done
+  pending="$(sort -u "$PENDING_FINALIZE" | grep . || true)"
+  if [[ -n "$pending" ]]; then
+    echo "  ${C_ERR}${C_BOLD}predecessor cleanup pending${C_OFF} ${C_DIM}for:${C_OFF} $(tr '\n' ' ' <<< "$pending")"
+    echo "  ${C_DIM}those rotations are complete; rerun the same command to retry their finalize step (or rotate-secret --finalize per entry)${C_OFF}"
+  fi
+  if [[ "$code" -eq 0 && -n "$pending" ]]; then
+    sweep_state_save
+    code=1
+  elif [[ "$code" -eq 0 ]]; then
+    rm -f "$SWEEP_STATE"
+    local synced_note=""
+    [[ "$synced_n" -gt 0 ]] && synced_note=", ${C_BOLD}$synced_n synced only${C_OFF}"
+    echo "  ${C_OK}${C_BOLD}$rotated_n rotated+verified${C_OFF}${synced_note} ${C_DIM}in $(fmt_dur "$total") ($skipped filtered out)${C_OFF}"
+    [[ "$synced_n" -eq 0 ]] || echo "  ${C_DIM}synced entries pushed the value the vault already held; rotate them at their source (see each entry's playbook).${C_OFF}"
+  else
+    sweep_state_save
+    echo "  ${C_ERR}${C_BOLD}stopped after a failure${C_OFF} ${C_DIM}— rerun the same command to resume (completed entries are not reminted)${C_OFF}"
+  fi
+  echo "  ${C_DIM}logs: $logdir${C_OFF}"
+  exit "$code"
+}
+
+# --- per-entry runners (each runs in a background subshell; rc = outcome) -----
+# rotate-secret --finalize outcome: 0 done, 6 predecessor cleanup still pending
+# (non-fatal: recorded, retried by the next run), anything else is a failure.
+finalize_entry() { # id ref logf -> rc 0 (done or pending-recorded) | other
+  local id="$1" ref="$2" logf="$3" rc=0
+  "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id finalize]" --yes --finalize >> "$logf" 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    6) echo "  finalize pending for $id (predecessor still valid; retried on the next run)" >> "$logf"
+       touch "$logdir/$id.finalize-pending"; return 0 ;;
+    *) return "$rc" ;;
+  esac
+}
+
+rotate_postgres_entry() { # entry json, logf: rotate (--no-finalize) → health gate → finalize (not for the canary)
+  local entry="$1" logf="$2" id ref rc=0
+  id="$(jq -r '.id' <<< "$entry")"; ref="$(jq -r '.ref' <<< "$entry")"
+  "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes --resume --no-finalize >> "$logf" 2>&1 || return $?
+  health_gate "$entry" >> "$logf" 2>&1 || return 99
+  if [[ "$ref" == "$CANARY_REF" ]]; then
+    echo "  canary: predecessor kept as the sweep's rollback window (finalized at the end)" >> "$logf"
+    return 0
+  fi
+  finalize_entry "$id" "$ref" "$logf"
+}
+
+sync_entry() { # entry json, logf: push the CURRENT vault value(s); own repo save-only, cross-project repos deploy themselves
+  local entry="$1" logf="$2" id ref r rc=0
+  local repos=("$repo") rels=()
+  id="$(jq -r '.id' <<< "$entry")"
+  while IFS= read -r r; do [[ -n "$r" ]] && rels+=("$r"); done < <(jq -r '(.sync_repos // [])[]' <<< "$entry")
+  if [[ ${#rels[@]} -gt 0 ]]; then
+    while IFS= read -r r; do [[ -n "$r" ]] && repos+=("$r"); done < <(config_sync_repos "${rels[@]}")
+  fi
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    for r in "${repos[@]}"; do
+      if [[ "$r" == "$repo" ]]; then
+        "$SYNC" --repo "$r" --changed "$ref" --reason "$reason [$id]" --no-deploy >> "$logf" 2>&1 || rc=$?
+      else
+        "$SYNC" --repo "$r" --changed "$ref" --reason "$reason [$id]" >> "$logf" 2>&1 || rc=$?
+      fi
+    done
+  done < <(jq -r '(.sync_refs // [.ref]) | .[]' <<< "$entry")
+  return "$rc"
+}
+
+rotate_batched_entry() { # entry json, logf: auto entry, save-only; deploy + finalize happen per phase
+  local entry="$1" logf="$2" id ref
+  id="$(jq -r '.id' <<< "$entry")"; ref="$(jq -r '.ref' <<< "$entry")"
+  ROTATE_NO_DEPLOY=1 "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes --resume --no-finalize >> "$logf" 2>&1
+}
+
+rotate_standalone_entry() { # entry json, logf: auto entry with cross-project sync_repos — rotate-secret deploys, waits and finalizes itself
+  local entry="$1" logf="$2" id ref rc=0
+  id="$(jq -r '.id' <<< "$entry")"; ref="$(jq -r '.ref' <<< "$entry")"
+  "$ROTATE" --repo "$repo" --ref "$ref" --reason "$reason [$id]" --yes --resume >> "$logf" 2>&1 || rc=$?
+  if [[ "$rc" -eq 6 ]]; then
+    echo "  finalize pending for $id (predecessor still valid; retried on the next run)" >> "$logf"
+    touch "$logdir/$id.finalize-pending"; rc=0
   fi
   return "$rc"
 }
 
-# Deploy every service touched by the batched saves exactly once, wait for the
-# deploy to reach a terminal state, then health-gate the service.
-finalize_pending_deploys() {
-  local sid url status key ref deadline ok=1
-  [[ -s "$logdir/pending-dests" ]] || return 0
-  # shellcheck source=../secrets/lib/read.sh
-  source "$HERE/../secrets/lib/read.sh"
-  # shellcheck source=../secrets/lib/vault.sh
-  source "$HERE/../secrets/lib/vault.sh"   # op_vault_read (Render API key)
-  # shellcheck source=../secrets/lib/render-api.sh
-  source "$HERE/../secrets/lib/render-api.sh"
-  # Deploy triggering needs the project's Render key + SA token, exactly like
-  # sync-secrets resolves them (entries deferred their deploys, so no child
-  # process resolved a project context on our behalf).
-  if [[ -z "${SECRETS_RENDER_KEY_REF:-}" ]]; then
-    local ctx
-    ctx="$("$HERE/project-context" --cwd "$repo")" || { echo "ERROR: project context resolution failed for $repo" >&2; return 1; }
-    SECRETS_SA_TOKEN_ENV="$(printf '%s' "$ctx" | jq -er '.service_account.token_env')" || return 1
-    SECRETS_SA_KEYCHAIN_ITEM="$(printf '%s' "$ctx" | jq -r '.service_account.keychain_item // ""')"
-    SECRETS_RENDER_KEY_REF="$(printf '%s' "$ctx" | jq -r '.tools.render.api_key_ref // ""')"
-    export SECRETS_SA_TOKEN_ENV SECRETS_SA_KEYCHAIN_ITEM SECRETS_RENDER_KEY_REF
-    [[ -n "$SECRETS_RENDER_KEY_REF" ]] || { echo "ERROR: no Render API key ref in project context for $repo" >&2; return 1; }
-  fi
-  local sids nsids t0 dt pids=() idle_pids=()
-  sids="$(sort -u "$logdir/pending-dests")"
-  : > "$logdir/pending-dests"
-  nsids="$(printf '%s\n' "$sids" | grep -c . || true)"
+# Deploy every service touched by the batched saves exactly once (request-
+# correlated deploy ids), wait for each to go live, then health-check it.
+deploy_pending() {
+  local sids nsids sid pid url ok=1 deploys="$logdir/deploys.tsv"
+  local pids=()
+  sids="$(sort -u "$PENDING_DESTS" | grep . || true)"
+  [[ -n "$sids" ]] || return 0
+  nsids="$(printf '%s\n' "$sids" | grep -c .)"
   echo
-  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}all values saved — deploying $nsids service(s) in parallel${C_OFF}"
-  # Idle-wait every dest FIRST so one service's new deploy is not treated as
-  # in-flight work that blocks the next trigger (that serialized the token wave).
-  # Wait the dests concurrently — sequential idle-wait stacked one deploy behind
-  # another when both services were already rolling.
-  wait_idle() {
-    local sid="$1" ref RENDER_API_KEY
-    ref="$(render_key_ref_for "$sid")" || return 1
-    RENDER_API_KEY="$(render_key_resolve "$ref")" || return 1
-    export RENDER_API_KEY
-    render_wait_service_idle "$sid"
-  }
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}all values saved — deploying $nsids service(s)${C_OFF}"
+  render_key_once "$repo" || return 1
+  : > "$deploys"
   while IFS= read -r sid; do
     [[ -n "$sid" ]] || continue
-    wait_idle "$sid" &
-    idle_pids+=($!)
-  done <<< "$sids"
-  for pid in "${idle_pids[@]-}"; do
-    wait "$pid" || return 1
-  done
-  while IFS= read -r sid; do
-    [[ -n "$sid" ]] || continue
-    ref="$(render_key_ref_for "$sid")" || { echo "ERROR: no Render key ref for $sid" >&2; return 1; }
-    RENDER_API_KEY="$(render_key_resolve "$ref")" || { echo "ERROR: could not resolve Render key for $sid" >&2; return 1; }
-    export RENDER_API_KEY
-    render_trigger_deploy "$sid" || { echo "ERROR: deploy trigger failed for $sid" >&2; return 1; }
-  done <<< "$sids"
-  echo "${C_DIM}  waiting for every deploy to go live (nothing is done until this passes)…${C_OFF}"
-  wait_one() {
-    local sid="$1" status deadline dt t0 url
-    local ref RENDER_API_KEY
-    ref="$(render_key_ref_for "$sid")" || return 1
-    RENDER_API_KEY="$(render_key_resolve "$ref")" || return 1
-    export RENDER_API_KEY
-    t0=$SECONDS
-    deadline=$(( $(date +%s) + 1200 ))
-    while [[ $(date +%s) -lt $deadline ]]; do
-      status="$(render_get "/services/${sid}/deploys?limit=1" | jq -r '.[0].deploy.status // .[0].status // empty')" || status=""
-      case "$status" in
-        live) break ;;
-        build_failed|update_failed|canceled|deactivated|pre_deploy_failed)
-          echo "${C_ERR}✗ deploy for $sid ended $status${C_OFF}" >&2
-          return 1 ;;
-        *) sleep 15 ;;
-      esac
-    done
-    dt=$((SECONDS - t0))
-    [[ "$status" == "live" ]] || { echo "${C_ERR}✗ deploy for $sid did not go live within 20m${C_OFF}" >&2; return 1; }
-    url="$(jq -r --arg d "$sid" '.health_urls[$d] // empty' "$REGISTRY")"
-    [[ "$url" == "deploy-only" ]] && url=""
-    if [[ -n "$url" ]]; then
-      if curl -sf --max-time 30 "$url" >/dev/null; then
-        echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live + healthy ($(fmt_dur "$dt"))${C_OFF}"
-      else
-        echo "${C_ERR}✗ $sid live but health check failed ($url)${C_OFF}" >&2
-        return 1
-      fi
-    else
-      echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live ($(fmt_dur "$dt")) — no health URL registered${C_OFF}"
-    fi
-  }
-  while IFS= read -r sid; do
-    [[ -n "$sid" ]] || continue
-    wait_one "$sid" &
+    ( id="$(render_trigger_deploy_id "$sid")" || exit 1
+      printf '%s\t%s\n' "$sid" "$id" > "$logdir/deploy.$sid"
+      echo "  render[$sid] deploy triggered ($id)" ) &
     pids+=($!)
   done <<< "$sids"
-  for pid in "${pids[@]-}"; do
-    wait "$pid" || ok=0
-  done
-  [[ "$ok" -eq 1 ]]
+  for pid in "${pids[@]}"; do wait "$pid" || ok=0; done
+  [[ "$ok" -eq 1 ]] || { echo "${C_ERR}✗ a deploy trigger failed — dests stay deferred; rerun to retry${C_OFF}" >&2; return 1; }
+  cat "$logdir"/deploy.* > "$deploys"
+  echo "${C_DIM}  waiting for every deploy to go live (nothing is done until this passes)…${C_OFF}"
+  deploy_wait_all "$deploys" || { echo "${C_ERR}✗ a deploy did not go live — dests stay deferred; rerun to retry${C_OFF}" >&2; return 1; }
+  while IFS= read -r sid; do
+    [[ -n "$sid" ]] || continue
+    url="$(jq -r --arg d "$sid" '.health_urls[$d] // empty' "$REGISTRY")"
+    [[ "$url" == "deploy-only" ]] && url=""
+    if [[ -z "$url" ]]; then
+      echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live — no health URL registered${C_OFF}"
+    elif curl -sf --max-time 30 "$url" >/dev/null; then
+      echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live + healthy${C_OFF}"
+    else
+      echo "${C_ERR}✗ $sid live but health check failed ($url)${C_OFF}" >&2; ok=0
+    fi
+  done <<< "$sids"
+  [[ "$ok" -eq 1 ]] || return 1
+  : > "$PENDING_DESTS"
+  rm -f "$logdir"/deploy.*
+  sweep_state_save
 }
 
-logdir="$(mktemp -d)"
-trap 'rm -rf "$logdir"' EXIT
-: > "$logdir/pending-dests"
-first_staging_pg=1 ran=0 failed=0 idx=0
-
-if [[ "$fresh" -eq 1 ]]; then
-  sweep_state_clear
-  echo "${C_DIM}--fresh: discarded unfinished sweep checkpoint${C_OFF}"
-fi
-sweep_state_load || exit 2
-if [[ ${#PENDING_SIDS[@]} -gt 0 ]]; then
-  printf '%s\n' "${PENDING_SIDS[@]}" > "$logdir/pending-dests"
-  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}resuming${C_OFF} ${C_DIM}retrying ${#PENDING_SIDS[@]} deferred deploy(s); already-minted secrets will not be reminted${C_OFF}"
-  finalize_pending_deploys || summary_and_exit 1
+# After the batched deploys are proven: finalize every minted auto entry
+# (rc 6 → pending, retried later), then promote minted → completed.
+finalize_minted() {
+  local id entry ref rc=0 logf
+  for id in "${MINTED_IDS[@]-}"; do
+    [[ -n "$id" ]] || continue
+    entry="$(jq -c --arg id "$id" '.[] | select(.id == $id)' <<< "$ALL_JSON")"
+    [[ -n "$entry" && "$(jq -r '.auto' <<< "$entry")" == "true" ]] || continue
+    ref="$(jq -r '.ref' <<< "$entry")"
+    logf="$logdir/$id.log"
+    if finalize_entry "$id" "$ref" "$logf"; then
+      if [[ -e "$logdir/$id.finalize-pending" ]]; then
+        pending_finalize_add "$id"
+        echo "${C_ERR}!${C_OFF} $id ${C_DIM}finalize pending (predecessor still valid)${C_OFF}"
+      else
+        echo "${C_OK}✓${C_OFF} $id ${C_DIM}finalized (predecessor retired)${C_OFF}"
+      fi
+    else
+      rc=$?
+      echo "${C_ERR}✗ $id finalize failed (rc=$rc)${C_OFF}"; tail -8 "$logf" | sed 's/^/  /'
+      return 1
+    fi
+  done
   sweep_promote_minted
-fi
-if [[ ${#COMPLETED_IDS[@]} -gt 0 || ${#MINTED_IDS[@]} -gt 0 ]]; then
-  n_skip=$(( ${#COMPLETED_IDS[@]} + ${#MINTED_IDS[@]} ))
-  echo "${C_DIM}  checkpoint: $n_skip already completed this sweep — not reminting${C_OFF}"
-  skip_json='[]'
-  if [[ ${#COMPLETED_IDS[@]} -gt 0 || ${#MINTED_IDS[@]} -gt 0 ]]; then
-    skip_json="$(sweep_ids_json ${COMPLETED_IDS[@]+"${COMPLETED_IDS[@]}"} ${MINTED_IDS[@]+"${MINTED_IDS[@]}"})"
+}
+
+retry_pending_finalizes() { # ids left by a previous run (rc 6): retry, keep the still-pending ones
+  local id ref entry logf rc
+  [[ -s "$PENDING_FINALIZE" ]] || return 0
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}retrying pending finalizes${C_OFF}"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    entry="$(jq -c --arg id "$id" '.secrets[] | select(.id == $id)' "$REGISTRY")"
+    ref="$(jq -r '.ref' <<< "$entry")"
+    logf="$logdir/$id.finalize.log"; : > "$logf"
+    rm -f "$logdir/$id.finalize-pending"
+    if finalize_entry "$id" "$ref" "$logf"; then
+      if [[ -e "$logdir/$id.finalize-pending" ]]; then
+        echo "${C_ERR}!${C_OFF} $id ${C_DIM}finalize still pending${C_OFF}"
+      else
+        pending_finalize_remove "$id"
+        echo "${C_OK}✓${C_OFF} $id ${C_DIM}finalized (predecessor retired)${C_OFF}"
+      fi
+    else
+      rc=$?
+      echo "${C_ERR}✗ $id finalize failed (rc=$rc)${C_OFF}"; tail -8 "$logf" | sed 's/^/  /'
+      return 1
+    fi
+  done < <(sort -u "$PENDING_FINALIZE")
+}
+
+finalize_canary() {
+  # The canary kept one predecessor login valid as the sweep's rollback
+  # window. Once every entry succeeded there is nothing to roll back to, so
+  # retire it (idempotent: no finalize-state → "nothing to finalize").
+  [[ -n "$CANARY_REF" ]] || return 0
+  local id logf
+  id="$(jq -r --arg r "$CANARY_REF" '.secrets[] | select(.ref == $r) | .id' "$REGISTRY")"
+  echo "${C_RUN}⟳${C_OFF} finalizing canary $id ${C_DIM}(retiring the kept predecessor login)${C_OFF}"
+  logf="$logdir/canary-finalize.log"; : > "$logf"
+  if finalize_entry "$id" "$CANARY_REF" "$logf"; then
+    if [[ -e "$logdir/$id.finalize-pending" ]]; then
+      pending_finalize_add "$id"
+      echo "${C_ERR}!${C_OFF} canary finalize pending ${C_DIM}(predecessor login remains valid; retried on the next run)${C_OFF}"
+    else
+      echo "${C_OK}✓${C_OFF} canary predecessor retired"
+    fi
+  else
+    echo "${C_ERR}✗ canary finalize failed — predecessor login remains valid (safe).${C_OFF}"
+    tail -8 "$logf" | sed 's/^/  /'
+    return 1
   fi
-  run_json="$(jq -c --argjson skip "$skip_json" '
-    [.[] | select(.id as $id | $skip | index($id) | not)]' <<< "$run_json")"
+}
+
+# --- live sweep -----------------------------------------------------------------
+sweep_state_load || exit 2
+failed=0 idx=0
+if [[ -s "$PENDING_DESTS" ]]; then
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}resuming${C_OFF} ${C_DIM}retrying $(sort -u "$PENDING_DESTS" | grep -c .) deferred deploy(s); already-minted secrets will not be reminted${C_OFF}"
+  deploy_pending || summary_and_exit 1
+fi
+# Minted entries whose deploys are already live but whose finalize never ran
+# (a crash or finalize failure between deploy_pending and finalize_minted).
+if [[ ${#MINTED_IDS[@]} -gt 0 ]]; then
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}resuming${C_OFF} ${C_DIM}finalizing ${#MINTED_IDS[@]} minted entr(y/ies) whose deploys are live${C_OFF}"
+  finalize_minted || summary_and_exit 1
+fi
+retry_pending_finalizes || summary_and_exit 1
+if [[ ${#COMPLETED_IDS[@]} -gt 0 || ${#MINTED_IDS[@]} -gt 0 ]]; then
+  echo "${C_DIM}  checkpoint: $(( ${#COMPLETED_IDS[@]} + ${#MINTED_IDS[@]} )) already completed this sweep — not reminting${C_OFF}"
+  done_json="$(sweep_ids_json ${COMPLETED_IDS[@]+"${COMPLETED_IDS[@]}"} ${MINTED_IDS[@]+"${MINTED_IDS[@]}"})"
+  run_json="$(jq -c --argjson done "$done_json" '[.[] | select(.id as $id | $done | index($id) | not)]' <<< "$run_json")"
   run_count="$(jq 'length' <<< "$run_json")"
 fi
-if [[ "$run_count" -eq 0 ]]; then
-  echo "${C_OK}✓${C_OFF} ${C_BOLD}sweep already complete${C_OFF} ${C_DIM}(checkpoint had nothing left)${C_OFF}"
-  sweep_state_clear
+if [[ "$run_count" -eq 0 && ${#MINTED_IDS[@]} -eq 0 ]]; then
+  if [[ -s "$PENDING_FINALIZE" ]]; then
+    echo "${C_ERR}!${C_OFF} ${C_BOLD}nothing left to mint${C_OFF} ${C_DIM}— predecessor cleanup still pending (see summary)${C_OFF}"
+  else
+    echo "${C_OK}✓${C_OFF} ${C_BOLD}sweep already complete${C_OFF} ${C_DIM}(checkpoint had nothing left)${C_OFF}"
+  fi
+  finalize_canary || summary_and_exit 1
   summary_and_exit 0
 fi
+[[ -n "$CANARY_REF" ]] || CANARY_REF="$PLAN_CANARY_REF"
 
-# Phase batches: postgres entries run in dest-disjoint + lock-disjoint waves
-# (same Render dest or same instance advisory lock stay sequential). Other
-# entries run concurrently when their 1Password items do not overlap.
-for phase in 1 2 3; do
-  phase_json="$(jq -c --argjson ph "$phase" '[.[] | select(.phase == $ph)]' <<< "$run_json")"
-  n="$(jq 'length' <<< "$phase_json")"
-  [[ "$n" -gt 0 ]] || continue
-
-  if [[ "$phase" -eq 1 || "$phase" -eq 3 ]]; then
-    # postgres: dest-disjoint + lock-disjoint waves. Same Render dest or the
-    # same instance advisory lock stay sequential (overlapping dests 202; same
-    # lock exits 2).
-    remaining="$phase_json"
-    while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
-      wave_split="$(split_postgres_wave "$remaining")"
-      current="$(jq -c '.now' <<< "$wave_split")"
-      remaining="$(jq -c '.later' <<< "$wave_split")"
-      bn="$(jq 'length' <<< "$current")"
-      pids=() ids=() entries=()
-      batch_t0=$SECONDS
-      while IFS= read -r entry; do
-        idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
-        xtra=""
-        if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then
-          xtra="--keep-old"; first_staging_pg=0
-          CANARY_REF="$(jq -r '.ref' <<< "$entry")"
-          sweep_state_save
-        fi
-        how="postgres"
-        [[ "$bn" -gt 1 ]] && how="postgres, parallel x$bn"
-        echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id${xtra:+ ${C_DIM}$xtra${C_OFF}} ${C_DIM}($how)${C_OFF}"
-        logf="$logdir/$id.log"; : > "$logf"
-        (
-          rc=0
-          rotate_one "$entry" "$logf" "$xtra" || rc=$?
-          if [[ "$rc" -ne 0 ]] && grep -q 'rerun with --resume' "$logf"; then
-            echo "  unfinished rotation state found — resuming it" >> "$logf"
-            rc=0; rotate_one "$entry" "$logf" "--resume" || rc=$?
-          fi
-          exit "$rc"
-        ) &
-        pids+=($!); ids+=("$id"); entries+=("$entry")
-      done < <(jq -c '.[]' <<< "$current")
-      i=0
-      for pid in "${pids[@]}"; do
-        rc=0; wait "$pid" || rc=$?
-        dt=$((SECONDS - batch_t0))
-        id="${ids[$i]}"; entry="${entries[$i]}"
-        if [[ "$rc" -ne 0 ]]; then
-          entry_fail "$id" "$rc" "$dt" "$logdir/$id.log"
-          record_result "$id" "failed" "$dt"
-          failed=$((failed + 1))
-        else
-          kind="$(entry_kind "$entry")"
-          entry_ok "$id" "$dt" "$logdir/$id.log" "$kind"
-          record_result "$id" "ok" "$dt" "$kind"
-          sweep_mark_completed "$id"
-          ran=$((ran + 1))
-        fi
-        i=$((i + 1))
-      done
-      [[ "$failed" -eq 0 ]] || summary_and_exit 1
-    done
-  else
-    # non-postgres: deploys are deferred to finalize_pending_deploys, so env
-    # saves cannot race — the whole phase runs as one parallel batch.
-    remaining="$phase_json"
-    while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
-      # Wave partitioning: entries whose refs live in the SAME 1Password item
-      # (grouped items hold several rotated fields) must not write concurrently
-      # — each edit replaces the whole item, so parallel writers race on the
-      # item version (409 Conflict; the vault layer retries, but not racing at
-      # all is cheaper and deterministic). Take, per item, only the first
-      # entry into this wave; the rest run in the next wave. Worst observed
-      # depth is 3 (Decrypt proxy staging), so this adds at most ~2 waves.
-      wave_split="$(jq -c '
-        def items: ([.ref] + (.sync_refs // [])) | map(select(startswith("op://")) | sub("^op://"; "") | sub("/[^/]*$"; ""));
-        . as $all
-        | reduce range(0; length) as $i ({claimed: [], now: [], later: []};
-            ($all[$i] | items) as $mine
-            | if ([.claimed[]] | any(. as $c | $mine | index($c) != null))
-              then .later += [$all[$i]]
-              else .now += [$all[$i]] | .claimed += $mine
-              end)
-        | {now: .now, later: .later}' <<< "$remaining")"
-      current="$(jq -c '.now' <<< "$wave_split")"
-      remaining="$(jq -c '.later' <<< "$wave_split")"
-      bn="$(jq 'length' <<< "$current")"
-      pids=() ids=() entries=()
-      batch_t0=$SECONDS
-      while IFS= read -r entry; do
-        idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
-        echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id ${C_DIM}(parallel x$bn)${C_OFF}"
-        logf="$logdir/$id.log"; : > "$logf"
-        rotate_one "$entry" "$logf" "" 1 &
-        pids+=($!); ids+=("$id"); entries+=("$entry")
-      done < <(jq -c '.[]' <<< "$current")
-      i=0
-      for pid in "${pids[@]}"; do
-        rc=0; wait "$pid" || rc=$?
-        dt=$((SECONDS - batch_t0))
-        id="${ids[$i]}"; entry="${entries[$i]}"
-        if [[ "$rc" -ne 0 ]]; then
-          entry_fail "$id" "$rc" "$dt" "$logdir/$id.log"
-          record_result "$id" "failed" "$dt"
-          failed=$((failed + 1))
-        else
-          kind="$(entry_kind "$entry")"
-          entry_ok "$id" "$dt" "$logdir/$id.log" "$kind"
-          record_result "$id" "ok" "$dt" "$kind"
-          sweep_mark_minted "$id"
-          ran=$((ran + 1))
-        fi
-        i=$((i + 1))
-      done
-      [[ "$failed" -eq 0 ]] || summary_and_exit 1
-    done
-    if [[ "$dry" -eq 0 ]]; then
-      sweep_capture_pending_dests
-      finalize_pending_deploys || summary_and_exit 1
-      sweep_promote_minted
+run_wave() { # phase, wave json -> 0 | 1 (failed; results recorded)
+  local phase="$1" current="$2" bn entry id logf pid i rc dt kind how batch_t0
+  local pids=() ids=() entries=()
+  bn="$(jq 'length' <<< "$current")"
+  batch_t0=$SECONDS
+  while IFS= read -r entry; do
+    idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
+    how="$(phase_label "$phase")"; [[ "$bn" -gt 1 ]] && how="$how, parallel x$bn"
+    [[ "$(jq -r '.ref' <<< "$entry")" == "$CANARY_REF" ]] && how="$how, canary"
+    echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id ${C_DIM}($how)${C_OFF}"
+    logf="$logdir/$id.log"; : > "$logf"
+    if [[ "$phase" -eq 1 || "$phase" -eq 4 ]]; then
+      rotate_postgres_entry "$entry" "$logf" &
+    elif [[ "$(jq -r '.auto' <<< "$entry")" != "true" ]]; then
+      sync_entry "$entry" "$logf" &
+    elif jq -e '(.sync_repos // []) | length > 0' <<< "$entry" >/dev/null; then
+      rotate_standalone_entry "$entry" "$logf" &
+    else
+      rotate_batched_entry "$entry" "$logf" &
     fi
-  fi
+    pids+=($!); ids+=("$id"); entries+=("$entry")
+  done < <(jq -c '.[]' <<< "$current")
+  i=0
+  for pid in "${pids[@]}"; do
+    rc=0; wait "$pid" || rc=$?
+    dt=$((SECONDS - batch_t0))
+    id="${ids[$i]}"; entry="${entries[$i]}"
+    if [[ "$rc" -ne 0 ]]; then
+      entry_fail "$id" "$rc" "$dt" "$logdir/$id.log"
+      record_result "$id" "failed" "$dt"
+      failed=$((failed + 1))
+    else
+      kind="$(entry_kind "$entry")"
+      entry_ok "$id" "$dt" "$logdir/$id.log" "$kind"
+      record_result "$id" "ok" "$dt" "$kind"
+      if [[ "$phase" -eq 2 || "$phase" -eq 3 ]] \
+         && ! { [[ "$kind" == "rotated" ]] && jq -e '(.sync_repos // []) | length > 0' <<< "$entry" >/dev/null; }; then
+        sweep_mark_minted "$id" "$entry"
+      else
+        sweep_mark_completed "$id"
+      fi
+      if [[ -e "$logdir/$id.finalize-pending" ]]; then
+        pending_finalize_add "$id"
+        echo "  ${C_ERR}!${C_OFF} ${C_DIM}finalize pending for $id (predecessor still valid; retried on the next run)${C_OFF}"
+      fi
+    fi
+    i=$((i + 1))
+  done
+  [[ "$failed" -eq 0 ]]
+}
 
+for phase in 1 2 3 4; do
+  waves="$(waves_for_phase "$phase")"
+  # Entries already completed by a previous run were filtered out of run_json;
+  # the waves keep their plan-time shape, so drop those ids here.
+  waves="$(jq -c --argjson run "$run_json" '[.[] | [.[] | select(.id as $id | $run | any(.[]; .id == $id))] | select(length > 0)]' <<< "$waves")"
+  while IFS= read -r current; do
+    [[ -n "$current" ]] || continue
+    run_wave "$phase" "$current" || summary_and_exit 1
+  done < <(jq -c '.[]' <<< "$waves")
+  # Batched phases deploy + finalize whatever is minted — even with no wave
+  # left to run, so a resumed sweep never exits with minted ids unfinalized.
+  if [[ "$phase" -eq 2 || "$phase" -eq 3 ]]; then
+    deploy_pending || summary_and_exit 1
+    finalize_minted || summary_and_exit 1
+  fi
 done
 
 finalize_canary || summary_and_exit 1
