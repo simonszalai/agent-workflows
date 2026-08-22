@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Resolve one project credential in memory and bridge MCP stdio to HTTP."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import BinaryIO
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "hooks"))
+
+from mcp_auth import McpAuthError, resolve_autodev_memory  # noqa: E402
+
+
+WAF_SENTINEL = "@@B64@@"
+WAF_FIELDS = ("content", "summary", "description", "project_description")
+WRITE_TOOL = re.compile(r"^(create|update|absorb)_")
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+
+
+class BridgeError(RuntimeError):
+    """A bounded operator-facing bridge failure."""
+
+
+def fail(message: str) -> None:
+    print(f"mcp-bridge: {message}", file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def encode_waf_fields(message: object) -> object:
+    if not isinstance(message, dict) or message.get("method") != "tools/call":
+        return message
+    params = message.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+        return message
+    if not WRITE_TOOL.match(params["name"]):
+        return message
+    arguments = params.get("arguments")
+    if not isinstance(arguments, dict):
+        return message
+    for field in WAF_FIELDS:
+        value = arguments.get(field)
+        if isinstance(value, str) and value and not value.startswith(WAF_SENTINEL):
+            encoded = base64.b64encode(value.encode()).decode("ascii")
+            arguments[field] = WAF_SENTINEL + encoded
+    return message
+
+
+def emit(message: object) -> None:
+    sys.stdout.write(json.dumps(message, separators=(",", ":"), ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def emit_sse(response: BinaryIO) -> None:
+    data: list[str] = []
+    for raw in response:
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not line:
+            if data:
+                payload = "\n".join(data)
+                data.clear()
+                if payload != "[DONE]":
+                    emit(json.loads(payload))
+            continue
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+    if data:
+        emit(json.loads("\n".join(data)))
+
+
+class Bridge:
+    def __init__(self, url: str, bearer: str) -> None:
+        self.url = url
+        self.bearer = bearer
+        self.session_id = ""
+        self.protocol_version = ""
+
+    def request(self, message: object) -> None:
+        if (
+            isinstance(message, dict)
+            and message.get("method") == "initialize"
+            and isinstance(message.get("params"), dict)
+        ):
+            version = message["params"].get("protocolVersion")
+            if isinstance(version, str):
+                self.protocol_version = version
+        body = json.dumps(
+            encode_waf_fields(message), separators=(",", ":"), ensure_ascii=False,
+        ).encode()
+        if len(body) > MAX_MESSAGE_BYTES:
+            raise BridgeError("MCP message exceeded 16 MiB")
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {self.bearer}",
+            "Content-Type": "application/json",
+        }
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+        if self.protocol_version:
+            headers["MCP-Protocol-Version"] = self.protocol_version
+        request = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                session = response.headers.get("Mcp-Session-Id")
+                if session:
+                    self.session_id = session
+                if response.status in {202, 204}:
+                    return
+                content_type = response.headers.get_content_type()
+                if content_type == "text/event-stream":
+                    emit_sse(response)
+                    return
+                payload = response.read(MAX_MESSAGE_BYTES + 1)
+                if len(payload) > MAX_MESSAGE_BYTES:
+                    raise BridgeError("upstream response exceeded 16 MiB")
+                if payload:
+                    emit(json.loads(payload))
+        except urllib.error.HTTPError as error:
+            raise BridgeError(f"upstream returned HTTP {error.code}") from error
+        except urllib.error.URLError as error:
+            raise BridgeError(f"upstream connection failed: {error.reason}") from error
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise BridgeError(f"invalid upstream response: {error}") from error
+        finally:
+            body = b""
+
+    def close(self) -> None:
+        if not self.session_id:
+            return
+        headers = {
+            "Authorization": f"Bearer {self.bearer}",
+            "Mcp-Session-Id": self.session_id,
+        }
+        request = urllib.request.Request(self.url, headers=headers, method="DELETE")
+        try:
+            urllib.request.urlopen(request, timeout=2).close()
+        except (OSError, urllib.error.URLError):
+            pass
+
+
+def main() -> None:
+    default_cwd = Path(
+        os.environ.get("CONDUCTOR_ROOT_PATH")
+        or os.environ.get("CONDUCTOR_WORKSPACE_PATH")
+        or Path.cwd()
+    )
+    parser = argparse.ArgumentParser(prog="mcp-bridge")
+    parser.add_argument("server", choices=("autodev-memory",))
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--cwd", type=Path, default=default_cwd)
+    args = parser.parse_args()
+    try:
+        rest_url, bearer = resolve_autodev_memory(args.project, args.cwd.resolve())
+    except McpAuthError as error:
+        fail(str(error))
+
+    bridge = Bridge(rest_url + "/mcp", bearer)
+    try:
+        for raw in sys.stdin:
+            if not raw.strip():
+                continue
+            if len(raw.encode("utf-8")) > MAX_MESSAGE_BYTES:
+                emit({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "MCP message exceeded 16 MiB"},
+                })
+                continue
+            try:
+                message = json.loads(raw)
+                bridge.request(message)
+            except json.JSONDecodeError:
+                emit({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "invalid JSON on MCP stdio"},
+                })
+            except BridgeError as error:
+                request_id = message.get("id") if isinstance(message, dict) else None
+                if request_id is not None:
+                    emit({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {"code": -32000, "message": str(error)},
+                    })
+                else:
+                    print(f"mcp-bridge: {error}", file=sys.stderr, flush=True)
+    finally:
+        bridge.close()
+        bridge.bearer = ""
+        bearer = ""
+
+
+if __name__ == "__main__":
+    main()

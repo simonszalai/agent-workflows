@@ -33,26 +33,39 @@ class HookContractTest(unittest.TestCase):
         fake_bin = root / "bin"
         fake_bin.mkdir(exist_ok=True)
         fixture = json.loads((ROOT / "tests/fixtures/session-packet-v2.json").read_text())
-        fixture["repo"] = "agent-workflows"
+        fixture["repo"] = "autodev-memory"
+        repo = root / "repo"
+        repo.mkdir(exist_ok=True)
+        (repo / "CLAUDE.md").write_text("<!-- mem:project=autodev repo=autodev-memory -->\n")
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "remote", "add", "origin",
+            "https://github.com/simonszalai/autodev-memory.git",
+        ], check=True)
         response = root / "session-response.json"
         response.write_text(json.dumps(fixture))
         curl = fake_bin / "curl"
         curl.write_text(
             '#!/bin/sh\n'
             'if [ -n "${FAKE_CURL_ARGS:-}" ]; then printf "%s\\n" "$@" > "$FAKE_CURL_ARGS"; fi\n'
+            'if [ -n "${FAKE_CURL_HEADERS:-}" ]; then cat > "$FAKE_CURL_HEADERS"; fi\n'
             'cat "$FAKE_SESSION_RESPONSE"\nprintf "\\n200\\n"\n'
         )
         curl.chmod(0o755)
+        fake_op = fake_bin / "real-op"
+        fake_op.write_text('#!/bin/sh\nprintf "%s" "test-only-token"\n')
+        fake_op.chmod(0o755)
         env = os.environ.copy()
         env.update({
             "HOME": directory,
             "PATH": str(fake_bin) + os.pathsep + env["PATH"],
-            "AUTODEV_MEMORY_API_TOKEN": "test-only-token",
+            "AUTODEV_OP_SERVICE_ACCOUNT_TOKEN": "test-service-account",
+            "OP_REAL_BIN": str(fake_op),
             "FAKE_SESSION_RESPONSE": str(response),
             "CLAUDE_SESSION_ID": "parent-session",
         })
         payload: dict[str, object] = {
-            "source": "startup", "session_id": "parent-session", "cwd": str(ROOT),
+            "source": "startup", "session_id": "parent-session", "cwd": str(repo),
         }
         return env, payload
 
@@ -60,9 +73,11 @@ class HookContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             env, payload = self._session_env(directory)
             args = Path(directory) / "curl-args"
+            headers = Path(directory) / "curl-headers"
             env.update({
                 "CONDUCTOR_IS_LOCAL": "1",
                 "FAKE_CURL_ARGS": str(args),
+                "FAKE_CURL_HEADERS": str(headers),
                 "AUTODEV_MEMORY_API_URL": "https://wrong-project.invalid",
                 "AUTODEV_MEMORY_API_TOKEN": "wrong-project-bearer",
             })
@@ -72,9 +87,10 @@ class HookContractTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             curl_args = args.read_text()
-            self.assertIn("http://127.0.0.1:8792/autodev/session-init", curl_args)
+            self.assertIn("https://autodev-memory.onrender.com/session-init", curl_args)
             self.assertNotIn("Authorization:", curl_args)
             self.assertNotIn("wrong-project", curl_args)
+            self.assertEqual(headers.read_text(), "Authorization: Bearer test-only-token\n")
 
     def test_external_explicit_packet_suppresses_ambient_session_start(self) -> None:
         env = os.environ.copy()

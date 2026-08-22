@@ -19,6 +19,7 @@ from memory_context import (
     render_task_packet,
     telemetry_session_key,
 )
+from mcp_auth import McpAuthError, resolve_autodev_memory
 
 
 VALID_TYPES = {
@@ -63,8 +64,8 @@ def _frontmatter(path: Path) -> dict[str, Any]:
     current = ""
     for raw in block.splitlines():
         item = re.match(r"^\s+-\s+(.+?)\s*$", raw)
-        if item and current:
-            result.setdefault(current, []).append(item.group(1).strip("\"'"))
+        if item and current and isinstance(result.get(current), list):
+            result[current].append(item.group(1).strip("\"'"))
             continue
         match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", raw)
         if not match:
@@ -108,32 +109,15 @@ def selection_for_agent(cwd: Path, agent_type: str) -> tuple[list[str], list[str
     return list(dict.fromkeys(tags)), list(dict.fromkeys(types))
 
 
-def load_api_config(project: str) -> tuple[str, str]:
-    values: dict[str, str] = {}
-    env_file = Path.home() / ".config" / "autodev-memory" / ".env"
-    try:
-        lines = env_file.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    for raw in lines:
-        line = raw.strip()
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key.strip()):
-            values[key.strip()] = value.strip().strip("\"'")
-    if os.environ.get("CONDUCTOR_IS_LOCAL") in {"0", "1"} and project:
-        route = "workflow-pro" if project == "workflow_pro" else project
-        return f"http://127.0.0.1:8792/{route}", ""
-    url = os.environ.get("AUTODEV_MEMORY_API_URL", values.get("AUTODEV_MEMORY_API_URL", ""))
-    token = os.environ.get("AUTODEV_MEMORY_API_TOKEN", values.get("AUTODEV_MEMORY_API_TOKEN", ""))
-    return url.rstrip("/"), token
+def load_api_config(project: str, cwd: Path | None = None) -> tuple[str, str]:
+    return resolve_autodev_memory(project, (cwd or Path.cwd()).resolve())
 
 
-def _post(path: str, body: dict[str, Any], *, repo: str, timeout: float = 10) -> dict[str, Any]:
-    url, token = load_api_config(str(body.get("project", "")))
+def _post(
+    path: str, body: dict[str, Any], *, repo: str, cwd: Path | None = None,
+    timeout: float = 10,
+) -> dict[str, Any]:
+    url, token = load_api_config(str(body.get("project", "")), cwd)
     if not url:
         raise RuntimeError("configuration_unavailable")
     headers = {
@@ -159,6 +143,7 @@ def _post(path: str, body: dict[str, Any], *, repo: str, timeout: float = 10) ->
 def retrieve_task_context(
     *, project: str, repo: str, prompt: str, tags: list[str], types: list[str],
     exclude_ids: list[str], corpus_generation: str, external_no_mcp: bool,
+    cwd: Path | None = None,
 ) -> RetrievalOutcome:
     """Load role rules, rank semantic gaps from the actual task, then optionally pre-expand."""
     by_skill: dict[str, Any] = {"entries": [], "count": 0}
@@ -171,8 +156,9 @@ def retrieve_task_context(
             by_skill = _post("/entries/by-skill", {
                 "project": project, "repo": repo, "tags": tags, "types": types,
                 "exclude_ids": exclude_ids, "limit": 12, "scope_mode": "current_repo",
-            }, repo=repo)
-        except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, ValueError):
+            }, repo=repo, cwd=cwd)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, ValueError,
+                McpAuthError):
             failures.append("by_skill")
     if prompt.strip():
         attempted = True
@@ -184,8 +170,9 @@ def retrieve_task_context(
                 "exclude_ids": exclude_ids,
                 "detail": "compact",
                 "scope_mode": "current_repo",
-            }, repo=repo)
-        except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, ValueError):
+            }, repo=repo, cwd=cwd)
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, ValueError,
+                McpAuthError):
             failures.append("search")
     if attempted and len(failures) == int(bool(tags or types)) + int(bool(prompt.strip())):
         return RetrievalOutcome(
@@ -228,7 +215,7 @@ def retrieve_task_context(
             expanded = _post("/entries/expand", {
                 "project": project, "repo": repo, "scope_mode": "current_repo",
                 "corpus_generation": generation, "entry_ids": outcome.selected_ids,
-            }, repo=repo)
+            }, repo=repo, cwd=cwd)
             by_id = {
                 str(item.get("entry_id")): item.get("entry", {})
                 for item in expanded.get("items", []) if isinstance(item, dict)
@@ -249,7 +236,8 @@ def retrieve_task_context(
                 outcome.expansion_status = "unavailable"
                 outcome.status = "partial"
                 outcome.failure_stage = "expansion"
-        except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, ValueError):
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, RuntimeError, ValueError,
+                McpAuthError):
             outcome.expansion_status = "failed"
             outcome.status = "partial"
             outcome.failure_stage = "expansion"
@@ -295,6 +283,7 @@ def build_task_packet(
         exclude_ids=[x for x in (manifest or {}).get("exclude_ids", []) if isinstance(x, str)],
         corpus_generation=str((manifest or {}).get("corpus_generation", "")),
         external_no_mcp=mechanism.startswith("external"),
+        cwd=cwd,
     )
     packet_status = (
         "base_unavailable" if not manifest

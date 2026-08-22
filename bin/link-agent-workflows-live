@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -233,6 +234,12 @@ def link_live(source: Path, home: Path) -> None:
     _link_bins(home, source, store)
     _merge_hooks(settings_paths[0], home / ".claude/hooks")
     _merge_hooks(settings_paths[1], home / ".codex/hooks")
+    synced = subprocess.run(
+        [str(source / "bin/sync-mcp"), "--user", "--home", str(home)],
+        check=False,
+    )
+    if synced.returncode:
+        raise SystemExit("link-agent-workflows-live: MCP user configuration sync failed")
     _remove_pinned_store(store)
 
 

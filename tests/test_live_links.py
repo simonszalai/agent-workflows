@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -28,6 +29,9 @@ class LiveLinksTest(unittest.TestCase):
         executable = source / "bin/tool"
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
+        shutil.copy2(ROOT / "bin/sync-mcp", source / "bin/sync-mcp")
+        (source / "config").mkdir()
+        shutil.copy2(ROOT / "config/mcp.json", source / "config/mcp.json")
         return source
 
     def run_linker(self, source: Path, home: Path) -> subprocess.CompletedProcess[str]:

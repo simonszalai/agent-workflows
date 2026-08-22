@@ -45,40 +45,42 @@ Running `bin/install-agent-workflows` without `--version` now performs this same
 so an old setup command cannot silently repin the machine. Pinned, one-way environments must pass
 an explicit `--version <commit>`; that mode exports the exact commit into an immutable version tree.
 
-### MCP access — two loopback proxies + CLI wrappers (2026-07-28 consolidation)
+### MCP access — native HTTP plus per-session bridge
 
-Only two shared development proxy processes exist: **autodev-memory**
-(`127.0.0.1:8792/<project>/*`) and **context7** (`127.0.0.1:8793`). AutoDEV's one process
-routes the checked-in project prefixes `amaru`, `autodev`, `ts`, and `workflow-pro` to
-separate project-restricted bearers. The upstream service pins every tool/REST request to
-the selected bearer, so a model-supplied wrong project argument cannot cross the route.
-There is no default route.
+`config/mcp.json` is the single values-free manifest for all four supported clients. `bin/sync-mcp`
+renders it into Claude (`.mcp.json`), Codex (`.codex/config.toml`), Cursor
+(`.cursor/mcp.json`), and Grok (`.grok/config.toml`) without replacing unrelated client settings.
+Project configs include the global servers so a fresh cloud workspace is self-contained:
 
-Both processes use `mcp-proxies/mcp-proxy.mjs` and resolve their values-free env files once
-at startup. Each AutoDEV bearer is read with its own project's Keychain service-account token;
-Context7 uses `op-ts-token`. The launcher then replaces itself with Node, so only two proxy
-processes remain. Bearers remain only in process memory and no 1Password call occurs per MCP request. Repos check in
-static project URLs in `.mcp.json`, `.codex/config.toml`, and `.grok/config.toml`; clients
-hold no secrets and there is no user-scope MCP config. Install once per machine:
+- Conductor uses its native HTTPS/OAuth endpoint.
+- Context7 uses its native unauthenticated HTTPS endpoint.
+- Amaru repositories add Amaru's native HTTPS/OAuth endpoint.
+- Autodev-memory runs through `bin/mcp-bridge`, one stdio child per client session.
+
+The bridge resolves the exact Git origin through `config/project-tools.json`, accepts only the
+matching project identity, reads only that project's restricted bearer from 1Password, and holds it
+in memory. Local sessions get the project service-account token from the exact Mac Keychain item;
+cloud sessions get it from the exact project-prefixed environment variable. Ambient unprefixed or
+cross-project 1Password credentials are removed before access. Client files contain no secrets,
+ports, daemons, health-check races, or shell-expanded bearer values. Autodev write fields retain the
+WAF-safe base64 transform.
+
+Local setup synchronizes only global user-scope servers; each repository owns its project servers:
 
 ```bash
-cp ~/dev/agent-workflows/mcp-proxies/com.simon.mcp-proxies.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.simon.mcp-proxies.plist
-~/dev/agent-workflows/mcp-proxies/start-proxies.sh status   # routes pinned + context7 healthy
+~/dev/agent-workflows/bin/link-agent-workflows-live
+~/dev/agent-workflows/bin/sync-mcp --project --cwd /path/to/repository
 ```
 
-AutoDEV route URLs use the project registry identity, for example
-`http://127.0.0.1:8792/amaru/mcp`; REST hooks use the same prefix, for example the
-base URL `http://127.0.0.1:8792/amaru`. The explicit route is the client-side identity;
-the restricted bearer is the server-side enforcement. Adding a project requires both a
-route entry and a server-recognized restricted bearer, followed by the identity canary in
-`start-proxies.sh status`.
+Cloud setup installs an exact agent-workflows snapshot and the small `op`/`jq` runtime, then syncs
+global and project servers at user scope as well as using the checked-in project files. The duplicate
+cloud registration intentionally avoids Codex/Grok folder-trust timing races; it contains the same
+values-free commands and endpoints. OAuth servers require each client's normal one-time browser
+login.
 
-Conductor cloud workspaces run `mcp-proxies/start-cloud-proxies.sh`. It resolves the exact
-Git origin through `config/project-tools.json`, reads only that project's restricted bearer,
-and starts a fixed-prefix AutoDEV proxy on the same port. The script also starts Context7,
-using an injected key when one exists and its documented lower unauthenticated rate limit
-otherwise. Cloud and Mac client files therefore use identical loopback URLs.
+Autodev-memory hooks use the same exact-origin resolver but fetch their restricted bearer inline per
+hook invocation. The extra 1Password read is deliberate: no credential-bearing background process
+survives the hook or client session.
 
 Everything else is a **CLI via the shell**, with the same silent per-call credential
 resolution (see the matching `skills/tool-*` references):
@@ -127,10 +129,9 @@ another project's vault path. PostgreSQL and Slack refs must be non-sensitive. A
 the requested optional tool profile fails closed instead of reaching for another project's
 service.
 
-The old `mcp-gateway` daemon (`127.0.0.1:8765`) is **retired and booted out of
-launchd** and fully deleted from this repo (2026-07-29), along with its `project-mcp`
-predecessor, the `mcp-remote` reaper, and the hermes analyst routes. All prior MCP config
-generations are superseded by the static loopback-proxy URLs above.
+The old `mcp-gateway`, `project-mcp`, `mcp-remote`, shared launchd router, and cloud proxy
+generations are retired. The only remaining loopback proxy is the fixed-upstream service used by
+the separate Hermes host; interactive coding clients never use it.
 
 The separate Hermes host reuses the same autodev-memory proxy and also runs a dedicated
 Conductor API MCP. Its reviewed source, hardened systemd units, installer, and operational

@@ -20,11 +20,13 @@ class InstallerTest(unittest.TestCase):
             (source / name).mkdir(parents=True, exist_ok=True)
         for relative in (
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
-            "hooks/memory_context.py", "hooks/task_packet.py", "bin/autodev-memory-task-packet",
+            "hooks/memory_context.py", "hooks/mcp_auth.py", "hooks/task_packet.py",
+            "bin/autodev-memory-task-packet",
             "bin/install-agent-workflows", "bin/link-agent-workflows-live",
-            "bin/project-context", "bin/psql-cli", "bin/render-cli", "bin/resend-cli",
+            "bin/mcp-bridge", "bin/project-context", "bin/psql-cli", "bin/render-cli",
+            "bin/resend-cli", "bin/setup-agent-workflows-cloud", "bin/sync-mcp",
             "bin/.protected-route-security-floor",
-            "config/project-tools.json",
+            "config/mcp.json", "config/project-tools.json",
         ):
             shutil.copy2(ROOT / relative, source / relative)
         (source / "agents/builder.md").write_text("builder v1")
