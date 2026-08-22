@@ -86,6 +86,51 @@ class InstallerTest(unittest.TestCase):
             self.assertTrue((home / ".claude/skills/added-later/SKILL.md").is_file())
             self.assertTrue((home / ".cursor/skills/added-later/SKILL.md").is_file())
 
+    def test_install_deduplicates_managed_hook_path_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            home = root / "home"
+            settings = home / ".claude/settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(json.dumps({
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command":
+                                    "~/.claude/hooks/autodev-memory-session-start.sh"}]},
+                        {"hooks": [{"type": "command", "command": str(
+                            home / ".claude/hooks/autodev-memory-session-start.sh"
+                        )}]},
+                    ],
+                    "PreToolUse": [
+                        {"matcher": "Agent", "hooks": [{
+                            "type": "command",
+                            "command": "$HOME/.claude/hooks/autodev-memory-pre-agent.sh",
+                        }]},
+                        {"matcher": "Keep", "hooks": [{
+                            "type": "command", "command": "/usr/local/bin/personal-hook",
+                        }]},
+                    ],
+                },
+            }))
+
+            result = self.run_install(source, home)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            merged = json.loads(settings.read_text())["hooks"]
+            self.assertEqual(len(merged["SessionStart"]), 1)
+            commands = [
+                hook["command"]
+                for group in merged["PreToolUse"]
+                for hook in group.get("hooks", [])
+            ]
+            self.assertEqual(
+                sum(command.endswith("/.claude/hooks/autodev-memory-pre-agent.sh")
+                    for command in commands),
+                1,
+            )
+            self.assertIn("/usr/local/bin/personal-hook", commands)
+
     def test_fresh_upgrade_and_rollback_in_temporary_home(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -182,6 +182,39 @@ def _atomic_json(path: Path, value: object) -> None:
         raise
 
 
+def _managed_hook_aliases(hook_root: Path, filename: str) -> set[str]:
+    home = hook_root.parents[1]
+    relative = (hook_root / filename).relative_to(home).as_posix()
+    return {
+        str(hook_root / filename),
+        str((hook_root / filename).resolve(strict=False)),
+        f"~/{relative}",
+        f"$HOME/{relative}",
+        f"${{HOME}}/{relative}",
+    }
+
+
+def _without_managed_hook_aliases(values: list[object], aliases: set[str]) -> list[object]:
+    kept: list[object] = []
+    for value in values:
+        if not isinstance(value, dict) or not isinstance(value.get("hooks"), list):
+            kept.append(value)
+            continue
+        remaining = []
+        for hook in value["hooks"]:
+            command = hook.get("command") if isinstance(hook, dict) else None
+            matches = isinstance(command, str) and command in aliases
+            if isinstance(command, str) and command.startswith("/"):
+                matches = matches or str(Path(command).resolve(strict=False)) in aliases
+            if not (isinstance(hook, dict) and hook.get("type") == "command" and matches):
+                remaining.append(hook)
+        if remaining:
+            updated = dict(value)
+            updated["hooks"] = remaining
+            kept.append(updated)
+    return kept
+
+
 def _merge_hooks(path: Path, hook_root: Path) -> None:
     settings = _read_settings(path)
     hooks = settings.setdefault("hooks", {})
@@ -190,13 +223,15 @@ def _merge_hooks(path: Path, hook_root: Path) -> None:
         "PreToolUse": str(hook_root / "autodev-memory-pre-agent.sh"),
     }
     for event, command in desired.items():
-        values = hooks.setdefault(event, [])
-        if any(command in json.dumps(item) for item in values):
-            continue
+        filename = Path(command).name
+        values = _without_managed_hook_aliases(
+            hooks.setdefault(event, []), _managed_hook_aliases(hook_root, filename),
+        )
         entry: dict[str, object] = {"hooks": [{"type": "command", "command": command}]}
         if event == "PreToolUse":
             entry["matcher"] = "Agent"
         values.append(entry)
+        hooks[event] = values
     _atomic_json(path, settings)
 
 
