@@ -31,7 +31,13 @@ _MEM_LOG_FILE="$_MEM_LOG_DIR/hooks.log"
 _MEM_LOG_MAX_BYTES=1048576  # 1MB
 _MEM_LOG_HOOK_NAME=$(basename "${0:-unknown}" .sh)
 _MEM_LOG_CWD=""
-_MEM_AGENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+_MEM_LIB_REALPATH=$(python3 -c '
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).resolve())
+' "${BASH_SOURCE[0]}")
+_MEM_AGENT_ROOT="$(cd "$(dirname "$_MEM_LIB_REALPATH")/.." && pwd)"
+unset _MEM_LIB_REALPATH
 
 mkdir -p "$_MEM_LOG_DIR" 2>/dev/null || true
 

@@ -92,6 +92,25 @@ class HookContractTest(unittest.TestCase):
             self.assertNotIn("wrong-project", curl_args)
             self.assertEqual(headers.read_text(), "Authorization: Bearer test-only-token\n")
 
+    def test_installed_session_hook_resolves_agent_root_through_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env, payload = self._session_env(directory)
+            installed_hooks = Path(directory) / ".claude/hooks"
+            installed_hooks.mkdir(parents=True)
+            for source in (ROOT / "hooks").iterdir():
+                if source.is_file():
+                    (installed_hooks / source.name).symlink_to(source)
+
+            result = subprocess.run(
+                [str(installed_hooks / "autodev-memory-session-start.sh")],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn('status="delivered"', context)
+            self.assertNotIn('status="unavailable"', context)
+
     def test_external_explicit_packet_suppresses_ambient_session_start(self) -> None:
         env = os.environ.copy()
         env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"
