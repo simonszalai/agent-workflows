@@ -124,6 +124,68 @@ class McpBridgeTest(unittest.TestCase):
             self.assertEqual(decoded, "SELECT * FROM secret_table")
             self.assertEqual(arguments["title"], "safe")
 
+    def test_conductor_bridge_uses_env_bearer_and_skips_waf_transform(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
+        RecordingHandler.requests = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        messages = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            }},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "create_workspace",
+                "arguments": {"description": "SELECT * FROM plans", "name": "ws"},
+            }},
+        ]
+        env = os.environ.copy()
+        env.update({
+            "CONDUCTOR_API_URL": f"http://127.0.0.1:{server.server_port}",
+            "CONDUCTOR_API_KEY": "workspace-scoped-key",
+        })
+        result = subprocess.run(
+            [str(BRIDGE), "conductor"],
+            input="".join(json.dumps(message) + "\n" for message in messages),
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        responses = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([response["id"] for response in responses], [1, 2])
+        self.assertEqual(len(RecordingHandler.requests), 2)
+        for request in RecordingHandler.requests:
+            self.assertEqual(request["authorization"], "Bearer workspace-scoped-key")
+        arguments = RecordingHandler.requests[1]["body"]["params"]["arguments"]
+        self.assertEqual(arguments["description"], "SELECT * FROM plans")
+
+    def test_conductor_bridge_prefers_explicit_token_over_workspace_key(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
+        RecordingHandler.requests = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        message = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        env = os.environ.copy()
+        env.update({
+            "CONDUCTOR_API_URL": f"http://127.0.0.1:{server.server_port}",
+            "CONDUCTOR_API_TOKEN": "explicit-token",
+            "CONDUCTOR_API_KEY": "workspace-scoped-key",
+        })
+        result = subprocess.run(
+            [str(BRIDGE), "conductor"],
+            input=json.dumps(message) + "\n",
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            RecordingHandler.requests[0]["authorization"], "Bearer explicit-token",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

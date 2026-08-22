@@ -49,7 +49,12 @@ class SyncMcpTest(unittest.TestCase):
             )
             self.assertIn('"$HOME/.local/bin/mcp-bridge"',
                           claude["autodev-memory"]["args"][1])
-            self.assertEqual(claude["conductor"]["type"], "http")
+            self.assertEqual(claude["conductor"]["type"], "stdio")
+            self.assertEqual(claude["conductor"]["command"], "sh")
+            self.assertIn(
+                '"$HOME/.local/bin/mcp-bridge" conductor',
+                claude["conductor"]["args"][1],
+            )
             self.assertEqual(claude["context7"]["url"], "https://mcp.context7.com/mcp")
             self.assertNotIn("render", cursor)
             self.assertIn("team-owned", cursor)

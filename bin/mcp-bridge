@@ -18,7 +18,7 @@ from typing import BinaryIO
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hooks"))
 
-from mcp_auth import McpAuthError, resolve_autodev_memory  # noqa: E402
+from mcp_auth import McpAuthError, resolve_autodev_memory, resolve_conductor  # noqa: E402
 
 
 WAF_SENTINEL = "@@B64@@"
@@ -98,9 +98,10 @@ def emit_sse(response: BinaryIO) -> None:
 
 
 class Bridge:
-    def __init__(self, url: str, bearer: str) -> None:
+    def __init__(self, url: str, bearer: str, *, waf_transform: bool) -> None:
         self.url = url
         self.bearer = bearer
+        self.waf_transform = waf_transform
         self.session_id = ""
         self.protocol_version = ""
 
@@ -113,9 +114,9 @@ class Bridge:
             version = message["params"].get("protocolVersion")
             if isinstance(version, str):
                 self.protocol_version = version
-        body = json.dumps(
-            encode_waf_fields(message), separators=(",", ":"), ensure_ascii=False,
-        ).encode()
+        if self.waf_transform:
+            message = encode_waf_fields(message)
+        body = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode()
         if len(body) > MAX_MESSAGE_BYTES:
             raise BridgeError("MCP message exceeded 16 MiB")
         headers = {
@@ -169,16 +170,24 @@ class Bridge:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="mcp-bridge")
-    parser.add_argument("server", choices=("autodev-memory",))
-    parser.add_argument("--project", required=True)
+    parser.add_argument("server", choices=("autodev-memory", "conductor"))
+    parser.add_argument("--project")
     parser.add_argument("--cwd", type=Path, default=default_working_directory())
     args = parser.parse_args()
     try:
-        rest_url, bearer = resolve_autodev_memory(args.project, args.cwd.resolve())
+        if args.server == "autodev-memory":
+            if not args.project:
+                fail("--project is required for autodev-memory")
+            rest_url, bearer = resolve_autodev_memory(args.project, args.cwd.resolve())
+            url = rest_url + "/mcp"
+        else:
+            if args.project:
+                fail("--project is not accepted for conductor")
+            url, bearer = resolve_conductor()
     except McpAuthError as error:
         fail(str(error))
 
-    bridge = Bridge(rest_url + "/mcp", bearer)
+    bridge = Bridge(url, bearer, waf_transform=args.server == "autodev-memory")
     try:
         for raw in sys.stdin:
             if not raw.strip():

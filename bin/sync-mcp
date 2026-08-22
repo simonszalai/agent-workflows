@@ -121,24 +121,24 @@ def servers_for(
     return [parse_server(name, merged[name]) for name in sorted(merged)]
 
 
-def bridge_args(server: Server, project: str) -> tuple[str, list[str]]:
-    if server.profile != "autodev_memory":
-        fail(f"no bridge implementation for profile {server.profile!r}")
-    command = "sh"
-    args = [
-        "-lc",
-        'exec "$HOME/.local/bin/mcp-bridge" autodev-memory --project "$1"',
-        "mcp-bridge",
-        project,
-    ]
-    return command, args
+def bridge_args(server: Server, project: str | None) -> tuple[str, list[str]]:
+    if server.profile == "autodev_memory":
+        if not project:
+            fail(f"project is required for {server.name}")
+        return "sh", [
+            "-lc",
+            'exec "$HOME/.local/bin/mcp-bridge" autodev-memory --project "$1"',
+            "mcp-bridge",
+            project,
+        ]
+    if server.profile == "conductor":
+        return "sh", ["-lc", 'exec "$HOME/.local/bin/mcp-bridge" conductor']
+    fail(f"no bridge implementation for profile {server.profile!r}")
 
 
 def json_entry(server: Server, project: str | None) -> dict[str, object]:
     if server.transport == "http":
         return {"type": "http", "url": server.url}
-    if not project:
-        fail(f"project is required for {server.name}")
     command, args = bridge_args(server, project)
     return {"type": "stdio", "command": command, "args": args}
 
@@ -152,8 +152,6 @@ def toml_entry(server: Server, project: str | None, *, grok: bool) -> list[str]:
     if server.transport == "http":
         lines.append(f"url = {toml_string(server.url)}")
     else:
-        if not project:
-            fail(f"project is required for {server.name}")
         command, args = bridge_args(server, project)
         lines.append(f"command = {toml_string(command)}")
         rendered = ", ".join(toml_string(arg) for arg in args)

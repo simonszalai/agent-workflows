@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONTEXT = ROOT / "bin/project-context"
 DEFAULT_CONFIG = ROOT / "config/project-tools.json"
 TOKEN_ENV = re.compile(r"^[A-Z][A-Z0-9_]*_OP_SERVICE_ACCOUNT_TOKEN$")
+CONDUCTOR_DEFAULT_BASE = "https://api.conductor.build"
+CONDUCTOR_KEYCHAIN_SERVICE = "com.conductor.cli"
 
 
 class McpAuthError(RuntimeError):
@@ -101,3 +103,39 @@ def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
     if not bearer:
         raise McpAuthError("1Password returned an empty autodev-memory credential")
     return url.rstrip("/"), bearer
+
+
+def resolve_conductor() -> tuple[str, str]:
+    """Return the Conductor MCP URL and API bearer without persisting either.
+
+    Credential order matches the Conductor CLI: explicit CONDUCTOR_API_TOKEN,
+    then the workspace-scoped CONDUCTOR_API_KEY that Conductor injects into
+    machine-launched cloud workspaces, then the Mac Keychain entry written by
+    `conductor auth login` (service com.conductor.cli).
+    """
+    base = os.environ.get("CONDUCTOR_API_URL", "") or CONDUCTOR_DEFAULT_BASE
+    if not (
+        base.startswith("https://")
+        or base.startswith("http://127.0.0.1:")
+        or base.startswith("http://localhost:")
+    ):
+        raise McpAuthError("invalid Conductor API URL")
+    url = base.rstrip("/") + "/mcp"
+    for name in ("CONDUCTOR_API_TOKEN", "CONDUCTOR_API_KEY"):
+        bearer = os.environ.get(name, "")
+        if bearer:
+            return url, bearer
+    if sys.platform == "darwin":
+        try:
+            bearer = _run([
+                "security", "find-generic-password",
+                "-s", CONDUCTOR_KEYCHAIN_SERVICE, "-w",
+            ]).rstrip("\n")
+        except McpAuthError:
+            bearer = ""
+        if bearer:
+            return url, bearer
+    raise McpAuthError(
+        "no Conductor API credential: run `conductor auth login` on the Mac, "
+        "or launch from a Conductor cloud workspace (CONDUCTOR_API_KEY)"
+    )

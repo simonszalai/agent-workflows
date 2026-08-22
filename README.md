@@ -52,10 +52,15 @@ renders it into Claude (`.mcp.json`), Codex (`.codex/config.toml`), Cursor
 (`.cursor/mcp.json`), and Grok (`.grok/config.toml`) without replacing unrelated client settings.
 Project configs include the global servers so a fresh cloud workspace is self-contained:
 
-- Conductor uses its native HTTPS/OAuth endpoint.
 - Context7 uses its native unauthenticated HTTPS endpoint.
 - Amaru repositories add Amaru's native HTTPS/OAuth endpoint.
-- Autodev-memory runs through `bin/mcp-bridge`, one stdio child per client session.
+- Autodev-memory and Conductor run through `bin/mcp-bridge`, one stdio child per client session.
+  Conductor's bearer comes from `CONDUCTOR_API_TOKEN`, else the workspace-scoped
+  `CONDUCTOR_API_KEY` Conductor injects into machine-launched cloud workspaces, else the Mac
+  Keychain entry written by a one-time `conductor auth login` (service `com.conductor.cli`).
+  No browser OAuth is involved, so the same config works in every client, local and cloud.
+  The WAF base64 transform applies only to autodev-memory writes; Conductor bodies pass
+  through untouched.
 
 The bridge resolves the exact Git origin through `config/project-tools.json`, accepts only the
 matching project identity, reads only that project's restricted bearer from 1Password, and holds it
@@ -75,8 +80,8 @@ Local setup synchronizes only global user-scope servers; each repository owns it
 Cloud setup installs an exact agent-workflows snapshot and the small `op`/`jq` runtime, then syncs
 global and project servers at user scope as well as using the checked-in project files. The duplicate
 cloud registration intentionally avoids Codex/Grok folder-trust timing races; it contains the same
-values-free commands and endpoints. OAuth servers require each client's normal one-time browser
-login.
+values-free commands and endpoints. Remaining OAuth servers (Amaru) require each client's normal
+one-time browser login.
 
 Autodev-memory hooks use the same exact-origin resolver but fetch their restricted bearer inline per
 hook invocation. The extra 1Password read is deliberate: no credential-bearing background process
