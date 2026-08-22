@@ -48,7 +48,28 @@ class LiveLinksTest(unittest.TestCase):
             home = root / "home"
             settings = home / ".claude/settings.json"
             settings.parent.mkdir(parents=True)
-            settings.write_text(json.dumps({"unrelated": {"keep": True}}))
+            settings.write_text(json.dumps({
+                "unrelated": {"keep": True},
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command":
+                                    "~/.claude/hooks/autodev-memory-session-start.sh"}]},
+                        {"hooks": [{"type": "command", "command": str(
+                            home / ".claude/hooks/autodev-memory-session-start.sh"
+                        )}]},
+                    ],
+                    "PreToolUse": [
+                        {"matcher": "Agent", "hooks": [{
+                            "type": "command",
+                            "command": "~/.claude/hooks/autodev-memory-pre-agent.sh",
+                        }]},
+                        {"matcher": "mcp__autodev-memory__search", "hooks": [{
+                            "type": "command",
+                            "command": "~/.claude/hooks/mcp-schema-guard.py",
+                        }]},
+                    ],
+                },
+            }))
             external = root / "external-skill"
             external.mkdir()
             (source / "skills/external").symlink_to(external)
@@ -89,6 +110,17 @@ class LiveLinksTest(unittest.TestCase):
             merged = json.loads(settings.read_text())
             self.assertTrue(merged["unrelated"]["keep"])
             self.assertEqual(len(merged["hooks"]["SessionStart"]), 1)
+            pretool_commands = [
+                hook["command"]
+                for group in merged["hooks"]["PreToolUse"]
+                for hook in group.get("hooks", [])
+            ]
+            self.assertEqual(
+                sum(command.endswith("/.claude/hooks/autodev-memory-pre-agent.sh")
+                    for command in pretool_commands),
+                1,
+            )
+            self.assertIn("~/.claude/hooks/mcp-schema-guard.py", pretool_commands)
             self.assertEqual(
                 len(json.loads((home / ".codex/hooks.json").read_text())["hooks"]["PreToolUse"]),
                 1,
