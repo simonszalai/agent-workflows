@@ -337,6 +337,15 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("@ext-host:", url)
         self.assertIn("/mem_shared", url)
 
+    def test_migrator_default_privs_only_target_same_instance_roles(self) -> None:
+        # Cross-instance provision (autodev_mem_ts on the ts box) used to ALTER
+        # DEFAULT PRIVILEGES for autodev_app because the project-level role was
+        # always included and apps without instance defaulted to $own.
+        src = (ROOT / "bin" / "db-provision-roles").read_text()
+        self.assertIn("if $own == $p then .projects[$p].roles.app", src)
+        self.assertIn("select((.value.instance.project // $p) == $own)", src)
+        self.assertNotIn("select((.value.instance.project // $own) == $own)", src)
+
     def test_migrator_role_is_a_separate_principal_owning_its_own_credential(self) -> None:
         """The app role is revoked from alembic_version by design, so a service that
         migrates at boot needs its own principal. Before this, autodev-memory borrowed
@@ -368,20 +377,20 @@ class DbProvisionRolesAppModeTest(unittest.TestCase):
         self.assertIn("op://SHAREDV-sensitive/Postgres prod/memsvc_migrator", proc.stdout)
         self.assertEqual(self.sb.log_lines(), [])
 
-    def test_dedicated_box_migrator_sets_role_to_table_owner(self) -> None:
+    def test_dedicated_box_migrator_sets_role_to_itself(self) -> None:
         proc = self.provision("--project", "alpha", "--app", "migweb", "prod", "--reason", "t")
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         url = self.stored("ALPHAV-sensitive", "Postgres prod", "migweb_migrator")
         self.assertIn("migweb_migrator", url)
-        self.assertIn("options=-c%20role%3Dalpha_user", url)
-        self.assertNotIn("REASSIGN OWNED", proc.stdout)
+        self.assertIn("options=-c%20role%3Dmigweb_migrator", url)
+        self.assertNotIn("options=-c%20role%3Dalpha_user", url)
 
-    def test_dedicated_box_migrator_dry_run_does_not_reassign(self) -> None:
+    def test_dedicated_box_migrator_dry_run_reassigns_to_migrator(self) -> None:
         proc = self.provision("--project", "alpha", "--app", "migweb", "prod", "--dry-run")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("preferred SET ROLE alpha_user", proc.stdout)
-        self.assertIn("falls back to instance ROOT", proc.stdout)
-        self.assertNotIn("REASSIGN OWNED BY", proc.stdout)
+        self.assertIn("preferred SET ROLE migweb_migrator", proc.stdout)
+        self.assertIn("REASSIGN OWNED BY alpha_user TO migweb_migrator", proc.stdout)
+        self.assertNotIn("instance ROOT", proc.stdout)
 
     def test_cross_instance_app_provisions_on_owning_box_into_consumer_vault(self) -> None:
         proc = self.provision("--project", "shared", "--app", "crossapp", "prod", "--reason", "t")

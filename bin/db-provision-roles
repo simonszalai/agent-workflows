@@ -488,9 +488,9 @@ SQL
 # SET ROLE target:
 #   sql_role       — project SQL owner (autodev_owner). GRANT render is
 #                    impossible (no ADMIN OPTION).
-#   dedicated      — table_owner when someone we can connect as has ADMIN
-#                    (ts_root on ts_user). Otherwise the migrator itself,
-#                    after REASSIGN of the consumer database only.
+#   dedicated      — the migrator itself. Render Postgres has no superuser,
+#                    so GRANT table_owner is not a provision primitive;
+#                    consumer-DB objects are REASSIGNed.
 sql_grant_migrator_on_db() { # admin_url_for_db role — CONNECT + CREATE only
   local admin_url="$1" role="$2"
   ROLE_NAME="$role" run_psql_url "$admin_url" -q -v ON_ERROR_STOP=1 <<'SQL'
@@ -647,15 +647,7 @@ provision_app_tier() {
   own_owner_kind="$(jq -r ".projects[\"$own_project\"].owner_kind // \"render_credential\"" "$CONFIG")"
   own_owner_cred="$(cfg_get ".projects[\"$own_project\"].roles.owner")"
   own_render_project="$(cfg_get ".projects[\"$own_project\"].render_project")"
-  # Dedicated boxes SET ROLE table_owner. sql_role boxes cannot GRANT that
-  # role (`render` has no ADMIN OPTION holder), so the migrator SET ROLEs
-  # the SQL owner instead.
-  local mig_set_role
-  if [[ "$own_owner_kind" == "sql_role" ]]; then
-    mig_set_role="$own_owner_cred"
-  else
-    mig_set_role="$own_table_owner"
-  fi
+  # SET ROLE target is filled in after the migrator role name is known.
 
   # Databases the grants target: explicit app override, else the owning tier's
   # database plus extra_databases. First entry is the item URL's primary db.
@@ -673,6 +665,13 @@ provision_app_tier() {
   ro_role="$(jq -r ".projects[\"$PROJECT\"].apps[\"$APP\"].roles.ro // \"\"" "$CONFIG")"
   migrator_role="$(jq -r ".projects[\"$PROJECT\"].apps[\"$APP\"].roles.migrator // \"\"" "$CONFIG")"
   [[ -n "$app_role$ro_role$migrator_role" ]] || { echo "ERROR: app $APP declares no roles" >&2; return 2; }
+  local mig_set_role
+  if [[ "$own_owner_kind" == "sql_role" ]]; then
+    mig_set_role="$own_owner_cred"
+  else
+    # Render has no superuser. Do not GRANT ts_user/amaru_db_user.
+    mig_set_role="$migrator_role"
+  fi
   if [[ -n "$ROLES_ARG" ]]; then
     [[ "$WANT_APP" -eq 0 || -n "$app_role" ]] || { echo "ERROR: --roles app but $APP declares no app role" >&2; return 2; }
     [[ "$WANT_RO" -eq 0 || -n "$ro_role" ]] || { echo "ERROR: --roles ro but $APP declares no ro role" >&2; return 2; }
@@ -715,11 +714,7 @@ provision_app_tier() {
     [[ "$do_migrator" -eq 1 ]] && {
       echo "  would create/rotate LOGIN $migrator_role (preferred SET ROLE $mig_set_role on: ${dbs[*]})"
       echo "  would upsert op://$app_vault/$app_item/${app_field}_migrator"
-      if [[ "$own_owner_kind" == "sql_role" ]]; then
-        echo "  would REASSIGN OWNED BY $own_table_owner TO $mig_set_role on: ${dbs[*]}"
-      else
-        echo "  GRANT $own_table_owner falls back to instance ROOT, then to SET ROLE $migrator_role + REASSIGN"
-      fi
+      echo "  would REASSIGN OWNED BY $own_table_owner TO $mig_set_role on: ${dbs[*]}"
     }
     return 0
   fi
@@ -752,36 +747,11 @@ provision_app_tier() {
     echo "  admin session verified (current_user=$own_table_owner, login=$admin_user)"
   fi
 
-  local effective_mig_set_role="$mig_set_role" need_reassign=0
-  [[ "$own_owner_kind" == "sql_role" ]] && need_reassign=1
-  local own_root_ref=""
-  own_root_ref="$(jq -r ".projects[\"$own_project\"].admin_refs[\"$own_tier\"].root // empty" "$CONFIG")"
+  local effective_mig_set_role="$mig_set_role" need_reassign=1
 
   grant_migrator_set_role() { # grant_url db_name
-    local grant_url="$1" db_name="$2"
-    if sql_grant_role_membership "$grant_url" "$effective_mig_set_role" "$migrator_role" 2>/dev/null; then
-      return 0
-    fi
-    echo "  GRANT $effective_mig_set_role as owner failed on $db_name"
-    if [[ "$own_owner_kind" != "sql_role" && -n "$own_root_ref" ]]; then
-      local root_url root_db_url RU_USER RU_PASS RU_HOST RU_PORT RU_DB RU_QUERY
-      root_url="$(vault_read_optional "$own_root_ref")" || root_url=""
-      if [[ -n "$root_url" ]]; then
-        parse_url "$root_url"
-        echo "  retrying GRANT $own_table_owner via instance ROOT login=$U_USER"
-        RU_USER="$U_USER" RU_PASS="$U_PASS"
-        root_db_url="$(compose_url_db "$root_url" "$RU_USER" "$RU_PASS" "$db_name")"
-        if sql_grant_role_membership "$root_db_url" "$own_table_owner" "$migrator_role"; then
-          effective_mig_set_role="$own_table_owner"
-          return 0
-        fi
-        echo "  GRANT $own_table_owner via ROOT failed on $db_name"
-      fi
-    fi
-    # Last resort: SET ROLE the migrator itself and take ownership of this DB.
-    effective_mig_set_role="$migrator_role"
-    need_reassign=1
-    return 0
+    local grant_url="$1"
+    sql_grant_role_membership "$grant_url" "$effective_mig_set_role" "$migrator_role"
   }
 
   reassign_with_temp_membership() { # admin_as_table_owner _plain_unused db
@@ -893,9 +863,9 @@ provision_app_tier() {
         sql_default_privs_app_on_db "$mig_url_ext" "$def_app_role"
       done < <(jq -r --arg p "$PROJECT" --arg own "$own_project" --arg skip "$migrator_role" '
         [
-          .projects[$p].roles.app // empty,
+          (if $own == $p then .projects[$p].roles.app // empty else empty end),
           ((.projects[$p].apps // {}) | to_entries[]
-            | select((.value.instance.project // $own) == $own)
+            | select((.value.instance.project // $p) == $own)
             | .value.roles.app // empty)
         ] | map(select(. != "" and . != $skip)) | unique | .[]
       ' "$CONFIG")
@@ -904,9 +874,9 @@ provision_app_tier() {
         sql_default_privs_ro_on_db "$mig_url_ext" "$def_ro_role"
       done < <(jq -r --arg p "$PROJECT" --arg own "$own_project" '
         [
-          .projects[$p].roles.ro // empty,
+          (if $own == $p then .projects[$p].roles.ro // empty else empty end),
           ((.projects[$p].apps // {}) | to_entries[]
-            | select((.value.instance.project // $own) == $own)
+            | select((.value.instance.project // $p) == $own)
             | .value.roles.ro // empty)
         ] | map(select(. != "")) | unique | .[]
       ' "$CONFIG")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import stat
 import sys
@@ -279,6 +280,7 @@ class HermesScheduleTests(unittest.TestCase):
         runner = manifest["runner"]
         for key in ("poll_seconds", "retention_days_pass", "retention_days_fail"):
             self.assertIsInstance(runner[key], int)
+        self.assertEqual(runner["archive_on_complete"], ["PASS"])
         for entry in manifest["schedules"]:
             with self.subTest(entry=entry.get("name")):
                 self.assertIn(entry["slack_channel"], channels)
@@ -286,6 +288,9 @@ class HermesScheduleTests(unittest.TestCase):
                 self.assertGreater(entry["max_runtime_minutes"], 0)
                 self.assertTrue(entry["workspace"]["repo"])
                 self.assertTrue(entry["workspace"]["branch"])
+                # Scheduled runs pin the latest Codex model (Simon, 2026-08-22).
+                self.assertEqual(entry["workspace"]["agent"], "codex")
+                self.assertEqual(entry["workspace"]["model"], "gpt-5.6-sol")
                 prompt = HERMES / "schedules" / entry["prompt"]
                 self.assertTrue(prompt.is_file(), entry["prompt"])
                 self.assertNotEqual(entry["prompt"], "README.md")
@@ -1123,3 +1128,48 @@ class HermesScheduleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HermesArchiveOnCompleteTests(unittest.TestCase):
+    def _runner_with_state(self, tmp: str):
+        runner = load_schedule_runner()
+        os.environ["STATE_DIRECTORY"] = tmp
+        return runner
+
+    def test_pass_archives_immediately_and_marks_history(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            runner.record_run("health-6h", "PASS", "ws-1")
+            with mock.patch.object(runner, "conductor_call", return_value={}) as call:
+                archived = runner.archive_completed_workspace(
+                    {"runner": {"archive_on_complete": ["PASS"]}}, "health-6h", "PASS", "ws-1"
+                )
+            self.assertTrue(archived)
+            call.assert_called_once_with("archive_workspace", {"workspace_id": "ws-1"})
+            history = runner.history_path("health-6h").read_text().splitlines()
+            self.assertTrue(json.loads(history[-1])["archived"])
+
+    def test_fail_and_needs_more_time_are_left_open_by_default(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            with mock.patch.object(runner, "conductor_call") as call:
+                for status in ("FAIL", "BLOCKED", "NEEDS_MORE_TIME"):
+                    self.assertFalse(
+                        runner.archive_completed_workspace({"runner": {}}, "x", status, "ws-2")
+                    )
+            call.assert_not_called()
+
+    def test_archive_failure_is_best_effort(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            runner.record_run("x", "PASS", "ws-3")
+            with mock.patch.object(
+                runner, "conductor_call", side_effect=runner.RunnerError("boom")
+            ):
+                self.assertFalse(
+                    runner.archive_completed_workspace({"runner": {}}, "x", "PASS", "ws-3")
+                )
+            self.assertFalse(json.loads(runner.history_path("x").read_text())["archived"])

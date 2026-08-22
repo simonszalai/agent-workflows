@@ -105,6 +105,22 @@ for unit in "$ROOT"/hermes/systemd/hermes-schedule*; do
   esac
 done
 
+# Local hermes-agent patches (hermes/patches/*.patch) — behaviour fixes that
+# upstream lacks. Applied idempotently as the hermes user; a patch that is
+# already in the tree (by content) is skipped, a patch that no longer applies
+# fails the install so the drift is reviewed instead of silently lost.
+HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-${HERMES_HOME}/hermes-agent}"
+for patch in "$ROOT"/hermes/patches/*.patch; do
+  [ -f "$patch" ] || continue
+  if sudo -u hermes -H git -C "$HERMES_AGENT_DIR" apply --check --reverse "$patch" >/dev/null 2>&1; then
+    continue  # already applied
+  fi
+  sudo -u hermes -H git -C "$HERMES_AGENT_DIR" apply --check "$patch" ||
+    die "hermes-agent patch no longer applies: $patch"
+  sudo -u hermes -H git -C "$HERMES_AGENT_DIR" apply "$patch"
+  echo "hermes install: applied $(basename "$patch")"
+done
+
 "$HERMES_PYTHON" "$ROOT/hermes/configure.py" "$HERMES_CONFIG"
 chown hermes:hermes "$HERMES_CONFIG"
 chmod 0600 "$HERMES_CONFIG"

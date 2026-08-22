@@ -23,6 +23,10 @@ schedule channel for automatic/next-run continuation).
 - **Watchdog.** `hermes-schedule-watchdog.timer` (every 30 min) alerts `#autodev-incidents`
   when an enabled schedule has not reported within its cron interval plus `max_runtime` plus
   an hour of grace — green runs post, so silence means the scheduler is broken.
+- **Archive on completion.** A run whose final status is in `runner.archive_on_complete`
+  (default `[PASS]`) has its Conductor workspace archived immediately by the runner; archive
+  failures fall through to the retention sweep below. FAIL/BLOCKED stay open for triage and
+  NEEDS_MORE_TIME must stay open for its continuation.
 - **Workspace retention.** The watchdog archives PASS workspaces after
   `runner.retention_days_pass` days; FAIL/BLOCKED workspaces are retained
   `runner.retention_days_fail` days for triage before archival. NEEDS_MORE_TIME uses the longer

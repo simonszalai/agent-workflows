@@ -25,7 +25,7 @@ Autodev has **prod only** (no staging DB).
 | Workflow | `workflow_owner` | `workflow_app` | `workflow_ro` | prod `render` |
 | Autodev | `autodev_owner` (SQL) | `autodev_app` | `autodev_ro` | shared instance `render` |
 
-**TS note:** application tables are owned by `ts_user`, not `ts_root`. Owner URLs use `?options=-c role=ts_user`.
+**TS note:** application tables are owned by `ts_user`, not the Render default login (`ts_root`). Owner URLs use `?options=-c role=ts_user`. Render Postgres has no superuser: `GRANT ts_user` is not a rotation/provision primitive. Dedicated migrators SET ROLE themselves and `REASSIGN` consumer-DB objects (`mem_ts`). Amaru’s `amaru_db_user` is the same shape.
 
 **Autodev note:** shares Workflow’s Render Postgres (`dpg-d66ig…`). Owner is a SQL role (not a Render credential) so creating it does not steal Workflow’s default credential.
 

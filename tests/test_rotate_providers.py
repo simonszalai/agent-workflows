@@ -527,6 +527,17 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
         self.assertIn("PGKEEPALIVESIDLE=30", body)
         self.assertIn("PGKEEPALIVESINTERVAL=10", body)
         self.assertIn("PGKEEPALIVESCOUNT=6", body)
+        self.assertIn("db_url_without_role_option", body)
+
+    def test_root_control_url_does_not_keep_set_role_options(self) -> None:
+        """PROD_POSTGRES_URL_ROOT may be stored owner-shaped (options=-c role=
+        ts_user). GRANT ts_user then runs as ts_user and fails; ts_root holds
+        ADMIN OPTION."""
+        self.assertIn("db_url_without_role_option", self.SOURCE)
+        body = self._function_body("acquire_rotation_lock")
+        rehost = body.index("db_rehost_url")
+        strip = body.index("db_url_without_role_option")
+        self.assertLess(rehost, strip)
 
     def test_exact_deploy_trigger_waits_for_idle_and_retries_202(self) -> None:
         src = (ROOT / "secrets" / "lib" / "render-api.sh").read_text()
@@ -580,9 +591,24 @@ class DrainKeepsAdvisoryLockWarmTest(unittest.TestCase):
     def test_migrator_field_is_a_first_class_scope(self) -> None:
         self.assertIn("${appslug_upper}_MIGRATOR", self.SOURCE)
         self.assertIn('SCOPE_KIND="migrator"', self.SOURCE)
-        self.assertIn('SET_ROLE_TARGET="$TABLE_OWNER"', self.SOURCE)
+        self.assertIn('SET_ROLE_TARGET="$CAPABILITY"', self.SOURCE)
         self.assertIn('SET_ROLE_TARGET="$(printf \'%s\' "$INSTANCE_CFG" | jq -r \'.roles.owner // empty\')"', self.SOURCE)
-        self.assertIn('-v set_role_target="$SET_ROLE_TARGET"', self.SOURCE)
+
+    def test_dedicated_migrator_does_not_grant_table_owner(self) -> None:
+        """Render Postgres has no superuser. Dedicated migrators SET ROLE
+        themselves and REASSIGN consumer-DB objects; they must not GRANT
+        ts_user/amaru_db_user (autodev_mem_ts_migrator, 2026-08-21)."""
+        start = self.SOURCE.index('elif [[ "$SCOPE_KIND" == "migrator" ]]; then')
+        end = self.SOURCE.index("\n	else\n", start)
+        body = self.SOURCE[start:end]
+        self.assertIn("CREATE ROLE", body)
+        self.assertIn(":'capability'", body)
+        self.assertIn("REASSIGN OWNED BY", body)
+        self.assertIn("WITH INHERIT TRUE, SET TRUE", body)
+        self.assertIn("WITH INHERIT FALSE, SET FALSE", body)
+        self.assertIn("pg_has_role", body)
+        self.assertNotIn("ROOT_CONTROL_URL", body)
+        self.assertNotIn("GRANT ts_user", body)
 
     def test_autodev_dashboard_repo_maps_to_the_autodev_render_key(self) -> None:
         import subprocess
