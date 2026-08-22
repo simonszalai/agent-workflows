@@ -25,6 +25,7 @@ class SyncMcpTest(unittest.TestCase):
             repo = self.make_repo(
                 Path(directory), "https://github.com/TS-Value-Software/ts-api.git",
             )
+            (repo / ".mcp.json").write_text('{\n\t"mcpServers": {}\n}\n')
             (repo / ".cursor").mkdir()
             (repo / ".cursor/mcp.json").write_text(json.dumps({
                 "mcpServers": {
@@ -52,6 +53,10 @@ class SyncMcpTest(unittest.TestCase):
             self.assertIn("[mcp_servers.autodev-memory]",
                           (repo / ".codex/config.toml").read_text())
             self.assertIn("enabled = true", (repo / ".grok/config.toml").read_text())
+            self.assertTrue((repo / ".mcp.json").read_text().startswith('{\n\t"mcpServers"'))
+            self.assertTrue((repo / ".cursor/mcp.json").read_text().startswith(
+                '{\n\t"mcpServers"',
+            ))
 
             checked = subprocess.run(
                 [str(SYNC), "--project", "--check", "--cwd", str(repo)],
