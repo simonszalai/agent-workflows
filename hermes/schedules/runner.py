@@ -44,6 +44,9 @@ STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔", "NEEDS_MORE_TIME
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
+# Statuses whose workspace is archived as soon as the run finishes; everything
+# else waits for the watchdog's day-based retention sweep.
+DEFAULT_ARCHIVE_ON_COMPLETE = ("PASS",)
 WATCHDOG_GRACE_MINUTES = 60
 TICKET_ID_PATTERN = re.compile(r"^[A-Z]\d{4}$")
 
@@ -738,6 +741,49 @@ def record_run(name: str, status: str, workspace_id: str | None) -> None:
             history.write(json.dumps({**record, "archived": False}) + "\n")
 
 
+def mark_archived(name: str, workspace_id: str) -> None:
+    """Flag *workspace_id* as archived in the schedule's history file."""
+    path = history_path(name)
+    if not path.exists():
+        return
+    records = [
+        cast(JsonObject, json.loads(line))
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]
+    for record in records:
+        if record.get("workspace_id") == workspace_id:
+            record["archived"] = True
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+
+def archive_on_complete_statuses(manifest: JsonObject) -> set[str]:
+    raw = runner_settings(manifest).get("archive_on_complete")
+    if isinstance(raw, list):
+        return {str(item) for item in raw}
+    return set(DEFAULT_ARCHIVE_ON_COMPLETE)
+
+
+def archive_completed_workspace(
+    manifest: JsonObject, name: str, status: str, workspace_id: str | None
+) -> bool:
+    """Archive the run's workspace immediately when its status is configured.
+
+    Best-effort: a failure is logged and left to the retention sweep, which
+    retries every unarchived history record.
+    """
+    if not workspace_id or status not in archive_on_complete_statuses(manifest):
+        return False
+    try:
+        conductor_call("archive_workspace", {"workspace_id": workspace_id})
+    except RunnerError as error:
+        log.warning("archive-on-complete: %s failed: %s", workspace_id, error)
+        return False
+    mark_archived(name, workspace_id)
+    log.info("schedule %s: archived workspace %s (%s)", name, workspace_id, status)
+    return True
+
+
 # --- run mode ----------------------------------------------------------------
 
 
@@ -761,6 +807,12 @@ def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None
         "name": f"sched-{name}-{stamp}",
         "session_name": f"{name} {stamp}",
     }
+    # Agent/model/effort are reviewed manifest fields (schedules.yaml); when
+    # present they pin which coding agent runs the scheduled prompt.
+    for key in ("agent", "model", "effort"):
+        value = workspace_spec.get(key)
+        if isinstance(value, str) and value:
+            request[key] = value
     # Cloud sandboxes have no Keychain; the per-project 1Password service-account
     # token must arrive via the workspace environment (consumed by cloud-mcp.sh).
     credentials = os.environ.get("CREDENTIALS_DIRECTORY")
@@ -919,6 +971,7 @@ def run_schedule(name: str) -> int:
             )
 
     record_run(name, status, workspace_id)
+    archive_completed_workspace(manifest, name, status, workspace_id)
     log.info("schedule %s finished: %s — %s", name, status, summary)
     lock_file.close()
     return 0

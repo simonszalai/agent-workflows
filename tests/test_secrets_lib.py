@@ -372,5 +372,30 @@ class ReadDispatchTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
 
 
+class DbUrlTest(unittest.TestCase):
+    def _run(self, snippet: str) -> subprocess.CompletedProcess[str]:
+        import os
+        script = f'source "{LIB}/db-url.sh"; {snippet}'
+        return run(["bash", "-c", script], dict(os.environ))
+
+    def test_without_role_option_strips_options_keeps_sslmode(self) -> None:
+        proc = self._run(
+            'db_url_without_role_option '
+            '"postgresql://ts_root:p%40ss@host:5432/db?sslmode=require&options=-c%20role%3Dts_user"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            proc.stdout,
+            "postgresql://ts_root:p%40ss@host:5432/db?sslmode=require",
+        )
+        self.assertNotIn("options=", proc.stdout)
+
+    def test_without_role_option_is_noop_when_no_options(self) -> None:
+        url = "postgresql://ts_root:x@host:5432/db?sslmode=require"
+        proc = self._run(f'db_url_without_role_option "{url}"')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, url)
+
+
 if __name__ == "__main__":
     unittest.main()

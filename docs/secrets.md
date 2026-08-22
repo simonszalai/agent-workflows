@@ -18,6 +18,23 @@ argv, logs, or disk.
 | Non-primary repo pointer | `<repo>/secrets.yaml` containing `extends: ../<primary-repo>/secrets.yaml` |
 | Entry points | `bin/sync-secrets`, `bin/rotate-secret`, `bin/rotate-project`, `bin/dev-env` |
 
+`rotate-project` writes a value-free checkpoint under
+`${ROTATE_PROJECT_STATE_DIR:-~/.local/state/agent-workflows/rotate-project}/<project>.state`.
+A failed sweep records completed/minted entry ids and batched Render dests.
+Rerunning the same command skips those entries (SELF_MINTED is not reminted)
+and retries deferred deploys. A successful sweep deletes the checkpoint so the
+next invocation is a new rotation. `--fresh` discards an unfinished checkpoint.
+
+The sweep overlaps independent work and refuses the rest:
+- Non-postgres entries in a phase mint/sync in parallel (writes to the same
+  1Password item stay sequential), then idle-wait every dest concurrently,
+  trigger each dest, and wait-live in parallel.
+- Postgres entries run in dest-disjoint + instance-lock-disjoint waves. Dual-key
+  rotation still deploys and drains per entry, so overlapping Render dests
+  (HTTP 202) or the same advisory lock (exit 2) stay sequential. An autodev
+  prod sweep packs 8 postgres entries into 6 waves: dashboard+memory share the
+  workflow-pro/prod lock, and six of eight entries deploy autodev-memory.
+
 The engine holds no project data: every command discovers the project config
 from the repo it runs in (or `--repo`), fails closed when none exists, and
 derives each rotation entry's consumer set from the routes sharing its ref

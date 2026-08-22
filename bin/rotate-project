@@ -4,17 +4,20 @@
 # Runs every rotation entry of the project secrets.yaml through
 # rotate-secret in a safe order, verifying consumer health after each entry:
 #
-#   1. staging postgres entries      (first one runs --keep-old as the canary)
-#   2. SELF_MINTED entries           (fully automatic)
-#   3. provider entries              (automated when the provider handler can
-#                                     mint; otherwise the script prompts you to
-#                                     paste the freshly minted value ONCE — it
-#                                     is read silently and piped to --complete,
-#                                     never argv or history)
-#   4. prod postgres entries         (one at a time, health-gated between)
+#   1. staging postgres              dest+lock waves; first entry --keep-old (canary)
+#   2. SELF_MINTED + provider        parallel saves (same 1Password item sequential);
+#                                    then one deploy per touched service, live-wait
+#                                    in parallel. Provider entries without a mint
+#                                    handler SYNC the current vault value.
+#   3. prod postgres                 dest+lock waves (same Render dest or instance
+#                                    advisory lock stay sequential)
 #
-# Stops on the first failure; rerunning is safe (rotate-secret is resumable /
-# idempotent per entry). Values never reach stdout or argv.
+# Stops on the first failure. Rerunning the SAME command resumes the unfinished
+# sweep: completed entries are not reminted, batched dests whose values were
+# already saved are redeployed, postgres --resume still applies. A finished
+# sweep deletes the checkpoint so the next invocation is a new rotation.
+# --fresh discards the checkpoint and starts over. Values never reach stdout
+# or argv.
 #
 # Two entry actions:
 #   ROTATE — postgres and self-minted entries mint/stage a NEW credential
@@ -28,7 +31,7 @@
 # usage:
 #   rotate-project <amaru|ts|workflow-pro|autodev> --reason "<why>"
 #                  [--dry-run] [--tier staging|prod|all]
-#                  [--skip id[,id...]] [--only id[,id...]]
+#                  [--skip id[,id...]] [--only id[,id...]] [--fresh]
 #
 # exit codes: 0 all entries rotated+verified, 1 a rotation or health check
 #   failed (state printed), 2 usage/config, 3 agent-shell refusal.
@@ -42,9 +45,9 @@ ROTATE="${ROTATE_SECRET:-$HERE/rotate-secret}"
 # shellcheck source=../secrets/lib/config.sh
 source "$SECRETS_LIB/config.sh"
 
-usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-repo="" project="" reason="" dry=0 tier="all" skip="" only=""
+repo="" project="" reason="" dry=0 tier="all" skip="" only="" fresh=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2:?}"; shift 2 ;;
@@ -58,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --skip=*) skip="${1#*=}"; shift ;;
     --only) only="${2:?}"; shift 2 ;;
     --only=*) only="${1#*=}"; shift ;;
+    --fresh) fresh=1; shift ;;
     -h|--help) usage ;;
     -*) echo "ERROR: unknown flag $1" >&2; usage ;;
     *) [[ -z "$project" ]] || usage; project="$1"; shift ;;
@@ -133,6 +137,63 @@ run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
          else true end))]' <<< "$plan_json")"
 run_count="$(jq 'length' <<< "$run_json")"
 skipped=$((count - run_count))
+
+# Sweep checkpoint: unfinished runs persist completed/minted entry ids and
+# batched dests so a rerun does not remint SELF_MINTED secrets or restart a
+# finished postgres rotation. Value-free (ids and service ids only).
+SWEEP_STATE_DIR="${ROTATE_PROJECT_STATE_DIR:-$HOME/.local/state/agent-workflows/rotate-project}"
+SWEEP_STATE="$SWEEP_STATE_DIR/${project}.state"
+COMPLETED_IDS=()
+MINTED_IDS=()
+PENDING_SIDS=()
+sweep_has_id() { local needle="$1" x; for x in "${COMPLETED_IDS[@]-}" "${MINTED_IDS[@]-}"; do [[ "$x" == "$needle" ]] && return 0; done; return 1; }
+sweep_ids_json() { # args -> JSON string array
+  if [[ $# -eq 0 ]]; then printf '[]\n'; return 0; fi
+  jq -n '$ARGS.positional' --args -- "$@"
+}
+sweep_state_save() {
+  local completed minted pending
+  mkdir -p "$SWEEP_STATE_DIR"
+  chmod 700 "$SWEEP_STATE_DIR" 2>/dev/null || true
+  if [[ ${#COMPLETED_IDS[@]} -gt 0 ]]; then completed="$(sweep_ids_json "${COMPLETED_IDS[@]}")"; else completed='[]'; fi
+  if [[ ${#MINTED_IDS[@]} -gt 0 ]]; then minted="$(sweep_ids_json "${MINTED_IDS[@]}")"; else minted='[]'; fi
+  if [[ ${#PENDING_SIDS[@]} -gt 0 ]]; then pending="$(sweep_ids_json "${PENDING_SIDS[@]}")"; else pending='[]'; fi
+  jq -n --arg p "$project" --arg t "$tier" --arg c "${CANARY_REF:-}" \
+    --argjson completed "$completed" --argjson minted "$minted" --argjson pendingDests "$pending" \
+    '{stateVersion:1, project:$p, tier:$t, canaryRef:$c, completed:$completed, minted:$minted, pendingDests:$pendingDests}' \
+    > "$SWEEP_STATE"
+  chmod 600 "$SWEEP_STATE"
+}
+sweep_state_load() {
+  local json
+  COMPLETED_IDS=(); MINTED_IDS=(); PENDING_SIDS=()
+  [[ -f "$SWEEP_STATE" ]] || return 0
+  json="$(cat "$SWEEP_STATE")" || return 1
+  printf '%s' "$json" | jq -e --arg p "$project" '.stateVersion == 1 and .project == $p' >/dev/null || {
+    echo "ERROR: sweep checkpoint $SWEEP_STATE is malformed or for another project." >&2
+    return 1
+  }
+  while IFS= read -r x; do [[ -n "$x" ]] && COMPLETED_IDS+=("$x"); done < <(jq -r '.completed[]?' <<<"$json")
+  while IFS= read -r x; do [[ -n "$x" ]] && MINTED_IDS+=("$x"); done < <(jq -r '.minted[]?' <<<"$json")
+  while IFS= read -r x; do [[ -n "$x" ]] && PENDING_SIDS+=("$x"); done < <(jq -r '.pendingDests[]?' <<<"$json")
+  CANARY_REF="$(jq -r '.canaryRef // empty' <<<"$json")"
+}
+sweep_state_clear() { rm -f "$SWEEP_STATE"; }
+sweep_mark_completed() { COMPLETED_IDS+=("$1"); sweep_state_save; }
+sweep_mark_minted() { MINTED_IDS+=("$1"); sweep_state_save; }
+sweep_capture_pending_dests() {
+  PENDING_SIDS=()
+  [[ -s "$logdir/pending-dests" ]] || { sweep_state_save; return 0; }
+  while IFS= read -r x; do [[ -n "$x" ]] && PENDING_SIDS+=("$x"); done < <(sort -u "$logdir/pending-dests")
+  sweep_state_save
+}
+sweep_promote_minted() {
+  local x
+  for x in "${MINTED_IDS[@]-}"; do [[ -n "$x" ]] && COMPLETED_IDS+=("$x"); done
+  MINTED_IDS=()
+  PENDING_SIDS=()
+  sweep_state_save
+}
 # --- output helpers (concise per-entry status; full logs only on failure) ----
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_OK=$'\033[32m'; C_ERR=$'\033[31m'; C_RUN=$'\033[36m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
@@ -194,6 +255,7 @@ summary_and_exit() { # exit code
     i=$((i + 1))
   done
   if [[ "$code" -eq 0 ]]; then
+    sweep_state_clear
     local synced_note=""
     [[ "$synced_n" -gt 0 ]] && synced_note=", ${C_BOLD}$synced_n synced only${C_OFF}"
     echo "  ${C_OK}${C_BOLD}$rotated_n rotated+verified${C_OFF}${synced_note} ${C_DIM}in $(fmt_dur "$total") ($skipped filtered out)${C_OFF}"
@@ -201,11 +263,119 @@ summary_and_exit() { # exit code
       echo "  ${C_DIM}synced entries pushed the value the vault already held; rotate them at their source (see each entry's playbook).${C_OFF}"
     fi
   else
-    echo "  ${C_ERR}${C_BOLD}stopped after a failure${C_OFF} ${C_DIM}— rerun the same command to resume (completed entries converge instantly)${C_OFF}"
+    sweep_state_save
+    echo "  ${C_ERR}${C_BOLD}stopped after a failure${C_OFF} ${C_DIM}— rerun the same command to resume (completed entries are not reminted)${C_OFF}"
   fi
   exit "$code"
 }
 
+# Stamp postgres entries with lockKey (admin project/tier of the physical box)
+# and renderDests so phase 1/3 can run disjoint groups in parallel. Missing
+# db-roles.json leaves lockKey=unknown → one postgres per wave (sequential).
+annotate_postgres_keys() {
+  local db_roles="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
+  [[ -f "$db_roles" ]] || return 0
+  run_json="$(printf '%s' "$run_json" | python3 -c '
+import json, sys
+roles = json.load(open(sys.argv[1]))
+entries = json.load(sys.stdin)
+
+def lock_key(entry):
+    if entry.get("provider") != "postgres":
+        return ""
+    ref = entry.get("ref") or ""
+    project = entry.get("project") or ""
+    parts = ref.split("/")
+    if len(parts) < 5 or not ref.startswith("op://"):
+        return "unknown"
+    title, field = parts[3], parts[4]
+    title_l = title.lower()
+    if "staging" in title_l:
+        tier = "staging"
+    elif title_l.startswith("postgres") or title.startswith("PROD_"):
+        tier = "prod"
+    else:
+        return "unknown"
+    proj = (roles.get("projects") or {}).get(project) or {}
+    base = field.lower()
+    for suffix in ("_migrator", "_ro"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    inst_p, inst_t = project, tier
+    for app in (proj.get("apps") or {}).values():
+        prefix = (app.get("item_prefix") or "").rstrip("_").lower()
+        if prefix == base:
+            inst = app.get("instance") or {}
+            inst_p = inst.get("project") or project
+            inst_t = (inst.get("tier_map") or {}).get(tier) or tier
+            break
+    box = ((roles.get("projects") or {}).get(inst_p) or {}).get("tiers", {}).get(inst_t) or {}
+    admin = (box.get("admin_via") or {}).get("project") or inst_p
+    return "%s/%s" % (admin, inst_t)
+
+def dests(entry):
+    out = []
+    for c in entry.get("consumers") or []:
+        d = str(c.get("dest") or "")
+        if d.startswith("srv-") or d.startswith("crn-"):
+            out.append(d)
+    return sorted(set(out))
+
+for e in entries:
+    e["lockKey"] = lock_key(e)
+    e["renderDests"] = dests(e)
+print(json.dumps(entries, separators=(",", ":")))
+' "$db_roles")" || return 1
+}
+
+# One dest-disjoint + lock-disjoint wave. $.cdest is invalid jq — the reduce
+# accumulator is `.`, saved as $acc before the conflict predicate (which would
+# otherwise replace `.` with a boolean).
+split_postgres_wave() { # $1 = json array of annotated entries -> {now, later}
+  jq -c '
+    def dests: (.renderDests // []);
+    def lock: (.lockKey // "unknown");
+    . as $all
+    | reduce range(0; length) as $i ({cdest: [], clock: [], now: [], later: []};
+        . as $acc
+        | ($all[$i] | dests) as $d
+        | ($all[$i] | lock) as $k
+        | (
+            ($d | any(. as $x | $acc.cdest | index($x) != null))
+            or (($k != "unknown") and ($acc.clock | index($k) != null))
+            or (($k == "unknown") and (($acc.now | length) > 0))
+            or (($k != "unknown") and ($acc.now | any((.lockKey // "unknown") == "unknown")))
+          ) as $conflict
+        | if $conflict
+          then $acc | .later += [$all[$i]]
+          else $acc
+               | .now += [$all[$i]]
+               | .cdest += $d
+               | if $k != "unknown" then .clock += [$k] else . end
+          end)
+    | {now: .now, later: .later}' <<< "$1"
+}
+
+postgres_wave_labels() { # $1 = phase json -> {id: "wave i/n · parallel xN"}
+  local remaining="${1:-[]}" waves='[]' split
+  [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]] || { printf '{}\n'; return 0; }
+  while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
+    split="$(split_postgres_wave "$remaining")"
+    waves="$(jq -c --argjson w "$(jq -c '.now' <<< "$split")" '. + [$w]' <<< "$waves")"
+    remaining="$(jq -c '.later' <<< "$split")"
+  done
+  jq -c '
+    . as $waves | ($waves | length) as $n
+    | [range(0; $n) as $i
+       | ($waves[$i] | length) as $bn
+       | $waves[$i][]
+       | {key: .id,
+          value: ("wave \($i+1)/\($n)" + (if $bn > 1 then " · parallel x\($bn)" else "" end))}]
+    | from_entries' <<< "$waves"
+}
+
+annotate_postgres_keys || echo "${C_DIM}postgres lock annotation skipped${C_OFF}" >&2
 
 echo "${C_BOLD}rotate-project $project${C_OFF} — $run_count of $count entries ${C_DIM}(tier=$tier, $skipped filtered out)${C_OFF}"
 
@@ -232,6 +402,13 @@ finalize_canary() {
 }
 
 if [[ "$dry" -eq 1 ]]; then
+  _w1="$(postgres_wave_labels "$(jq -c '[.[] | select(.phase == 1)]' <<< "$run_json")")"
+  _w3="$(postgres_wave_labels "$(jq -c '[.[] | select(.phase == 3)]' <<< "$run_json")")"
+  # `${var:-{}}` is parsed as default `{` plus a leftover `}` — never use
+  # braces inside a `${var:-...}` default.
+  [[ -n "$_w1" ]] || _w1='{}'
+  [[ -n "$_w3" ]] || _w3='{}'
+  pg_wave_labels="$(jq -n -c --argjson a "$_w1" --argjson b "$_w3" '$a + $b')"
   render_plan_section() { # title, color, entries json
     local title="$1" color="$2" entries="$3" n entry id provider mode phase staging how ref dest env label host
     n="$(jq 'length' <<< "$entries")"
@@ -244,7 +421,11 @@ if [[ "$dry" -eq 1 ]]; then
       mode="$(jq -r '.mode' <<< "$entry")"
       phase="$(jq -r '.phase' <<< "$entry")"
       staging="$(jq -r '.staging' <<< "$entry")"
-      if [[ "$phase" == "1" || "$phase" == "3" ]]; then how="sequential"; else how="parallel · save-only, one deploy per service"; fi
+      if [[ "$phase" == "1" || "$phase" == "3" ]]; then
+        how="$(jq -r --arg id "$id" '.[$id] // "dest+lock waves"' <<< "$pg_wave_labels")"
+      else
+        how="parallel · save-only, one deploy per service"
+      fi
       local tierlabel="prod"; [[ "$staging" == "true" ]] && tierlabel="staging"
       local plan=""
       case "$provider" in
@@ -438,12 +619,31 @@ finalize_pending_deploys() {
     export SECRETS_SA_TOKEN_ENV SECRETS_SA_KEYCHAIN_ITEM SECRETS_RENDER_KEY_REF
     [[ -n "$SECRETS_RENDER_KEY_REF" ]] || { echo "ERROR: no Render API key ref in project context for $repo" >&2; return 1; }
   fi
-  local sids nsids t0 dt
+  local sids nsids t0 dt pids=() idle_pids=()
   sids="$(sort -u "$logdir/pending-dests")"
   : > "$logdir/pending-dests"
   nsids="$(printf '%s\n' "$sids" | grep -c . || true)"
   echo
-  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}all values saved — deploying $nsids service(s), one deploy each${C_OFF}"
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}all values saved — deploying $nsids service(s) in parallel${C_OFF}"
+  # Idle-wait every dest FIRST so one service's new deploy is not treated as
+  # in-flight work that blocks the next trigger (that serialized the token wave).
+  # Wait the dests concurrently — sequential idle-wait stacked one deploy behind
+  # another when both services were already rolling.
+  wait_idle() {
+    local sid="$1" ref RENDER_API_KEY
+    ref="$(render_key_ref_for "$sid")" || return 1
+    RENDER_API_KEY="$(render_key_resolve "$ref")" || return 1
+    export RENDER_API_KEY
+    render_wait_service_idle "$sid"
+  }
+  while IFS= read -r sid; do
+    [[ -n "$sid" ]] || continue
+    wait_idle "$sid" &
+    idle_pids+=($!)
+  done <<< "$sids"
+  for pid in "${idle_pids[@]-}"; do
+    wait "$pid" || return 1
+  done
   while IFS= read -r sid; do
     [[ -n "$sid" ]] || continue
     ref="$(render_key_ref_for "$sid")" || { echo "ERROR: no Render key ref for $sid" >&2; return 1; }
@@ -452,8 +652,9 @@ finalize_pending_deploys() {
     render_trigger_deploy "$sid" || { echo "ERROR: deploy trigger failed for $sid" >&2; return 1; }
   done <<< "$sids"
   echo "${C_DIM}  waiting for every deploy to go live (nothing is done until this passes)…${C_OFF}"
-  while IFS= read -r sid; do
-    [[ -n "$sid" ]] || continue
+  wait_one() {
+    local sid="$1" status deadline dt t0 url
+    local ref RENDER_API_KEY
     ref="$(render_key_ref_for "$sid")" || return 1
     RENDER_API_KEY="$(render_key_resolve "$ref")" || return 1
     export RENDER_API_KEY
@@ -463,64 +664,134 @@ finalize_pending_deploys() {
       status="$(render_get "/services/${sid}/deploys?limit=1" | jq -r '.[0].deploy.status // .[0].status // empty')" || status=""
       case "$status" in
         live) break ;;
-        build_failed|update_failed|canceled|deactivated|pre_deploy_failed) echo "${C_ERR}✗ deploy for $sid ended $status${C_OFF}" >&2; return 1 ;;
+        build_failed|update_failed|canceled|deactivated|pre_deploy_failed)
+          echo "${C_ERR}✗ deploy for $sid ended $status${C_OFF}" >&2
+          return 1 ;;
         *) sleep 15 ;;
       esac
     done
     dt=$((SECONDS - t0))
     [[ "$status" == "live" ]] || { echo "${C_ERR}✗ deploy for $sid did not go live within 20m${C_OFF}" >&2; return 1; }
     url="$(jq -r --arg d "$sid" '.health_urls[$d] // empty' "$REGISTRY")"
-    [[ "$url" == "deploy-only" ]] && url=""   # TCP-only service: live IS the gate
+    [[ "$url" == "deploy-only" ]] && url=""
     if [[ -n "$url" ]]; then
       if curl -sf --max-time 30 "$url" >/dev/null; then
         echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live + healthy ($(fmt_dur "$dt"))${C_OFF}"
       else
-        echo "${C_ERR}✗ $sid live but health check failed ($url)${C_OFF}" >&2; ok=0
+        echo "${C_ERR}✗ $sid live but health check failed ($url)${C_OFF}" >&2
+        return 1
       fi
     else
       echo "${C_OK}✓${C_OFF} $sid ${C_DIM}live ($(fmt_dur "$dt")) — no health URL registered${C_OFF}"
     fi
+  }
+  while IFS= read -r sid; do
+    [[ -n "$sid" ]] || continue
+    wait_one "$sid" &
+    pids+=($!)
   done <<< "$sids"
+  for pid in "${pids[@]-}"; do
+    wait "$pid" || ok=0
+  done
   [[ "$ok" -eq 1 ]]
 }
 
 logdir="$(mktemp -d)"
 trap 'rm -rf "$logdir"' EXIT
+: > "$logdir/pending-dests"
 first_staging_pg=1 ran=0 failed=0 idx=0
 
-# Phase batches: postgres entries run strictly sequentially (instance advisory
-# lock); other entries within one phase run concurrently when their consumer
-# dest sets are pairwise disjoint (overlapping services would race deploys).
+if [[ "$fresh" -eq 1 ]]; then
+  sweep_state_clear
+  echo "${C_DIM}--fresh: discarded unfinished sweep checkpoint${C_OFF}"
+fi
+sweep_state_load || exit 2
+if [[ ${#PENDING_SIDS[@]} -gt 0 ]]; then
+  printf '%s\n' "${PENDING_SIDS[@]}" > "$logdir/pending-dests"
+  echo "${C_RUN}⟳${C_OFF} ${C_BOLD}resuming${C_OFF} ${C_DIM}retrying ${#PENDING_SIDS[@]} deferred deploy(s); already-minted secrets will not be reminted${C_OFF}"
+  finalize_pending_deploys || summary_and_exit 1
+  sweep_promote_minted
+fi
+if [[ ${#COMPLETED_IDS[@]} -gt 0 || ${#MINTED_IDS[@]} -gt 0 ]]; then
+  n_skip=$(( ${#COMPLETED_IDS[@]} + ${#MINTED_IDS[@]} ))
+  echo "${C_DIM}  checkpoint: $n_skip already completed this sweep — not reminting${C_OFF}"
+  skip_json='[]'
+  if [[ ${#COMPLETED_IDS[@]} -gt 0 || ${#MINTED_IDS[@]} -gt 0 ]]; then
+    skip_json="$(sweep_ids_json ${COMPLETED_IDS[@]+"${COMPLETED_IDS[@]}"} ${MINTED_IDS[@]+"${MINTED_IDS[@]}"})"
+  fi
+  run_json="$(jq -c --argjson skip "$skip_json" '
+    [.[] | select(.id as $id | $skip | index($id) | not)]' <<< "$run_json")"
+  run_count="$(jq 'length' <<< "$run_json")"
+fi
+if [[ "$run_count" -eq 0 ]]; then
+  echo "${C_OK}✓${C_OFF} ${C_BOLD}sweep already complete${C_OFF} ${C_DIM}(checkpoint had nothing left)${C_OFF}"
+  sweep_state_clear
+  summary_and_exit 0
+fi
+
+# Phase batches: postgres entries run in dest-disjoint + lock-disjoint waves
+# (same Render dest or same instance advisory lock stay sequential). Other
+# entries run concurrently when their 1Password items do not overlap.
 for phase in 1 2 3; do
   phase_json="$(jq -c --argjson ph "$phase" '[.[] | select(.phase == $ph)]' <<< "$run_json")"
   n="$(jq 'length' <<< "$phase_json")"
   [[ "$n" -gt 0 ]] || continue
 
   if [[ "$phase" -eq 1 || "$phase" -eq 3 ]]; then
-    # postgres: sequential
-    while IFS= read -r entry; do
-      idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
-      xtra=""
-      if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then xtra="--keep-old"; first_staging_pg=0; CANARY_REF="$(jq -r '.ref' <<< "$entry")"; fi
-      echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id${xtra:+ ${C_DIM}$xtra${C_OFF}} ${C_DIM}(postgres, sequential)${C_OFF}"
-      logf="$logdir/$id.log"; : > "$logf"
-      t0=$SECONDS
-      rc=0; rotate_one "$entry" "$logf" "$xtra" || rc=$?
-      if [[ "$rc" -ne 0 ]] && grep -q 'rerun with --resume' "$logf"; then
-        echo "  ${C_DIM}unfinished rotation state found — resuming it${C_OFF}"
-        rc=0; rotate_one "$entry" "$logf" "--resume" || rc=$?
-      fi
-      dt=$((SECONDS - t0))
-      if [[ "$rc" -ne 0 ]]; then
-        entry_fail "$id" "$rc" "$dt" "$logf"
-        record_result "$id" "failed" "$dt"
-        summary_and_exit 1
-      fi
-      kind="$(entry_kind "$entry")"
-      entry_ok "$id" "$dt" "$logf" "$kind"
-      record_result "$id" "ok" "$dt" "$kind"
-      ran=$((ran + 1))
-    done < <(jq -c '.[]' <<< "$phase_json")
+    # postgres: dest-disjoint + lock-disjoint waves. Same Render dest or the
+    # same instance advisory lock stay sequential (overlapping dests 202; same
+    # lock exits 2).
+    remaining="$phase_json"
+    while [[ "$(jq 'length' <<< "$remaining")" -gt 0 ]]; do
+      wave_split="$(split_postgres_wave "$remaining")"
+      current="$(jq -c '.now' <<< "$wave_split")"
+      remaining="$(jq -c '.later' <<< "$wave_split")"
+      bn="$(jq 'length' <<< "$current")"
+      pids=() ids=() entries=()
+      batch_t0=$SECONDS
+      while IFS= read -r entry; do
+        idx=$((idx + 1)); id="$(jq -r '.id' <<< "$entry")"
+        xtra=""
+        if [[ "$phase" -eq 1 && "$first_staging_pg" -eq 1 ]]; then
+          xtra="--keep-old"; first_staging_pg=0
+          CANARY_REF="$(jq -r '.ref' <<< "$entry")"
+          sweep_state_save
+        fi
+        how="postgres"
+        [[ "$bn" -gt 1 ]] && how="postgres, parallel x$bn"
+        echo "${C_RUN}⟳${C_OFF} [$idx/$run_count] $id${xtra:+ ${C_DIM}$xtra${C_OFF}} ${C_DIM}($how)${C_OFF}"
+        logf="$logdir/$id.log"; : > "$logf"
+        (
+          rc=0
+          rotate_one "$entry" "$logf" "$xtra" || rc=$?
+          if [[ "$rc" -ne 0 ]] && grep -q 'rerun with --resume' "$logf"; then
+            echo "  unfinished rotation state found — resuming it" >> "$logf"
+            rc=0; rotate_one "$entry" "$logf" "--resume" || rc=$?
+          fi
+          exit "$rc"
+        ) &
+        pids+=($!); ids+=("$id"); entries+=("$entry")
+      done < <(jq -c '.[]' <<< "$current")
+      i=0
+      for pid in "${pids[@]}"; do
+        rc=0; wait "$pid" || rc=$?
+        dt=$((SECONDS - batch_t0))
+        id="${ids[$i]}"; entry="${entries[$i]}"
+        if [[ "$rc" -ne 0 ]]; then
+          entry_fail "$id" "$rc" "$dt" "$logdir/$id.log"
+          record_result "$id" "failed" "$dt"
+          failed=$((failed + 1))
+        else
+          kind="$(entry_kind "$entry")"
+          entry_ok "$id" "$dt" "$logdir/$id.log" "$kind"
+          record_result "$id" "ok" "$dt" "$kind"
+          sweep_mark_completed "$id"
+          ran=$((ran + 1))
+        fi
+        i=$((i + 1))
+      done
+      [[ "$failed" -eq 0 ]] || summary_and_exit 1
+    done
   else
     # non-postgres: deploys are deferred to finalize_pending_deploys, so env
     # saves cannot race — the whole phase runs as one parallel batch.
@@ -568,6 +839,7 @@ for phase in 1 2 3; do
           kind="$(entry_kind "$entry")"
           entry_ok "$id" "$dt" "$logdir/$id.log" "$kind"
           record_result "$id" "ok" "$dt" "$kind"
+          sweep_mark_minted "$id"
           ran=$((ran + 1))
         fi
         i=$((i + 1))
@@ -575,7 +847,9 @@ for phase in 1 2 3; do
       [[ "$failed" -eq 0 ]] || summary_and_exit 1
     done
     if [[ "$dry" -eq 0 ]]; then
+      sweep_capture_pending_dests
       finalize_pending_deploys || summary_and_exit 1
+      sweep_promote_minted
     fi
   fi
 

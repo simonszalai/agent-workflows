@@ -88,6 +88,21 @@ db_url_with_database() { # url database -> url (same credentials/host/query, dif
 	printf %s "$out"
 }
 
+db_url_without_role_option() { # url -> url with options= stripped (sslmode etc. kept)
+	# Root/admin DDL must run as the login itself. db_rehost_url copies
+	# options=-c role=table_owner from owner-shaped vault URLs; GRANT of
+	# that role then fails (the session is SET ROLE table_owner, which has
+	# no ADMIN OPTION on itself).
+	local url="$1"
+	local DB_URL_USER DB_URL_PASS DB_URL_HOST DB_URL_PORT DB_URL_DB DB_URL_QUERY query
+	db_parse_url "$url" || return $?
+	query="$(db_query_without_options "$DB_URL_QUERY")"
+	printf 'postgresql://%s:%s@%s:%s/%s' \
+		"$DB_URL_USER" "$DB_URL_PASS" "$DB_URL_HOST" "$DB_URL_PORT" "$DB_URL_DB"
+	if [[ -n "$query" ]]; then printf '?%s' "$query"; fi
+	return 0
+}
+
 db_rehost_url() { # source_credentials_url target_host_url -> url
 	local source="$1" target="$2"
 	local source_user source_pass source_query target_host target_port target_db target_query role_options query

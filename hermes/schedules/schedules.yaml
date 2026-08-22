@@ -7,6 +7,7 @@ runner:
   poll_seconds: 60
   retention_days_pass: 3    # archive PASS workspaces after N days
   retention_days_fail: 14   # FAIL/BLOCKED workspaces retained longer for triage
+  archive_on_complete: [PASS]   # archive the workspace the moment a run ends with one of these statuses
 
 # Slack channel IDs (resolved at authoring time; runtime uses IDs, not names).
 slack_channels:
@@ -22,6 +23,8 @@ schedules:
       repo: ts-prefect
       repo_url: https://github.com/TS-Value-Software/ts-prefect
       branch: staging
+      agent: codex
+      model: gpt-5.6-sol
     slack_channel: "#autodev-nightly"
     max_runtime_minutes: 180
     enabled: true
@@ -35,6 +38,8 @@ schedules:
       repo: ts-prefect
       repo_url: https://github.com/TS-Value-Software/ts-prefect
       branch: staging
+      agent: codex
+      model: gpt-5.6-sol
     slack_channel: "#autodev-nightly"
     max_runtime_minutes: 150
     enabled: true
@@ -46,6 +51,8 @@ schedules:
       repo: ts-prefect
       repo_url: https://github.com/TS-Value-Software/ts-prefect
       branch: staging
+      agent: codex
+      model: gpt-5.6-sol
     slack_channel: "#autodev-health"
     max_runtime_minutes: 90
     enabled: true

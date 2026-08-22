@@ -1,0 +1,61 @@
+From 112c6a04980438d41f564f2b2b7b211810df0fbe Mon Sep 17 00:00:00 2001
+From: Hermes local patch <hermes@localhost>
+Date: Sat, 22 Aug 2026 09:53:26 +0000
+Subject: [PATCH] fix(whatsapp): convert GFM tables to bullet groups in
+ format_message (local patch, TS)
+
+---
+ gateway/platforms/whatsapp_common.py      |  7 +++++++
+ tests/gateway/test_whatsapp_formatting.py | 15 +++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/gateway/platforms/whatsapp_common.py b/gateway/platforms/whatsapp_common.py
+index 70f77b2973..f1e48d3736 100644
+--- a/gateway/platforms/whatsapp_common.py
++++ b/gateway/platforms/whatsapp_common.py
+@@ -37,6 +37,8 @@ import os
+ import re
+ from typing import Any, Dict, Optional
+
++from gateway.platforms.helpers import convert_table_to_bullets
++
+
+ logger = logging.getLogger(__name__)
+
+@@ -395,6 +397,11 @@ class WhatsAppBehaviorMixin:
+
+         content = self._sanitize_outbound_text(content)
+
++        # --- 0. GFM pipe tables do not render in WhatsApp; rewrite them as
++        # bold-heading + bullet groups (same helper Discord/Telegram use).
++        # The **heading** it emits is converted to *heading* in step 3.
++        content = convert_table_to_bullets(content)
++
+         # --- 1. Protect fenced code blocks from formatting changes ---
+         _FENCE_PH = "\x00FENCE"
+         fences: list[str] = []
+diff --git a/tests/gateway/test_whatsapp_formatting.py b/tests/gateway/test_whatsapp_formatting.py
+index 3692fe5a12..c3bb72df74 100644
+--- a/tests/gateway/test_whatsapp_formatting.py
++++ b/tests/gateway/test_whatsapp_formatting.py
+@@ -360,3 +360,18 @@ class TestWhatsAppTier:
+     def test_whatsapp_tool_progress_is_new(self):
+         from gateway.display_config import resolve_display_setting
+         assert resolve_display_setting({}, "whatsapp", "tool_progress") == "new"
++
++
++def test_markdown_tables_become_bullet_groups():
++    adapter = _make_adapter()
++    table = (
++        "Summary:\n"
++        "| Service | Status | Latency |\n"
++        "|---|---|---|\n"
++        "| api | up | 120ms |\n"
++        "| worker | down | - |\n"
++    )
++    out = adapter.format_message(table)
++    assert "|---" not in out and "| Service" not in out
++    assert "*api*" in out and "• Status: up" in out and "• Latency: 120ms" in out
++    assert "*worker*" in out and "• Status: down" in out
+--
+2.43.0

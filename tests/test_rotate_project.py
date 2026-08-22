@@ -1,5 +1,6 @@
 """rotate-project orchestrator: selection, ordering, canary flag, stop-on-failure."""
 
+import json
 import os
 import stat
 import subprocess
@@ -52,8 +53,8 @@ def registry(tmp: Path) -> Path:
     return repo
 
 
-def fake_rotate(tmp: Path, script: str) -> Path:
-    p = tmp / "rotate-secret"
+def fake_rotate(tmp: Path, script: str, name: str = "rotate-secret") -> Path:
+    p = tmp / name
     p.write_text("#!/usr/bin/env bash\n" + script, encoding="utf-8")
     p.chmod(p.stat().st_mode | stat.S_IEXEC)
     return p
@@ -63,6 +64,7 @@ def run(tmp: Path, rotate_body: str, *args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["ROTATE_PREFLIGHT"] = "0"  # sandbox refs aren't real vault items
     env["ROTATE_SECRET"] = str(fake_rotate(tmp, rotate_body))
+    env["ROTATE_PROJECT_STATE_DIR"] = str(tmp / "sweep-state")
     return subprocess.run([BIN, "--repo", str(registry(tmp)), *args],
                           capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
 
@@ -93,6 +95,7 @@ class RotateProjectTest(unittest.TestCase):
         env_log = self.tmp / "calls.log"
         env = dict(os.environ)
         env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, body))
         env["LOG"] = str(env_log)
         proc = subprocess.run(
@@ -111,6 +114,7 @@ class RotateProjectTest(unittest.TestCase):
     def test_sync_entry_failure_stops_the_sweep(self) -> None:
         env = dict(os.environ)
         env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         sync = self.tmp / "sync-secrets"
         sync.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
@@ -133,6 +137,7 @@ class RotateProjectTest(unittest.TestCase):
         is how a rotation that never happened reads as done."""
         env = dict(os.environ)
         env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0"))
         proc = subprocess.run(
@@ -148,6 +153,7 @@ class RotateProjectTest(unittest.TestCase):
     def test_rotated_entries_are_still_reported_as_rotated(self) -> None:
         env = dict(os.environ)
         env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         proc = subprocess.run(
             [BIN, "--repo", str(registry(self.tmp)), "p", "--reason", "x",
@@ -183,6 +189,7 @@ class RotateProjectTest(unittest.TestCase):
 
         env = dict(os.environ)
         env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0"))
         env["PATH"] = f"{fakebin}:{env['PATH']}"
@@ -241,6 +248,7 @@ class RotateProjectTest(unittest.TestCase):
 
         env = dict(os.environ)
         env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
         env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0"))
         env["PATH"] = f"{fakebin}:{env['PATH']}"
@@ -271,6 +279,181 @@ class RotateProjectTest(unittest.TestCase):
         self.assertIn("p-db-staging", proc.stdout)
         self.assertNotIn("p-db-prod", proc.stdout)
 
+    def _deploy_env(self, rotate_body: str) -> dict:
+        fakebin = self.tmp / "fakebin-resume"
+        fakebin.mkdir(exist_ok=True)
+        curl = fakebin / "curl"
+        curl.write_text(
+            "#!/usr/bin/env bash\n"
+            'url=""; prev=""\n'
+            'for a in "$@"; do [[ "$prev" == "--url" ]] && url="$a"; prev="$a"; done\n'
+            "cat >/dev/null 2>&1\n"
+            'case "$url" in\n'
+            '  *"/deploys"*) printf \'[{"deploy":{"id":"dep-1","status":"live"}}]\' ;;\n'
+            '  *) printf \'{"id":"dep-1","status":"live"}\' ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, rotate_body, "rotate-secret"))
+        env["SYNC_SECRETS"] = str(fake_rotate(self.tmp, "exit 0", "sync-secrets"))
+        env["PATH"] = f"{fakebin}:{env['PATH']}"
+        env["RENDER_API_KEY"] = "fake-render-key"
+        env["SECRETS_RENDER_KEY_REF"] = "env:RENDER_API_KEY"
+        env["LOG"] = str(self.tmp / "calls.log")
+        return env
+
+    def test_rerun_does_not_remint_completed_entries(self) -> None:
+        """A failed sweep used to remint every SELF_MINTED secret on retry."""
+        body = (
+            'echo "$@" >> "$LOG"\n'
+            '[[ "$*" == *P-sensitive* ]] && exit 1\n'
+            "exit 0\n"
+        )
+        env = self._deploy_env(body)
+        repo = str(registry(self.tmp))
+        first = subprocess.run(
+            [BIN, "--repo", repo, "p", "--reason", "x", "--skip", "p-vendor2"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
+        self.assertIn("p-token", first.stdout)
+        first_calls = (self.tmp / "calls.log").read_text(encoding="utf-8")
+        self.assertEqual(first_calls.count("API/token"), 1)
+        (self.tmp / "calls.log").write_text("", encoding="utf-8")
+        second = subprocess.run(
+            [BIN, "--repo", repo, "p", "--reason", "x", "--skip", "p-vendor2"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(second.returncode, 1, second.stdout + second.stderr)
+        self.assertIn("not reminting", second.stdout)
+        second_calls = (self.tmp / "calls.log").read_text(encoding="utf-8")
+        self.assertNotIn("API/token", second_calls)
+        self.assertIn("Postgres prod/web", second_calls)
+
+    def test_fresh_discards_checkpoint_and_remints(self) -> None:
+        body = (
+            'echo "$@" >> "$LOG"\n'
+            '[[ "$*" == *P-sensitive* ]] && exit 1\n'
+            "exit 0\n"
+        )
+        env = self._deploy_env(body)
+        repo = str(registry(self.tmp))
+        subprocess.run(
+            [BIN, "--repo", repo, "p", "--reason", "x", "--skip", "p-vendor2"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        (self.tmp / "calls.log").write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [BIN, "--repo", repo, "p", "--reason", "x", "--skip", "p-vendor2", "--fresh"],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("discarded unfinished sweep checkpoint", proc.stdout)
+        calls = (self.tmp / "calls.log").read_text(encoding="utf-8")
+        self.assertIn("API/token", calls)
+
+
+def _packing_roles() -> dict:
+    """Two prod postgres apps on different physical boxes."""
+    return {
+        "projects": {
+            "p": {
+                "apps": {
+                    "web_a": {"item_prefix": "WEB_A_",
+                              "instance": {"project": "box_a"}},
+                    "web_b": {"item_prefix": "WEB_B_",
+                              "instance": {"project": "box_b"}},
+                },
+                "tiers": {"prod": {}},
+            },
+            "box_a": {"tiers": {"prod": {}}},
+            "box_b": {"tiers": {"prod": {}}},
+        }
+    }
+
+
+def packing_registry(tmp: Path, *, shared_dest: bool = False,
+                     shared_lock: bool = False) -> Path:
+    dest_a, dest_b = "srv-aaaa", ("srv-aaaa" if shared_dest else "srv-bbbb")
+    roles = _packing_roles()
+    if shared_lock:
+        roles["projects"]["p"]["apps"]["web_b"]["instance"]["project"] = "box_a"
+    repo = tmp / "repo"
+    repo.mkdir(exist_ok=True)
+    (tmp / "db-roles.json").write_text(json.dumps(roles), encoding="utf-8")
+    doc = {
+        "project": "p",
+        "repos": ["repo"],
+        "health": {},
+        "rotation": {
+            "p-db-a": {"ref": "op://P-sensitive/Postgres prod/web_a",
+                       "provider": "postgres", "mode": "DUAL_KEY"},
+            "p-db-b": {"ref": "op://P-sensitive/Postgres prod/web_b",
+                       "provider": "postgres", "mode": "DUAL_KEY"},
+        },
+        "routes": [
+            {"repo": "repo", "kind": "render", "dest": dest_a,
+             "env": "DATABASE_URL_A",
+             "ref": "op://P-sensitive/Postgres prod/web_a",
+             "transform": "self"},
+            {"repo": "repo", "kind": "render", "dest": dest_b,
+             "env": "DATABASE_URL_B",
+             "ref": "op://P-sensitive/Postgres prod/web_b",
+             "transform": "self"},
+        ],
+    }
+    (repo / "secrets.yaml").write_text(
+        yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return repo
+
+
+class PostgresWavePackingTest(unittest.TestCase):
+    """Dest-disjoint + lock-disjoint postgres entries share a wave; the
+    rest stay sequential (overlapping dests 202, same advisory lock exit 2)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def _run(self, repo: Path, *args: str) -> subprocess.CompletedProcess:
+        env = dict(os.environ)
+        env["ROTATE_PREFLIGHT"] = "0"
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
+        env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["DB_ROLES_CONFIG"] = str(self.tmp / "db-roles.json")
+        return subprocess.run(
+            [BIN, "--repo", str(repo), "p", *args],
+            capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+        )
+
+    def test_disjoint_dest_and_lock_share_a_wave(self) -> None:
+        repo = packing_registry(self.tmp)
+        proc = self._run(repo, "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("wave 1/1 · parallel x2", proc.stdout)
+        live = self._run(repo, "--reason", "x")
+        self.assertEqual(live.returncode, 0, live.stderr + live.stdout)
+        self.assertIn("postgres, parallel x2", live.stdout)
+
+    def test_shared_dest_stays_sequential(self) -> None:
+        repo = packing_registry(self.tmp, shared_dest=True)
+        proc = self._run(repo, "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("wave 1/2", proc.stdout)
+        self.assertIn("wave 2/2", proc.stdout)
+        self.assertNotIn("parallel x2", proc.stdout)
+
+    def test_shared_lock_stays_sequential(self) -> None:
+        repo = packing_registry(self.tmp, shared_lock=True)
+        proc = self._run(repo, "--dry-run")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("wave 1/2", proc.stdout)
+        self.assertIn("wave 2/2", proc.stdout)
+        self.assertNotIn("parallel x2", proc.stdout)
+
 
 class DryRunPreflightTest(unittest.TestCase):
     """Dry-run verifies field EXISTENCE from item metadata and fails when a
@@ -299,6 +482,7 @@ class DryRunPreflightTest(unittest.TestCase):
         op.chmod(0o755)
         env = dict(os.environ)
         env["ROTATE_SECRET"] = str(fake_rotate(self.tmp, "exit 0"))
+        env["ROTATE_PROJECT_STATE_DIR"] = str(self.tmp / "sweep-state")
         env["DB_ROLES_CONFIG"] = "/nonexistent"
         env["OP_BIN"] = str(op)
         return subprocess.run(

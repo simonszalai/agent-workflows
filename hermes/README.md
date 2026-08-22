@@ -51,6 +51,11 @@ not replace this file with an admin or cross-project token.
   Slack socket-mode connection is provably dead (process alive but deaf), and posts a one-time
   alert to `#autodev-incidents` when the WhatsApp adapter is in the logged-out state that only
   manual QR re-pairing can fix.
+- `patches/`: local `git format-patch` fixes to the hermes-agent checkout that upstream lacks
+  (currently: WhatsApp `format_message` rewrites GFM tables into bold-heading bullet groups,
+  because WhatsApp renders pipe tables as raw text). `install.sh` re-applies them idempotently,
+  so they survive `hermes update`; the SOUL.md "never use markdown tables" line is the
+  prompt-side half of the same fix.
 - `systemd/`: hardened service definitions, plus the schedule template service
   (`hermes-schedule@.service`), one instantiated timer per manifest entry, the OnFailure alert
   template, and the watchdog service/timer pair.
