@@ -123,6 +123,9 @@ class Bridge:
             "Accept": "application/json, text/event-stream",
             "Authorization": f"Bearer {self.bearer}",
             "Content-Type": "application/json",
+            # api.conductor.build's edge 403s requests with the default
+            # Python-urllib User-Agent; an explicit product token passes.
+            "User-Agent": "mcp-bridge/1",
         }
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
@@ -160,6 +163,7 @@ class Bridge:
         headers = {
             "Authorization": f"Bearer {self.bearer}",
             "Mcp-Session-Id": self.session_id,
+            "User-Agent": "mcp-bridge/1",
         }
         request = urllib.request.Request(self.url, headers=headers, method="DELETE")
         try:
