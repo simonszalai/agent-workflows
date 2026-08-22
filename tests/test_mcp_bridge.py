@@ -102,12 +102,15 @@ class McpBridgeTest(unittest.TestCase):
                 "WRONG_OP_SERVICE_ACCOUNT_TOKEN": "wrong-account",
                 "OP_REAL_BIN": str(fake_op),
                 "HOME": str(root / "home"),
+                # A Conductor-launched shell may retain path hints for another
+                # workspace. The bridge must prefer the MCP child's Git cwd.
+                "CONDUCTOR_ROOT_PATH": str(root / "stale-root"),
+                "CONDUCTOR_WORKSPACE_PATH": str(root / "stale-workspace"),
             })
             result = subprocess.run(
-                [str(BRIDGE), "autodev-memory", "--project", "testproj",
-                 "--cwd", str(repo)],
+                [str(BRIDGE), "autodev-memory", "--project", "testproj"],
                 input="".join(json.dumps(message) + "\n" for message in messages),
-                capture_output=True, text=True, env=env, timeout=30,
+                capture_output=True, text=True, env=env, cwd=repo, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             responses = [json.loads(line) for line in result.stdout.splitlines()]
