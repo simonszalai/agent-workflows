@@ -214,7 +214,7 @@ def render_toml(
 
 def render_json(
     current: object, servers: list[Server], project: str | None, managed: set[str], *,
-    indent: int | str,
+    indent: int | str, trailing_newline: bool,
 ) -> str:
     if not isinstance(current, dict):
         fail("MCP JSON root must be an object")
@@ -226,7 +226,8 @@ def render_json(
         merged[server.name] = json_entry(server, project)
     value = dict(current)
     value["mcpServers"] = {name: merged[name] for name in sorted(merged)}
-    return json.dumps(value, indent=indent, ensure_ascii=False) + "\n"
+    rendered = json.dumps(value, indent=indent, ensure_ascii=False)
+    return rendered + ("\n" if trailing_newline else "")
 
 
 def json_indent(text: str) -> int | str:
@@ -306,8 +307,17 @@ def sync_json(
     path: Path, servers: list[Server], project: str | None, managed: set[str], *,
     check: bool, private: bool, indent: int | str,
 ) -> bool:
+    current_text = read_text(path)
     current = load_json(path, missing={})
-    desired = render_json(current, servers, project, managed, indent=indent)
+    # Claude owns ~/.claude.json and rewrites it without a trailing newline during
+    # ordinary commands such as `claude mcp list`. Preserve that user-file convention
+    # so a health check does not make the renderer report false drift. Checked-in
+    # project configs and newly created user files keep the normal final newline.
+    trailing_newline = not private or not current_text or current_text.endswith("\n")
+    desired = render_json(
+        current, servers, project, managed, indent=indent,
+        trailing_newline=trailing_newline,
+    )
     return update(path, desired, check=check, private=private)
 
 

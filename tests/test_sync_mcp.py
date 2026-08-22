@@ -97,6 +97,13 @@ class SyncMcpTest(unittest.TestCase):
             self.assertEqual(codex.count("[mcp_servers.context7]"), 1)
             self.assertTrue((home / ".cursor/mcp.json").is_file())
             self.assertTrue((home / ".grok/config.toml").is_file())
+            self.assertFalse((home / ".claude.json").read_text().endswith("\n"))
+
+            checked = subprocess.run(
+                [str(SYNC), "--user", "--check", "--home", str(home)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
 
     def test_cloud_user_scope_includes_exact_project_servers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
