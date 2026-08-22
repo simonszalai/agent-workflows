@@ -25,7 +25,10 @@ class SyncMcpTest(unittest.TestCase):
             repo = self.make_repo(
                 Path(directory), "https://github.com/TS-Value-Software/ts-api.git",
             )
-            (repo / ".mcp.json").write_text('{\n\t"mcpServers": {}\n}\n')
+            (repo / "biome.json").write_text(
+                '{"formatter":{"indentStyle":"tab"}}\n',
+            )
+            (repo / ".mcp.json").write_text('{\n  "mcpServers": {}\n}\n')
             (repo / ".cursor").mkdir()
             (repo / ".cursor/mcp.json").write_text(json.dumps({
                 "mcpServers": {

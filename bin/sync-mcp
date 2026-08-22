@@ -22,6 +22,8 @@ BEGIN = "# BEGIN agent-workflows managed MCP"
 END = "# END agent-workflows managed MCP"
 TOML_HEADER = re.compile(r"^\s*\[([^]]+)]\s*(?:#.*)?$")
 SERVER_TABLE = re.compile(r'^mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))(?:\..*)?$')
+BIOME_INDENT_STYLE = re.compile(r'"indentStyle"\s*:\s*"(tab|space)"')
+BIOME_INDENT_WIDTH = re.compile(r'"indentWidth"\s*:\s*([1-9][0-9]*)')
 
 
 class Server(NamedTuple):
@@ -241,6 +243,21 @@ def json_indent(text: str) -> int | str:
     return 2
 
 
+def project_json_indent(root: Path, fallback: str) -> int | str:
+    """Prefer a repository's explicit Biome JSON style over historical file style."""
+    for name in ("biome.json", "biome.jsonc"):
+        text = read_text(root / name)
+        if not text:
+            continue
+        matched = BIOME_INDENT_STYLE.search(text)
+        if matched and matched.group(1) == "tab":
+            return "\t"
+        if matched and matched.group(1) == "space":
+            width = BIOME_INDENT_WIDTH.search(text)
+            return int(width.group(1)) if width else 2
+    return json_indent(fallback)
+
+
 def read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -326,7 +343,7 @@ def sync_scope(
         claude_indent = json_indent(claude_text)
         cursor_indent = json_indent(cursor_text)
     else:
-        project_indent = json_indent(claude_text or cursor_text)
+        project_indent = project_json_indent(root, claude_text or cursor_text)
         claude_indent = project_indent
         cursor_indent = project_indent
     changed = sync_json(
