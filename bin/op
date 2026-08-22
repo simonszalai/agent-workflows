@@ -77,7 +77,9 @@ resolve_real_op() {
     fi
   done
 
-  for candidate in /opt/homebrew/bin/op /usr/local/bin/op /usr/bin/op; do
+  for candidate in \
+    "$HOME/.local/share/agent-workflows-tools/bin/op" \
+    /opt/homebrew/bin/op /usr/local/bin/op /usr/bin/op; do
     if [[ -f "$candidate" && -x "$candidate" && ! "$candidate" -ef "$HERE/op" ]]; then
       REAL_OP="$candidate"
       return 0

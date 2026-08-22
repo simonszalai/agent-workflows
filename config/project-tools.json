@@ -18,7 +18,7 @@
         ]
       },
       "autodev_memory": {
-        "route": "amaru",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://AMARU/Autodev memory/api_token"
       },
       "render": {
@@ -61,7 +61,7 @@
         ]
       },
       "autodev_memory": {
-        "route": "autodev",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://AUTODEV/Autodev memory/api_token"
       },
       "render": {
@@ -99,7 +99,7 @@
         ]
       },
       "autodev_memory": {
-        "route": "ts",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://TS/Autodev memory restricted/api_token"
       },
       "render": {
@@ -132,9 +132,6 @@
     "workflow-pro": {
       "repo_remotes": [
         "github.com/workflow-tech/workflow-pro",
-        "github.com/szaboszerszam/workflow-mcp",
-        "github.com/szaboszerszam/workflow-pdf",
-        "github.com/szaboszerszam/workflow_pro",
         "github.com/workflow-tech/workflow-mcp",
         "github.com/workflow-tech/workflow-pdf"
       ],
@@ -146,7 +143,7 @@
         ]
       },
       "autodev_memory": {
-        "route": "workflow-pro",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token"
       },
       "render": {

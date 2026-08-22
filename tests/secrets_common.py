@@ -65,7 +65,7 @@ PROJECT_TOOLS = textwrap.dedent(
             "keychain_item": "op-testproj-token"
           },
           "autodev_memory": {
-            "route": "testproj",
+            "url": "https://autodev-memory.onrender.com",
             "token_ref": "op://TESTVAULT/TESTPROJ_AUTODEV_MEMORY_API_TOKEN/value"
           },
           "render": {

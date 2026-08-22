@@ -40,20 +40,15 @@ def response(text: str = "critical rule", child: str = "child rule") -> dict[str
 
 
 class MemoryContextTest(unittest.TestCase):
-    def test_task_packet_uses_same_project_route_in_conductor(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {
-                "CONDUCTOR_IS_LOCAL": "0",
-                "AUTODEV_MEMORY_API_URL": "https://wrong.invalid",
-                "AUTODEV_MEMORY_API_TOKEN": "wrong-token",
-            },
-            clear=False,
-        ):
+    @mock.patch("task_packet.resolve_autodev_memory")
+    def test_task_packet_uses_exact_project_credential_resolver(self, resolve) -> None:
+        resolve.return_value = ("https://memory.example", "restricted-token")
+        with mock.patch("task_packet.Path.cwd", return_value=ROOT):
             self.assertEqual(
                 load_api_config("workflow_pro"),
-                ("http://127.0.0.1:8792/workflow-pro", ""),
+                ("https://memory.example", "restricted-token"),
             )
+        resolve.assert_called_once_with("workflow_pro", ROOT.resolve())
 
     def test_canonical_producer_fixture_is_consumed(self) -> None:
         fixture = json.loads((ROOT / "tests/fixtures/session-packet-v2.json").read_text())
@@ -170,10 +165,10 @@ class MemoryContextTest(unittest.TestCase):
             invalidate_cache(root, "session", request_epoch=30)
             self.assertIsNone(read_cache(root, "session", "p", "r"))
 
-    def test_agent_frontmatter_declares_bounded_selection_types(self) -> None:
-        tags, types = selection_for_agent(ROOT, "builder")
+    def test_agent_without_memory_frontmatter_has_no_implicit_selection(self) -> None:
+        tags, types = selection_for_agent(ROOT, "ticket-curator")
         self.assertEqual(tags, [])
-        self.assertEqual(types, ["gotcha", "pattern", "architecture"])
+        self.assertEqual(types, [])
 
     @mock.patch("task_packet._post")
     def test_task_selection_combines_semantic_and_skill_results_then_preexpands(self, post) -> None:

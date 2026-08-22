@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Install the exact agent-workflows checkout plus its small cloud runtime.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOME_DIR="${HOME}"
+CWD="${PWD}"
+OP_VERSION="2.30.0"
+JQ_VERSION="1.7.1"
+TOOLS_BIN="${HOME_DIR}/.local/share/agent-workflows-tools/bin"
+LOCAL_BIN="${HOME_DIR}/.local/bin"
+
+log() { printf '[agent-workflows-cloud] %s\n' "$*"; }
+
+is_cloud() {
+  [ "${CONDUCTOR_IS_LOCAL:-1}" = "0" ] ||
+    [ -n "${CONDUCTOR_BASE_DIR:-}" ] ||
+    [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] ||
+    [ "${AGENT_WORKFLOWS_CLOUD_TEST:-}" = "1" ]
+}
+
+download() {
+  local url="$1" destination="$2" temporary="${destination}.download.$$"
+  rm -f "$temporary"
+  if ! curl --fail --silent --show-error --location "$url" --output "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv -f "$temporary" "$destination"
+}
+
+ensure_op() {
+  local target="${TOOLS_BIN}/op" arch tmp
+  if [ -x "$target" ] && "$target" --version 2>/dev/null | grep -Eq '^[0-9]'; then
+    return 0
+  fi
+  case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+  tmp="$(mktemp -d)"
+  log "installing 1Password CLI ${OP_VERSION}"
+  download \
+    "https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_VERSION}/op_linux_${arch}_v${OP_VERSION}.zip" \
+    "${tmp}/op.zip"
+  python3 -m zipfile -e "${tmp}/op.zip" "$tmp"
+  install -m 0755 "${tmp}/op" "$target"
+  python3 - "$tmp" <<'PY'
+import shutil, sys
+shutil.rmtree(sys.argv[1])
+PY
+  [ "$("$target" --version 2>/dev/null)" = "$OP_VERSION" ] || {
+    echo "setup-agent-workflows-cloud: installed op failed version verification" >&2
+    return 1
+  }
+}
+
+ensure_jq() {
+  command -v jq >/dev/null 2>&1 && jq --version >/dev/null 2>&1 && return 0
+  local arch target="${LOCAL_BIN}/jq"
+  case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+  log "installing jq ${JQ_VERSION}"
+  download \
+    "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-${arch}" \
+    "$target"
+  chmod 0755 "$target"
+  "$target" --version >/dev/null
+}
+
+main() {
+  local version installer
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --cwd) CWD="$2"; shift 2 ;;
+      --home) HOME_DIR="$2"; shift 2 ;;
+      *) echo "usage: setup-agent-workflows-cloud [--cwd DIR] [--home DIR]" >&2; return 2 ;;
+    esac
+  done
+  is_cloud || { log "skipping outside a cloud workspace"; return 0; }
+  TOOLS_BIN="${HOME_DIR}/.local/share/agent-workflows-tools/bin"
+  LOCAL_BIN="${HOME_DIR}/.local/bin"
+  mkdir -p "$TOOLS_BIN" "$LOCAL_BIN"
+  if command -v flock >/dev/null 2>&1; then
+    mkdir -p "${HOME_DIR}/.cache/agent-workflows"
+    exec 9>"${HOME_DIR}/.cache/agent-workflows/cloud-setup.lock"
+    flock -w 600 9 || {
+      echo "setup-agent-workflows-cloud: timed out waiting for setup lock" >&2
+      return 1
+    }
+  fi
+  ensure_op
+  ensure_jq
+
+  installer="${ROOT}/bin/install-agent-workflows"
+  version="$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')"
+  "$installer" --source "$ROOT" --home "$HOME_DIR" --version "$version"
+  "${HOME_DIR}/.local/bin/sync-mcp" \
+    --user --include-project --cwd "$CWD" --home "$HOME_DIR"
+  command -v sh >/dev/null 2>&1 || {
+    echo "setup-agent-workflows-cloud: sh is required by MCP stdio configs" >&2
+    return 1
+  }
+  log "installed ${version} with project MCP configuration"
+}
+
+main "$@"

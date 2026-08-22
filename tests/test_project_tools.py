@@ -42,9 +42,6 @@ EXPECTED_PROJECT_REMOTES = {
     },
     "workflow-pro": {
         "github.com/workflow-tech/workflow-pro",
-        "github.com/szaboszerszam/workflow-mcp",
-        "github.com/szaboszerszam/workflow-pdf",
-        "github.com/szaboszerszam/workflow_pro",
         "github.com/workflow-tech/workflow-mcp",
         "github.com/workflow-tech/workflow-pdf",
     },
@@ -80,19 +77,19 @@ EXPECTED_RENDER_REFS = {
 
 EXPECTED_AUTODEV_MEMORY_PROFILES = {
     "amaru": {
-        "route": "amaru",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://AMARU/Autodev memory/api_token",
     },
     "autodev": {
-        "route": "autodev",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://AUTODEV/Autodev memory/api_token",
     },
     "ts": {
-        "route": "ts",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://TS/Autodev memory restricted/api_token",
     },
     "workflow-pro": {
-        "route": "workflow-pro",
+        "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token",
     },
 }
@@ -146,7 +143,7 @@ class ProjectToolsTest(unittest.TestCase):
                                 "keychain_item": "op-dev-token-alpha",
                             },
                             "autodev_memory": {
-                                "route": "alpha",
+                                "url": "https://autodev-memory.onrender.com",
                                 "token_ref": "op://ALPHA/AUTODEV_MEMORY/value",
                             },
                             "render": {
@@ -175,7 +172,7 @@ class ProjectToolsTest(unittest.TestCase):
                                 "token_env": "BETA_OP_SERVICE_ACCOUNT_TOKEN"
                             },
                             "autodev_memory": {
-                                "route": "beta",
+                                "url": "https://autodev-memory.onrender.com",
                                 "token_ref": "op://BETA/AUTODEV_MEMORY/value",
                             },
                             "render": {

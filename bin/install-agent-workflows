@@ -181,23 +181,30 @@ def _validate_artifact(root: Path) -> None:
     required = (
         root / "hooks/autodev-memory-session-start.sh",
         root / "hooks/memory_context.py",
+        root / "hooks/mcp_auth.py",
         root / "bin/autodev-memory-task-packet",
         root / "bin/install-agent-workflows",
+        root / "bin/mcp-bridge",
         root / "bin/project-context",
         root / "bin/psql-cli",
         root / "bin/render-cli",
         root / "bin/resend-cli",
+        root / "bin/setup-agent-workflows-cloud",
+        root / "bin/sync-mcp",
+        root / "config/mcp.json",
         root / "config/project-tools.json",
     )
     if not all(path.is_file() for path in required):
         raise SystemExit("install-agent-workflows: staged artifact is missing required files")
-    for path in (root / "hooks/memory_context.py", root / "hooks/task_packet.py",
+    for path in (root / "hooks/memory_context.py", root / "hooks/mcp_auth.py",
+                 root / "hooks/task_packet.py", root / "bin/mcp-bridge", root / "bin/sync-mcp",
                  root / "bin/autodev-memory-task-packet", root / "bin/install-agent-workflows",
                  root / "bin/project-context"):
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     for path in (root / "hooks/autodev-memory-session-start.sh",
                  root / "hooks/autodev-memory-pre-agent.sh", root / "bin/psql-cli",
-                 root / "bin/render-cli", root / "bin/resend-cli"):
+                 root / "bin/render-cli", root / "bin/resend-cli",
+                 root / "bin/setup-agent-workflows-cloud"):
         check = subprocess.run(["bash", "-n", str(path)], capture_output=True)
         if check.returncode:
             raise SystemExit(f"install-agent-workflows: shell validation failed for {path.name}")

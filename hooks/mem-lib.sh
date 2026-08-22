@@ -31,6 +31,7 @@ _MEM_LOG_FILE="$_MEM_LOG_DIR/hooks.log"
 _MEM_LOG_MAX_BYTES=1048576  # 1MB
 _MEM_LOG_HOOK_NAME=$(basename "${0:-unknown}" .sh)
 _MEM_LOG_CWD=""
+_MEM_AGENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 mkdir -p "$_MEM_LOG_DIR" 2>/dev/null || true
 
@@ -88,11 +89,6 @@ _mem_parse_env() {
   local input="$1"
   _MEM_ENV_SKIP=""
 
-  # Load env from dotfile
-  if [[ -f "$HOME/.config/autodev-memory/.env" ]]; then
-    set -a; source "$HOME/.config/autodev-memory/.env"; set +a
-  fi
-
   # CWD: different hook events use different schemas
   _CWD=$(echo "$input" | jq -r '(.cwd // .session.cwd) // empty' 2>/dev/null)
   if [[ -z "$_CWD" ]]; then
@@ -138,20 +134,50 @@ _mem_parse_env() {
     fi
   fi
 
-  # Conductor local and cloud workspaces use the same project-routed loopback proxy.
-  # The checked-in project marker selects the URL; the proxy supplies a restricted
-  # bearer and the server pins all tool/REST project fields to that identity.
-  if [[ "${CONDUCTOR_IS_LOCAL:-}" == "0" || "${CONDUCTOR_IS_LOCAL:-}" == "1" ]]; then
-    local mem_route="$MEM_PROJECT"
-    [[ "$mem_route" == "workflow_pro" ]] && mem_route="workflow-pro"
-    MEM_URL="http://127.0.0.1:8792/${mem_route}"
-    MEM_TOKEN=""
-  else
-    MEM_URL="${AUTODEV_MEMORY_API_URL:-http://localhost:8475}"
-    MEM_TOKEN="${AUTODEV_MEMORY_API_TOKEN:-}"
+  # Resolve the exact project's restricted bearer for this hook process. The bearer
+  # stays in memory and the project service-account variable is removed before curl.
+  # This deliberately costs one 1Password read per hook invocation; it replaces the
+  # launchd/cloud loopback daemons and their ports, health checks, and startup races.
+  local profile_project="$MEM_PROJECT" profile fields token_env keychain_item token_ref
+  [[ "$profile_project" == "workflow_pro" ]] && profile_project="workflow-pro"
+  profile=$(PROJECT_TOOLS_CONFIG="${PROJECT_TOOLS_CONFIG:-$_MEM_AGENT_ROOT/config/project-tools.json}" \
+    "$_MEM_AGENT_ROOT/bin/project-context" --cwd "$_CWD" \
+    --project "$profile_project" --tool autodev_memory) || return 1
+  fields=$(PROFILE="$profile" python3 - <<'PY'
+import json, os
+profile = json.loads(os.environ["PROFILE"])
+memory = profile["tools"]["autodev_memory"]
+service = profile["service_account"]
+print(memory["url"], memory["token_ref"], service["token_env"],
+      service.get("keychain_item", ""), sep="\t")
+PY
+  ) || return 1
+  IFS=$'\t' read -r MEM_URL token_ref token_env keychain_item <<<"$fields"
+  local service_token="${!token_env:-}"
+  if [[ -z "$service_token" && "$(uname -s)" == "Darwin" && -n "$keychain_item" ]]; then
+    service_token=$(security find-generic-password -s "$keychain_item" \
+      -a "${USER:-$(id -un)}" -w 2>/dev/null) || service_token=""
   fi
-  if [[ -z "$MEM_TOKEN" && "$MEM_URL" != http://127.0.0.1:8792/* ]]; then
-    echo "HOOK ERROR [mem-lib]: AUTODEV_MEMORY_API_TOKEN not set" >&2
+  if [[ -z "$service_token" ]]; then
+    echo "HOOK ERROR [mem-lib]: no project service-account token ($token_env)" >&2
+    return 1
+  fi
+  local registered_env
+  while IFS= read -r registered_env; do
+    [[ -n "$registered_env" ]] && unset "$registered_env"
+  done < <(python3 - "${PROJECT_TOOLS_CONFIG:-$_MEM_AGENT_ROOT/config/project-tools.json}" <<'PY'
+import json, sys
+for value in json.load(open(sys.argv[1], encoding="utf-8"))["projects"].values():
+    print(value["service_account"]["token_env"])
+PY
+  )
+  unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
+  MEM_TOKEN=$(OP_SERVICE_ACCOUNT_TOKEN="$service_token" \
+    "$_MEM_AGENT_ROOT/bin/op" read --no-newline "$token_ref" 2>/dev/null) || MEM_TOKEN=""
+  service_token=""
+  unset "$token_env" OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
+  if [[ -z "$MEM_TOKEN" ]]; then
+    echo "HOOK ERROR [mem-lib]: restricted autodev-memory credential is unreadable" >&2
     return 1
   fi
 
@@ -231,7 +257,12 @@ _mem_curl_with_retry() {
   local attempt out rc=1
   for attempt in 1 2 3; do
     # Capture curl's real exit status (set -e safe; an if/else here would mask it as 0).
-    out=$(curl "$@" 2>&1) && rc=0 || rc=$?
+    if [[ -n "${MEM_TOKEN:-}" ]]; then
+      out=$(printf 'Authorization: Bearer %s\n' "$MEM_TOKEN" | \
+        curl --header @- "$@" 2>&1) && rc=0 || rc=$?
+    else
+      out=$(curl "$@" 2>&1) && rc=0 || rc=$?
+    fi
     if [[ $rc -eq 0 ]]; then
       printf '%s' "$out"
       return 0
@@ -265,10 +296,6 @@ mem_curl() {
     -H "X-Workspace: ${CONDUCTOR_WORKSPACE_NAME:-}"
     -H "X-Conductor-Root: ${CONDUCTOR_ROOT_PATH:-}"
   )
-
-  if [[ -n "$MEM_TOKEN" ]]; then
-    curl_args+=(-H "Authorization: Bearer $MEM_TOKEN")
-  fi
 
   if [[ "$method" == "POST" ]]; then
     curl_args+=(-X POST -H "Content-Type: application/json" -d "$body")

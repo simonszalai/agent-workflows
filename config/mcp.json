@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "global_servers": {
+    "conductor": {
+      "transport": "http",
+      "url": "https://api.conductor.build/mcp",
+      "auth": "oauth"
+    },
+    "context7": {
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "auth": "none"
+    }
+  },
+  "project_servers": {
+    "*": {
+      "autodev-memory": {
+        "transport": "stdio-bridge",
+        "profile": "autodev_memory"
+      }
+    },
+    "amaru": {
+      "amaru": {
+        "transport": "http",
+        "url": "https://mcp.amaruplatform.com/mcp",
+        "auth": "oauth"
+      }
+    }
+  },
+  "managed_server_names": [
+    "amaru",
+    "autodev-memory",
+    "conductor",
+    "context7",
+    "postgres_autodev_global",
+    "postgres_autodev_ts",
+    "postgres_dev",
+    "postgres_prod",
+    "postgres_prod_prefect",
+    "postgres_staging",
+    "render"
+  ]
+}

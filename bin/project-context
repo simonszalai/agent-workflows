@@ -189,15 +189,22 @@ def load_projects(path: Path) -> dict[str, Project]:
         autodev_memory = tools.get("autodev_memory")
         if not isinstance(autodev_memory, dict):
             fail(f"projects.{name}.autodev_memory must be an object")
-        unknown = set(autodev_memory) - {"route", "token_ref"}
+        unknown = set(autodev_memory) - {"url", "token_ref"}
         if unknown:
             fail(
                 f"projects.{name}.autodev_memory has unknown keys: "
                 f"{', '.join(sorted(unknown))}"
             )
-        route = autodev_memory.get("route")
-        if not isinstance(route, str) or not PROFILE_ID.fullmatch(route):
-            fail(f"projects.{name}.autodev_memory.route must be a route id")
+        url = autodev_memory.get("url")
+        if not isinstance(url, str) or not (
+            url.startswith("https://")
+            or url.startswith("http://127.0.0.1:")
+            or url.startswith("http://localhost:")
+        ):
+            fail(
+                f"projects.{name}.autodev_memory.url must use HTTPS "
+                "or loopback HTTP"
+            )
         non_sensitive_op_ref(
             autodev_memory.get("token_ref"),
             f"projects.{name}.autodev_memory.token_ref",
