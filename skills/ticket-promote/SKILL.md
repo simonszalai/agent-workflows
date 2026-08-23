@@ -81,6 +81,12 @@ is a production deploy.
   `git log origin/main..origin/staging` shows no other ticket's commits touching the promoted
   diff's files. Other tickets' commits on staging in unrelated files do not break isolation.
   If isolation cannot be proven by these checks, stop and report — do not silently widen scope.
+- **A human may explicitly authorize the scoped parity bypass for an isolated, non-schema
+  ticket.** This bypass means only that genuine branch or declarative-schema divergence proven
+  unrelated to the promoted diff is reported and deferred instead of blocking the ticket. It does
+  not waive PASS evidence, commit/file isolation, CI, deployment, production verification, or any
+  schema dependency of the promoted code. Record the approving human instruction and the parity
+  report in the manifest. Scheduled/unattended runs can never use this bypass.
 - **Schema-bearing tickets are not the fast path.** Use the schema gate (§Schema gate) before
   treating them as normal cherry-picks.
 - Deploy steps come from the ticket's `deployment_guide` artifact and the project deploy
@@ -269,6 +275,14 @@ current per-repo rules. Summary of lanes:
   promotion.
 
 DB-only object changes must be covered by the repo's schema-truth verification, not assumed.
+
+For an isolated scope with **no schema files**, a global Atlas/declarative-model difference is not
+automatically a schema-bearing promotion. Compare the promoted diff with every divergent schema
+file and check whether the promoted code references objects that exist only on one branch. If
+there is no overlap or runtime dependency, record the divergence as out-of-scope debt and proceed;
+when a human explicitly requested the scoped parity bypass, cite that approval in the manifest.
+Stop only when the promoted scope touches, imports, generates from, or otherwise depends on the
+divergent schema state.
 
 ## Local checks
 
@@ -471,8 +485,12 @@ withheld from production. A raw commit count cannot distinguish them.
    already on `main` and the resulting tree introduces no unapproved content. If any genuine
    out-of-scope commit remains, do not merge; finish the isolated promotion and report the debt.
 5. Residual schema divergence or schema-gate reconciliation debt remains a correctness blocker
-   when it affects the promoted scope. STOP and name the exact schema debt and safe lane; do not
-   silently include unrelated staging work to repair it.
+   only when it affects the promoted scope. A parity check's repo-wide `DIVERGED` verdict does not
+   by itself block a proven isolated non-schema ticket. If the divergence is unrelated, finish the
+   isolated promotion and report the debt; if the human explicitly authorized the scoped parity
+   bypass, record that authorization. STOP and name the exact schema debt and safe lane only when
+   the promoted scope overlaps or depends on it. Do not silently include unrelated staging work to
+   repair it.
 6. When a parity merge is authorized, use a real `--merge` commit. Never substitute squash or
    rebase — both create new SHAs with no ancestry link. If merge commits are forbidden, report the
    repo-policy blocker, but only block a run that actually requires the authorized parity merge.

@@ -194,6 +194,15 @@ claim deployment or final ticket closure: use `## ✅ PROMOTION PRECHECK PASSED`
 comparison is clean, or `## ❌ PROMOTION PRECHECK FAILED`/the blocked heading when reconciliation
 or missing evidence prevents promotion, with the exact debt and next action underneath.
 
+The verdict is relative to the requested promotion scope, not merely the repository as a whole.
+For a proven isolated non-schema ticket, compare the ticket diff and runtime dependencies against
+the divergent schema/model files. Repo-wide Atlas divergence that neither overlaps nor supplies a
+runtime dependency is out-of-scope debt: report it, but return
+`SAFE FOR ISOLATED NON-SCHEMA SCOPE`. When the invoking human explicitly authorized
+ticket-promote's scoped parity bypass, include that authorization in the report. Do not use this
+classification if the ticket changes schema, generated schema artifacts, model registration, or
+code that requires an object present on only one branch.
+
 ```text
 Repo:      ts-prefect
 Lane:      Atlas schema lane | legacy Alembic lane | Prisma lane | no schema lane
@@ -204,7 +213,9 @@ Env truth: staging  schema-truth=OK, Atlas apply/no-op=OK
 Cross-env: staging vs prod schema delta: none
 Graph:     ts-prefect Atlas — no Alembic graph (skip)
            — OR — legacy Alembic heads=1, revision drift=none
-Verdict:   SAFE to promote | SCHEMA-LANE — use Atlas/reviewed plan | STRANDED env — reconcile first | DIVERGED — full parity merge
+Verdict:   SAFE to promote | SAFE FOR ISOLATED NON-SCHEMA SCOPE — global debt deferred |
+           SCHEMA-LANE — use Atlas/reviewed plan | STRANDED env — reconcile first |
+           DIVERGED — full parity merge
 
 Recommended action:
 - <one of: proceed / use ts-prefect Atlas reviewed-plan promotion / reconcile staging then retry /

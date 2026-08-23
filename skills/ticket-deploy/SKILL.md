@@ -231,8 +231,10 @@ behavior unverified.
 
 **Ticket:** precondition is latest staging evidence is an exact `PASS` (or `tiny_safe`
 contract-missing PASS). Run `/ticket-promote <ID>`. This invocation satisfies the
-human-authorization requirement but waives none of ticket-promote's schema, isolation, parity,
-CI, or deploy gates. It lands the work on `main`, runs production deploy steps, sets
+human-authorization requirement. It waives none of ticket-promote's schema dependencies,
+isolation, CI, or deploy gates; an explicit human instruction may use only ticket-promote's
+documented scoped parity bypass for proven unrelated branch/schema debt. It lands the work on
+`main`, runs production deploy steps, sets
 `to_verify_prod`, and hands off to `/ticket-verify production <ID>` (§5). The promotion PR
 uses the same local-health → CI loop.
 
