@@ -16,7 +16,7 @@ INSTALLER = ROOT / "bin/install-agent-workflows"
 class InstallerTest(unittest.TestCase):
     def source_repo(self, root: Path) -> Path:
         source = root / "source"
-        for name in ("agents", "commands", "skills", "hooks", "bin", "config"):
+        for name in ("agents", "commands", "skills", "hooks", "bin", "config", "secrets/lib"):
             (source / name).mkdir(parents=True, exist_ok=True)
         for relative in (
             "hooks/autodev-memory-session-start.sh", "hooks/autodev-memory-pre-agent.sh",
@@ -25,8 +25,9 @@ class InstallerTest(unittest.TestCase):
             "bin/install-agent-workflows", "bin/link-agent-workflows-live",
             "bin/mcp-bridge", "bin/project-context", "bin/psql-cli", "bin/render-cli",
             "bin/resend-cli", "bin/setup-agent-workflows-cloud", "bin/sync-mcp",
-            "bin/.protected-route-security-floor",
+            "bin/slack-api", "bin/.protected-route-security-floor",
             "config/mcp.json", "config/project-tools.json",
+            "secrets/lib/read.sh",
         ):
             shutil.copy2(ROOT / relative, source / relative)
         (source / "agents/builder.md").write_text("builder v1")
@@ -273,6 +274,33 @@ class InstallerTest(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("project tool registry validation failed", result.stderr)
+
+    def test_installed_wrappers_resolve_secrets_includes_in_clean_home(self) -> None:
+        """B0004: installed psql-cli/slack-api must find secrets/lib/read.sh."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            home = root / "home"
+            result = self.run_install(source, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            commit = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"],
+                                    capture_output=True, text=True, check=True).stdout.strip()
+            version = home / f".local/share/agent-workflows/versions/{commit}"
+            self.assertTrue((version / "secrets/lib/read.sh").is_file())
+            # slack-api needs one arg to get past its usage check and reach the include.
+            for name, args in (("psql-cli", []), ("slack-api", ["auth.test"])):
+                link = home / ".local/bin" / name
+                self.assertTrue(link.is_symlink())
+                run = subprocess.run([str(link), *args], capture_output=True, text=True,
+                                     env={**os.environ, "HOME": str(home)}, cwd=str(home))
+                combined = run.stdout + run.stderr
+                self.assertNotIn("read.sh", combined)
+                self.assertNotIn("No such file or directory", combined)
+            usage = subprocess.run([str(home / ".local/bin/psql-cli")],
+                                   capture_output=True, text=True,
+                                   env={**os.environ, "HOME": str(home)})
+            self.assertEqual(usage.returncode, 2)
+            self.assertIn("usage:", usage.stderr)
 
     def test_staged_artifact_requires_psql_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

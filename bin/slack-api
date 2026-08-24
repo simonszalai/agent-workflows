@@ -19,7 +19,15 @@ set -euo pipefail
 [ $# -ge 1 ] || { echo "usage: slack-api <method> [key=value ...]" >&2; exit 2; }
 METHOD="$1"; shift
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the physical script location so ../secrets works from symlinked
+# installs (~/.local/bin -> immutable version tree or live checkout).
+_SELF="${BASH_SOURCE[0]}"
+while [ -L "$_SELF" ]; do
+  _TARGET="$(readlink "$_SELF")"
+  case "$_TARGET" in /*) _SELF="$_TARGET" ;; *) _SELF="$(dirname "$_SELF")/$_TARGET" ;; esac
+done
+HERE="$(cd "$(dirname "$_SELF")" && pwd -P)"
+unset _SELF _TARGET
 PROJECT_CONTEXT="$HERE/project-context"
 OP_WRAPPER="$HERE/op"
 # shellcheck source=../secrets/lib/read.sh
