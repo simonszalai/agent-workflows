@@ -38,6 +38,13 @@ human-authorized deploying workflow. It does not authorize production flow trigg
 
 ## Boundaries
 
+- Use only MCP tools injected into the current agent session. Never read a Codex/Conductor/browser
+  Keychain or credential store, reuse browser/application cookies as bearer tokens, or construct a
+  direct HTTP/custom MCP client to compensate for a stale tool catalog or missing authentication.
+  `redacted-exec`, in-memory handling, and user-imported browser cookies do not permit this. If the
+  required MCP tool is absent or unauthenticated, record the scope `BLOCKED` with the supported
+  login/reconnect + fresh-session remedy; do not attempt credential recovery. See
+  `../sensitive-vault-access/SKILL.md` § Client-managed MCP and OAuth credentials.
 - Verification evidence collection is read-only by default: no data mutation, no flow triggers,
   no deploys. Exception: if the scope's evidence contract explicitly requires a bounded on-demand
   canary/shadow run, or staging `--produce-evidence` resolves one unambiguous bounded producer

@@ -5,6 +5,29 @@ description: Safely request interactive access to 1Password *-sensitive vaults w
 
 # Sensitive vault access
 
+## Client-managed MCP and OAuth credentials
+
+Codex, Conductor, Claude, browsers, and other clients own the credentials they obtain for MCP
+servers and OAuth sessions. Those credential stores are a capability boundary, not an alternate
+secret source for agents.
+
+- **Never** invoke `security`, Keychain APIs, SQLite/config-store readers, or equivalent commands
+  to locate, inspect, test, or extract a client-managed credential. In particular, never read
+  entries such as `Codex MCP Credentials`, even through `redacted-exec` and even if the value would
+  remain in memory.
+- Never repurpose a browser session cookie, application cookie, OAuth refresh/access token, or
+  other client session material as an MCP bearer token. Never build a direct `curl`/`fetch`/custom
+  MCP client to work around an unavailable injected MCP tool.
+- Use only the MCP tools injected into the current agent session. Credential-free status commands
+  may establish configuration or auth *mode*, but they do not prove that a usable token exists and
+  do not authorize reading the client's credential store.
+- If a tool is missing because the catalog is stale, authentication is absent/expired, or the
+  injected server is unavailable, stop that scope and report `BLOCKED`. The remedy is a supported
+  client login/reconnect followed by a fresh agent session; it is never manual credential recovery.
+
+These rules apply to read-only and mutating work in every environment. `SENSITIVE_ACCESS_REASON`,
+Touch ID approval, and redaction wrappers do not permit bypassing this boundary.
+
 **Staging and dev never belong here.** Every staging and dev credential — reads *and* writes,
 including the `owner` and `app` database roles — lives in the regular `<PROJECT>` vault and resolves
 silently through the project's service account. Only production **write** credentials are sensitive;
