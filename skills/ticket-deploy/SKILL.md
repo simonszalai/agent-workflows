@@ -253,6 +253,11 @@ there in the same run, and confirm that back-sync before reporting the leg compl
 Production mutation boundary: prefer audited MCP/server-side operations; never write the
 production database from a local shell. Authenticated production CLI mutations with no remote
 route run through `bin/redacted-exec -- <documented command>`.
+Use only MCP tools injected into the current agent session. Never inspect or extract
+Codex/Conductor/browser credentials, reuse cookies or OAuth material as MCP bearer tokens, or build
+a direct HTTP/custom MCP client when a tool is missing or stale; `redacted-exec` does not authorize
+that bypass. Stop the affected scope as `BLOCKED` pending supported login/reconnect and a fresh
+agent session. See `../sensitive-vault-access/SKILL.md` § Client-managed MCP and OAuth credentials.
 
 ### 5. Verify and complete production
 
