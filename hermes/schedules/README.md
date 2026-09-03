@@ -6,7 +6,8 @@ America/Vancouver) start `runner.py run <name>`, which reads `schedules.yaml`, c
 Conductor workspace per the entry, sends the referenced prompt file's contents as the first
 session message, polls the session with the entry's `max_runtime_minutes` cap, parses the
 `SCHEDULED_RUN_RESULT` ending, and posts the result to Slack (normally one line in the channel
-with detail in the thread; `health-6h` uses a parent bullet list plus one reply per issue;
+with detail in the thread; `health-6h` uses a parent bullet list, launches one cloud
+`/ticket-flow` workspace per issue, and posts one final issue/fix/verification reply per issue;
 FAIL/BLOCKED additionally routes one line to `#autodev-incidents`; NEEDS_MORE_TIME remains in the
 schedule channel for automatic/next-run continuation).
 
@@ -16,6 +17,10 @@ schedule channel for automatic/next-run continuation).
   installed, so activation is purely a reviewed manifest flip plus `hermes/install.sh`.
 - **Overlap lock.** A per-schedule `flock` under `/var/lib/hermes-schedules` skips a firing
   while the previous run is still active. No queueing, no double workspaces.
+- **Health remediation.** `health-6h` first completes bounded triage and emits owning tickets. The
+  runner then launches all per-ticket workspaces in parallel from `staging`, supervises them under
+  `remediation_max_runtime_minutes`, and keeps the schedule lock until each child has produced a
+  structured terminal result or been cancelled at the deadline.
 - **Failure handling.** Poll timeout cancels the session and posts FAIL; an errored session
   or a run ending without a `SCHEDULED_RUN_RESULT` block is FAIL; there are no automatic
   retries. Runner crashes trigger `OnFailure=hermes-schedule-alert@%i.service`, which posts
@@ -45,10 +50,11 @@ Rules:
   canonical gate is `skills/references/scheduled-run.md` §2a.
 - **Changes are PR-reviewed.** These files gate what runs autonomously against production
   data; edit them only through a reviewed agent-workflows PR, like every Hermes asset.
-- **Unattended contract (every schedule inherits this):** no `op://*-sensitive` access, no
-  operation that would raise a 1Password prompt (they hard-fail unattended), no production
-  mutations of any kind. Production is read-only via `TS/PROD_POSTGRES_URL_RO`. Anything
-  requiring prod-touch or human approval stops and reports to Slack instead of proceeding.
+- **Unattended contract (every schedule inherits this):** no `op://*-sensitive` access and no
+  operation that would raise a 1Password prompt (they hard-fail unattended). Production data is
+  read-only via `TS/PROD_POSTGRES_URL_RO`; `health-6h` has one reviewed production-side exception:
+  append-only `ticket:<ID>` Prefect tags on explicitly verified failed/crashed runs. Per-issue
+  ticket workspaces may land and verify staging only; production promotion remains human-invoked.
 - An `enabled: false` entry is staged but not yet runnable — its `blocked_on` field says
   what must land first.
 - The full unattended contract (mutation boundary, Slack report format, terminal-result ending

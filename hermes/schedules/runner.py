@@ -15,6 +15,7 @@ LoadCredential. No secret ever appears in argv, environment, or logs.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import fcntl
 import json
 import logging
@@ -38,9 +39,15 @@ SLACK_API_ROOT = "https://slack.com/api"
 SLACK_MENTION_SIMON = "<@U09T4LELYES>"
 INCIDENTS_CHANNEL_NAME = "#autodev-incidents"
 RESULT_MARKER = "SCHEDULED_RUN_RESULT"
+REMEDIATION_RESULT_MARKER = "HEALTH_REMEDIATION_RESULT"
 RESULT_LIST_KEYS = ("tickets_touched", "rc_fingerprints")
 RESULT_JSON_KEYS = ("issues", "dream_report")
 STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔", "NEEDS_MORE_TIME": "⏳"}
+REMEDIATION_STATUS_ICONS = {
+    "STAGING_VERIFIED": "✅",
+    "STOPPED": "⛔",
+    "FAILED": "❌",
+}
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
@@ -49,6 +56,10 @@ DEFAULT_RETENTION_FAIL_DAYS = 14
 DEFAULT_ARCHIVE_ON_COMPLETE = ("PASS",)
 WATCHDOG_GRACE_MINUTES = 60
 TICKET_ID_PATTERN = re.compile(r"^[A-Z]\d{4}$")
+SESSION_MESSAGE_PAGE_SIZE = 100
+MAX_SESSION_MESSAGE_PAGES = 500
+TERMINAL_IDLE_CONFIRMATIONS = 2
+EXECUTABLE_TICKET_ID_PATTERN = re.compile(r"^[FBR]\d{4}$")
 
 JsonObject = dict[str, object]
 
@@ -59,6 +70,25 @@ class HealthIssue(TypedDict):
     example: str
     next_step: str
     ticket_id: str | None
+    remediation_ready: bool
+
+
+class RemediationResult(TypedDict):
+    status: str
+    ticket_id: str
+    issue: str
+    fix: str
+    verification: str
+
+
+class RemediationJob(TypedDict):
+    issue: HealthIssue
+    workspace_id: str | None
+    session_id: str | None
+    deep_link: str | None
+    launch_error: str | None
+    saw_working: bool
+    terminal_idle_confirmations: int
 
 
 class DreamReport(TypedDict):
@@ -70,6 +100,16 @@ class DreamReport(TypedDict):
     proposals: list[str]
     graph_plan: str
     scope: list[str]
+
+
+class SessionMessageSnapshot(TypedDict):
+    texts: list[str]
+    turn_completed: bool
+
+
+class SessionResultSnapshot(TypedDict):
+    result: JsonObject | None
+    turn_completed: bool
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("hermes-schedules")
@@ -268,25 +308,78 @@ def workspace_session_id(workspace: JsonObject, workspace_id: str) -> str:
     raise RunnerError(f"workspace {workspace_id} has no session to prompt")
 
 
-def session_transcript_tail(session_id: str, limit: int = 50) -> list[str]:
-    payload = conductor_call(
-        "list_session_messages", {"session_id": session_id, "limit": limit}
-    )
-    texts: list[str] = []
+def session_message_event(message: JsonObject) -> JsonObject | None:
+    content = message.get("content")
+    if not isinstance(content, dict):
+        return None
+    raw_payload = content.get("rawPayload")
+    if not isinstance(raw_payload, dict):
+        return None
+    event = raw_payload.get("event")
+    return cast(JsonObject, event) if isinstance(event, dict) else None
+
+
+def session_message_text(message: JsonObject) -> str | None:
+    text = message.get("message") or message.get("text")
+    content = message.get("content")
+    if not isinstance(text, str) and isinstance(content, str):
+        text = content
+    if not isinstance(text, str) and isinstance(content, dict):
+        text = content.get("message") or content.get("text")
+    if not isinstance(text, str):
+        event = session_message_event(message)
+        item = event.get("item") if event is not None else None
+        if (
+            event is not None
+            and event.get("type") == "item.completed"
+            and isinstance(item, dict)
+            and item.get("type") == "agentMessage"
+        ):
+            text = item.get("text")
+    return text if isinstance(text, str) and text else None
+
+
+def session_message_rows(payload: JsonObject) -> list[JsonObject]:
     for key in ("data", "messages", "items"):
         value = payload.get(key)
-        if not isinstance(value, list):
-            continue
-        for message in cast(list[JsonObject], value):
-            text = message.get("message") or message.get("text") or message.get("content")
-            if isinstance(text, dict):
-                # The official API nests the body under content.{message,text}.
-                text = text.get("message") or text.get("text")
-            if isinstance(text, str) and text:
+        if isinstance(value, list):
+            return cast(list[JsonObject], value)
+    return []
+
+
+def session_message_snapshot(session_id: str) -> SessionMessageSnapshot:
+    texts: list[str] = []
+    turn_completed = False
+    offset = 0
+    for _ in range(MAX_SESSION_MESSAGE_PAGES):
+        payload = conductor_call(
+            "list_session_messages",
+            {
+                "session_id": session_id,
+                "limit": SESSION_MESSAGE_PAGE_SIZE,
+                "offset": offset,
+            },
+        )
+        messages = session_message_rows(payload)
+        for message in messages:
+            text = session_message_text(message)
+            if text is not None:
                 texts.append(text)
-        break
-    # Assistant output is not reliably present in the messages endpoint; the
-    # rendered transcript view is the authoritative source for the result block.
+            event = session_message_event(message)
+            if event is not None and event.get("type") == "turn.completed":
+                turn_completed = True
+        if not payload.get("hasMore"):
+            return {"texts": texts, "turn_completed": turn_completed}
+        if not messages:
+            raise RunnerError("Conductor session-message pagination did not advance.")
+        offset += len(messages)
+    raise RunnerError(
+        "Conductor session-message history exceeded the 50,000-event safety cap."
+    )
+
+
+def rendered_session_transcript(session_id: str) -> list[str]:
+    texts: list[str] = []
     try:
         payload = conductor_call(
             "query_conductor_sql",
@@ -304,8 +397,26 @@ def session_transcript_tail(session_id: str, limit: int = 50) -> list[str]:
                 if isinstance(transcript, str) and transcript:
                     texts.append(transcript)
     except (RunnerError, urllib.error.URLError):
-        pass  # messages-endpoint texts remain the fallback
+        pass
     return texts
+
+
+def read_session_result(session_id: str) -> SessionResultSnapshot:
+    messages = session_message_snapshot(session_id)
+    result = find_result(messages["texts"])
+    if result is None:
+        result = find_result(rendered_session_transcript(session_id))
+    return {"result": result, "turn_completed": messages["turn_completed"]}
+
+
+def read_session_remediation_result(
+    session_id: str,
+) -> tuple[RemediationResult | None, bool]:
+    messages = session_message_snapshot(session_id)
+    result = find_remediation_result(messages["texts"])
+    if result is None:
+        result = find_remediation_result(rendered_session_transcript(session_id))
+    return result, messages["turn_completed"]
 
 
 # --- Result parsing ----------------------------------------------------------
@@ -419,9 +530,12 @@ def parse_health_issues(value: object) -> list[HealthIssue] | None:
         ticket_ok, ticket_id = normalize_issue_alias(
             raw_issue, "owning_ticket_id", "ticket_id", required=False
         )
+        remediation_ready = raw_issue.get("remediation_ready", False)
         if not proof_ok or not example_ok or not ticket_ok:
             return None
         if proof is None or example is None:
+            return None
+        if not isinstance(remediation_ready, bool):
             return None
         issues.append(
             {
@@ -430,9 +544,53 @@ def parse_health_issues(value: object) -> list[HealthIssue] | None:
                 "example": example,
                 "next_step": next_step.strip(),
                 "ticket_id": ticket_id,
+                "remediation_ready": remediation_ready,
             }
         )
     return issues
+
+
+def parse_remediation_result(text: str) -> RemediationResult | None:
+    """Parse and validate the last one-line remediation JSON object in a transcript."""
+    if REMEDIATION_RESULT_MARKER not in text:
+        return None
+    block = text[text.rindex(REMEDIATION_RESULT_MARKER) + len(REMEDIATION_RESULT_MARKER) :]
+    object_start = block.find("{")
+    if object_start < 0:
+        return None
+    try:
+        decoded, _ = json.JSONDecoder().raw_decode(block[object_start:])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+
+    values: dict[str, str] = {}
+    for key in ("status", "ticket_id", "issue", "fix", "verification"):
+        value = decoded.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        values[key] = value.strip()
+    status = values["status"].upper()
+    if status not in REMEDIATION_STATUS_ICONS:
+        return None
+    if not EXECUTABLE_TICKET_ID_PATTERN.fullmatch(values["ticket_id"]):
+        return None
+    return {
+        "status": status,
+        "ticket_id": values["ticket_id"],
+        "issue": values["issue"],
+        "fix": values["fix"],
+        "verification": values["verification"],
+    }
+
+
+def find_remediation_result(transcript_tail: list[str]) -> RemediationResult | None:
+    for text in reversed(transcript_tail):
+        parsed = parse_remediation_result(text)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def normalize_issue_alias(
@@ -478,31 +636,49 @@ def health_issues(result: JsonObject | None, summary: str, status: str) -> list[
                 "example": "The run did not return structured issue evidence.",
                 "next_step": "Open the run thread and inspect the scheduler failure.",
                 "ticket_id": None,
+                "remediation_ready": False,
             }
         )
     return issues
 
 
-def health_parent_message(icon: str, issues: list[HealthIssue], summary: str) -> str:
+def health_parent_message(
+    icon: str,
+    issues: list[HealthIssue],
+    summary: str,
+    jobs: list[RemediationJob] | None = None,
+) -> str:
     if not issues:
         return f"{icon} [health-6h] {summary}"
     noun = "issue" if len(issues) == 1 else "issues"
-    lines = [f"{icon} [health-6h] {len(issues)} {noun}"]
-    for issue in issues:
+    launched = sum(
+        job["session_id"] is not None and job["launch_error"] is None for job in jobs or []
+    )
+    launch_suffix = (
+        f" — {launched}/{len(issues)} remediation workspaces started" if jobs else ""
+    )
+    lines = [f"{icon} [health-6h] {len(issues)} {noun}{launch_suffix}"]
+    for index, issue in enumerate(issues):
         ticket = issue["ticket_id"] or "no ticket"
-        lines.append(f"• {issue['title']} — ticket `{ticket}`")
+        line = f"• {issue['title']} — ticket `{ticket}`"
+        if jobs and jobs[index]["deep_link"]:
+            line += f" — <{jobs[index]['deep_link']}|Open workspace>"
+        lines.append(line)
     return "\n".join(lines)
 
 
-def health_issue_reply(issue: HealthIssue) -> str:
-    ticket = issue["ticket_id"] or "No ticket assigned"
-    return (
-        f"*{issue['title']}*\n"
-        f"• *Proof:* {issue['proof']}\n"
-        f"• *Example:* {issue['example']}\n"
-        f"• *Next:* {issue['next_step']}\n"
-        f"• *Ticket:* `{ticket}`"
-    )
+def health_remediation_reply(job: RemediationJob, result: RemediationResult) -> str:
+    icon = REMEDIATION_STATUS_ICONS[result["status"]]
+    status_label = result["status"].lower().replace("_", " ")
+    lines = [
+        f"{icon} *{result['ticket_id']} — {job['issue']['title']} — {status_label}*",
+        f"• *Issue:* {result['issue']}",
+        f"• *Fix:* {result['fix']}",
+        f"• *Verification:* {result['verification']}",
+    ]
+    if job["deep_link"]:
+        lines.append(f"• *Workspace:* <{job['deep_link']}|Open in Conductor>")
+    return "\n".join(lines)
 
 
 def count_label(count: int, singular: str, plural: str | None = None) -> str:
@@ -741,6 +917,23 @@ def record_run(name: str, status: str, workspace_id: str | None) -> None:
             history.write(json.dumps({**record, "archived": False}) + "\n")
 
 
+def record_remediation(
+    name: str, job: RemediationJob, result: RemediationResult
+) -> None:
+    if not job["workspace_id"]:
+        return
+    record = {
+        "completed_at": utc_now().isoformat(),
+        "status": "PASS" if result["status"] == "STAGING_VERIFIED" else "FAIL",
+        "workspace_id": job["workspace_id"],
+        "ticket_id": job["issue"]["ticket_id"],
+        "kind": "health-remediation",
+        "archived": False,
+    }
+    with history_path(name).open("a") as history:
+        history.write(json.dumps(record) + "\n")
+
+
 def mark_archived(name: str, workspace_id: str) -> None:
     """Flag *workspace_id* as archived in the schedule's history file."""
     path = history_path(name)
@@ -787,10 +980,13 @@ def archive_completed_workspace(
 # --- run mode ----------------------------------------------------------------
 
 
-def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None]:
-    workspace_spec = cast(JsonObject, entry.get("workspace") or {})
+def launch_cloud_workspace(
+    workspace_spec: JsonObject,
+    *,
+    workspace_name: str,
+    session_name: str,
+) -> tuple[str, str, str | None]:
     repo = cast(str, workspace_spec.get("repo"))
-    stamp = utc_now().strftime("%Y%m%d-%H%M")
     # Orgs without Conductor projects create workspaces from a repository URL;
     # supply exactly one of project_id / repository_url (server enforces this).
     source: JsonObject
@@ -804,8 +1000,8 @@ def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None
     request: JsonObject = {
         **source,
         "branch": workspace_spec.get("branch"),
-        "name": f"sched-{name}-{stamp}",
-        "session_name": f"{name} {stamp}",
+        "name": workspace_name,
+        "session_name": session_name,
     }
     # Agent/model/effort are reviewed manifest fields (schedules.yaml); when
     # present they pin which coding agent runs the scheduled prompt.
@@ -831,6 +1027,177 @@ def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None
     return workspace_id, session_id, deep_link
 
 
+def launch_workspace(entry: JsonObject, name: str) -> tuple[str, str, str | None]:
+    workspace_spec = cast(JsonObject, entry.get("workspace") or {})
+    stamp = utc_now().strftime("%Y%m%d-%H%M")
+    return launch_cloud_workspace(
+        workspace_spec,
+        workspace_name=f"sched-{name}-{stamp}",
+        session_name=f"{name} {stamp}",
+    )
+
+
+def remediation_prompt(issue: HealthIssue) -> str:
+    ticket_id = cast(str, issue["ticket_id"])
+    context = json.dumps(
+        {
+            "title": issue["title"],
+            "concrete_proof": issue["proof"],
+            "representative_example": issue["example"],
+            "triage_next_step": issue["next_step"],
+        },
+        separators=(",", ":"),
+    )
+    return (
+        (HERE / "health-remediation.md")
+        .read_text()
+        .replace("__TICKET_ID__", ticket_id)
+        .replace("__ISSUE_CONTEXT_JSON__", context)
+    )
+
+
+def launch_health_remediations(
+    entry: JsonObject, issues: list[HealthIssue]
+) -> list[RemediationJob]:
+    """Launch one independent cloud ticket-flow workspace per health issue."""
+    jobs: list[RemediationJob] = []
+    workspace_spec = cast(JsonObject, entry.get("workspace") or {})
+    stamp = utc_now().strftime("%Y%m%d-%H%M")
+    seen_tickets: set[str] = set()
+    for ordinal, issue in enumerate(issues, start=1):
+        ticket_id = issue["ticket_id"]
+        launch_error: str | None = None
+        workspace_id: str | None = None
+        session_id: str | None = None
+        deep_link: str | None = None
+        if ticket_id is None or not EXECUTABLE_TICKET_ID_PATTERN.fullmatch(ticket_id):
+            launch_error = "No executable F/B/R owning ticket was assigned during health triage."
+        elif not issue["remediation_ready"]:
+            launch_error = (
+                "Health triage did not attest that ticket assignment, flow-run tagging, and "
+                "artifacts completed."
+            )
+        elif ticket_id in seen_tickets:
+            launch_error = (
+                f"Health triage emitted duplicate owning ticket {ticket_id}; one issue per "
+                "ticket is required."
+            )
+        else:
+            seen_tickets.add(ticket_id)
+            try:
+                workspace_id, session_id, deep_link = launch_cloud_workspace(
+                    workspace_spec,
+                    workspace_name=f"health-{ticket_id.lower()}-{stamp}-{ordinal:02d}",
+                    session_name=f"health remediation {ticket_id}",
+                )
+                conductor_call(
+                    "send_session_message",
+                    {"session_id": session_id, "message": remediation_prompt(issue)},
+                )
+            except (RunnerError, OSError) as error:
+                launch_error = str(error)
+        jobs.append(
+            {
+                "issue": issue,
+                "workspace_id": workspace_id,
+                "session_id": session_id,
+                "deep_link": deep_link,
+                "launch_error": launch_error,
+                "saw_working": False,
+                "terminal_idle_confirmations": 0,
+            }
+        )
+    return jobs
+
+
+def stopped_remediation(job: RemediationJob, reason: str) -> RemediationResult:
+    ticket_id = job["issue"]["ticket_id"] or "No ticket assigned"
+    return {
+        "status": "STOPPED",
+        "ticket_id": ticket_id,
+        "issue": job["issue"]["proof"],
+        "fix": f"No complete fix was landed because {reason}",
+        "verification": "Staging verification did not complete; open the workspace for evidence.",
+    }
+
+
+def supervise_health_remediations(
+    jobs: list[RemediationJob],
+    max_runtime_minutes: int,
+    poll_seconds: int,
+) -> Iterator[tuple[RemediationJob, RemediationResult]]:
+    """Yield child results as parallel remediation sessions reach a terminal state."""
+    pending = list(jobs)
+    deadline = time.monotonic() + max_runtime_minutes * 60
+    while pending and time.monotonic() < deadline:
+        completed: list[RemediationJob] = []
+        for job in pending:
+            if job["launch_error"]:
+                completed.append(job)
+                yield job, stopped_remediation(job, job["launch_error"])
+                continue
+            session_id = cast(str, job["session_id"])
+            try:
+                status_payload = conductor_call(
+                    "get_session_status", {"session_id": session_id}
+                )
+                status = str(
+                    first_string(status_payload, "status", "state") or ""
+                ).lower()
+                if status in {"error", "errored", "failed"}:
+                    completed.append(job)
+                    result, _ = read_session_remediation_result(session_id)
+                    if result is not None and result["status"] in {"STOPPED", "FAILED"}:
+                        yield job, result
+                    else:
+                        yield job, stopped_remediation(
+                            job, "the Conductor agent session errored."
+                        )
+                elif status in {"working", "running", "busy"}:
+                    job["saw_working"] = True
+                    job["terminal_idle_confirmations"] = 0
+                elif status in {"idle", "completed", "done"}:
+                    result, turn_completed = read_session_remediation_result(session_id)
+                    if result is not None:
+                        completed.append(job)
+                        if result["ticket_id"] != job["issue"]["ticket_id"]:
+                            yield job, stopped_remediation(
+                                job, "the agent returned a result for a different ticket."
+                            )
+                        else:
+                            yield job, result
+                    elif job["saw_working"] or status in {"completed", "done"}:
+                        job["terminal_idle_confirmations"] += 1
+                        if (
+                            turn_completed
+                            or job["terminal_idle_confirmations"]
+                            >= TERMINAL_IDLE_CONFIRMATIONS
+                        ):
+                            completed.append(job)
+                            yield job, stopped_remediation(
+                                job,
+                                "the agent finished without a structured remediation result.",
+                            )
+            except (RunnerError, OSError) as error:
+                completed.append(job)
+                yield job, stopped_remediation(job, f"Conductor polling failed: {error}.")
+        for job in completed:
+            pending.remove(job)
+        if pending:
+            time.sleep(poll_seconds)
+
+    for job in pending:
+        session_id = job["session_id"]
+        if session_id:
+            try:
+                conductor_call("cancel_session", {"session_id": session_id})
+            except RunnerError as error:
+                log.warning("cancel remediation after timeout failed: %s", error)
+        yield job, stopped_remediation(
+            job, f"the {max_runtime_minutes}-minute remediation deadline expired."
+        )
+
+
 def poll_session(
     session_id: str,
     max_runtime_minutes: int,
@@ -844,21 +1211,29 @@ def poll_session(
     """
     deadline = time.monotonic() + max_runtime_minutes * 60
     saw_working = False
+    terminal_idle_confirmations = 0
     while time.monotonic() < deadline:
         status_payload = conductor_call("get_session_status", {"session_id": session_id})
         status = str(
             first_string(status_payload, "status", "state") or ""
         ).lower()
         if status in {"error", "errored", "failed"}:
-            return "errored", find_result(session_transcript_tail(session_id))
+            return "errored", read_session_result(session_id)["result"]
         if status in {"working", "running", "busy"}:
             saw_working = True
+            terminal_idle_confirmations = 0
         elif status in {"idle", "completed", "done"}:
-            result = find_result(session_transcript_tail(session_id))
-            if result is not None:
-                return "finished", result
-            if saw_working:
+            snapshot = read_session_result(session_id)
+            if snapshot["result"] is not None:
+                return "finished", snapshot["result"]
+            if snapshot["turn_completed"]:
                 return "finished", None
+            if saw_working or status in {"completed", "done"}:
+                terminal_idle_confirmations += 1
+                if terminal_idle_confirmations >= TERMINAL_IDLE_CONFIRMATIONS:
+                    return "finished", None
+        else:
+            terminal_idle_confirmations = 0
         time.sleep(poll_seconds)
     return "timeout", None
 
@@ -885,6 +1260,9 @@ def run_schedule(name: str) -> int:
     settings = runner_settings(manifest)
     poll_seconds = int(cast(int, settings.get("poll_seconds", DEFAULT_POLL_SECONDS)))
     max_runtime = int(cast(int, entry.get("max_runtime_minutes", 120)))
+    remediation_max_runtime = int(
+        cast(int, entry.get("remediation_max_runtime_minutes", 0))
+    )
 
     workspace_id: str | None = None
     started = utc_now()
@@ -925,21 +1303,34 @@ def run_schedule(name: str) -> int:
         detail_lines.append("```")
 
     issues: list[HealthIssue] = []
+    incident_posted = False
     if name == "health-6h":
         issues = health_issues(result, summary, status)
         if status == "PASS" and issues:
             status = "FAIL"
             summary = "run reported issues with PASS status"
+        jobs = launch_health_remediations(entry, issues)
         icon = STATUS_ICONS[status]
-        line = health_parent_message(icon, issues, summary)
+        line = health_parent_message(icon, issues, summary, jobs)
         parent_ts = post_message(slack_token, channel, line)
-        for issue in issues:
+        if status in {"FAIL", "BLOCKED"} and channel != incidents:
+            permalink = message_permalink(slack_token, channel, parent_ts)
+            post_message(
+                slack_token,
+                incidents,
+                incident_message(name, status, summary, result, issues, permalink),
+            )
+            incident_posted = True
+        for job, remediation in supervise_health_remediations(
+            jobs, remediation_max_runtime, poll_seconds
+        ):
             post_message(
                 slack_token,
                 channel,
-                health_issue_reply(issue),
+                health_remediation_reply(job, remediation),
                 thread_ts=parent_ts,
             )
+            record_remediation(name, job, remediation)
     elif name == "nightly-dream":
         raw_report = result.get("dream_report") if result is not None else None
         icon = STATUS_ICONS[status]
@@ -961,7 +1352,7 @@ def run_schedule(name: str) -> int:
         line = f"{icon} [{name}] {summary}"
         parent_ts = post_message(slack_token, channel, line)
         post_message(slack_token, channel, "\n".join(detail_lines), thread_ts=parent_ts)
-    if status in {"FAIL", "BLOCKED"}:
+    if status in {"FAIL", "BLOCKED"} and not incident_posted:
         permalink = message_permalink(slack_token, channel, parent_ts)
         if channel != incidents:
             post_message(
@@ -1028,7 +1419,12 @@ def check_staleness(manifest: JsonObject, token: str, incidents: str) -> None:
         name = cast(str, entry["name"])
         interval_hours = cron_interval_hours(cast(str, entry["cron"]))
         max_runtime = int(cast(int, entry.get("max_runtime_minutes", 120)))
-        allowed = interval_hours * 3600 + (max_runtime + WATCHDOG_GRACE_MINUTES) * 60
+        remediation_runtime = int(
+            cast(int, entry.get("remediation_max_runtime_minutes", 0))
+        )
+        allowed = interval_hours * 3600 + (
+            max_runtime + remediation_runtime + WATCHDOG_GRACE_MINUTES
+        ) * 60
         path = state_path(name)
         if path.exists():
             completed = datetime.fromisoformat(

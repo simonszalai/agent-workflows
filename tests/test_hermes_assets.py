@@ -286,6 +286,8 @@ class HermesScheduleTests(unittest.TestCase):
                 self.assertIn(entry["slack_channel"], channels)
                 self.assertIsInstance(entry["enabled"], bool)
                 self.assertGreater(entry["max_runtime_minutes"], 0)
+                if entry["name"] == "health-6h":
+                    self.assertGreater(entry["remediation_max_runtime_minutes"], 0)
                 self.assertTrue(entry["workspace"]["repo"])
                 self.assertTrue(entry["workspace"]["branch"])
                 # Scheduled runs pin the latest Codex model (Simon, 2026-08-22).
@@ -316,20 +318,17 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertIn("`scraper_executions` contains execution writers", contract)
         self.assertIn("`record.source_meta.scraper_id`", contract)
 
-    def test_health_schedule_investigates_clusters_in_current_workspace(self) -> None:
+    def test_health_schedule_tags_and_dispatches_every_actionable_cluster(self) -> None:
         prompt = (HERMES / "schedules" / "health-6h.md").read_text().replace("\n", " ")
 
-        self.assertIn(
-            "bounded cluster investigation within the current scheduled workspace",
-            prompt,
-        )
-        self.assertIn("one durable owning ticket with investigation evidence", prompt)
-        self.assertIn("recurrences extend that ticket by `rc_fingerprint`", prompt)
-        self.assertIn("Never create a follow-up Conductor workspace", prompt)
-        self.assertIn("never emit or request spawn placeholders", prompt)
+        self.assertIn("complete every actionable cluster in the bounded result", prompt)
+        self.assertIn("append `ticket:<ID>` to every verified failed/crashed flow run", prompt)
+        self.assertIn("one cloud `/ticket-flow <ID>` workspace per emitted issue", prompt)
+        self.assertIn("supervises it through staging verification", prompt)
+        self.assertIn("final issue/fix/evidence reply", prompt)
         for obsolete_promise in (
-            "spawn one investigation workspace",
-            "would spawn",
+            "never create a follow-up conductor workspace",
+            "remaining clusters are listed un-investigated",
             "spawn_requests",
         ):
             with self.subTest(obsolete_promise=obsolete_promise):
@@ -340,19 +339,98 @@ class HermesScheduleTests(unittest.TestCase):
         contract = (ROOT / "skills" / "references" / "scheduled-run.md").read_text()
         canonical_keys = (
             "`title`, `concrete_proof`, `representative_example`, `next_step`, "
-            "and `owning_ticket_id`"
+            "`owning_ticket_id`, and `remediation_ready`"
         )
         canonical_schema = """{
   "title": "<short name>",
   "concrete_proof": "<aggregate evidence>",
   "representative_example": "<one occurrence>",
   "next_step": "<specific action>",
-  "owning_ticket_id": "<ID or null>"
+  "owning_ticket_id": "<ID or null>",
+  "remediation_ready": true
 }"""
 
         self.assertIn(canonical_keys, prompt)
         self.assertIn(canonical_schema, contract)
         self.assertIn("input-only legacy aliases", contract)
+
+    def test_health_contract_defines_ticket_tag_and_cloud_remediation_boundaries(self) -> None:
+        contract = (ROOT / "skills" / "references" / "scheduled-run.md").read_text()
+        readme = (HERMES / "schedules" / "README.md").read_text()
+
+        self.assertIn("## 2b. Health issue remediation", contract)
+        self.assertIn("tag_ticket_flow_runs", contract)
+        self.assertIn("one workspace per valid F/B/R ticket", contract)
+        self.assertIn("`HEALTH_REMEDIATION_RESULT`", contract)
+        self.assertIn("It never promotes\n   to production", contract)
+        self.assertIn("one cloud\n`/ticket-flow` workspace per issue", readme)
+
+    def test_health_remediation_launches_one_workspace_per_unique_ticket(self) -> None:
+        runner = load_schedule_runner()
+        issues = [
+            {
+                "title": "Issue one",
+                "proof": "Proof one.",
+                "example": "Example one.",
+                "next_step": "Fix one.",
+                "ticket_id": "B0100",
+                "remediation_ready": True,
+            },
+            {
+                "title": "Issue two",
+                "proof": "Proof two.",
+                "example": "Example two.",
+                "next_step": "Fix two.",
+                "ticket_id": "B0101",
+                "remediation_ready": True,
+            },
+        ]
+        entry = {
+            "workspace": {
+                "repo": "ts-prefect",
+                "branch": "staging",
+                "agent": "codex",
+                "model": "gpt-5.6-sol",
+            }
+        }
+        launched = [
+            ("workspace-1", "session-1", "conductor://workspace-1"),
+            ("workspace-2", "session-2", "conductor://workspace-2"),
+        ]
+
+        with (
+            mock.patch.object(
+                runner, "launch_cloud_workspace", side_effect=launched
+            ) as launch,
+            mock.patch.object(runner, "conductor_call") as conductor_call,
+        ):
+            jobs = runner.launch_health_remediations(entry, issues)
+
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(conductor_call.call_count, 2)
+        for index, ticket_id in enumerate(("B0100", "B0101")):
+            message = conductor_call.mock_calls[index].args[1]["message"]
+            self.assertTrue(message.startswith(f"/ticket-flow {ticket_id}\n"))
+
+        with (
+            mock.patch.object(
+                runner, "launch_cloud_workspace", return_value=launched[0]
+            ) as launch,
+            mock.patch.object(runner, "conductor_call"),
+        ):
+            duplicate_jobs = runner.launch_health_remediations(entry, [issues[0], issues[0]])
+        self.assertEqual(launch.call_count, 1)
+        self.assertIn("duplicate owning ticket", duplicate_jobs[1]["launch_error"])
+
+        not_ready = issues[0] | {"remediation_ready": False}
+        with (
+            mock.patch.object(runner, "launch_cloud_workspace") as launch,
+            mock.patch.object(runner, "conductor_call"),
+        ):
+            not_ready_jobs = runner.launch_health_remediations(entry, [not_ready])
+        launch.assert_not_called()
+        self.assertIn("did not attest", not_ready_jobs[0]["launch_error"])
 
     def test_every_schedule_has_a_matching_vancouver_timer(self) -> None:
         for entry in self.manifest()["schedules"]:
@@ -418,7 +496,8 @@ class HermesScheduleTests(unittest.TestCase):
             'issues: [{"title":"Worker offline",'
             '"concrete_proof":"No heartbeat in 15m",'
             '"representative_example":"Worker alpha missed three polls",'
-            '"next_step":"Restart worker alpha","owning_ticket_id":"B0100"}]\n'
+            '"next_step":"Restart worker alpha","owning_ticket_id":"B0100",'
+            '"remediation_ready":true}]\n'
             "```\n"
         )
         parsed = runner.parse_result_block(message)
@@ -435,6 +514,7 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "Worker alpha missed three polls",
                     "next_step": "Restart worker alpha",
                     "ticket_id": "B0100",
+                    "remediation_ready": True,
                 }
             ],
         )
@@ -442,14 +522,6 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertEqual(
             runner.health_parent_message("❌", issues, "one check failed"),
             "❌ [health-6h] 1 issue\n• Worker offline — ticket `B0100`",
-        )
-        self.assertEqual(
-            runner.health_issue_reply(issues[0]),
-            "*Worker offline*\n"
-            "• *Proof:* No heartbeat in 15m\n"
-            "• *Example:* Worker alpha missed three polls\n"
-            "• *Next:* Restart worker alpha\n"
-            "• *Ticket:* `B0100`",
         )
         self.assertIsNone(runner.parse_result_block("no marker here"))
         self.assertIsNone(
@@ -477,6 +549,100 @@ class HermesScheduleTests(unittest.TestCase):
             )
         )
 
+    def test_session_result_reads_paginated_nested_agent_output(self) -> None:
+        runner = load_schedule_runner()
+        filler = [
+            {
+                "content": {
+                    "rawPayload": {
+                        "event": {
+                            "type": "item.completed",
+                            "item": {"type": "toolCall", "id": f"tool-{index}"},
+                        }
+                    }
+                }
+            }
+            for index in range(205)
+        ]
+        result_text = (
+            "Health check complete.\n"
+            "SCHEDULED_RUN_RESULT\n"
+            "status: BLOCKED\n"
+            "summary: three actionable failures were confirmed\n"
+            "checks_total: 36\n"
+            "checks_failed: 3\n"
+        )
+        messages = [
+            *filler,
+            {
+                "content": {
+                    "rawPayload": {
+                        "event": {
+                            "type": "item.completed",
+                            "item": {"type": "agentMessage", "text": result_text},
+                        }
+                    }
+                }
+            },
+            {"content": {"rawPayload": {"event": {"type": "turn.completed"}}}},
+        ]
+        offsets: list[int] = []
+
+        def conductor_call(tool: str, arguments: dict[str, object]) -> dict[str, object]:
+            self.assertEqual(tool, "list_session_messages")
+            self.assertEqual(arguments["limit"], 100)
+            offset = int(arguments["offset"])
+            offsets.append(offset)
+            page = messages[offset : offset + 100]
+            return {
+                "data": page,
+                "hasMore": offset + len(page) < len(messages),
+            }
+
+        with mock.patch.object(runner, "conductor_call", side_effect=conductor_call):
+            snapshot = runner.read_session_result("session-1")
+
+        self.assertEqual(offsets, [0, 100, 200])
+        self.assertTrue(snapshot["turn_completed"])
+        self.assertEqual(snapshot["result"]["status"], "BLOCKED")
+        self.assertEqual(snapshot["result"]["checks_failed"], "3")
+
+    def test_poll_waits_for_terminal_output_materialization(self) -> None:
+        runner = load_schedule_runner()
+        result = {
+            "status": "BLOCKED",
+            "summary": "three actionable failures were confirmed",
+        }
+        statuses = iter(
+            [
+                {"status": "working"},
+                {"status": "idle"},
+                {"status": "idle"},
+            ]
+        )
+        snapshots = iter(
+            [
+                {"result": None, "turn_completed": False},
+                {"result": result, "turn_completed": True},
+            ]
+        )
+
+        with (
+            mock.patch.object(
+                runner,
+                "conductor_call",
+                side_effect=lambda tool, arguments: next(statuses),
+            ),
+            mock.patch.object(
+                runner, "read_session_result", side_effect=lambda session_id: next(snapshots)
+            ) as read_result,
+            mock.patch.object(runner.time, "sleep"),
+        ):
+            outcome = runner.poll_session("session-1", 1, 0)
+
+        self.assertEqual(outcome, ("finished", result))
+        self.assertEqual(read_result.call_count, 2)
+
     def test_health_issue_legacy_aliases_are_normalized(self) -> None:
         runner = load_schedule_runner()
 
@@ -499,9 +665,165 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "Worker alpha missed three polls",
                     "next_step": "Restart worker alpha",
                     "ticket_id": "B0100",
+                    "remediation_ready": False,
                 }
             ],
         )
+
+    def test_health_remediation_prompt_and_result_are_structured(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "proof": "No heartbeat arrived in fifteen minutes.",
+            "example": "Worker alpha missed three polls.",
+            "next_step": "Repair the worker heartbeat.",
+            "ticket_id": "B0100",
+        }
+
+        prompt = runner.remediation_prompt(issue)
+
+        self.assertTrue(prompt.startswith("/ticket-flow B0100\n"))
+        self.assertIn('"title":"Worker offline"', prompt)
+        self.assertIn("Independently confirm the root cause", prompt)
+        self.assertIn("land it on `staging`", prompt)
+        self.assertIn("Do not promote to production", prompt)
+        self.assertIn("HEALTH_REMEDIATION_RESULT", prompt)
+
+        transcript = (
+            "Ticket flow complete.\n"
+            "HEALTH_REMEDIATION_RESULT\n"
+            '{"status":"STAGING_VERIFIED","ticket_id":"B0100",'
+            '"issue":"A dead worker stopped all scheduled jobs.",'
+            '"fix":"The worker now restarts after a stale heartbeat.",'
+            '"verification":"Staging run run-1 passed with evidence artifact art-1."}\n'
+        )
+        self.assertEqual(
+            runner.parse_remediation_result(transcript),
+            {
+                "status": "STAGING_VERIFIED",
+                "ticket_id": "B0100",
+                "issue": "A dead worker stopped all scheduled jobs.",
+                "fix": "The worker now restarts after a stale heartbeat.",
+                "verification": "Staging run run-1 passed with evidence artifact art-1.",
+            },
+        )
+
+    def test_health_remediation_result_rejects_unverified_or_wrong_ticket_types(self) -> None:
+        runner = load_schedule_runner()
+        for status, ticket_id in (
+            ("PASS", "B0100"),
+            ("STAGING_VERIFIED", "E0100"),
+        ):
+            with self.subTest(status=status, ticket_id=ticket_id):
+                transcript = (
+                    "HEALTH_REMEDIATION_RESULT\n"
+                    f'{{"status":"{status}","ticket_id":"{ticket_id}",'
+                    '"issue":"Issue.","fix":"Fix.","verification":"Evidence."}'
+                )
+                self.assertIsNone(runner.parse_remediation_result(transcript))
+
+    def test_health_remediation_supervisor_yields_valid_terminal_result(self) -> None:
+        runner = load_schedule_runner()
+        job = {
+            "issue": {
+                "title": "Worker offline",
+                "proof": "No heartbeat arrived.",
+                "example": "Worker alpha missed three polls.",
+                "next_step": "Repair the worker.",
+                "ticket_id": "B0100",
+                "remediation_ready": True,
+            },
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": False,
+            "terminal_idle_confirmations": 0,
+        }
+        result = {
+            "status": "STAGING_VERIFIED",
+            "ticket_id": "B0100",
+            "issue": "A dead worker stopped jobs.",
+            "fix": "The worker now restarts safely.",
+            "verification": "Staging run run-1 passed with evidence artifact art-1.",
+        }
+
+        with (
+            mock.patch.object(
+                runner, "conductor_call", return_value={"status": "completed"}
+            ),
+            mock.patch.object(
+                runner, "read_session_remediation_result", return_value=(result, True)
+            ),
+            mock.patch.object(runner.time, "sleep") as sleep,
+        ):
+            completed = list(runner.supervise_health_remediations([job], 10, 1))
+
+        self.assertEqual(completed[0][1]["status"], "STAGING_VERIFIED")
+        sleep.assert_not_called()
+
+    def test_health_remediation_supervisor_fails_closed_per_issue(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "proof": "No heartbeat arrived.",
+            "example": "Worker alpha missed three polls.",
+            "next_step": "Repair the worker.",
+            "ticket_id": "B0100",
+            "remediation_ready": True,
+        }
+        launch_failure = {
+            "issue": issue,
+            "workspace_id": None,
+            "session_id": None,
+            "deep_link": None,
+            "launch_error": "workspace launch failed",
+            "saw_working": False,
+            "terminal_idle_confirmations": 0,
+        }
+
+        with (
+            mock.patch.object(runner, "conductor_call") as conductor_call,
+            mock.patch.object(runner.time, "sleep") as sleep,
+        ):
+            completed = list(
+                runner.supervise_health_remediations([launch_failure], 10, 1)
+            )
+
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0][1]["status"], "STOPPED")
+        self.assertIn("workspace launch failed", completed[0][1]["fix"])
+        conductor_call.assert_not_called()
+        sleep.assert_not_called()
+
+        errored_job = launch_failure | {
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": True,
+        }
+        untrustworthy_success = {
+            "status": "STAGING_VERIFIED",
+            "ticket_id": "B0100",
+            "issue": "A dead worker stopped jobs.",
+            "fix": "The worker now restarts safely.",
+            "verification": "Staging run run-1 passed with artifact art-1.",
+        }
+        with (
+            mock.patch.object(
+                runner, "conductor_call", return_value={"status": "errored"}
+            ),
+            mock.patch.object(
+                runner,
+                "read_session_remediation_result",
+                return_value=(untrustworthy_success, True),
+            ),
+        ):
+            completed = list(runner.supervise_health_remediations([errored_job], 10, 1))
+
+        self.assertEqual(completed[0][1]["status"], "STOPPED")
+        self.assertIn("session errored", completed[0][1]["fix"])
 
     def test_dream_result_block_and_noop_report_are_structured(self) -> None:
         runner = load_schedule_runner()
@@ -588,6 +910,7 @@ class HermesScheduleTests(unittest.TestCase):
             "next_step": "Restart worker alpha",
             "owning_ticket_id": "B0100",
             "ticket_id": " B0100 ",
+            "remediation_ready": True,
         }
 
         self.assertIsNotNone(runner.parse_health_issues([issue]))
@@ -600,6 +923,7 @@ class HermesScheduleTests(unittest.TestCase):
             "representative_example": "Worker alpha missed three polls",
             "next_step": "Restart worker alpha",
             "owning_ticket_id": "B0100",
+            "remediation_ready": True,
         }
         conflicts = {
             "proof": "A different aggregate finding",
@@ -620,6 +944,7 @@ class HermesScheduleTests(unittest.TestCase):
             "representative_example": "Worker alpha missed three polls",
             "next_step": "Restart worker alpha",
             "owning_ticket_id": "B0100",
+            "remediation_ready": True,
         }
         malformed_issues = {
             "missing proof": {
@@ -635,13 +960,14 @@ class HermesScheduleTests(unittest.TestCase):
             },
             "non-string example": valid_issue | {"representative_example": 7},
             "non-string ticket": valid_issue | {"owning_ticket_id": 100},
+            "non-boolean readiness": valid_issue | {"remediation_ready": "yes"},
         }
 
         for case, issue in malformed_issues.items():
             with self.subTest(case=case):
                 self.assertIsNone(runner.parse_health_issues([issue]))
 
-    def test_health_report_is_one_parent_list_and_one_reply_per_issue(self) -> None:
+    def test_health_report_parent_is_one_issue_list(self) -> None:
         runner = load_schedule_runner()
         result = {
             "issues": [
@@ -651,6 +977,7 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "The SNDK channel failed at 07:15 UTC.",
                     "next_step": "Restore the monitor's channel access.",
                     "ticket_id": "B0349",
+                    "remediation_ready": True,
                 },
                 {
                     "title": "Tradable scheduler is stale",
@@ -658,6 +985,7 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "The latest tradable run is eight hours old.",
                     "next_step": "Restart the stalled tradable schedule.",
                     "ticket_id": "B0365",
+                    "remediation_ready": True,
                 },
             ]
         }
@@ -668,21 +996,6 @@ class HermesScheduleTests(unittest.TestCase):
             "❌ [health-6h] 2 issues\n"
             "• Discord monitor cannot fetch channels — ticket `B0349`\n"
             "• Tradable scheduler is stale — ticket `B0365`",
-        )
-        self.assertEqual(
-            [runner.health_issue_reply(issue) for issue in issues],
-            [
-                "*Discord monitor cannot fetch channels*\n"
-                "• *Proof:* Twelve verified Discord API 403 responses in six hours.\n"
-                "• *Example:* The SNDK channel failed at 07:15 UTC.\n"
-                "• *Next:* Restore the monitor's channel access.\n"
-                "• *Ticket:* `B0349`",
-                "*Tradable scheduler is stale*\n"
-                "• *Proof:* No successful run completed inside the freshness window.\n"
-                "• *Example:* The latest tradable run is eight hours old.\n"
-                "• *Next:* Restart the stalled tradable schedule.\n"
-                "• *Ticket:* `B0365`",
-            ],
         )
 
     def test_health_report_falls_back_when_run_has_no_structured_issue(self) -> None:
@@ -698,16 +1011,9 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "The run did not return structured issue evidence.",
                     "next_step": "Open the run thread and inspect the scheduler failure.",
                     "ticket_id": None,
+                    "remediation_ready": False,
                 }
             ],
-        )
-        self.assertEqual(
-            runner.health_issue_reply(issues[0]),
-            "*Scheduled health run failed*\n"
-            "• *Proof:* agent session errored\n"
-            "• *Example:* The run did not return structured issue evidence.\n"
-            "• *Next:* Open the run thread and inspect the scheduler failure.\n"
-            "• *Ticket:* `No ticket assigned`",
         )
 
     def test_health_schedule_posts_exactly_one_reply_per_issue(self) -> None:
@@ -725,6 +1031,7 @@ class HermesScheduleTests(unittest.TestCase):
                     "prompt": "health-6h.md",
                     "slack_channel": "#autodev-health",
                     "max_runtime_minutes": 90,
+                    "remediation_max_runtime_minutes": 420,
                 }
             ],
         }
@@ -738,6 +1045,7 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "The SNDK channel failed at 07:15 UTC.",
                     "next_step": "Restore the monitor's channel access.",
                     "ticket_id": "B0349",
+                    "remediation_ready": True,
                 },
                 {
                     "title": "Tradable scheduler is stale",
@@ -745,9 +1053,66 @@ class HermesScheduleTests(unittest.TestCase):
                     "example": "The 06:00 UTC run never started.",
                     "next_step": "Restart the stalled tradable schedule.",
                     "ticket_id": "B0365",
+                    "remediation_ready": True,
                 },
             ],
         }
+        normalized_issues = runner.parse_health_issues(result["issues"])
+        self.assertIsNotNone(normalized_issues)
+        jobs = [
+            {
+                "issue": normalized_issues[0],
+                "workspace_id": "remediation-1",
+                "session_id": "session-1",
+                "deep_link": "conductor://remediation-1",
+                "launch_error": None,
+                "saw_working": True,
+                "terminal_idle_confirmations": 0,
+            },
+            {
+                "issue": normalized_issues[1],
+                "workspace_id": "remediation-2",
+                "session_id": "session-2",
+                "deep_link": "conductor://remediation-2",
+                "launch_error": None,
+                "saw_working": True,
+                "terminal_idle_confirmations": 0,
+            },
+        ]
+        remediations = [
+            (
+                jobs[0],
+                {
+                    "status": "STAGING_VERIFIED",
+                    "ticket_id": "B0349",
+                    "issue": (
+                        "Expired Discord access caused every monitored channel request "
+                        "to return 403."
+                    ),
+                    "fix": "The monitor now refreshes and validates channel access before polling.",
+                    "verification": (
+                        "Staging run flow-123 passed on revision abc123 with evidence "
+                        "artifact art-1."
+                    ),
+                },
+            ),
+            (
+                jobs[1],
+                {
+                    "status": "STAGING_VERIFIED",
+                    "ticket_id": "B0365",
+                    "issue": (
+                        "A stale schedule lease prevented the tradable scheduler from "
+                        "starting."
+                    ),
+                    "fix": "The lease recovery path now releases expired scheduler ownership.",
+                    "verification": (
+                        "Staging run flow-456 passed on revision def456 with evidence "
+                        "artifact art-2."
+                    ),
+                },
+            ),
+        ]
         with tempfile.TemporaryDirectory() as directory:
             with (
                 mock.patch.object(runner, "load_manifest", return_value=manifest),
@@ -766,8 +1131,18 @@ class HermesScheduleTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     runner,
+                    "launch_health_remediations",
+                    return_value=jobs,
+                ),
+                mock.patch.object(
+                    runner,
+                    "supervise_health_remediations",
+                    return_value=iter(remediations),
+                ),
+                mock.patch.object(
+                    runner,
                     "post_message",
-                    side_effect=["parent", "reply-1", "reply-2", "incident"],
+                    side_effect=["parent", "incident", "reply-1", "reply-2"],
                 ) as post,
                 mock.patch.object(
                     runner,
@@ -785,29 +1160,11 @@ class HermesScheduleTests(unittest.TestCase):
                 mock.call(
                     "token",
                     "C-health",
-                    "❌ [health-6h] 2 issues\n"
-                    "• Discord monitor cannot fetch channels — ticket `B0349`\n"
-                    "• Tradable scheduler is stale — ticket `B0365`",
-                ),
-                mock.call(
-                    "token",
-                    "C-health",
-                    "*Discord monitor cannot fetch channels*\n"
-                    "• *Proof:* Discord returned twelve HTTP 403 responses.\n"
-                    "• *Example:* The SNDK channel failed at 07:15 UTC.\n"
-                    "• *Next:* Restore the monitor's channel access.\n"
-                    "• *Ticket:* `B0349`",
-                    thread_ts="parent",
-                ),
-                mock.call(
-                    "token",
-                    "C-health",
-                    "*Tradable scheduler is stale*\n"
-                    "• *Proof:* No successful run completed in eight hours.\n"
-                    "• *Example:* The 06:00 UTC run never started.\n"
-                    "• *Next:* Restart the stalled tradable schedule.\n"
-                    "• *Ticket:* `B0365`",
-                    thread_ts="parent",
+                    "❌ [health-6h] 2 issues — 2/2 remediation workspaces started\n"
+                    "• Discord monitor cannot fetch channels — ticket `B0349` — "
+                    "<conductor://remediation-1|Open workspace>\n"
+                    "• Tradable scheduler is stale — ticket `B0365` — "
+                    "<conductor://remediation-2|Open workspace>",
                 ),
                 mock.call(
                     "token",
@@ -826,6 +1183,32 @@ class HermesScheduleTests(unittest.TestCase):
                     "> *Ticket:* `B0365`\n"
                     "\n"
                     "• *Details:* <https://slack.example/thread|Open the run thread>",
+                ),
+                mock.call(
+                    "token",
+                    "C-health",
+                    "✅ *B0349 — Discord monitor cannot fetch channels — staging verified*\n"
+                    "• *Issue:* Expired Discord access caused every monitored channel "
+                    "request to return 403.\n"
+                    "• *Fix:* The monitor now refreshes and validates channel access before "
+                    "polling.\n"
+                    "• *Verification:* Staging run flow-123 passed on revision abc123 with "
+                    "evidence artifact art-1.\n"
+                    "• *Workspace:* <conductor://remediation-1|Open in Conductor>",
+                    thread_ts="parent",
+                ),
+                mock.call(
+                    "token",
+                    "C-health",
+                    "✅ *B0365 — Tradable scheduler is stale — staging verified*\n"
+                    "• *Issue:* A stale schedule lease prevented the tradable scheduler "
+                    "from starting.\n"
+                    "• *Fix:* The lease recovery path now releases expired scheduler "
+                    "ownership.\n"
+                    "• *Verification:* Staging run flow-456 passed on revision def456 with "
+                    "evidence artifact art-2.\n"
+                    "• *Workspace:* <conductor://remediation-2|Open in Conductor>",
+                    thread_ts="parent",
                 ),
             ],
         )

@@ -17,15 +17,20 @@ What a scheduled run may and may never touch:
   uses `psql-cli prod` only when the selected project registry exposes a non-sensitive read-only
   production profile. A missing profile is BLOCKED; never substitute a read-write credential,
   even for a "safe" statement.
+- **Health triage may append Prefect ticket tags.** After `health-6h` has verified that a
+  FAILED/CRASHED flow run belongs to an actionable cluster with an owning ticket, it may append
+  only `ticket:<ID>` through the repository's reviewed `tag_ticket_flow_runs` command. The command
+  uses explicit verified run IDs and preserves existing tags. Triggering, retrying, deleting, or
+  otherwise mutating production flow runs remains prohibited.
 - **Autodev ticket/memory writes: allowed.** Creating/updating tickets, artifacts, and memory
   entries via the autodev-memory MCP is the intended dedup/state mechanism (see §4).
 - **`graph_*` mutations: never.** No inserts/updates/deletes on graph tables in any
   environment. Graph maintenance is its own explicitly-approved workflow.
-- **Git merges/pushes to long-lived branches: never.** No merging or pushing to `main` or
-  `staging` from a scheduled run. For ts-prefect, merging to `main` IS a production deploy
-  (flows git_clone at runtime) and merging to `staging` is a staging deploy. A scheduled run
-  reports "promotion-ready" evidence; a human (or an explicitly human-invoked workflow)
-  performs the merge.
+- **Long-lived branch writes stay gated.** The top-level scheduled health/check workspace never
+  merges or pushes to `main` or `staging`. The sole staging exception is a per-issue remediation
+  workspace explicitly launched by the Hermes runner under §2b: `/ticket-flow <ID>` may merge the
+  ticket branch to `staging`, deploy documented staging steps, and verify there. It never promotes
+  to `main`; for ts-prefect, merging to `main` is a production deploy because flows use git_clone.
 - **Nothing that can raise a 1Password prompt.** No `op://*-sensitive` reads, no operation
   that triggers Touch ID or an authorization prompt. These hard-fail unattended (authorization
   timeout / agent-communication failure) and wedge the run.
@@ -43,9 +48,11 @@ resolves the configured name to its ID.
 - **Default format.** Post exactly one summary line to the schedule's channel, then attach detail
   in that message's thread.
 - **`health-6h` issue format.** When issues exist, the parent message is a short header followed by
-  one bullet per issue. Each bullet names the issue and its owning ticket. Post exactly one thread
-  reply per issue containing its human-readable problem description and ticket ID. Do not add a
-  generic result-dump reply. A green run remains one standalone ✅ line with no thread reply.
+  one bullet per issue. Each bullet names the issue and its owning ticket. The runner launches the
+  §2b remediation workspaces, then posts exactly one final thread reply per issue containing the
+  confirmed issue, implemented fix (or precise stop), staging verification evidence, ticket ID,
+  and Conductor link. Do not add a generic result-dump reply. A green run remains one standalone ✅
+  line with no thread reply.
 - **Green runs still post.** A healthy run posts its one ✅ line ("ran, nothing to report").
   Silence is indistinguishable from a broken scheduler.
 - **`nightly-dream` format.** The parent line states whether any changes were applied and gives
@@ -91,6 +98,35 @@ Prefect flows and `record.source_meta.scraper_id`; do not use a Reuters record-I
 the sitemap deliberately preserves the historical fusion prefix for deduplication. A Completed
 all-config RSS run proves every selected RSS config passed acquisition/parsing/claim processing,
 but does not prove every downstream article body scrape succeeded.
+
+## 2b. Health issue remediation
+
+For each actionable `health-6h` issue, the complete automated path is:
+
+1. The health workspace proves current ownership, clusters the root cause, creates or extends one
+   owning ticket by `rc_fingerprint`, tags every verified failed/crashed run `ticket:<ID>`, and
+   persists the occurrence plus deferred-cleanup artifacts.
+2. The health workspace emits exactly one canonical `issues` object per owning ticket and sets its
+   `remediation_ready` attestation only after ticket/artifact/tag postconditions pass. It never
+   calls Conductor or Slack itself.
+3. The Hermes runner launches all issue workspaces independently from the configured `staging`
+   branch, one workspace per valid F/B/R ticket, and sends `health-remediation.md` with
+   `/ticket-flow <ID>`. Workspaces run in parallel under the manifest's shared remediation
+   deadline.
+4. Each ticket workspace independently confirms the investigation, persists its plan, implements
+   and reviews the fix, lands/deploys to staging, and runs staging verification. It never promotes
+   to production. A successful result requires the ticket to re-read as `staging_verified` and
+   cite its persisted verification artifact.
+5. The runner accepts only the structured `HEALTH_REMEDIATION_RESULT` ending. As each workspace
+   reaches a terminal result, the runner posts the issue's one Slack thread reply with concise
+   issue, fix, and verification sentences plus the Conductor link. Missing/malformed results,
+   launch failures, agent errors, and deadline expiry are explicit STOPPED replies, never silent
+   success.
+
+There is no five-cluster drop or placeholder lane in scheduled health: every actionable cluster in
+the bounded input is ticketed, tagged when it has flow runs, emitted, and dispatched. Non-flow
+issues naturally have no Prefect runs to tag. External noise that is not actionable remains
+acknowledged rather than ticketed or dispatched.
 
 ## 3. Structured ending (PASS/FAIL schema)
 
@@ -140,7 +176,8 @@ Issue object:
   "concrete_proof": "<aggregate evidence>",
   "representative_example": "<one occurrence>",
   "next_step": "<specific action>",
-  "owning_ticket_id": "<ID or null>"
+  "owning_ticket_id": "<ID or null>",
+  "remediation_ready": true
 }
 ```
 
@@ -167,7 +204,11 @@ rejected.
   assigned. Keep `title` short enough for the parent bullet. Keep `concrete_proof`,
   `representative_example`, and `next_step` to one concrete sentence each. `concrete_proof` states
   the aggregate evidence; `representative_example` names one representative occurrence rather than
-  repeating the proof.
+  repeating the proof. Every non-null owning ticket appears in at most one issue object so runner
+  dispatch remains exactly one ticket workspace per issue. Set `remediation_ready: true` only after
+  the owning ticket and occurrence/cleanup artifacts exist and every applicable flow-run tag write
+  returned `errors: 0`; non-flow issues have no tag prerequisite. Missing, false, or non-boolean
+  readiness fails closed and produces a STOPPED reply instead of launching a workspace.
 - `dream_report` is required for `nightly-dream`. Missing or malformed data makes the run FAIL
   rather than silently restoring the raw machine dump.
 - The block is the last thing in the message. Free-form detail goes above it, never below.
