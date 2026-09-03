@@ -117,6 +117,7 @@ apt-get install -y --no-install-recommends \
   sudo \
   tar \
   ufw \
+  util-linux \
   xz-utils
 
 if ! id "$HERMES_USER" >/dev/null 2>&1; then

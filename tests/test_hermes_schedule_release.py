@@ -576,6 +576,23 @@ class HermesScheduleReleaseTests(unittest.TestCase):
             self.assertEqual((owned_staging / revision).name, release.name)
             self.release.verify_release(release, bundle)
 
+    def test_builder_subprocess_drops_identity_and_cannot_regain_privileges(self) -> None:
+        account = types.SimpleNamespace(pw_uid=1234, pw_gid=5678)
+        with (
+            mock.patch.object(self.release.pwd, "getpwnam", return_value=account),
+            mock.patch.object(self.release, "run_text") as run_text,
+        ):
+            self.release.run_as_build_user(["/usr/bin/id", "-u"], "validation")
+
+        command = run_text.call_args.args[0]
+        self.assertEqual(command[0], "/usr/bin/setpriv")
+        self.assertIn("--reuid=1234", command)
+        self.assertIn("--regid=5678", command)
+        self.assertIn("--inh-caps=-all", command)
+        self.assertIn("--ambient-caps=-all", command)
+        self.assertIn("--no-new-privs", command)
+        self.assertNotIn("/usr/sbin/runuser", command)
+
     def test_moved_virtual_environment_uses_release_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -597,8 +614,8 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("ExecStart=/opt/hermes-schedules/bin/hermes-schedule-release sync", service)
         self.assertIn("OnFailure=hermes-schedule-sync-alert.service", service)
         self.assertIn("ProtectSystem=strict", service)
-        self.assertIn("NoNewPrivileges=true", service)
-        self.assertIn("RestrictSUIDSGID=false", service)
+        self.assertIn("NoNewPrivileges=false", service)
+        self.assertIn("RestrictSUIDSGID=true", service)
         self.assertIn("ReadWritePaths=/opt/hermes-schedules", service)
         self.assertIn("TimeoutStartSec=20min", service)
         self.assertIn("OnCalendar=*-*-* *:00/15:00 UTC", timer)
@@ -613,6 +630,9 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("systemctl disable --now", installer)
         self.assertIn('chmod 0755 "$CONDUCTOR_NEW"', installer)
         self.assertIn('CONDUCTOR_NEW="/opt/hermes-conductor/.venv.failed.$$"', installer)
+        release_manager = (HERMES / "bin" / "hermes-schedule-release").read_text()
+        self.assertIn('"/usr/bin/setpriv"', release_manager)
+        self.assertNotIn('"/usr/sbin/runuser"', release_manager)
         self.assertIn(
             '"$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"',
             installer,

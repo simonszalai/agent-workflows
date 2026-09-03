@@ -380,10 +380,18 @@ def lock_down(root: Path) -> None:
 
 
 def run_as_build_user(command: list[str], phase: str) -> None:
+    try:
+        account = pwd.getpwnam(BUILD_USER)
+    except KeyError as error:
+        raise ReleaseError("permissions", f"service account is missing: {BUILD_USER}") from error
     full_command = [
-        "/usr/sbin/runuser",
-        "--user",
-        BUILD_USER,
+        "/usr/bin/setpriv",
+        f"--reuid={account.pw_uid}",
+        f"--regid={account.pw_gid}",
+        "--init-groups",
+        "--inh-caps=-all",
+        "--ambient-caps=-all",
+        "--no-new-privs",
         "--",
         "/usr/bin/env",
         "-i",
