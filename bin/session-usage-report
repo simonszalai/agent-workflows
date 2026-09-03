@@ -29,7 +29,7 @@ TEST_CMD_RE = re.compile(
     r"\b(pytest|vitest|jest|tsc\b|ruff|eslint|mypy|pyright|go test|cargo test|"
     r"npm (run )?test|pnpm (run )?test|alembic|atlas)\b"
 )
-EXTERNAL_RE = re.compile(r"(external-agent|external-build|codex exec|grok)")
+EXTERNAL_RE = re.compile(r"(external-agent|external-build|codex exec|codex review|grok)")
 CHILD_MATCH_CHARS = 120
 LABEL_CHARS = 72
 
@@ -325,7 +325,7 @@ def main() -> None:
     print()
 
     external = [cmd for cmd in all_bash if EXTERNAL_RE.search(cmd)]
-    print("## External provider legs")
+    print("## External provider legs (policy: none expected)")
     for command in external[: args.top]:
         print(f"- {command[:120]}")
     if not external:

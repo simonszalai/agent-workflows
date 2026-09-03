@@ -81,9 +81,12 @@ work — a direct fix gets a short plan, not a skipped one.
 
 Implement the planned change with focused behavior tests, running only the targeted tests and
 lint for the files you touch while iterating. Then, for non-trivial diffs, run **one** review
-pass against the plan — self-review, `/code-review`, or at most two forked reviewers with
-disjoint scopes, never a nested review CLI on top of forked reviewers — and fold accepted
-findings into **one** repair pass, re-running targeted tests only. Only then run the repo's
+pass against the plan — a self-review of the diff, or `/code-review` in the same session — and
+fold accepted findings into **one** repair pass, re-running targeted tests only. There is no
+external review step: never invoke another provider or review CLI (`codex review`,
+`codex exec`, Grok, cross-provider "peer" envelopes) and never spawn reviewer subagents; the
+data showed those legs cost tens of minutes per ticket and rarely produced a finding the
+self-review missed. Only then run the repo's
 full health gate, once, on the final tree; inventory and fix all failures, re-running the full
 gate only when the tree changed. The tree that passes the full gate is the tree you push, so
 the gate runs at most twice per landing (final tree, and once more after a rebase that changed
