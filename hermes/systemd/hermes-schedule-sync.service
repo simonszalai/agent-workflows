@@ -6,15 +6,18 @@ OnFailure=hermes-schedule-sync-alert.service
 
 [Service]
 Type=oneshot
-User=root
-Group=root
+# No explicit User=/Group=: the coordinator runs as root by default. An explicit
+# User=root plus NoNewPrivileges=true makes systemd 255 take its user-switch
+# path, and the later setpriv/runuser setuid to the builder then fails with
+# EPERM (verified on the Hermes host, 2026-09-03).
 StateDirectory=hermes-schedule-sync
 StateDirectoryMode=0700
 TimeoutStartSec=20min
 ExecStart=/opt/hermes-schedules/bin/hermes-schedule-release sync
 # The fixed root coordinator needs CAP_SETUID once; setpriv drops capabilities
 # and sets no-new-privileges before any candidate-controlled dependency work.
-NoNewPrivileges=false
+# NoNewPrivileges=true is compatible with that setuid as long as User= is unset.
+NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
