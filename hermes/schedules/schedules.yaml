@@ -55,4 +55,7 @@ schedules:
       model: gpt-5.6-sol
     slack_channel: "#autodev-health"
     max_runtime_minutes: 90
+    # After triage, runner.py launches all issue workspaces in parallel and supervises them
+    # through `/ticket-flow <ID>` staging verification under this shared wall-clock cap.
+    remediation_max_runtime_minutes: 420
     enabled: true
