@@ -195,6 +195,9 @@ For each milestone in order (or the single `--milestone`):
    The gate grades the milestone's acceptance criteria and each step's deployment-guide
    evidence rows under ticket-verify's §5 evidence bound; it is not a second review of the
    code and does not invent extra producers, workflow runs, or oracles beyond that bound.
+   Nothing in the epic path adds review beyond each step's single ticket-flow self-review:
+   no external provider, review CLI, or reviewer subagent at the step, milestone, or epic
+   level.
 5. **Repair** — on `FAIL`: classify with `staging-autonomy.md`. Infra/config repairs that are
    `staging_safe` run directly (in the owning repo's workspace), then re-deploy and re-verify.
    Code/config/auth fixes become a new fix step ticket in this milestone run through
