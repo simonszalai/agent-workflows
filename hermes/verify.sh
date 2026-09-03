@@ -39,7 +39,13 @@ swapon --show=NAME --noheadings | grep -Fxq /swapfile || die "swap is not active
 ufw status | grep -Fq 'Status: active' || die "firewall is not active"
 [ "$(sudo -u hermes -H git -C "$AGENT_DIR" rev-parse HEAD)" = \
   "$HERMES_AGENT_PATCHED_COMMIT" ] || die "Hermes agent revision drifted"
-[ -z "$(sudo -u hermes -H git -C "$AGENT_DIR" status --porcelain)" ] ||
+[ -f "$AGENT_DIR/.install_method" ] && [ ! -L "$AGENT_DIR/.install_method" ] ||
+  die "Hermes install-method marker is missing or invalid"
+[ "$(stat -c '%U:%G:%a' "$AGENT_DIR/.install_method")" = "hermes:hermes:644" ] &&
+  [ "$(cat "$AGENT_DIR/.install_method")" = git ] ||
+  die "Hermes install-method marker drifted"
+[ -z "$(sudo -u hermes -H git -C "$AGENT_DIR" status \
+  --porcelain --untracked-files=all -- . ':(exclude).install_method')" ] ||
   die "Hermes agent checkout is dirty"
 [ "$(sudo -u hermes -H "$HERMES_HOME/bin/uv" --version | awk '{print $2}')" = \
   "$HERMES_UV_VERSION" ] || die "uv version drifted"

@@ -41,7 +41,6 @@ BOOLEAN_KEYS = {
     "IMAGE_TOOLS_DEBUG",
     "MOA_TOOLS_DEBUG",
     "SLACK_ALLOW_ALL_USERS",
-    "TERMINAL_MODAL_IMAGE",
     "VISION_TOOLS_DEBUG",
     "WEB_TOOLS_DEBUG",
     "WHATSAPP_ENABLED",
@@ -51,6 +50,9 @@ INTEGER_KEYS = {
     "BROWSER_SESSION_TIMEOUT",
     "TERMINAL_LIFETIME_SECONDS",
     "TERMINAL_TIMEOUT",
+}
+OPTIONAL_EMPTY_KEYS = {
+    "WHATSAPP_HOME_CHANNEL_THREAD_ID",
 }
 KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -70,7 +72,7 @@ def parse_environment(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         if not KEY.fullmatch(key) or key in values:
             raise InputError(f"gateway.env has an invalid or duplicate key on line {line_number}")
-        if not value or "replace-with-" in value.lower():
+        if (not value and key not in OPTIONAL_EMPTY_KEYS) or "replace-with-" in value.lower():
             raise InputError(f"gateway.env key {key} is empty or still a placeholder")
         values[key] = value
     missing = EXPECTED_ENV_KEYS - set(values)
