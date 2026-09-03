@@ -58,7 +58,12 @@ CONDUCTOR_NEW=""
 CONDUCTOR_OLD=""
 INSTALL_METHOD_TMP=""
 cleanup() {
-  if [ -n "$CONDUCTOR_OLD" ] && [ ! -e /opt/hermes-conductor/venv ]; then
+  if [ -n "$CONDUCTOR_OLD" ]; then
+    systemctl stop hermes-conductor.service 2>/dev/null || true
+    if [ -e /opt/hermes-conductor/venv ]; then
+      CONDUCTOR_NEW="/opt/hermes-conductor/.venv.failed.$$"
+      mv /opt/hermes-conductor/venv "$CONDUCTOR_NEW"
+    fi
     mv "$CONDUCTOR_OLD" /opt/hermes-conductor/venv
     CONDUCTOR_OLD=""
     systemctl start hermes-conductor.service 2>/dev/null || true
@@ -124,6 +129,7 @@ python3 -m venv "$CONDUCTOR_NEW"
 "$CONDUCTOR_NEW/bin/pip" check
 chown -R root:root /opt/hermes-conductor
 chmod -R go-w /opt/hermes-conductor
+chmod 0755 "$CONDUCTOR_NEW"
 if [ -d /opt/hermes-conductor/venv ]; then
   CONDUCTOR_OLD="/opt/hermes-conductor/.venv.old.$$"
   systemctl stop hermes-conductor.service 2>/dev/null || true
@@ -136,10 +142,6 @@ if ! mv "$CONDUCTOR_NEW" /opt/hermes-conductor/venv; then
   die "could not activate the rebuilt Conductor environment"
 fi
 CONDUCTOR_NEW=""
-if [ -n "$CONDUCTOR_OLD" ]; then
-  rm -rf -- "$CONDUCTOR_OLD"
-  CONDUCTOR_OLD=""
-fi
 
 install -d -o root -g root -m 0755 /opt/hermes-schedules/bin
 for executable in \
@@ -255,4 +257,8 @@ systemctl is-active --quiet hermes-gateway.service
 for timer in "${SCHEDULE_TIMERS[@]}"; do
   systemctl is-active --quiet "$timer"
 done
+if [ -n "$CONDUCTOR_OLD" ]; then
+  rm -rf -- "$CONDUCTOR_OLD"
+  CONDUCTOR_OLD=""
+fi
 echo "hermes install: services active"
