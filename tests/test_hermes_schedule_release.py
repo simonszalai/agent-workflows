@@ -615,6 +615,10 @@ class HermesScheduleReleaseTests(unittest.TestCase):
             '"$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"',
             installer,
         )
+        self.assertIn(
+            '/dev/null "$HERMES_HOME/.no-bundled-skills"',
+            installer,
+        )
         self.assertNotIn('configure.py" "$HERMES_CONFIG"', installer)
 
     def test_managed_install_method_marker_does_not_dirty_agent_checkout(self) -> None:
