@@ -256,6 +256,17 @@ bad-output interpretation. Intermediate files go in one run-scoped
 `.context/ticket-verify/<scope>-<env>-<stamp>/` directory, folded into the artifact before
 cleanup.
 
+**Evidence bound.** The evidence set is the contract rows, the named edge cases, and the
+repeated-writer checks above — proved once each with the cheapest read that settles the row.
+Within one scope: at most one triggered producer run (the §3a canary, when it applies) plus one
+re-run only if the first ended in a non-terminal state; no manually dispatched CI/migration
+workflows to observe a no-op (read the last run's result instead); no throwaway git worktrees
+or hand-written oracle programs when the row can be graded with the deployed code's own
+outputs and a read-only query; no service-log pulls beyond the activation window the row
+names. A row that cannot be settled inside this bound is `BLOCKED: invalid_evidence` for the
+contract owner, not a reason to widen the bound. A milestone gate (`--epic`) grades under the
+same bound per included step; it is not a second code review.
+
 ### 6. Record the Verification Evidence artifact
 
 Artifact type `verification_evidence`, title

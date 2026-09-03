@@ -95,6 +95,16 @@ Place these where they apply (Anthropic-recommended wording; keep it stable):
   first look at the run. Lead with the outcome, write complete sentences, drop working
   shorthand and labels invented mid-run, and give each file/commit/flag its own plain-language
   clause."
+- **Context continuity** (any skill that can outlive a compaction): "Read CLAUDE.md, this
+  skill, its references, and the tool catalog once. After a context compaction, continue from
+  the compaction summary and your run-state note; do not re-read them or re-introspect tools.
+  Reload one reference only when a concrete decision needs a rule you cannot recall."
+- **Bounded waiting** (orchestrators that wait on subagents, sessions, CI, or flows): "Wait
+  with one bounded blocking call per external event — `wait_agent` (≤5 min), `wait-ci`,
+  `wait-prefect-flow`, or a 2–3 minute status poll — and compare each result with the previous
+  one. Never `sleep` in a loop. A worker with no new activity for 10 minutes, or still reading
+  docs or troubleshooting tool access 10 minutes in, gets one corrective message naming the
+  first concrete action; the next stall replaces it."
 
 ## Drift rules
 
