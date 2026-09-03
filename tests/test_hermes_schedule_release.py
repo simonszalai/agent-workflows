@@ -539,6 +539,40 @@ class HermesScheduleReleaseTests(unittest.TestCase):
                 self.release.install_bundle(bundle, runtime, state, HERMES / "systemd")
             self.assertEqual((runtime / "current").resolve(), healthy.resolve())
 
+    def test_build_release_verifies_a_sha_named_staging_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            releases = root / "releases"
+            releases.mkdir()
+            files = {
+                "runner.py": b"print('runner')\n",
+                "schedules.yaml": b"deployment_contract_version: 1\n",
+                "requirements.txt": b"package==1 --hash=sha256:" + b"a" * 64 + b"\n",
+            }
+            revision = "a" * 40
+            bundle = self.release.Bundle(
+                revision,
+                "b" * 40,
+                self.release.hash_files(files),
+                files,
+            )
+
+            def fake_build(command: list[str], phase: str) -> None:
+                if phase == "venv":
+                    venv = Path(command[-1])
+                    (venv / "bin").mkdir(parents=True)
+                    (venv / "bin" / "python").write_text("")
+
+            with (
+                mock.patch.object(self.release, "change_owner"),
+                mock.patch.object(self.release, "lock_down"),
+                mock.patch.object(self.release, "run_as_build_user", side_effect=fake_build),
+            ):
+                release = self.release.build_release(bundle, releases, root)
+
+            self.assertEqual(release.name, revision)
+            self.release.verify_release(release, bundle)
+
     def test_moved_virtual_environment_uses_release_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -572,6 +606,8 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("status --porcelain --untracked-files=all", installer)
         self.assertIn("archive --format=tar", installer)
         self.assertIn("systemctl disable --now", installer)
+        self.assertIn('chmod 0755 "$CONDUCTOR_NEW"', installer)
+        self.assertIn('CONDUCTOR_NEW="/opt/hermes-conductor/.venv.failed.$$"', installer)
         self.assertIn(
             '"$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"',
             installer,

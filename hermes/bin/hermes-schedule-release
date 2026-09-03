@@ -415,7 +415,9 @@ def build_release(bundle: Bundle, releases: Path, timer_directory: Path) -> Path
     if release.exists():
         verify_release(release, bundle)
         return release
-    temporary = Path(tempfile.mkdtemp(prefix=f".{bundle.revision[:12]}.", dir=releases))
+    staging = Path(tempfile.mkdtemp(prefix=f".{bundle.revision[:12]}.", dir=releases))
+    temporary = staging / bundle.revision
+    temporary.mkdir()
     try:
         for name, content in bundle.files.items():
             path = temporary / name
@@ -453,8 +455,8 @@ def build_release(bundle: Bundle, releases: Path, timer_directory: Path) -> Path
             verify_release(release, bundle)
         return release
     finally:
-        if temporary.exists():
-            shutil.rmtree(temporary)
+        if staging.exists():
+            shutil.rmtree(staging)
 
 
 def resolved_link(link: Path, releases: Path, required: bool = True) -> Path | None:
