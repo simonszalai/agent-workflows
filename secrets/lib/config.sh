@@ -133,7 +133,7 @@ TRANSFORM_PREFIXES = ("db=", "pgbouncer=", "asyncpg-internal=", "asyncpg-externa
 ENTRY_KEYS = {
     "ref", "provider", "mode", "owner_repo", "verify", "verify_command", "generate",
     "playbook", "sync_refs", "sync_repos", "config", "hook", "exclude_dests",
-    "project", "disabled_reason",
+    "project", "disabled_reason", "sweep",
 }
 ENTRY_REQUIRED = ("ref", "provider", "mode", "owner_repo")
 ENTRY_STRINGS = ("ref", "provider", "mode", "owner_repo", "verify", "verify_command",
@@ -289,6 +289,11 @@ for rid, entry in rotation.items():
     for key in ENTRY_STRINGS:
         if key in entry and not isinstance(entry[key], str):
             bad.append(f"{tag}: {key} must be a string")
+    # sweep: false excludes the entry from rotate-project sweeps (targeted
+    # rotate-secret runs and --only still work; unlike disabled_reason, which
+    # refuses everything).
+    if "sweep" in entry and not isinstance(entry["sweep"], bool):
+        bad.append(f"{tag}: sweep must be a boolean")
     ref = entry.get("ref")
     if is_str(ref):
         if not OP_REF.match(ref):

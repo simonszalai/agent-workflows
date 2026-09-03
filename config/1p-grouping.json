@@ -34,6 +34,7 @@
     { "project": "ts", "group": "Postgres", "old_ref": "op://TS-sensitive/PROD_POSTGRES_URL/value", "vault": "TS-sensitive", "new_item": "Postgres prod", "new_field": "canonical" },
     { "project": "ts", "group": "Postgres", "old_ref": "op://TS-sensitive/PROD_POSTGRES_URL_TS_PREFECT/value", "vault": "TS-sensitive", "new_item": "Postgres prod", "new_field": "ts_prefect" },
     { "project": "ts", "group": "Postgres", "old_ref": "op://TS-sensitive/PROD_POSTGRES_URL_TS_DASHBOARD/value", "vault": "TS-sensitive", "new_item": "Postgres prod", "new_field": "ts_dashboard" },
+    { "project": "ts", "group": "Postgres", "old_ref": "op://TS-sensitive/PROD_POSTGRES_URL_ROOT/value", "vault": "TS-sensitive", "new_item": "Postgres prod", "new_field": "root" },
     { "project": "ts", "group": "Postgres", "old_ref": "op://TS/PROD_POSTGRES_URL_RO/value", "vault": "TS", "new_item": "Postgres prod RO", "new_field": "canonical" },
     { "project": "ts", "group": "Postgres", "old_ref": "op://TS/PROD_POSTGRES_URL_TS_DASHBOARD_RO/value", "vault": "TS", "new_item": "Postgres prod RO", "new_field": "ts_dashboard" },
     { "project": "ts", "group": "Postgres", "old_ref": "op://TS/STAGING_POSTGRES_URL/value", "vault": "TS", "new_item": "Postgres staging", "new_field": "canonical" },

@@ -26,6 +26,8 @@
 #   SYNC   — manual / unconfigured providers: push whatever value the 1Password
 #            item currently holds to every consumer. To rotate one, update the
 #            item in 1Password first, then run the sweep (or --only that entry).
+#            Entries with sweep: false in the registry are excluded from sweeps
+#            entirely (still reachable via --only or targeted rotate-secret).
 #
 # usage:
 #   rotate-project <amaru|ts|workflow-pro|autodev> --reason "<why>"
@@ -164,6 +166,7 @@ run_json="$(jq -c --arg tier "$tier" --arg only "$only" --arg skip "$skip" '
   def incsv($csv): ($csv | split(",")) as $l | . as $x | ($l | index($x)) != null;
   [.[] | select(($only == "" or (.id | incsv($only)))
     and (($skip == "") or ((.id | incsv($skip)) | not))
+    and ($only != "" or .sweep != false)
     and (if $tier == "staging" then .staging
          elif $tier == "prod" then (.staging | not)
          else true end))]' <<< "$plan_json")"
@@ -639,9 +642,30 @@ deploy_pending() {
     fi
   done <<< "$sids"
   [[ "$ok" -eq 1 ]] || return 1
+  retarget_minted_deploys "$deploys"
   : > "$PENDING_DESTS"
   rm -f "$logdir"/deploy.*
   sweep_state_save
+}
+
+# Batched entries may still record an earlier rotate-secret deploy id (a
+# previous --no-finalize fan-out that did trigger, or a superseded overlapping
+# deploy). Point those dests at the ids this sweep just proved live so
+# --finalize does not wait on a deactivated deploy.
+retarget_minted_deploys() { # dest<TAB>deployId tsv
+  local tsv="$1" id state dest did
+  [[ -s "$tsv" ]] || return 0
+  for id in "${MINTED_IDS[@]-}"; do
+    [[ -n "$id" ]] || continue
+    state="${ROTATE_STATE_DIR:-$HOME/.local/state/agent-workflows/rotate-secret}/$project/$id.json"
+    [[ -f "$state" ]] || continue
+    while IFS=$'\t' read -r dest did; do
+      [[ -n "$dest" && -n "$did" ]] || continue
+      jq -c --arg d "$dest" --arg i "$did" \
+        '.deploys |= map(if .dest == $d then .deployId = $i else . end)' \
+        "$state" > "$state.tmp" && chmod 600 "$state.tmp" && mv "$state.tmp" "$state"
+    done < "$tsv"
+  done
 }
 
 # After the batched deploys are proven: finalize every minted auto entry
