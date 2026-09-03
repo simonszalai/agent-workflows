@@ -48,14 +48,18 @@ schedule channel for automatic/next-run continuation).
   when an enabled schedule has not reported within its cron interval plus `max_runtime` plus
   an hour of grace — green runs post, so silence means the scheduler is broken.
 - **Archive on completion.** A run whose final status is in `runner.archive_on_complete`
-  (default `[PASS]`) has its Conductor workspace archived immediately by the runner; archive
-  failures fall through to the retention sweep below. FAIL/BLOCKED stay open for triage and
-  NEEDS_MORE_TIME must stay open for its continuation.
-- **Workspace retention.** The watchdog archives PASS workspaces after
-  `runner.retention_days_pass` days; FAIL/BLOCKED workspaces are retained
-  `runner.retention_days_fail` days for triage before archival. NEEDS_MORE_TIME uses the longer
-  retention so its wait receipt remains available to the continuation. Workspaces waiting for or
-  running an approved production promotion are never archived by retention.
+  (default `[PASS, FAIL, BLOCKED]`, i.e. every terminal status) has its Conductor workspace
+  archived immediately by the runner; the Slack thread keeps the deep link and an archived
+  workspace stays readable for triage. Failed health remediation workspaces are archived the
+  same way. NEEDS_MORE_TIME must stay open for its continuation, and staging-verified
+  remediation workspaces stay open until their production promotion has finished.
+- **Workspace retention.** Every workspace is written to the schedule's history file as
+  `RUNNING` the moment it is created, so a runner crash cannot leak it. The watchdog sweep
+  retries any failed archive-on-complete on its next pass, archives `RUNNING` records older
+  than `runner.retention_days_stale_run` (unless that schedule's overlap lock is still held),
+  PASS records after `runner.retention_days_pass`, and everything else after
+  `runner.retention_days_fail`. Workspaces waiting for or running an approved production
+  promotion are never archived by retention.
 - **Secret boundary.** The runner holds no Conductor credential (loopback MCP on 8794 owns
   it) and receives the Slack token only via systemd `LoadCredential`
   (`/etc/hermes-schedules/slack.token`, root-only 0400 — see `hermes/README.md`).

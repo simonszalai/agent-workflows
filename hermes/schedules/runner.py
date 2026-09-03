@@ -57,9 +57,16 @@ REMEDIATION_STATUS_ICONS = {
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_RETENTION_PASS_DAYS = 3
 DEFAULT_RETENTION_FAIL_DAYS = 14
-# Statuses whose workspace is archived as soon as the run finishes; everything
-# else waits for the watchdog's day-based retention sweep.
-DEFAULT_ARCHIVE_ON_COMPLETE = ("PASS",)
+# Statuses whose workspace is archived as soon as the run finishes. Every
+# terminal status is archived: the Slack thread keeps the deep link and an
+# archived Conductor workspace stays readable, so nothing is lost by hiding it.
+# NEEDS_MORE_TIME is never archived (its continuation reuses the workspace) and
+# AWAITING_PROD_APPROVAL waits for the promotion bridge.
+DEFAULT_ARCHIVE_ON_COMPLETE = ("PASS", "FAIL", "BLOCKED")
+# History records still marked RUNNING after this many days belong to a runner
+# that crashed before recording its outcome; the retention sweep archives them.
+DEFAULT_RETENTION_STALE_RUN_DAYS = 1
+RUNNING_STATUS = "RUNNING"
 WATCHDOG_GRACE_MINUTES = 60
 TICKET_ID_PATTERN = re.compile(r"^[A-Z]\d{4}$")
 SESSION_MESSAGE_PAGE_SIZE = 100
@@ -1316,6 +1323,43 @@ def set_candidate_state(
         )
 
 
+def read_history(name: str) -> list[JsonObject]:
+    path = history_path(name)
+    if not path.exists():
+        return []
+    return [
+        cast(JsonObject, json.loads(line))
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def write_history(name: str, records: list[JsonObject]) -> None:
+    history_path(name).write_text(
+        "".join(json.dumps(record) + "\n" for record in records)
+    )
+
+
+def record_workspace_started(name: str, workspace_id: str) -> None:
+    """Register a freshly created workspace before the run has an outcome.
+
+    A runner that crashes or times out before ``record_run`` still leaves this
+    record behind, so the retention sweep can archive the workspace later.
+    """
+    with history_path(name).open("a") as history:
+        history.write(
+            json.dumps(
+                {
+                    "completed_at": utc_now().isoformat(),
+                    "status": RUNNING_STATUS,
+                    "workspace_id": workspace_id,
+                    "archived": False,
+                }
+            )
+            + "\n"
+        )
+
+
 def record_run(name: str, status: str, workspace_id: str | None) -> None:
     record = {
         "completed_at": utc_now().isoformat(),
@@ -1323,9 +1367,16 @@ def record_run(name: str, status: str, workspace_id: str | None) -> None:
         "workspace_id": workspace_id,
     }
     state_path(name).write_text(json.dumps(record) + "\n")
-    if workspace_id:
-        with history_path(name).open("a") as history:
-            history.write(json.dumps({**record, "archived": False}) + "\n")
+    if not workspace_id:
+        return
+    records = read_history(name)
+    for existing in records:
+        if existing.get("workspace_id") == workspace_id:
+            existing.update(record)
+            break
+    else:
+        records.append({**record, "archived": False})
+    write_history(name, records)
 
 
 def record_remediation(
@@ -1351,18 +1402,13 @@ def record_remediation(
 
 def mark_archived(name: str, workspace_id: str) -> None:
     """Flag *workspace_id* as archived in the schedule's history file."""
-    path = history_path(name)
-    if not path.exists():
+    records = read_history(name)
+    if not records:
         return
-    records = [
-        cast(JsonObject, json.loads(line))
-        for line in path.read_text().splitlines()
-        if line.strip()
-    ]
     for record in records:
         if record.get("workspace_id") == workspace_id:
             record["archived"] = True
-    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    write_history(name, records)
 
 
 def archive_on_complete_statuses(manifest: JsonObject) -> set[str]:
@@ -2551,6 +2597,7 @@ def run_schedule(name: str) -> int:
     try:
         prompt_text = (HERE / cast(str, entry["prompt"])).read_text()
         workspace_id, session_id, deep_link = launch_workspace(entry, name)
+        record_workspace_started(name, workspace_id)
         conductor_call(
             "send_session_message",
             {"session_id": session_id, "message": prompt_text},
@@ -2612,6 +2659,8 @@ def run_schedule(name: str) -> int:
                 health_remediation_reply(job, remediation),
             )
             record_remediation(name, job, remediation)
+            if remediation["status"] != "STAGING_VERIFIED":
+                archive_completed_workspace(manifest, name, "FAIL", job["workspace_id"])
             if remediation["status"] == "STAGING_VERIFIED":
                 approval_settings = production_approval_settings(manifest)
                 register_production_candidate(
@@ -2751,25 +2800,38 @@ def apply_retention(manifest: JsonObject) -> None:
     fail_days = int(
         cast(int, settings.get("retention_days_fail", DEFAULT_RETENTION_FAIL_DAYS))
     )
+    stale_run_days = int(
+        cast(
+            int,
+            settings.get("retention_days_stale_run", DEFAULT_RETENTION_STALE_RUN_DAYS),
+        )
+    )
+    immediate = archive_on_complete_statuses(manifest)
     protected_workspaces = approval_protected_workspace_ids()
+    active_workspaces = active_run_workspace_ids(manifest)
     for entry in cast(list[JsonObject], manifest.get("schedules") or []):
-        path = history_path(cast(str, entry["name"]))
-        if not path.exists():
-            continue
-        records = [
-            cast(JsonObject, json.loads(line))
-            for line in path.read_text().splitlines()
-            if line.strip()
-        ]
+        name = cast(str, entry["name"])
+        records = read_history(name)
         changed = False
         for record in records:
             if record.get("archived") or not record.get("workspace_id"):
                 continue
             if record["workspace_id"] in protected_workspaces:
                 continue
+            if record["workspace_id"] in active_workspaces:
+                continue
             completed = datetime.fromisoformat(cast(str, record["completed_at"]))
             age_days = (utc_now() - completed).total_seconds() / 86400
-            limit = pass_days if record.get("status") == "PASS" else fail_days
+            status = cast(str, record.get("status") or "")
+            if status in immediate:
+                # Archive-on-complete already failed once; retry on every sweep.
+                limit = 0.0
+            elif status == RUNNING_STATUS:
+                limit = float(stale_run_days)
+            elif status == "PASS":
+                limit = float(pass_days)
+            else:
+                limit = float(fail_days)
             if age_days <= limit:
                 continue
             try:
@@ -2785,9 +2847,30 @@ def apply_retention(manifest: JsonObject) -> None:
             record["archived"] = True
             changed = True
         if changed:
-            path.write_text(
-                "".join(json.dumps(record) + "\n" for record in records)
-            )
+            write_history(name, records)
+
+
+def active_run_workspace_ids(manifest: JsonObject) -> set[str]:
+    """Workspaces of schedule runs whose overlap lock is currently held."""
+    active: set[str] = set()
+    for entry in cast(list[JsonObject], manifest.get("schedules") or []):
+        name = cast(str, entry["name"])
+        lock_path = state_dir() / f"{name}.lock"
+        if not lock_path.exists():
+            continue
+        with lock_path.open("w") as lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                active.update(
+                    cast(str, record["workspace_id"])
+                    for record in read_history(name)
+                    if record.get("status") == RUNNING_STATUS
+                    and record.get("workspace_id")
+                )
+                continue
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    return active
 
 
 def watchdog() -> int:

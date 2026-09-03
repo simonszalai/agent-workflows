@@ -183,6 +183,8 @@ def validate_release(release: Path, timer_directory: Path) -> None:
     runner = require_mapping(manifest.get("runner"), "runner")
     for key in ("poll_seconds", "retention_days_pass", "retention_days_fail"):
         require_positive_int(runner, key, "runner")
+    if "retention_days_stale_run" in runner:
+        require_positive_int(runner, "retention_days_stale_run", "runner")
     archive_statuses = runner.get("archive_on_complete")
     if not isinstance(archive_statuses, list) or not all(
         isinstance(status, str) and status in {"PASS", "FAIL", "BLOCKED"}

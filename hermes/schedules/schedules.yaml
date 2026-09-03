@@ -8,9 +8,13 @@ deployment_contract_version: 1
 # Runner behavior (hermes/schedules/runner.py, deployed to /opt/hermes-schedules).
 runner:
   poll_seconds: 60
-  retention_days_pass: 3    # archive PASS workspaces after N days
-  retention_days_fail: 14   # FAIL/BLOCKED workspaces retained longer for triage
-  archive_on_complete: [PASS]   # archive the workspace the moment a run ends with one of these statuses
+  retention_days_pass: 3    # sweep fallback: PASS workspaces whose immediate archive failed
+  retention_days_fail: 14   # sweep fallback: AWAITING_PROD_APPROVAL and other non-terminal leftovers
+  retention_days_stale_run: 1   # RUNNING records from a crashed runner are archived after N days
+  # Archive the workspace the moment a run ends with one of these statuses. The Slack
+  # thread keeps the deep link and archived workspaces stay readable, so every terminal
+  # status is archived; NEEDS_MORE_TIME stays open for its continuation.
+  archive_on_complete: [PASS, FAIL, BLOCKED]
 
 # Slack channel IDs (resolved at authoring time; runtime uses IDs, not names).
 slack_channels:
