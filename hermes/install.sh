@@ -238,6 +238,7 @@ done
 # it exactly so an existing host reaches the same state as a clean bootstrap.
 install -o hermes -g hermes -m 0600 \
   "$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"
+install -o hermes -g hermes -m 0600 /dev/null "$HERMES_HOME/.no-bundled-skills"
 
 systemctl daemon-reload
 systemctl enable --now \
