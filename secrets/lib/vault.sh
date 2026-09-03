@@ -173,9 +173,15 @@ _vault_edit_fields() { # vault item_id FIELD=VAR...
       printf '%s' "$item" | EDIT_SPECS="$specs" jq -e '
         (env.EDIT_SPECS | split("\n") | map(select(length > 0) | split("\t") | {label: .[0], value: env[.[1]]})) as $edits
         | reduce $edits[] as $e (.;
-            if ([.fields[]? | select(.label == $e.label)] | length) == 1
-            then .fields |= map(if .label == $e.label then .value = $e.value else . end)
-            else error("item must contain exactly one field labelled " + $e.label) end)')" || { item=""; return 1; }
+            ([.fields[]? | select(.label == $e.label)] | length) as $n
+            | if $n == 1
+              then .fields |= map(if .label == $e.label then .value = $e.value else . end)
+              elif $n == 0
+              # pending_source fields from the grouped-item migration: the item
+              # exists but the field does not yet — upsert it (same shape as
+              # migrate-1p-grouping grouped_upsert_field).
+              then .fields += [{label: $e.label, type: "CONCEALED", value: $e.value}]
+              else error("item has " + ($n | tostring) + " fields labelled " + $e.label) end)')" || { item=""; return 1; }
   item=""
   printf '%s' "$edited" | op_vault_mutation "$vault" item edit "$item_id" --vault "$vault" >/dev/null
   rc=$?

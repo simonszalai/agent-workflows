@@ -7,7 +7,11 @@
 # registry file in SECRET_ROTATION_CONFIG (health_urls).
 #
 #   render_key_once [repo]          resolve the project Render key ONCE, export RENDER_API_KEY
-#   deploy_wait_live DEST DEPLOY_ID poll /deploys/<id> until live (RENDER_DEPLOY_TIMEOUT_SECONDS)
+#   deploy_wait_live DEST DEPLOY_ID poll /deploys/<id> until live. A recorded
+#                                   id that is deactivated is proven if a later
+#                                   deploy of the same service is live (or we
+#                                   wait on that later deploy if it is still
+#                                   rolling). Other terminal statuses fail.
 #   deploy_wait_all FILE            wait every `dest<TAB>deployId` row of FILE concurrently
 #   health_gate ENTRY_JSON          probe the health URL of every consumer dest (fail closed)
 
@@ -32,10 +36,53 @@ render_key_once() { # [repo] — no-op once RENDER_API_KEY is exported
 }
 
 deploy_wait_live() { # dest deployId
-  local dest="$1" id="$2" t0=$SECONDS
+  local dest="$1" id="$2" t0=$SECONDS deadline status latest latest_id latest_st
   [[ -n "$dest" && -n "$id" ]] || { echo "ERROR: deploy_wait_live needs dest and deploy id" >&2; return 2; }
-  render_wait_deploy_live "$dest" "$id" || return 1
-  echo "  render[$dest] deploy $id live ($((SECONDS - t0))s)"
+  deadline=$(( $(date +%s) + ${RENDER_DEPLOY_TIMEOUT_SECONDS:-1800} ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    status="$(render_get "/services/${dest}/deploys/${id}" | jq -er '.status')" || return 1
+    case "$status" in
+      live)
+        echo "  render[$dest] deploy $id live ($((SECONDS - t0))s)"
+        return 0 ;;
+      created|queued|build_in_progress|update_in_progress|pre_deploy_in_progress) ;;
+      deactivated)
+        # A later deploy of the same service replaced this one. Env PUTs persist,
+        # so a later live deploy carries the new value. Exact-id wait would
+        # fail an otherwise successful batched sweep (2026-08-22).
+        latest="$(render_get "/services/${dest}/deploys?limit=1")" || return 1
+        latest_id="$(jq -r '.[0].deploy.id // .[0].id // empty' <<<"$latest")"
+        latest_st="$(jq -r '.[0].deploy.status // .[0].status // empty' <<<"$latest")"
+        if [[ "$latest_st" == "live" && -n "$latest_id" ]]; then
+          echo "  render[$dest] deploy $id deactivated; later $latest_id is live ($((SECONDS - t0))s)"
+          return 0
+        fi
+        case "$latest_st" in
+          created|queued|build_in_progress|update_in_progress|pre_deploy_in_progress)
+            [[ -n "$latest_id" ]] || {
+              echo "ERROR: render[$dest] deploy $id deactivated and no later deploy id" >&2
+              return 1
+            }
+            echo "  render[$dest] deploy $id deactivated; waiting for later $latest_id ($latest_st)"
+            id="$latest_id"
+            ;;
+          *)
+            echo "ERROR: render[$dest] deploy $id deactivated and later deploy ${latest_id:-?} ended ${latest_st:-empty}" >&2
+            return 1
+            ;;
+        esac
+        ;;
+      build_failed|update_failed|canceled|pre_deploy_failed)
+        echo "ERROR: render[$dest] deploy $id reached terminal status $status" >&2
+        return 1 ;;
+      *)
+        echo "ERROR: render[$dest] deploy $id returned unknown status $status" >&2
+        return 1 ;;
+    esac
+    sleep "${RENDER_POLL_SECONDS:-10}"
+  done
+  echo "ERROR: render[$dest] deploy $id did not become live before timeout" >&2
+  return 1
 }
 
 deploy_wait_all() { # file of dest<TAB>deployId rows -> 0 only when every deploy is live

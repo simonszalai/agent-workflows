@@ -26,9 +26,11 @@ No secret values or secret-fetching commands are committed here.
 | Slack token (schedule reporting) | `op://TS/Slack/mcp_user_token` | `/etc/hermes-schedules/slack.token` |
 | TS 1Password service-account token | `op://TS/1Password service account/token` | `/etc/hermes-schedules/op.token` |
 
-These files are manifest-routed consumers (`kind: hermes` rows in
-`ts-prefect/secrets.yaml`, pushed by `secrets/lib/writers/hermes` over SSH with
-passwordless sudo): rotations and `sync-secrets` sweeps update them
+These files are manifest-routed consumers (`kind: hermes` rows), pushed by
+`secrets/lib/writers/hermes` over SSH with passwordless sudo. The autodev-memory
+token is routed from `autodev-memory/secrets.yaml` so an autodev rotation does
+not parse ts-prefect. Conductor, Slack, and the OP SA token stay on
+`ts-prefect/secrets.yaml`. Rotations and `sync-secrets` sweeps update them
 automatically, including a `hermes-autodev-mcp` / `hermes-conductor` restart
 where needed. Manual staging remains the bootstrap path only.
 

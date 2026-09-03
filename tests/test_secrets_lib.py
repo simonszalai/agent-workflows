@@ -379,10 +379,11 @@ class VaultTest(unittest.TestCase):
         self.assertIn("empty value", proc.stderr)
         self.assertEqual((self.sb.state / "TESTVAULT__ITEM__value").read_text(), "old-1")
 
-    def test_replace_fields_fails_on_a_missing_field(self) -> None:
+    def test_replace_fields_upserts_a_missing_field(self) -> None:
         proc = self.vault('A=x vault_replace_fields op://TESTVAULT/ITEM/nope=A')
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("edit failed", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual((self.sb.state / "TESTVAULT__ITEM__nope").read_text(), "x")
+        self.assertIn("updated 1 fields", proc.stdout)
 
 
 class RetryTest(unittest.TestCase):
@@ -813,6 +814,56 @@ class DbUrlTest(unittest.TestCase):
                     self.assertEqual(proc.stdout.strip(), expected)
             proc = self._run(f'DB_LOCK_TIMEOUT=3s PSQL_BIN="{fake}" db_run_psql_url "postgresql://u:p@h/d"')
             self.assertIn("lock_timeout=3s", proc.stdout)
+
+
+class DeployWaitTest(unittest.TestCase):
+    """A recorded deploy that Render deactivated is proven if a later deploy
+    of the same service is live (batched sweep overlap)."""
+
+    def _run(self, snippet: str) -> subprocess.CompletedProcess[str]:
+        import os
+        script = f'source "{LIB}/deploy-wait.sh"; {snippet}'
+        env = dict(os.environ)
+        env["RENDER_POLL_SECONDS"] = "0"
+        env["RENDER_DEPLOY_TIMEOUT_SECONDS"] = "5"
+        return run(["bash", "-c", script], env)
+
+    def test_deactivated_id_is_proven_when_a_later_deploy_is_live(self) -> None:
+        proc = self._run(r'''
+render_get() {
+  case "$1" in
+    */deploys/dep-old) printf '{"status":"deactivated"}' ;;
+    */deploys?limit=1) printf '[{"deploy":{"id":"dep-new","status":"live"}}]' ;;
+    *) echo "unexpected $1" >&2; return 1 ;;
+  esac
+}
+deploy_wait_live srv-x dep-old
+''')
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("deactivated; later dep-new is live", proc.stdout)
+
+    def test_build_failed_is_not_followed(self) -> None:
+        proc = self._run(r'''
+render_get() { printf '{"status":"build_failed"}'; }
+deploy_wait_live srv-x dep-old
+''')
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("build_failed", proc.stderr)
+        self.assertNotIn("later", proc.stdout + proc.stderr)
+
+    def test_deactivated_fails_when_later_deploy_failed(self) -> None:
+        proc = self._run(r'''
+render_get() {
+  case "$1" in
+    */deploys/dep-old) printf '{"status":"deactivated"}' ;;
+    */deploys?limit=1) printf '[{"deploy":{"id":"dep-new","status":"update_failed"}}]' ;;
+    *) return 1 ;;
+  esac
+}
+deploy_wait_live srv-x dep-old
+''')
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("update_failed", proc.stderr)
 
 
 if __name__ == "__main__":

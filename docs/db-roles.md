@@ -8,12 +8,13 @@ Vault scopes the project, the item title the tier, one field per principal:
 
 | Item | Vault | Fields |
 |---|---|---|
-| `Postgres prod` | `<PROJECT>-sensitive` | `root` (provider default / TablePlus only), `owner` (migrations + system client), `app`, `<app-slug>`, `<app-slug>_migrator` |
+| `Postgres prod` | `<PROJECT>-sensitive` | `root` (provider default `databaseUser`, NOT a real superuser / TablePlus only), `owner` (migrations + system client), `app`, `<app-slug>`, `<app-slug>_migrator` |
 | `Postgres prod RO` | `<PROJECT>` regular | `canonical` (project ro), `<app-slug>` (app ro) |
 | `Postgres staging` | `<PROJECT>` regular | `root`, `owner`, `app`, `ro`, `<app-slug>`, `<app-slug>_ro`, `<app-slug>_migrator` |
 
-`admin_refs[tier].{root,owner}` in the config name the box's break-glass root and admin owner
-fields explicitly (TS now: `op://TS-sensitive/Postgres prod/root|owner`,
+`admin_refs[tier].{root,owner}` in the config name the box's provider-default login ("root") and
+admin owner fields explicitly. The "root" field is only Render's `databaseUser` — Render managed
+Postgres exposes no actual superuser/root, so it is never a superuser escape hatch (TS now: `op://TS-sensitive/Postgres prod/root|owner`,
 `op://TS/Postgres staging/root|owner`). Autodev has **prod only** (no staging DB).
 
 ## Postgres logins (project-prefixed)
