@@ -79,11 +79,19 @@ work — a direct fix gets a short plan, not a skipped one.
 
 ### 3. Implement, review, verify locally
 
-Implement the planned change with focused behavior tests. Then run the repo's full health gate
-on the final tree; inventory and fix all failures before proceeding. For non-trivial diffs,
-review the diff against the plan (self-review or `/code-review` as the size warrants) and fold
-accepted findings into one repair pass; re-run health only if the tree changed. Record deviations
-from the plan in the ticket.
+Implement the planned change with focused behavior tests, running only the targeted tests and
+lint for the files you touch while iterating. Then, for non-trivial diffs, run **one** review
+pass against the plan — self-review, `/code-review`, or at most two forked reviewers with
+disjoint scopes, never a nested review CLI on top of forked reviewers — and fold accepted
+findings into **one** repair pass, re-running targeted tests only. Only then run the repo's
+full health gate, once, on the final tree; inventory and fix all failures, re-running the full
+gate only when the tree changed. The tree that passes the full gate is the tree you push, so
+the gate runs at most twice per landing (final tree, and once more after a rebase that changed
+files). Record deviations from the plan in the ticket.
+
+Read CLAUDE.md, this skill, and the plan artifact once; after a context compaction, continue
+from the compaction summary and the plan rather than re-reading them. When you have enough
+information to act, act.
 
 If the work turns out to cross a boundary the plan didn't accept — schema, auth, destructive
 migration, new infrastructure — stop before the risky edit, update the plan artifact, and

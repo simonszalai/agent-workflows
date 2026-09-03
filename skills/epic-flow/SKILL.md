@@ -44,14 +44,16 @@ milestone staging gate is an exact `PASS`. Never infer it.
 - `../references/epic-lifecycle.md` — milestones, contracts, evidence placement, `epic_status`
 - `../references/ticket-lifecycle.md` — epic-step ticket statuses
 - `../references/staging-autonomy.md` — what a milestone repair loop may do on its own
+- `../references/model-prompting.md` — effort defaults, context continuity, bounded waiting
 - Conductor MCP (`mcp__conductor__*`: `create_workspace`, `create_session`, `send_message`,
   `list_messages`, `get_session_status`, `list_project_workspaces`, `run_sql`) — remote repos
 
 ## Hard boundaries
 
-- One epic per run. Milestones strictly in order; never start milestone N+1 before milestone N
-  has a staging gate `PASS` with all three evidence artifacts (epic gate artifact, per-step
-  `verification_evidence`, epic summary).
+- One epic per run. Milestone **gates** strictly in order: never deploy or gate milestone N+1
+  before milestone N has a staging gate `PASS` with all three evidence artifacts (epic gate
+  artifact, per-step `verification_evidence`, epic summary). Building steps ahead of the gate is
+  allowed under the build-ahead rule (§3.2); deploying or verifying them is not.
 - This skill owns sequencing, gates, and deploy order — not design. Do not rewrite the
   mechanism/API/approach in an epic or step `plan` artifact from inside the milestone loop; if a
   readiness check says the design must change, re-enter the plan/split phase explicitly and
@@ -69,6 +71,44 @@ milestone staging gate is an exact `PASS`. Never infer it.
   obtained, stop and report the exact command to run there — do not improvise.
 - Remote workspaces are workers, not orchestrators: they receive exactly one `/ticket-flow`,
   `/ticket-deploy`, or `/ticket-verify` command per session and never `/epic-flow`.
+
+## Run budget
+
+An epic run is long, so the orchestrator's own overhead is the cost that compounds. A 2026-09-03
+E0031 run spent 4h19m: about half blocked on strictly serial subagents, a fifth on its own
+re-reading and tool-catalog introspection after compactions, and 30 minutes polling a stalled
+worker at 5-minute sleeps. These rules exist to stop that:
+
+- **Read once.** CLAUDE.md, this skill, its references, the Conductor skill, and tool catalogs
+  (`ALL_TOOLS` filters) are read exactly once per run, at load. After a context compaction, do
+  not re-read them; continue from the compaction summary plus the run-state note below. Reload a
+  reference only when a concrete decision needs a rule you cannot recall.
+- **Run-state note.** Keep `.context/epic-<E>-run-state.md` (scratch, not a ticket artifact)
+  with: epic/milestone ids, integration target, step tickets and their last confirmed status,
+  workspace/session ids and deep links, deploy report shas, gate artifact ids, and the next
+  action. Update it at every milestone transition and before any long wait so a compaction or
+  a resumed run costs one file read, not a re-derivation.
+- **Effort.** Follow `../references/model-prompting.md`: the orchestrator and every worker it
+  spawns run at that model's default effort; escalate one step only after a measured failure at
+  the lower effort. Never set `xhigh` as the standing effort for the orchestrator, forked
+  subagents, or remote workspaces.
+- **Waits are bounded and event-shaped.** Local forked subagents: `wait_agent` with a timeout of
+  at most 5 minutes, then re-check status and wait again; no `sleep`. Remote sessions: poll
+  `get_session_status` + `list_messages(after=...)` every 2–3 minutes; no fixed `sleep 300`
+  loops longer than that. Every poll result is compared against the previous one for progress.
+- **Stall detection.** A worker with no new tool activity for 10 minutes, or one still reading
+  skills/docs, introspecting tools, or troubleshooting tool access 10 minutes after its command
+  was sent, is stalled. Send one `send_message` that names the first concrete action (the file to
+  open, the command to run) and restates the tool boundary; if the next poll shows no
+  implementation activity, apply §Remote repos.4 (one fresh session, then `STOPPED`). Do not
+  keep nudging.
+- **Step count is a signal.** If the orchestrator's own tool calls since the last milestone
+  transition exceed ~60 without a status change in any ticket or gate, stop deriving and write
+  the run-state note, then take the next command in §3 directly.
+
+Anti-overplanning applies throughout: when you have enough information to act, act. Do not
+re-derive facts already established, re-litigate a decision already made, or narrate options you
+will not pursue.
 
 ## Process
 
@@ -132,6 +172,14 @@ For each milestone in order (or the single `--milestone`):
    repos always qualify, since they are separate workspaces. A step is done when the ticket is
    `merged` on the integration target with plan artifact present (confirm with `get_ticket`,
    not only the session's text). Already-`merged` steps are not rebuilt.
+
+   **Build ahead.** While milestone N is building, deploying, or gating, dispatch any step of
+   a later milestone whose `depends_on` are all `merged`, whose repo is not touched by any step
+   of milestone N, and whose contracts are fully written. Such steps land on their integration
+   target and rest at `merged`; they are deployed and gated only when their own milestone's
+   turn comes, in order. Build-ahead never applies to steps sharing a repo with an in-flight
+   milestone (its gate must see a stable integration target) and never to deploy or verify.
+   Record every build-ahead dispatch in the run-state note.
 3. **Deploy** — after all steps are `merged`, deploy the integration target to staging with
    `/ticket-deploy staging` (no-ticket mode: local health + CI + project staging deploy steps)
    in every repo that has a step in this milestone, in the order the deployment guide requires
@@ -144,6 +192,9 @@ For each milestone in order (or the single `--milestone`):
    reads staging externally; no foreign checkout needed), passing the per-repo deploy reports
    as context. Accept only an exact `PASS` plus the three evidence artifact ids. A `PASS`
    missing an evidence destination re-enters the verifier's evidence write, not the milestone.
+   The gate grades the milestone's acceptance criteria and each step's deployment-guide
+   evidence rows under ticket-verify's §5 evidence bound; it is not a second review of the
+   code and does not invent extra producers, workflow runs, or oracles beyond that bound.
 5. **Repair** — on `FAIL`: classify with `staging-autonomy.md`. Infra/config repairs that are
    `staging_safe` run directly (in the owning repo's workspace), then re-deploy and re-verify.
    Code/config/auth fixes become a new fix step ticket in this milestone run through
@@ -176,24 +227,30 @@ workspace for that repo, driven through the Conductor MCP:
 1. **Workspace** — one per (epic, repo), reused for the whole run. Find an existing one first
    (`list_project_workspaces` / `run_sql`, name `epic-<E>-<repo>`); otherwise
    `create_workspace(repo=<repo URL or Conductor project>, branch=<integration target>,
-   name="epic-<E>-<repo>")` with the same agent/model/effort as the orchestrator unless the
-   repo's settings override it. Never archive it mid-run; report its deep link.
+   name="epic-<E>-<repo>")` with the same agent as the orchestrator at that model's default
+   effort from `../references/model-prompting.md`, unless the repo's settings override it.
+   Never archive it mid-run; report its deep link.
 2. **Session** — `create_session(workspace, prompt)` with exactly one command and its context:
    `/ticket-flow <ID>` + epic id, milestone id, acceptance criteria, this step's contracts, and
    the integration target; or `/ticket-deploy staging` (no ticket) for a milestone deploy; or
    `/ticket-promote --epic <E>` for production. Nothing else — the worker must not re-plan the
-   epic or touch other milestones.
-3. **Poll** — `list_messages(session, after=<lastMessageId>)` plus `get_session_status`, on a
-   ScheduleWakeup/loop cadence matched to the work (minutes for a step, not seconds). Treat
+   epic or touch other milestones. The prompt also carries two lines verbatim: "Use only the
+   MCP tools injected into this session; if one is missing or unauthenticated, report BLOCKED
+   with the tool name — never build a custom client or inspect credentials." and "Read the
+   skill and repo instructions once, then start implementing; your first edit should land
+   within the first few tool calls after the plan artifact exists."
+3. **Poll** — `get_session_status` plus `list_messages(session, after=<lastMessageId>)` every
+   2–3 minutes (§Run budget); compare each result with the previous one for progress. Treat
    the session's terminal report as the worker's claim and confirm the fact in the source of
    truth: `get_ticket` status `merged` for steps, the deploy report's sha/result for deploys.
    A session that asks a question gets one `send_message` answer only when the answer is
    already in the orchestrator's context (contracts, acceptance criteria, integration target);
    anything else is a blocker to surface, not something to invent.
-4. **Failure** — a session that errors, stalls past the reasonable bound for its command, or
-   ends without the expected status is retried once with a fresh session in the same workspace
-   and the prior report attached; the second failure is a `STOPPED`/`BLOCKED` for this
-   milestone, reported with the workspace link and last message.
+4. **Failure** — a session that errors, stalls (§Run budget stall detection, after its one
+   corrective message), or ends without the expected status is retried once with a fresh
+   session in the same workspace and the prior report attached; the second failure is a
+   `STOPPED`/`BLOCKED` for this milestone, reported with the workspace link and last message.
+   Never run two live sessions for the same step in the same workspace.
 5. **Concurrency** — different repos in the same wave run as concurrent sessions; two sessions
    never write the same repo's integration target at once.
 
