@@ -614,8 +614,12 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("ExecStart=/opt/hermes-schedules/bin/hermes-schedule-release sync", service)
         self.assertIn("OnFailure=hermes-schedule-sync-alert.service", service)
         self.assertIn("ProtectSystem=strict", service)
-        self.assertIn("NoNewPrivileges=false", service)
+        self.assertIn("NoNewPrivileges=true", service)
         self.assertIn("RestrictSUIDSGID=true", service)
+        # setpriv must drop to the builder; an explicit User=root together with
+        # NoNewPrivileges=true breaks that setuid on systemd 255 (EPERM).
+        self.assertNotRegex(service, r"(?m)^User=")
+        self.assertNotRegex(service, r"(?m)^Group=")
         self.assertIn("ReadWritePaths=/opt/hermes-schedules", service)
         self.assertIn("TimeoutStartSec=20min", service)
         self.assertIn("OnCalendar=*-*-* *:00/15:00 UTC", timer)
@@ -642,6 +646,16 @@ class HermesScheduleReleaseTests(unittest.TestCase):
             installer,
         )
         self.assertNotIn('configure.py" "$HERMES_CONFIG"', installer)
+
+    def test_units_that_switch_users_never_pin_user_root(self) -> None:
+        for unit in sorted((HERMES / "systemd").glob("*.service")):
+            content = unit.read_text()
+            exec_line = next((l for l in content.splitlines() if l.startswith("ExecStart=")), "")
+            binary = exec_line.removeprefix("ExecStart=").split()[0] if exec_line else ""
+            source = HERMES / "bin" / Path(binary).name
+            if not source.exists() or not any(t in source.read_text() for t in ("setpriv", "runuser")):
+                continue
+            self.assertNotRegex(content, r"(?m)^User=", f"{unit.name} switches user; drop User=")
 
     def test_managed_install_method_marker_does_not_dirty_agent_checkout(self) -> None:
         bootstrap = (HERMES / "bootstrap.sh").read_text()
