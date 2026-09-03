@@ -424,7 +424,9 @@ def build_release(bundle: Bundle, releases: Path, timer_directory: Path) -> Path
             path.write_bytes(content)
             path.chmod(0o755 if name == "runner.py" else 0o644)
         (temporary / "release.json").write_text(metadata_json(metadata_for(bundle)))
-        change_owner(temporary, BUILD_USER)
+        # The builder must traverse the mkdtemp parent as well as own the
+        # revision-named candidate nested beneath it.
+        change_owner(staging, BUILD_USER)
         run_as_build_user([HOST_PYTHON, "-m", "venv", str(temporary / "venv")], "venv")
         run_as_build_user(
             [

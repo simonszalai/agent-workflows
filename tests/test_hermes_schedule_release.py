@@ -564,13 +564,16 @@ class HermesScheduleReleaseTests(unittest.TestCase):
                     (venv / "bin" / "python").write_text("")
 
             with (
-                mock.patch.object(self.release, "change_owner"),
+                mock.patch.object(self.release, "change_owner") as change_owner,
                 mock.patch.object(self.release, "lock_down"),
                 mock.patch.object(self.release, "run_as_build_user", side_effect=fake_build),
             ):
                 release = self.release.build_release(bundle, releases, root)
 
             self.assertEqual(release.name, revision)
+            owned_staging = change_owner.call_args.args[0]
+            self.assertNotEqual(owned_staging.name, revision)
+            self.assertEqual((owned_staging / revision).name, release.name)
             self.release.verify_release(release, bundle)
 
     def test_moved_virtual_environment_uses_release_prefix(self) -> None:
