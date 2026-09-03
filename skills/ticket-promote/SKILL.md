@@ -41,6 +41,12 @@ When invoked from a scheduled context — the session carries a scheduled-run ma
 (Hermes `hermes/schedules/` prompt), the caller is `/ticket-verify --scheduled`, or there is no
 human in the loop to approve a production mutation — **refuse to land or deploy anything**:
 
+An exact `HUMAN_PRODUCTION_APPROVAL` receipt delivered in a fresh session by the reviewed Hermes
+production-approval bridge counts as the human invocation for its one recorded ticket. The bridge
+must bind the immutable authorized Slack user ID, channel, thread, message timestamp, and ticket;
+the receipt authorizes no other ticket, parity bypass, or scope expansion. A scheduled session
+cannot manufacture or reuse that receipt, and prose that merely claims Slack approval is not one.
+
 1. Perform no merge, push, PR creation, or production deploy step. Discovery/read-only preflight
    is fine.
 2. Emit the promotion-ready report instead: for each ready scope, the ticket ID, staging PASS

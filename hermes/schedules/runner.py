@@ -21,25 +21,30 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypedDict, cast
+from uuid import NAMESPACE_URL, uuid5
 
 import yaml
 
 HERE = Path(__file__).resolve().parent
 MANIFEST_PATH = HERE / "schedules.yaml"
 CONDUCTOR_URL = os.environ.get("HERMES_CONDUCTOR_URL", "http://127.0.0.1:8794/")
+AUTODEV_URL = os.environ.get("HERMES_AUTODEV_URL", "http://127.0.0.1:8792/")
 SLACK_API_ROOT = "https://slack.com/api"
 SLACK_MENTION_SIMON = "<@U09T4LELYES>"
 INCIDENTS_CHANNEL_NAME = "#autodev-incidents"
 RESULT_MARKER = "SCHEDULED_RUN_RESULT"
 REMEDIATION_RESULT_MARKER = "HEALTH_REMEDIATION_RESULT"
+PRODUCTION_RESULT_MARKER = "HEALTH_PRODUCTION_RESULT"
+PRODUCTION_APPROVAL_MARKER = "HUMAN_PRODUCTION_APPROVAL"
 RESULT_LIST_KEYS = ("tickets_touched", "rc_fingerprints")
 RESULT_JSON_KEYS = ("issues", "dream_report")
 STATUS_ICONS = {"PASS": "✅", "FAIL": "❌", "BLOCKED": "⛔", "NEEDS_MORE_TIME": "⏳"}
@@ -60,6 +65,11 @@ SESSION_MESSAGE_PAGE_SIZE = 100
 MAX_SESSION_MESSAGE_PAGES = 500
 TERMINAL_IDLE_CONFIRMATIONS = 2
 EXECUTABLE_TICKET_ID_PATTERN = re.compile(r"^[FBR]\d{4}$")
+PRODUCTION_APPROVAL_PATTERN = re.compile(
+    r"^approve[ ]+prod[ ]+([FBR]\d{4})$", re.IGNORECASE
+)
+SLACK_TIMESTAMP_PATTERN = re.compile(r"^\d+[.]\d{6}$")
+PRODUCTION_TERMINAL_STATUSES = {"PROD_VERIFIED", "STOPPED", "FAILED"}
 
 JsonObject = dict[str, object]
 
@@ -88,6 +98,35 @@ class RemediationJob(TypedDict):
     deep_link: str | None
     launch_error: str | None
     saw_working: bool
+    terminal_idle_confirmations: int
+
+
+class ProductionResult(TypedDict):
+    status: str
+    ticket_id: str
+    issue: str
+    fix: str
+    verification: str
+
+
+class ApprovalCandidate(TypedDict):
+    ticket_id: str
+    title: str
+    channel: str
+    thread_ts: str
+    staging_reply_ts: str
+    approval_not_before_ts: str
+    workspace_id: str
+    workspace_link: str | None
+    state: str
+    created_at: str
+    expires_at: str
+    approval_message_ts: str | None
+    approved_by: str | None
+    promotion_session_id: str | None
+    promotion_session_link: str | None
+    deadline_at: str | None
+    start_attempts: int
     terminal_idle_confirmations: int
 
 
@@ -184,6 +223,7 @@ def post_message(
     channel: str,
     text: str,
     thread_ts: str | None = None,
+    client_msg_id: str | None = None,
 ) -> str:
     payload = slack_call(
         token,
@@ -191,6 +231,7 @@ def post_message(
         channel=channel,
         text=text,
         thread_ts=thread_ts,
+        client_msg_id=client_msg_id,
         unfurl_links="false",
     )
     return cast(str, payload["ts"])
@@ -207,10 +248,32 @@ def message_permalink(token: str, channel: str, ts: str) -> str | None:
     return permalink if isinstance(permalink, str) else None
 
 
-# --- Conductor MCP (loopback; stateless streamable HTTP) ---------------------
+def slack_thread_page(
+    token: str,
+    channel: str,
+    thread_ts: str,
+    oldest: str,
+) -> list[JsonObject]:
+    """Read one rate-limit-safe page of new replies from a Slack thread."""
+    payload = slack_call(
+        token,
+        "conversations.replies",
+        channel=channel,
+        ts=thread_ts,
+        oldest=oldest,
+        inclusive="false",
+        limit=15,
+    )
+    page = payload.get("messages")
+    if not isinstance(page, list):
+        raise RunnerError("Slack conversations.replies returned no messages array.")
+    return cast(list[JsonObject], page)
 
 
-def conductor_call(tool: str, arguments: JsonObject) -> JsonObject:
+# --- Loopback MCP clients (stateless streamable HTTP) ------------------------
+
+
+def mcp_call(url: str, label: str, tool: str, arguments: JsonObject) -> JsonObject:
     payload = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -220,7 +283,7 @@ def conductor_call(tool: str, arguments: JsonObject) -> JsonObject:
         }
     ).encode()
     request = urllib.request.Request(
-        CONDUCTOR_URL,
+        url,
         data=payload,
         headers={
             "Content-Type": "application/json",
@@ -231,17 +294,17 @@ def conductor_call(tool: str, arguments: JsonObject) -> JsonObject:
         with urllib.request.urlopen(request, timeout=90) as response:
             data = json.loads(response.read().decode())
     except (urllib.error.URLError, OSError) as error:
-        raise RunnerError(f"Conductor MCP unreachable for {tool}: {error}") from error
+        raise RunnerError(f"{label} MCP unreachable for {tool}: {error}") from error
     if not isinstance(data, dict):
-        raise RunnerError(f"Conductor {tool} returned a non-object response.")
+        raise RunnerError(f"{label} {tool} returned a non-object response.")
     if "error" in data:
         message = cast(JsonObject, data["error"]).get("message", "unknown error")
-        raise RunnerError(f"Conductor {tool} failed: {message}")
+        raise RunnerError(f"{label} {tool} failed: {message}")
     result = cast(JsonObject, data.get("result") or {})
     content = cast(list[JsonObject], result.get("content") or [])
     if result.get("isError"):
         detail = content[0].get("text", "unknown error") if content else "unknown error"
-        raise RunnerError(f"Conductor {tool} failed: {detail}")
+        raise RunnerError(f"{label} {tool} failed: {detail}")
     structured = result.get("structuredContent")
     if isinstance(structured, dict):
         if set(structured) == {"result"} and isinstance(structured["result"], dict):
@@ -251,7 +314,15 @@ def conductor_call(tool: str, arguments: JsonObject) -> JsonObject:
         parsed = json.loads(cast(str, content[0]["text"]))
         if isinstance(parsed, dict):
             return cast(JsonObject, parsed)
-    raise RunnerError(f"Conductor {tool} returned an unexpected payload.")
+    raise RunnerError(f"{label} {tool} returned an unexpected payload.")
+
+
+def conductor_call(tool: str, arguments: JsonObject) -> JsonObject:
+    return mcp_call(CONDUCTOR_URL, "Conductor", tool, arguments)
+
+
+def autodev_call(tool: str, arguments: JsonObject) -> JsonObject:
+    return mcp_call(AUTODEV_URL, "Autodev", tool, arguments)
 
 
 def iterate_projects(payload: JsonObject) -> list[JsonObject]:
@@ -559,10 +630,10 @@ def parse_remediation_result(text: str) -> RemediationResult | None:
     if object_start < 0:
         return None
     try:
-        decoded, _ = json.JSONDecoder().raw_decode(block[object_start:])
+        decoded, end = json.JSONDecoder().raw_decode(block[object_start:])
     except json.JSONDecodeError:
         return None
-    if not isinstance(decoded, dict):
+    if not isinstance(decoded, dict) or block[object_start + end :].strip():
         return None
 
     values: dict[str, str] = {}
@@ -591,6 +662,69 @@ def find_remediation_result(transcript_tail: list[str]) -> RemediationResult | N
         if parsed is not None:
             return parsed
     return None
+
+
+def parse_production_result(text: str) -> ProductionResult | None:
+    """Parse a terminal result from a human-approved production session."""
+    if PRODUCTION_RESULT_MARKER not in text:
+        return None
+    block = text[text.rindex(PRODUCTION_RESULT_MARKER) + len(PRODUCTION_RESULT_MARKER) :]
+    object_start = block.find("{")
+    if object_start < 0:
+        return None
+    try:
+        decoded, consumed = json.JSONDecoder().raw_decode(block[object_start:])
+    except json.JSONDecodeError:
+        return None
+    if block[object_start + consumed :].strip():
+        return None
+    if not isinstance(decoded, dict):
+        return None
+
+    required_keys = {"status", "ticket_id", "issue", "fix", "verification"}
+    if set(decoded) != required_keys:
+        return None
+    values: dict[str, str] = {}
+    for key in required_keys:
+        value = decoded.get(key)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or "\n" in value
+            or "\r" in value
+            or len(value) > 600
+        ):
+            return None
+        values[key] = value.strip()
+    status = values["status"].upper()
+    if status not in PRODUCTION_TERMINAL_STATUSES:
+        return None
+    if not EXECUTABLE_TICKET_ID_PATTERN.fullmatch(values["ticket_id"]):
+        return None
+    return {
+        "status": status,
+        "ticket_id": values["ticket_id"],
+        "issue": values["issue"],
+        "fix": values["fix"],
+        "verification": values["verification"],
+    }
+
+
+def find_production_result(transcript_tail: list[str]) -> ProductionResult | None:
+    for text in reversed(transcript_tail):
+        if PRODUCTION_RESULT_MARKER in text:
+            return parse_production_result(text)
+    return None
+
+
+def read_session_production_result(
+    session_id: str,
+) -> tuple[ProductionResult | None, bool]:
+    messages = session_message_snapshot(session_id)
+    result = find_production_result(messages["texts"])
+    if result is None:
+        result = find_production_result(rendered_session_transcript(session_id))
+    return result, messages["turn_completed"]
 
 
 def normalize_issue_alias(
@@ -678,6 +812,11 @@ def health_remediation_reply(job: RemediationJob, result: RemediationResult) -> 
     ]
     if job["deep_link"]:
         lines.append(f"• *Workspace:* <{job['deep_link']}|Open in Conductor>")
+    if result["status"] == "STAGING_VERIFIED":
+        lines.append(
+            "• *Approve production:* Reply in this thread with "
+            f"`approve prod {result['ticket_id']}`."
+        )
     return "\n".join(lines)
 
 
@@ -905,6 +1044,242 @@ def history_path(name: str) -> Path:
     return state_dir() / f"{name}.history.jsonl"
 
 
+def approval_db_path() -> Path:
+    return state_dir() / "production-approvals.sqlite3"
+
+
+def approval_connection() -> sqlite3.Connection:
+    connection = sqlite3.connect(approval_db_path(), timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approval_candidates (
+            ticket_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            thread_ts TEXT NOT NULL,
+            staging_reply_ts TEXT NOT NULL,
+            approval_not_before_ts TEXT,
+            workspace_id TEXT NOT NULL,
+            workspace_link TEXT,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            approval_message_ts TEXT UNIQUE,
+            approved_by TEXT,
+            promotion_session_id TEXT UNIQUE,
+            promotion_session_link TEXT,
+            deadline_at TEXT,
+            start_attempts INTEGER NOT NULL DEFAULT 0,
+            terminal_idle_confirmations INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            terminal_result_json TEXT,
+            result_posted_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS one_active_production_promotion
+        ON approval_candidates ((1))
+        WHERE state IN ('launching', 'running')
+        """
+    )
+    columns = {
+        cast(str, row["name"])
+        for row in connection.execute("PRAGMA table_info(approval_candidates)")
+    }
+    if "approval_not_before_ts" not in columns:
+        connection.execute(
+            "ALTER TABLE approval_candidates ADD COLUMN approval_not_before_ts TEXT"
+        )
+    connection.execute(
+        """
+        UPDATE approval_candidates
+        SET approval_not_before_ts = staging_reply_ts
+        WHERE approval_not_before_ts IS NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS processed_approval_messages (
+            channel TEXT NOT NULL,
+            message_ts TEXT NOT NULL,
+            ticket_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            processed_at TEXT NOT NULL,
+            PRIMARY KEY (channel, message_ts)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approval_thread_cursors (
+            channel TEXT NOT NULL,
+            thread_ts TEXT NOT NULL,
+            last_seen_ts TEXT NOT NULL,
+            last_polled_at TEXT,
+            PRIMARY KEY (channel, thread_ts)
+        )
+        """
+    )
+    connection.commit()
+    return connection
+
+
+def approval_candidate(row: sqlite3.Row) -> ApprovalCandidate:
+    return {
+        "ticket_id": cast(str, row["ticket_id"]),
+        "title": cast(str, row["title"]),
+        "channel": cast(str, row["channel"]),
+        "thread_ts": cast(str, row["thread_ts"]),
+        "staging_reply_ts": cast(str, row["staging_reply_ts"]),
+        "approval_not_before_ts": cast(str, row["approval_not_before_ts"]),
+        "workspace_id": cast(str, row["workspace_id"]),
+        "workspace_link": row["workspace_link"],
+        "state": cast(str, row["state"]),
+        "created_at": cast(str, row["created_at"]),
+        "expires_at": cast(str, row["expires_at"]),
+        "approval_message_ts": row["approval_message_ts"],
+        "approved_by": row["approved_by"],
+        "promotion_session_id": row["promotion_session_id"],
+        "promotion_session_link": row["promotion_session_link"],
+        "deadline_at": row["deadline_at"],
+        "start_attempts": int(row["start_attempts"]),
+        "terminal_idle_confirmations": int(row["terminal_idle_confirmations"]),
+    }
+
+
+def register_production_candidate(
+    job: RemediationJob,
+    *,
+    channel: str,
+    thread_ts: str,
+    staging_reply_ts: str,
+    expires_days: int,
+) -> None:
+    ticket_id = job["issue"]["ticket_id"]
+    workspace_id = job["workspace_id"]
+    if not ticket_id or not workspace_id:
+        return
+    now = utc_now()
+    with approval_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO approval_candidates (
+                ticket_id, title, channel, thread_ts, staging_reply_ts,
+                approval_not_before_ts,
+                workspace_id, workspace_link, state, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_approval', ?, ?)
+            ON CONFLICT(ticket_id) DO UPDATE SET
+                title = excluded.title,
+                channel = excluded.channel,
+                thread_ts = excluded.thread_ts,
+                staging_reply_ts = excluded.staging_reply_ts,
+                approval_not_before_ts = excluded.approval_not_before_ts,
+                workspace_id = excluded.workspace_id,
+                workspace_link = excluded.workspace_link,
+                state = 'awaiting_approval',
+                created_at = excluded.created_at,
+                expires_at = excluded.expires_at,
+                approval_message_ts = NULL,
+                approved_by = NULL,
+                promotion_session_id = NULL,
+                promotion_session_link = NULL,
+                deadline_at = NULL,
+                start_attempts = 0,
+                terminal_idle_confirmations = 0,
+                last_error = NULL,
+                terminal_result_json = NULL,
+                result_posted_at = NULL
+            WHERE approval_candidates.state IN (
+                'awaiting_approval', 'expired', 'rejected', 'stopped', 'failed',
+                'prod_verified'
+            )
+            """,
+            (
+                ticket_id,
+                job["issue"]["title"],
+                channel,
+                thread_ts,
+                staging_reply_ts,
+                staging_reply_ts,
+                workspace_id,
+                job["deep_link"],
+                now.isoformat(),
+                (now + timedelta(days=expires_days)).isoformat(),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO approval_thread_cursors (
+                channel, thread_ts, last_seen_ts, last_polled_at
+            ) VALUES (?, ?, ?, NULL)
+            ON CONFLICT(channel, thread_ts) DO UPDATE SET
+                last_seen_ts = CASE
+                    WHEN approval_thread_cursors.last_seen_ts < excluded.last_seen_ts
+                    THEN approval_thread_cursors.last_seen_ts
+                    ELSE excluded.last_seen_ts
+                END
+            """,
+            (channel, thread_ts, staging_reply_ts),
+        )
+
+
+def candidates_in_states(*states: str) -> list[ApprovalCandidate]:
+    if not states:
+        return []
+    placeholders = ", ".join("?" for _ in states)
+    with approval_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT * FROM approval_candidates
+            WHERE state IN ({placeholders})
+            ORDER BY created_at, ticket_id
+            """,
+            states,
+        ).fetchall()
+    return [approval_candidate(row) for row in rows]
+
+
+def approval_protected_workspace_ids() -> set[str]:
+    with approval_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT workspace_id FROM approval_candidates
+            WHERE state IN (
+                'awaiting_approval', 'queued', 'launching', 'running',
+                'stopped', 'failed', 'rejected'
+            )
+               OR (terminal_result_json IS NOT NULL AND result_posted_at IS NULL)
+            """
+        ).fetchall()
+    return {cast(str, row["workspace_id"]) for row in rows}
+
+
+def set_candidate_state(
+    ticket_id: str,
+    state: str,
+    *,
+    last_error: str | None = None,
+    idle_confirmations: int | None = None,
+) -> None:
+    assignments = ["state = ?", "last_error = ?"]
+    values: list[object] = [state, last_error]
+    if idle_confirmations is not None:
+        assignments.append("terminal_idle_confirmations = ?")
+        values.append(idle_confirmations)
+    values.append(ticket_id)
+    with approval_connection() as connection:
+        connection.execute(
+            f"UPDATE approval_candidates SET {', '.join(assignments)} WHERE ticket_id = ?",
+            values,
+        )
+
+
 def record_run(name: str, status: str, workspace_id: str | None) -> None:
     record = {
         "completed_at": utc_now().isoformat(),
@@ -924,7 +1299,11 @@ def record_remediation(
         return
     record = {
         "completed_at": utc_now().isoformat(),
-        "status": "PASS" if result["status"] == "STAGING_VERIFIED" else "FAIL",
+        "status": (
+            "AWAITING_PROD_APPROVAL"
+            if result["status"] == "STAGING_VERIFIED"
+            else "FAIL"
+        ),
         "workspace_id": job["workspace_id"],
         "ticket_id": job["issue"]["ticket_id"],
         "kind": "health-remediation",
@@ -1198,6 +1577,833 @@ def supervise_health_remediations(
         )
 
 
+def production_approval_settings(manifest: JsonObject) -> JsonObject:
+    value = manifest.get("production_approval")
+    return cast(JsonObject, value) if isinstance(value, dict) else {}
+
+
+def positive_approval_setting(
+    settings: JsonObject,
+    name: str,
+    default: int,
+) -> int:
+    value = settings.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RunnerError(f"production_approval.{name} must be a positive integer.")
+    return value
+
+
+def slack_ts_key(value: str) -> tuple[int, int]:
+    if not SLACK_TIMESTAMP_PATTERN.fullmatch(value):
+        raise RunnerError(f"Invalid Slack message timestamp: {value!r}.")
+    seconds, fraction = value.split(".", 1)
+    return int(seconds), int(fraction)
+
+
+def record_processed_approval(
+    *,
+    channel: str,
+    message_ts: str,
+    ticket_id: str,
+    user_id: str,
+    outcome: str,
+) -> bool:
+    with approval_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO processed_approval_messages (
+                channel, message_ts, ticket_id, user_id, outcome, processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (channel, message_ts, ticket_id, user_id, outcome, utc_now().isoformat()),
+        )
+    return cursor.rowcount == 1
+
+
+def claim_approval(
+    candidate: ApprovalCandidate,
+    *,
+    message_ts: str,
+    user_id: str,
+) -> bool:
+    with approval_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        inserted = connection.execute(
+            """
+            INSERT OR IGNORE INTO processed_approval_messages (
+                channel, message_ts, ticket_id, user_id, outcome, processed_at
+            ) VALUES (?, ?, ?, ?, 'accepted', ?)
+            """,
+            (
+                candidate["channel"],
+                message_ts,
+                candidate["ticket_id"],
+                user_id,
+                utc_now().isoformat(),
+            ),
+        )
+        if inserted.rowcount != 1:
+            return False
+        updated = connection.execute(
+            """
+            UPDATE approval_candidates
+            SET state = 'queued', approval_message_ts = ?, approved_by = ?,
+                promotion_session_id = NULL, promotion_session_link = NULL,
+                deadline_at = NULL, start_attempts = 0,
+                terminal_idle_confirmations = 0, last_error = NULL,
+                terminal_result_json = NULL, result_posted_at = NULL
+            WHERE ticket_id = ?
+              AND state IN ('awaiting_approval', 'stopped', 'failed', 'rejected')
+              AND expires_at > ?
+            """,
+            (message_ts, user_id, candidate["ticket_id"], utc_now().isoformat()),
+        )
+        if updated.rowcount != 1:
+            connection.execute(
+                """
+                UPDATE processed_approval_messages
+                SET outcome = 'stale'
+                WHERE channel = ? AND message_ts = ?
+                """,
+                (candidate["channel"], message_ts),
+            )
+            return False
+    return True
+
+
+def expire_approval_candidates() -> None:
+    now = utc_now()
+    expired_queued = [
+        candidate
+        for candidate in candidates_in_states("queued")
+        if datetime.fromisoformat(candidate["expires_at"]) <= now
+    ]
+    for candidate in expired_queued:
+        finalize_production_candidate(
+            candidate,
+            stopped_production(
+                candidate, "the production approval window expired before launch"
+            ),
+        )
+    with approval_connection() as connection:
+        connection.execute(
+            """
+            UPDATE approval_candidates
+            SET state = 'expired', last_error = 'The production approval window expired.'
+            WHERE state IN ('awaiting_approval', 'stopped', 'failed', 'rejected')
+              AND expires_at <= ?
+            """,
+            (now.isoformat(),),
+        )
+
+
+def scan_slack_approvals(
+    token: str,
+    settings: JsonObject,
+) -> None:
+    raw_users = settings.get("authorized_slack_users")
+    if not isinstance(raw_users, list) or not raw_users or not all(
+        isinstance(user, str) and user for user in raw_users
+    ):
+        raise RunnerError("production_approval.authorized_slack_users is invalid.")
+    authorized_users = set(cast(list[str], raw_users))
+    candidates = candidates_in_states(
+        "awaiting_approval", "stopped", "failed", "rejected"
+    )
+    by_thread: dict[tuple[str, str], dict[str, ApprovalCandidate]] = {}
+    for candidate in candidates:
+        key = (candidate["channel"], candidate["thread_ts"])
+        by_thread.setdefault(key, {})[candidate["ticket_id"]] = candidate
+    if not by_thread:
+        return
+
+    with approval_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT channel, thread_ts, last_seen_ts
+            FROM approval_thread_cursors
+            ORDER BY COALESCE(last_polled_at, ''), channel, thread_ts
+            """
+        ).fetchall()
+    selected = next(
+        (
+            row
+            for row in rows
+            if (cast(str, row["channel"]), cast(str, row["thread_ts"])) in by_thread
+        ),
+        None,
+    )
+    if selected is None:
+        raise RunnerError("No Slack cursor exists for an approval candidate thread.")
+    channel = cast(str, selected["channel"])
+    thread_ts = cast(str, selected["thread_ts"])
+    last_seen_ts = cast(str, selected["last_seen_ts"])
+    messages = slack_thread_page(token, channel, thread_ts, last_seen_ts)
+    thread_candidates = by_thread[(channel, thread_ts)]
+    newest_ts = last_seen_ts
+    for message in messages:
+        text = message.get("text")
+        message_ts = message.get("ts")
+        user_id = message.get("user")
+        if isinstance(message_ts, str) and slack_ts_key(message_ts) > slack_ts_key(
+            newest_ts
+        ):
+            newest_ts = message_ts
+        if not all(isinstance(value, str) for value in (text, message_ts, user_id)):
+            continue
+        match = PRODUCTION_APPROVAL_PATTERN.fullmatch(cast(str, text).strip())
+        if match is None:
+            continue
+        ticket_id = match.group(1).upper()
+        candidate = thread_candidates.get(ticket_id)
+        if candidate is None:
+            continue
+        if slack_ts_key(cast(str, message_ts)) <= slack_ts_key(
+            candidate["approval_not_before_ts"]
+        ):
+            continue
+        if cast(str, user_id) not in authorized_users:
+            if record_processed_approval(
+                channel=channel,
+                message_ts=cast(str, message_ts),
+                ticket_id=ticket_id,
+                user_id=cast(str, user_id),
+                outcome="unauthorized",
+            ):
+                post_message(
+                    token,
+                    channel,
+                    f"⛔ Production approval for `{ticket_id}` was rejected: "
+                    "the Slack member is not authorized.",
+                    thread_ts=thread_ts,
+                )
+            continue
+        if claim_approval(
+            candidate,
+            message_ts=cast(str, message_ts),
+            user_id=cast(str, user_id),
+        ):
+            post_message(
+                token,
+                channel,
+                f"✅ Production approval recorded for `{ticket_id}` from "
+                f"<@{user_id}>. Promotions run one at a time.",
+                thread_ts=thread_ts,
+            )
+    with approval_connection() as connection:
+        connection.execute(
+            """
+            UPDATE approval_thread_cursors
+            SET last_seen_ts = ?, last_polled_at = ?
+            WHERE channel = ? AND thread_ts = ?
+            """,
+            (newest_ts, utc_now().isoformat(), channel, thread_ts),
+        )
+
+
+def ticket_payload(ticket_id: str) -> JsonObject:
+    payload = autodev_call(
+        "get_ticket",
+        {
+            "project": "ts",
+            "repo": "ts-prefect",
+            "ticket_id": ticket_id,
+            "detail": "light",
+            "include_events": False,
+        },
+    )
+    ticket = payload.get("ticket")
+    if not isinstance(ticket, dict):
+        raise RunnerError(f"Autodev returned no ticket object for {ticket_id}.")
+    return payload
+
+
+def staging_ticket_preflight(ticket_id: str) -> tuple[bool, str]:
+    payload = ticket_payload(ticket_id)
+    ticket = cast(JsonObject, payload["ticket"])
+    if ticket.get("id") != ticket_id or ticket.get("repo") != "ts-prefect":
+        return False, "the approval does not resolve to that ts-prefect ticket"
+    if ticket.get("status") != "staging_verified":
+        return False, f"ticket status is {ticket.get('status')!r}, not 'staging_verified'"
+    evidence = verification_artifact(payload, environment="staging")
+    if evidence is None:
+        return False, "ticket has no exact staging PASS verification evidence artifact"
+    return True, f"ticket is staging_verified with PASS evidence {evidence.get('id')}"
+
+
+def artifact_recorded_at(artifact: JsonObject) -> datetime | None:
+    value = artifact.get("updated_at") or artifact.get("created_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def verification_artifact(
+    payload: JsonObject,
+    *,
+    environment: str,
+    recorded_after: datetime | None = None,
+) -> JsonObject | None:
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        return None
+    matches: list[JsonObject] = []
+    for artifact in cast(list[JsonObject], artifacts):
+        if artifact.get("artifact_type") != "verification_evidence":
+            continue
+        if not isinstance(artifact.get("id"), str) or not artifact["id"]:
+            continue
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        artifact_environment = str(metadata.get("environment", "")).lower()
+        verdict = str(metadata.get("verdict", "")).upper()
+        accepted_environments = (
+            {"production", "prod"} if environment == "production" else {environment}
+        )
+        if artifact_environment not in accepted_environments:
+            continue
+        if verdict != "PASS":
+            continue
+        recorded_at = artifact_recorded_at(artifact)
+        if recorded_after is not None and (
+            recorded_at is None or recorded_at <= recorded_after
+        ):
+            continue
+        matches.append(artifact)
+    return max(
+        matches,
+        key=lambda artifact: artifact_recorded_at(artifact) or datetime.min.replace(
+            tzinfo=timezone.utc
+        ),
+        default=None,
+    )
+
+
+def production_ticket_verified(
+    ticket_id: str,
+    approval_message_ts: str,
+) -> tuple[bool, str]:
+    payload = ticket_payload(ticket_id)
+    ticket = cast(JsonObject, payload["ticket"])
+    if (
+        ticket.get("id") != ticket_id
+        or ticket.get("repo") != "ts-prefect"
+        or ticket.get("status") != "completed"
+    ):
+        return False, "ticket did not re-read as completed"
+    seconds, fraction = approval_message_ts.split(".", 1)
+    slack_ts_key(approval_message_ts)
+    approved_at = datetime.fromtimestamp(
+        int(seconds) + int(fraction) / 1_000_000,
+        timezone.utc,
+    )
+    evidence = verification_artifact(
+        payload,
+        environment="production",
+        recorded_after=approved_at,
+    )
+    if evidence is None:
+        return False, "ticket has no new production PASS evidence recorded after approval"
+    return (
+        True,
+        "ticket re-read as completed with production PASS evidence artifact "
+        f"{evidence.get('id')} recorded after approval",
+    )
+
+
+def promotion_session_id(candidate: ApprovalCandidate) -> str:
+    approval_ts = cast(str, candidate["approval_message_ts"])
+    seed = (
+        f"hermes-health-prod:{candidate['channel']}:{candidate['thread_ts']}:"
+        f"{approval_ts}:{candidate['ticket_id']}"
+    )
+    return str(uuid5(NAMESPACE_URL, seed))
+
+
+def promotion_message_id(candidate: ApprovalCandidate) -> str:
+    return str(uuid5(NAMESPACE_URL, f"{promotion_session_id(candidate)}:prompt"))
+
+
+def production_prompt(candidate: ApprovalCandidate) -> str:
+    receipt = json.dumps(
+        {
+            "source": "slack_thread_comment",
+            "slack_user_id": candidate["approved_by"],
+            "slack_channel_id": candidate["channel"],
+            "slack_thread_ts": candidate["thread_ts"],
+            "slack_message_ts": candidate["approval_message_ts"],
+            "ticket_id": candidate["ticket_id"],
+        },
+        separators=(",", ":"),
+    )
+    return f"""/ticket-promote {candidate['ticket_id']}
+
+{PRODUCTION_APPROVAL_MARKER}
+{receipt}
+
+This is a single-ticket production authorization transported by the deterministic Hermes
+approval bridge after it authenticated the Slack member, thread, ticket, and one-use message.
+Re-read the ticket and staging PASS evidence before mutation. Promote only this ticket through
+the normal `/ticket-promote` lifecycle and its production verification handoff. This approval
+does not authorize a parity bypass, scope widening, another ticket, or a new product decision.
+
+End the final message with `{PRODUCTION_RESULT_MARKER}` on its own line followed by one single-line
+JSON object and nothing after it. Use exactly `status`, `ticket_id`, `issue`, `fix`, and
+`verification`. Status is `PROD_VERIFIED` only after the ticket re-reads as `completed` and a new
+production PASS verification artifact is recorded after this Slack approval; otherwise use
+`STOPPED` or `FAILED`. Keep the issue, fix, and verification values to one concise sentence each.
+"""
+
+
+def mark_candidate_running(
+    candidate: ApprovalCandidate,
+    *,
+    session_id: str,
+    session_link: str | None,
+    max_runtime_minutes: int,
+) -> None:
+    with approval_connection() as connection:
+        connection.execute(
+            """
+            UPDATE approval_candidates
+            SET state = 'running', promotion_session_id = ?,
+                promotion_session_link = ?, deadline_at = ?,
+                start_attempts = 0, terminal_idle_confirmations = 0,
+                last_error = NULL
+            WHERE ticket_id = ? AND state IN ('queued', 'launching')
+            """,
+            (
+                session_id,
+                session_link,
+                (utc_now() + timedelta(minutes=max_runtime_minutes)).isoformat(),
+                candidate["ticket_id"],
+            ),
+        )
+
+
+def session_not_found(error: RunnerError) -> bool:
+    lowered = str(error).lower()
+    return "404" in lowered or "not found" in lowered or "does not exist" in lowered
+
+
+def ensure_promotion_session(
+    candidate: ApprovalCandidate,
+    workspace_spec: JsonObject,
+    max_runtime_minutes: int,
+) -> tuple[str, str | None]:
+    session_id = promotion_session_id(candidate)
+    session: JsonObject
+    try:
+        session = conductor_call("get_session", {"session_id": session_id})
+    except RunnerError as error:
+        if not session_not_found(error):
+            raise
+        request: JsonObject = {
+            "workspace_id": candidate["workspace_id"],
+            "session_id": session_id,
+            "agent": workspace_spec.get("agent"),
+            "name": f"production approval {candidate['ticket_id']}",
+        }
+        for key in ("model", "effort"):
+            value = workspace_spec.get(key)
+            if isinstance(value, str) and value:
+                request[key] = value
+        session = conductor_call("create_session", request)
+    session_link = first_string(session, "url", "deepLink", "webUrl", "appUrl")
+    snapshot = session_message_snapshot(session_id)
+    approval_ts = cast(str, candidate["approval_message_ts"])
+    already_sent = any(
+        PRODUCTION_APPROVAL_MARKER in text and approval_ts in text
+        for text in snapshot["texts"]
+    )
+    if not already_sent:
+        conductor_call(
+            "send_session_message",
+            {
+                "session_id": session_id,
+                "message": production_prompt(candidate),
+                "message_id": promotion_message_id(candidate),
+            },
+        )
+    mark_candidate_running(
+        candidate,
+        session_id=session_id,
+        session_link=session_link,
+        max_runtime_minutes=max_runtime_minutes,
+    )
+    return session_id, session_link
+
+
+def production_result_reply(
+    candidate: ApprovalCandidate,
+    result: ProductionResult,
+) -> str:
+    icon = {"PROD_VERIFIED": "✅", "STOPPED": "⛔", "FAILED": "❌"}[result["status"]]
+    status_label = {
+        "PROD_VERIFIED": "production verified",
+        "STOPPED": "production stopped",
+        "FAILED": "production failed",
+    }[result["status"]]
+    lines = [
+        f"{icon} *{candidate['ticket_id']} — {status_label}*",
+        f"• *Issue:* {slack_plain_text(result['issue'])}",
+        f"• *Fix:* {slack_plain_text(result['fix'])}",
+        f"• *Production verification:* {slack_plain_text(result['verification'])}",
+    ]
+    link = candidate["promotion_session_link"] or candidate["workspace_link"]
+    if link:
+        lines.append(f"• *Workspace:* <{link}|Open in Conductor>")
+    if result["status"] != "PROD_VERIFIED":
+        lines.append(
+            "• *Queue:* Later approvals were reset. After reviewing this stop, reply again "
+            f"with `approve prod {candidate['ticket_id']}`."
+        )
+    return "\n".join(lines)
+
+
+def slack_plain_text(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def mark_history_workspace_status(workspace_id: str, status: str) -> None:
+    path = history_path("health-6h")
+    if not path.exists():
+        return
+    records = [
+        cast(JsonObject, json.loads(line))
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]
+    changed = False
+    for record in records:
+        if record.get("workspace_id") == workspace_id:
+            record["status"] = status
+            record["completed_at"] = utc_now().isoformat()
+            changed = True
+    if changed:
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+
+def finalize_production_candidate(
+    candidate: ApprovalCandidate,
+    result: ProductionResult,
+) -> None:
+    if result["ticket_id"] != candidate["ticket_id"]:
+        result = {
+            "status": "STOPPED",
+            "ticket_id": candidate["ticket_id"],
+            "issue": "The production session returned a result for a different ticket.",
+            "fix": "No additional production action was authorized.",
+            "verification": "The mismatched result was rejected before success was recorded.",
+        }
+    if result["status"] == "PROD_VERIFIED":
+        approval_ts = candidate["approval_message_ts"]
+        if approval_ts is None:
+            verified, evidence = False, "the approval message timestamp is missing"
+        else:
+            verified, evidence = production_ticket_verified(
+                candidate["ticket_id"], approval_ts
+            )
+        if not verified:
+            result = {
+                "status": "STOPPED",
+                "ticket_id": candidate["ticket_id"],
+                "issue": "The promotion session claimed success without durable ticket proof.",
+                "fix": "The success claim was rejected by the approval bridge.",
+                "verification": evidence.capitalize() + ".",
+            }
+        else:
+            result["verification"] = evidence.capitalize() + "."
+    terminal_state = {
+        "PROD_VERIFIED": "prod_verified",
+        "STOPPED": "stopped",
+        "FAILED": "failed",
+    }[result["status"]]
+    with approval_connection() as connection:
+        connection.execute(
+            """
+            UPDATE approval_candidates
+            SET state = ?, terminal_result_json = ?, result_posted_at = NULL,
+                last_error = NULL
+            WHERE ticket_id = ?
+            """,
+            (terminal_state, json.dumps(result), candidate["ticket_id"]),
+        )
+        if result["status"] != "PROD_VERIFIED":
+            connection.execute(
+                """
+                UPDATE approval_candidates
+                SET state = 'awaiting_approval', approval_message_ts = NULL,
+                    approved_by = NULL, promotion_session_id = NULL,
+                    promotion_session_link = NULL, deadline_at = NULL,
+                    start_attempts = 0, terminal_idle_confirmations = 0,
+                    last_error = 'A prior production promotion did not verify.',
+                    terminal_result_json = NULL, result_posted_at = NULL
+                WHERE state = 'queued'
+                """
+            )
+    mark_history_workspace_status(
+        candidate["workspace_id"],
+        "PASS" if result["status"] == "PROD_VERIFIED" else "FAIL",
+    )
+
+
+def post_pending_production_results(token: str) -> None:
+    with approval_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM approval_candidates
+            WHERE state IN ('prod_verified', 'stopped', 'failed', 'expired')
+              AND terminal_result_json IS NOT NULL
+              AND result_posted_at IS NULL
+            ORDER BY created_at, ticket_id
+            """
+        ).fetchall()
+    for row in rows:
+        candidate = approval_candidate(row)
+        raw_result = cast(str, row["terminal_result_json"])
+        result = parse_production_result(
+            f"{PRODUCTION_RESULT_MARKER}\n{raw_result}"
+        )
+        if result is None:
+            raise RunnerError(
+                f"Stored production result is invalid for {candidate['ticket_id']}."
+            )
+        posted_ts = post_message(
+            token,
+            candidate["channel"],
+            production_result_reply(candidate, result),
+            thread_ts=candidate["thread_ts"],
+            client_msg_id=str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"hermes-health-prod:{candidate['ticket_id']}:"
+                    f"{candidate['approval_message_ts']}:result",
+                )
+            ),
+        )
+        with approval_connection() as connection:
+            if result["status"] != "PROD_VERIFIED":
+                connection.execute(
+                    """
+                    UPDATE approval_candidates
+                    SET approval_not_before_ts = ?
+                    WHERE ticket_id = ?
+                       OR (
+                            state = 'awaiting_approval'
+                            AND last_error = 'A prior production promotion did not verify.'
+                       )
+                    """,
+                    (posted_ts, candidate["ticket_id"]),
+                )
+            connection.execute(
+                """
+                UPDATE approval_candidates
+                SET result_posted_at = ?
+                WHERE ticket_id = ? AND result_posted_at IS NULL
+                """,
+                (utc_now().isoformat(), candidate["ticket_id"]),
+            )
+
+
+def stopped_production(
+    candidate: ApprovalCandidate,
+    reason: str,
+) -> ProductionResult:
+    return {
+        "status": "STOPPED",
+        "ticket_id": candidate["ticket_id"],
+        "issue": "The approved production promotion did not reach verified completion.",
+        "fix": f"The promotion stopped because {reason.rstrip('.')}.",
+        "verification": "No production PASS was recorded; inspect the Conductor session.",
+    }
+
+
+def supervise_active_production() -> bool:
+    active = candidates_in_states("running", "launching")
+    if not active:
+        return False
+    candidate = active[0]
+    session_id = candidate["promotion_session_id"]
+    if not session_id:
+        set_candidate_state(
+            candidate["ticket_id"],
+            "queued",
+            last_error="Promotion session creation did not complete.",
+        )
+        return False
+    deadline = candidate["deadline_at"]
+    if deadline and utc_now() >= datetime.fromisoformat(deadline):
+        try:
+            conductor_call("cancel_session", {"session_id": session_id})
+        except RunnerError as error:
+            log.warning("cancel production promotion after timeout failed: %s", error)
+        finalize_production_candidate(
+            candidate,
+            stopped_production(candidate, "the production deadline expired."),
+        )
+        return False
+    status_payload = conductor_call("get_session_status", {"session_id": session_id})
+    status = str(first_string(status_payload, "status", "state") or "").lower()
+    if status in {"working", "running", "busy"}:
+        set_candidate_state(candidate["ticket_id"], "running", idle_confirmations=0)
+        return True
+    if status in {"error", "errored", "failed"}:
+        result, _ = read_session_production_result(session_id)
+        if result is None or result["status"] == "PROD_VERIFIED":
+            result = stopped_production(candidate, "the Conductor session errored.")
+        finalize_production_candidate(candidate, result)
+        return False
+    if status in {"idle", "completed", "done"}:
+        result, turn_completed = read_session_production_result(session_id)
+        if result is not None:
+            finalize_production_candidate(candidate, result)
+            return False
+        confirmations = candidate["terminal_idle_confirmations"] + 1
+        if turn_completed or confirmations >= TERMINAL_IDLE_CONFIRMATIONS:
+            finalize_production_candidate(
+                candidate,
+                stopped_production(
+                    candidate, "the agent finished without a structured production result."
+                ),
+            )
+            return False
+        set_candidate_state(
+            candidate["ticket_id"], "running", idle_confirmations=confirmations
+        )
+    return True
+
+
+def start_next_production(
+    token: str,
+    settings: JsonObject,
+    workspace_spec: JsonObject,
+) -> bool:
+    queued = candidates_in_states("queued")
+    if not queued:
+        return False
+    candidate = min(
+        queued,
+        key=lambda item: slack_ts_key(cast(str, item["approval_message_ts"])),
+    )
+    try:
+        ready, reason = staging_ticket_preflight(candidate["ticket_id"])
+    except RunnerError as error:
+        record_start_failure(candidate, f"production preflight failed: {error}", settings)
+        return False
+    if not ready:
+        set_candidate_state(candidate["ticket_id"], "rejected", last_error=reason)
+        post_message(
+            token,
+            candidate["channel"],
+            f"⛔ Production approval for `{candidate['ticket_id']}` was rejected: {reason}.",
+            thread_ts=candidate["thread_ts"],
+        )
+        return False
+    set_candidate_state(candidate["ticket_id"], "launching")
+    try:
+        session_id, session_link = ensure_promotion_session(
+            candidate,
+            workspace_spec,
+            positive_approval_setting(settings, "max_runtime_minutes", 480),
+        )
+    except RunnerError as error:
+        record_start_failure(candidate, f"Conductor session launch failed: {error}", settings)
+        return False
+    post_message(
+        token,
+        candidate["channel"],
+        f"🚀 Production promotion started for `{candidate['ticket_id']}`."
+        + (f" <{session_link}|Open in Conductor>" if session_link else ""),
+        thread_ts=candidate["thread_ts"],
+    )
+    log.info("production promotion %s started in session %s", candidate["ticket_id"], session_id)
+    return True
+
+
+def record_start_failure(
+    candidate: ApprovalCandidate,
+    reason: str,
+    settings: JsonObject,
+) -> None:
+    attempts = candidate["start_attempts"] + 1
+    max_attempts = positive_approval_setting(settings, "max_start_attempts", 10)
+    with approval_connection() as connection:
+        connection.execute(
+            """
+            UPDATE approval_candidates
+            SET state = 'queued', start_attempts = ?, last_error = ?
+            WHERE ticket_id = ?
+            """,
+            (attempts, reason, candidate["ticket_id"]),
+        )
+    if attempts < max_attempts:
+        log.warning(
+            "production start attempt %s/%s deferred for %s: %s",
+            attempts,
+            max_attempts,
+            candidate["ticket_id"],
+            reason,
+        )
+        return
+    refreshed = next(
+        item
+        for item in candidates_in_states("queued")
+        if item["ticket_id"] == candidate["ticket_id"]
+    )
+    finalize_production_candidate(
+        refreshed,
+        stopped_production(
+            refreshed,
+            f"startup could not complete after {attempts} attempts",
+        ),
+    )
+
+
+def process_production_approvals() -> int:
+    manifest = load_manifest()
+    settings = production_approval_settings(manifest)
+    if not settings.get("enabled"):
+        log.info("production approval bridge is disabled; skipping")
+        return 0
+    positive_approval_setting(settings, "expires_days", 14)
+    positive_approval_setting(settings, "max_runtime_minutes", 480)
+    positive_approval_setting(settings, "max_start_attempts", 10)
+    state_dir().mkdir(parents=True, exist_ok=True)
+    lock_file = (state_dir() / "production-approvals.lock").open("w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        log.info("production approval bridge: previous poll still active; skipping")
+        return 0
+    try:
+        token = read_slack_token()
+        post_pending_production_results(token)
+        expire_approval_candidates()
+        scan_slack_approvals(token, settings)
+        active = supervise_active_production()
+        post_pending_production_results(token)
+        if not active:
+            health = manifest_entry(manifest, "health-6h")
+            start_next_production(
+                token,
+                settings,
+                cast(JsonObject, health.get("workspace") or {}),
+            )
+            post_pending_production_results(token)
+        return 0
+    finally:
+        lock_file.close()
+
+
 def poll_session(
     session_id: str,
     max_runtime_minutes: int,
@@ -1324,13 +2530,24 @@ def run_schedule(name: str) -> int:
         for job, remediation in supervise_health_remediations(
             jobs, remediation_max_runtime, poll_seconds
         ):
-            post_message(
+            remediation_reply_ts = post_message(
                 slack_token,
                 channel,
                 health_remediation_reply(job, remediation),
                 thread_ts=parent_ts,
             )
             record_remediation(name, job, remediation)
+            if remediation["status"] == "STAGING_VERIFIED":
+                approval_settings = production_approval_settings(manifest)
+                register_production_candidate(
+                    job,
+                    channel=channel,
+                    thread_ts=parent_ts,
+                    staging_reply_ts=remediation_reply_ts,
+                    expires_days=positive_approval_setting(
+                        approval_settings, "expires_days", 14
+                    ),
+                )
     elif name == "nightly-dream":
         raw_report = result.get("dream_report") if result is not None else None
         icon = STATUS_ICONS[status]
@@ -1396,11 +2613,12 @@ def alert_unit_failure(suffix: str) -> int:
     manifest = load_manifest()
     incidents = channel_id(manifest, INCIDENTS_CHANNEL_NAME)
     token = read_slack_token()
-    unit = (
-        f"hermes-schedule@{suffix}.service"
-        if suffix != "watchdog"
-        else "hermes-schedule-watchdog.service"
-    )
+    if suffix == "watchdog":
+        unit = "hermes-schedule-watchdog.service"
+    elif suffix == "approval":
+        unit = "hermes-schedule-approval.service"
+    else:
+        unit = f"hermes-schedule@{suffix}.service"
     post_message(
         token,
         incidents,
@@ -1458,6 +2676,7 @@ def apply_retention(manifest: JsonObject) -> None:
     fail_days = int(
         cast(int, settings.get("retention_days_fail", DEFAULT_RETENTION_FAIL_DAYS))
     )
+    protected_workspaces = approval_protected_workspace_ids()
     for entry in cast(list[JsonObject], manifest.get("schedules") or []):
         path = history_path(cast(str, entry["name"]))
         if not path.exists():
@@ -1470,6 +2689,8 @@ def apply_retention(manifest: JsonObject) -> None:
         changed = False
         for record in records:
             if record.get("archived") or not record.get("workspace_id"):
+                continue
+            if record["workspace_id"] in protected_workspaces:
                 continue
             completed = datetime.fromisoformat(cast(str, record["completed_at"]))
             age_days = (utc_now() - completed).total_seconds() / 86400
@@ -1511,8 +2732,10 @@ def main(argv: list[str]) -> int:
         return alert_unit_failure(argv[2])
     if len(argv) == 2 and argv[1] == "watchdog":
         return watchdog()
+    if len(argv) == 2 and argv[1] == "approvals":
+        return process_production_approvals()
     print(
-        "usage: runner.py run <schedule> | alert <unit-suffix> | watchdog",
+        "usage: runner.py run <schedule> | alert <unit-suffix> | watchdog | approvals",
         file=sys.stderr,
     )
     return 2

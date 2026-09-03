@@ -21,6 +21,13 @@ schedule channel for automatic/next-run continuation).
   runner then launches all per-ticket workspaces in parallel from `staging`, supervises them under
   `remediation_max_runtime_minutes`, and keeps the schedule lock until each child has produced a
   structured terminal result or been cancelled at the deadline.
+- **Production approval.** A staging-verified issue reply includes
+  `approve prod <TICKET>`. The separate approval timer reads at most one 15-message Slack thread
+  page per minute, accepts only that exact command from a manifest-authorized immutable Slack user
+  ID after the staging reply, re-checks the ticket and exact staging PASS artifact, and launches a
+  fresh `/ticket-promote` session in that issue's workspace. Promotions are globally serialized.
+  Success is posted only after the ticket re-reads as `completed` with a new exact production PASS
+  artifact recorded after the Slack approval. Failed promotions reset later queued approvals.
 - **Failure handling.** Poll timeout cancels the session and posts FAIL; an errored session
   or a run ending without a `SCHEDULED_RUN_RESULT` block is FAIL; there are no automatic
   retries. Runner crashes trigger `OnFailure=hermes-schedule-alert@%i.service`, which posts
@@ -35,7 +42,8 @@ schedule channel for automatic/next-run continuation).
 - **Workspace retention.** The watchdog archives PASS workspaces after
   `runner.retention_days_pass` days; FAIL/BLOCKED workspaces are retained
   `runner.retention_days_fail` days for triage before archival. NEEDS_MORE_TIME uses the longer
-  retention so its wait receipt remains available to the continuation.
+  retention so its wait receipt remains available to the continuation. Workspaces waiting for or
+  running an approved production promotion are never archived by retention.
 - **Secret boundary.** The runner holds no Conductor credential (loopback MCP on 8794 owns
   it) and receives the Slack token only via systemd `LoadCredential`
   (`/etc/hermes-schedules/slack.token`, root-only 0400 — see `hermes/README.md`).
@@ -54,7 +62,8 @@ Rules:
   operation that would raise a 1Password prompt (they hard-fail unattended). Production data is
   read-only via `TS/PROD_POSTGRES_URL_RO`; `health-6h` has one reviewed production-side exception:
   append-only `ticket:<ID>` Prefect tags on explicitly verified failed/crashed runs. Per-issue
-  ticket workspaces may land and verify staging only; production promotion remains human-invoked.
+  ticket workspaces may land and verify staging only. Production remains human-invoked: the exact
+  Slack approval is the bounded invocation transported by the deterministic approval bridge.
 - An `enabled: false` entry is staged but not yet runnable — its `blocked_on` field says
   what must land first.
 - The full unattended contract (mutation boundary, Slack report format, terminal-result ending
@@ -71,3 +80,9 @@ Slack destinations:
 Default format: one-line summary in the channel, detail in the thread. Health failures use the
 issue-oriented exception defined in `skills/references/scheduled-run.md` §2. Nightly dream uses a
 count-rich parent plus one structured what/why/how reply; its raw result block is never posted.
+
+For a staging-verified issue, reply in the same health thread with the command printed in that
+issue's message, for example `approve prod B0423`. The bridge acknowledges acceptance, links the
+production Conductor session when it starts, and posts the final issue/fix/production-evidence
+reply in the same thread. A different user, ticket, thread, older message, edited prose command, or
+expired approval window cannot authorize production.
