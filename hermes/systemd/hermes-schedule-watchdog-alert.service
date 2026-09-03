@@ -1,20 +1,14 @@
 [Unit]
-Description=Hermes scheduled agent run (%i)
-After=network-online.target hermes-conductor.service
-Wants=network-online.target hermes-conductor.service
-OnFailure=hermes-schedule-alert@%i.service
+Description=Alert after the Hermes schedule watchdog fails
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 User=hermes-schedules
 Group=hermes-schedules
-WorkingDirectory=/opt/hermes-schedules
 LoadCredential=slack.token:/etc/hermes-schedules/slack.token
-LoadCredential=op.token:/etc/hermes-schedules/op.token
-StateDirectory=hermes-schedules
-StateDirectoryMode=0700
-TimeoutStartSec=10h
-ExecStart=/opt/hermes-schedules/bin/run-schedule-release run %i
+ExecStart=/opt/hermes-schedules/bin/hermes-schedule-alert watchdog
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

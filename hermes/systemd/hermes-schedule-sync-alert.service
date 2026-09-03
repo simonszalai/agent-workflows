@@ -1,16 +1,14 @@
 [Unit]
-Description=Hermes schedule failure alert (%i)
+Description=Alert after a failed Hermes schedule sync
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=hermes-schedules
-Group=hermes-schedules
+User=root
+Group=root
 LoadCredential=slack.token:/etc/hermes-schedules/slack.token
-StateDirectory=hermes-schedules
-StateDirectoryMode=0700
-ExecStart=/opt/hermes-schedules/bin/hermes-schedule-alert schedule %i
+ExecStart=/opt/hermes-schedules/bin/hermes-schedule-alert sync
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -23,4 +21,5 @@ LockPersonality=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/hermes-schedule-sync
 UMask=0077

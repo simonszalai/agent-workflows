@@ -1,0 +1,11 @@
+[Unit]
+Description=Check agent-workflows main for reviewed Hermes schedule updates
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*-*-* *:00/15:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

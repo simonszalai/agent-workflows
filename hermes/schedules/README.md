@@ -2,7 +2,8 @@
 
 Canonical definitions of every scheduled agent run Hermes launches through the Conductor MCP
 (`hermes/conductor/server.py`). systemd timers (one per manifest entry, timezone
-America/Vancouver) start `runner.py run <name>`, which reads `schedules.yaml`, creates a
+America/Vancouver) start the stable release launcher with `run <name>`. It resolves the current
+immutable release, whose `runner.py` reads `schedules.yaml`, creates a
 Conductor workspace per the entry, sends the referenced prompt file's contents as the first
 session message, polls the session with the entry's `max_runtime_minutes` cap, parses the
 `SCHEDULED_RUN_RESULT` ending, and posts the result to Slack (normally one line in the channel
@@ -12,6 +13,14 @@ FAIL/BLOCKED additionally routes one line to `#autodev-incidents`; NEEDS_MORE_TI
 schedule channel for automatic/next-run continuation).
 
 ## Runner mechanics (`runner.py`, deployed to `/opt/hermes-schedules`)
+
+- **Automatic reviewed updates.** A root-owned 15-minute timer fetches public
+  `agent-workflows/main`, exports only the runtime files in this directory, validates them as the
+  unprivileged service account, and atomically activates a complete immutable release. Existing
+  jobs remain pinned to their starting release; no service restart is required.
+- **Deployment contract.** `deployment_contract_version` prevents code that needs new systemd,
+  timer, or credential behavior from being activated by the limited automatic updater. Timer
+  names and calendars must continue matching the installed reviewed units.
 
 - **Enabled gate.** `enabled: false` entries are skipped at runtime; timers are always
   installed, so activation is purely a reviewed manifest flip plus `hermes/install.sh`.
@@ -33,8 +42,8 @@ schedule channel for automatic/next-run continuation).
   artifact recorded after the Slack approval. Failed promotions reset later queued approvals.
 - **Failure handling.** Poll timeout cancels the session and posts FAIL; an errored session
   or a run ending without a `SCHEDULED_RUN_RESULT` block is FAIL; there are no automatic
-  retries. Runner crashes trigger `OnFailure=hermes-schedule-alert@%i.service`, which posts
-  the unit failure to `#autodev-incidents`.
+  retries. Runner crashes trigger a root-owned stable alert program outside the mutable
+  release, which posts the unit failure to `#autodev-incidents`.
 - **Watchdog.** `hermes-schedule-watchdog.timer` (every 30 min) alerts `#autodev-incidents`
   when an enabled schedule has not reported within its cron interval plus `max_runtime` plus
   an hour of grace — green runs post, so silence means the scheduler is broken.

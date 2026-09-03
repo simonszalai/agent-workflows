@@ -236,8 +236,15 @@ class HermesAssetTests(unittest.TestCase):
 
     def test_executables_have_execute_bits(self) -> None:
         for relative in (
+            "bootstrap.sh",
             "install.sh",
+            "verify.sh",
+            "bin/hermes-schedule-alert",
+            "bin/hermes-schedule-release",
             "bin/run-autodev-memory",
+            "bin/run-schedule-release",
+            "bin/validate-bootstrap-inputs",
+            "bin/validate-schedule-release",
             "conductor/server.py",
             "schedules/runner.py",
         ):
@@ -480,7 +487,7 @@ class HermesScheduleTests(unittest.TestCase):
         template = (HERMES / "systemd" / "hermes-schedule@.service").read_text()
         self.assertIn("OnFailure=hermes-schedule-alert@%i.service", template)
         watchdog = (HERMES / "systemd" / "hermes-schedule-watchdog.service").read_text()
-        self.assertIn("OnFailure=hermes-schedule-alert@watchdog.service", watchdog)
+        self.assertIn("OnFailure=hermes-schedule-watchdog-alert.service", watchdog)
         watchdog_timer = (
             HERMES / "systemd" / "hermes-schedule-watchdog.timer"
         ).read_text()
@@ -493,7 +500,7 @@ class HermesScheduleTests(unittest.TestCase):
         approval_service = (
             HERMES / "systemd" / "hermes-schedule-approval.service"
         ).read_text()
-        self.assertIn("runner.py approvals", approval_service)
+        self.assertIn("run-schedule-release approvals", approval_service)
         self.assertIn("OnFailure=hermes-schedule-alert@approval.service", approval_service)
         self.assertNotIn("LoadCredential=op.token", approval_service)
 
@@ -510,7 +517,8 @@ class HermesScheduleTests(unittest.TestCase):
         installer = (HERMES / "install.sh").read_text()
         self.assertIn("check_credential /etc/hermes-schedules/slack.token", installer)
         self.assertIn("/opt/hermes-schedules", installer)
-        self.assertIn("hermes/schedules/requirements.txt", installer)
+        self.assertIn("hermes-schedule-release install-local", installer)
+        self.assertIn("validate-schedule-release", installer)
         self.assertIn('systemctl enable --now "${SCHEDULE_TIMERS[@]}"', installer)
         self.assertIn("useradd --system", installer)
         self.assertIn("hermes-schedules", installer)
@@ -2178,6 +2186,7 @@ class HermesScheduleTests(unittest.TestCase):
             manifest.write_text(
                 yaml.safe_dump(
                     {
+                        "deployment_contract_version": 1,
                         "slack_channels": {"#autodev-incidents": "C000"},
                         "schedules": [
                             {

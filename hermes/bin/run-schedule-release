@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Resolve the release before starting Python so a later symlink switch cannot
+# change sys.prefix or any prompt opened by this process.
+set -euo pipefail
+
+RUNTIME_ROOT=/opt/hermes-schedules
+RELEASES_ROOT="$RUNTIME_ROOT/releases"
+RELEASE="$(readlink -e "$RUNTIME_ROOT/current")"
+
+[[ "$RELEASE" =~ ^${RELEASES_ROOT}/[0-9a-f]{40}$ ]] || {
+  echo "Hermes schedule launcher: current is not a valid release" >&2
+  exit 1
+}
+
+[ -d "$RELEASE" ] || {
+  echo "Hermes schedule launcher: release directory is missing" >&2
+  exit 1
+}
+[ -x "$RELEASE/venv/bin/python" ] || {
+  echo "Hermes schedule launcher: release Python is missing" >&2
+  exit 1
+}
+[ -f "$RELEASE/runner.py" ] && [ ! -L "$RELEASE/runner.py" ] || {
+  echo "Hermes schedule launcher: release runner is invalid" >&2
+  exit 1
+}
+
+cd "$RELEASE"
+exec "$RELEASE/venv/bin/python" "$RELEASE/runner.py" "$@"

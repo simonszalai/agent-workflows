@@ -2,7 +2,7 @@
 Description=Hermes schedule watchdog (missing-post check + workspace retention)
 After=network-online.target hermes-conductor.service
 Wants=network-online.target hermes-conductor.service
-OnFailure=hermes-schedule-alert@watchdog.service
+OnFailure=hermes-schedule-watchdog-alert.service
 
 [Service]
 Type=oneshot
@@ -12,7 +12,7 @@ WorkingDirectory=/opt/hermes-schedules
 LoadCredential=slack.token:/etc/hermes-schedules/slack.token
 StateDirectory=hermes-schedules
 StateDirectoryMode=0700
-ExecStart=/opt/hermes-schedules/venv/bin/python /opt/hermes-schedules/runner.py watchdog
+ExecStart=/opt/hermes-schedules/bin/run-schedule-release watchdog
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
