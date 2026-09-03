@@ -19,7 +19,9 @@ ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
+# The root coordinator must drop to the secretless builder with runuser.
+# NoNewPrivileges remains inherited by that child and prevents re-escalation.
+RestrictSUIDSGID=false
 LockPersonality=true
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
 AmbientCapabilities=

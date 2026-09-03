@@ -597,6 +597,8 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("ExecStart=/opt/hermes-schedules/bin/hermes-schedule-release sync", service)
         self.assertIn("OnFailure=hermes-schedule-sync-alert.service", service)
         self.assertIn("ProtectSystem=strict", service)
+        self.assertIn("NoNewPrivileges=true", service)
+        self.assertIn("RestrictSUIDSGID=false", service)
         self.assertIn("ReadWritePaths=/opt/hermes-schedules", service)
         self.assertIn("TimeoutStartSec=20min", service)
         self.assertIn("OnCalendar=*-*-* *:00/15:00 UTC", timer)
