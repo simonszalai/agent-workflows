@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -299,6 +300,7 @@ class HermesScheduleTests(unittest.TestCase):
 
         approval = manifest["production_approval"]
         self.assertTrue(approval["enabled"])
+        self.assertEqual(approval["hermes_slack_user_id"], "U0BKDG6QP17")
         self.assertEqual(approval["authorized_slack_users"], ["U09T4LELYES"])
         self.assertGreater(approval["expires_days"], 0)
         self.assertGreater(approval["max_runtime_minutes"], 0)
@@ -371,6 +373,10 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertIn("`HEALTH_REMEDIATION_RESULT`", contract)
         self.assertIn("It never promotes\n   to production", contract)
         self.assertIn("one cloud\n`/ticket-flow` workspace per issue", readme)
+        self.assertIn("its own top-level Slack message", readme)
+        self.assertIn("tags Hermes", readme)
+        self.assertIn("Ticket identity comes only from that one-issue thread", readme)
+        self.assertIn("`SLACK_ALLOWED_CHANNELS`", readme)
 
     def test_health_remediation_launches_one_workspace_per_unique_ticket(self) -> None:
         runner = load_schedule_runner()
@@ -496,6 +502,8 @@ class HermesScheduleTests(unittest.TestCase):
 
         self.assertIn("An exact `HUMAN_PRODUCTION_APPROVAL` receipt", promote)
         self.assertIn("immutable authorized Slack user ID", promote)
+        self.assertIn("pinned Hermes mention", promote)
+        self.assertIn("message digest", promote)
         self.assertIn("cannot manufacture or reuse that receipt", promote)
 
     def test_installer_deploys_the_schedule_stack(self) -> None:
@@ -866,6 +874,8 @@ class HermesScheduleTests(unittest.TestCase):
             "expires_at": "2026-09-17T08:00:00+00:00",
             "approval_message_ts": "100.000003",
             "approved_by": "U-SIMON",
+            "approval_text_sha256": "abc123",
+            "approval_hermes_user_id": "U0HERMES123",
             "promotion_session_id": None,
             "promotion_session_link": None,
             "deadline_at": None,
@@ -879,6 +889,9 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertIn("HUMAN_PRODUCTION_APPROVAL", prompt)
         self.assertIn('"slack_user_id":"U-SIMON"', prompt)
         self.assertIn('"slack_message_ts":"100.000003"', prompt)
+        self.assertIn('"slack_message_sha256":"abc123"', prompt)
+        self.assertIn('"hermes_user_id":"U0HERMES123"', prompt)
+        self.assertIn("one-use message digest", prompt)
         self.assertIn("does not authorize a parity bypass", prompt)
         self.assertIn("HEALTH_PRODUCTION_RESULT", prompt)
 
@@ -924,7 +937,39 @@ class HermesScheduleTests(unittest.TestCase):
             )
         )
 
-    def test_slack_production_approval_is_exact_authorized_and_single_use(self) -> None:
+    def test_natural_production_approval_requires_hermes_and_clear_intent(self) -> None:
+        runner = load_schedule_runner()
+
+        for text in (
+            "<@U0HERMES123> I approve this for production",
+            "Approved, <@U0HERMES123> — please proceed",
+            "<@U0HERMES123> looks good; ship it",
+            "<@U0HERMES123> go ahead and deploy this",
+            "<@U0HERMES123> green light for production",
+        ):
+            with self.subTest(accepted=text):
+                self.assertTrue(
+                    runner.is_natural_production_approval(text, "U0HERMES123")
+                )
+
+        for text in (
+            "I approve this for production",
+            "<@U0HERMES123> do not approve this",
+            "<@U0HERMES123> I cannot approve this",
+            "<@U0HERMES123> can I approve this?",
+            "<@U0HERMES123> I might approve this later",
+            "<@U0HERMES123> I approve if the final check passes",
+            "<@U0HERMES123> I approve staging only",
+            "approve prod B0100",
+        ):
+            with self.subTest(rejected=text):
+                self.assertFalse(
+                    runner.is_natural_production_approval(text, "U0HERMES123")
+                )
+
+    def test_slack_production_approval_is_thread_bound_authorized_and_single_use(
+        self,
+    ) -> None:
         runner = load_schedule_runner()
         issue = {
             "title": "Worker offline",
@@ -943,11 +988,26 @@ class HermesScheduleTests(unittest.TestCase):
             "saw_working": True,
             "terminal_idle_confirmations": 0,
         }
-        settings = {"authorized_slack_users": ["U-SIMON"]}
+        settings = {
+            "authorized_slack_users": ["U-SIMON"],
+            "hermes_slack_user_id": "U0HERMES123",
+        }
         messages = [
-            {"ts": "100.000003", "user": "U-OTHER", "text": "approve prod B0100"},
-            {"ts": "100.000004", "user": "U-SIMON", "text": "please approve prod B0100"},
-            {"ts": "100.000005", "user": "U-SIMON", "text": "approve prod B0100"},
+            {
+                "ts": "100.000003",
+                "user": "U-OTHER",
+                "text": "<@U0HERMES123> I approve this",
+            },
+            {
+                "ts": "100.000004",
+                "user": "U-SIMON",
+                "text": "<@U0HERMES123> I do not approve this",
+            },
+            {
+                "ts": "100.000005",
+                "user": "U-SIMON",
+                "text": "<@U0HERMES123> looks good — ship it",
+            },
         ]
 
         with tempfile.TemporaryDirectory() as directory:
@@ -971,6 +1031,15 @@ class HermesScheduleTests(unittest.TestCase):
                 candidate = runner.candidates_in_states("queued")[0]
                 self.assertEqual(candidate["approval_message_ts"], "100.000005")
                 self.assertEqual(candidate["approved_by"], "U-SIMON")
+                self.assertEqual(
+                    candidate["approval_text_sha256"],
+                    hashlib.sha256(
+                        "<@U0HERMES123> looks good — ship it".encode()
+                    ).hexdigest(),
+                )
+                self.assertEqual(
+                    candidate["approval_hermes_user_id"], "U0HERMES123"
+                )
                 self.assertEqual(page.call_count, 1)
                 self.assertEqual(post.call_count, 2)
                 self.assertIn("not authorized", post.mock_calls[0].args[2])
@@ -1336,12 +1405,12 @@ class HermesScheduleTests(unittest.TestCase):
                     {
                         "ts": "100.000009",
                         "user": "U-SIMON",
-                        "text": "approve prod B0100",
+                        "text": "<@U0HERMES123> I approve this",
                     },
                     {
                         "ts": "100.000011",
                         "user": "U-SIMON",
-                        "text": "approve prod B0100",
+                        "text": "<@U0HERMES123> I approve this",
                     },
                 ]
                 with (
@@ -1351,7 +1420,11 @@ class HermesScheduleTests(unittest.TestCase):
                     mock.patch.object(runner, "post_message"),
                 ):
                     runner.scan_slack_approvals(
-                        "token", {"authorized_slack_users": ["U-SIMON"]}
+                        "token",
+                        {
+                            "authorized_slack_users": ["U-SIMON"],
+                            "hermes_slack_user_id": "U0HERMES123",
+                        },
                     )
 
                 queued = runner.candidates_in_states("queued")[0]
@@ -1604,13 +1677,19 @@ class HermesScheduleTests(unittest.TestCase):
             ],
         )
 
-    def test_health_schedule_posts_exactly_one_reply_per_issue(self) -> None:
+    def test_health_schedule_posts_one_top_level_message_per_issue(self) -> None:
         runner = load_schedule_runner()
         manifest = {
             "runner": {"poll_seconds": 1},
             "slack_channels": {
                 "#autodev-health": "C-health",
                 "#autodev-incidents": "C-incidents",
+            },
+            "production_approval": {
+                "enabled": True,
+                "hermes_slack_user_id": "U0HERMES123",
+                "authorized_slack_users": ["U-SIMON"],
+                "expires_days": 14,
             },
             "schedules": [
                 {
@@ -1737,6 +1816,9 @@ class HermesScheduleTests(unittest.TestCase):
                     "message_permalink",
                     return_value="https://slack.example/thread",
                 ),
+                mock.patch.object(
+                    runner, "register_production_candidate"
+                ) as register_candidate,
                 mock.patch.object(runner, "record_run"),
             ):
                 exit_code = runner.run_schedule("health-6h")
@@ -1783,9 +1865,9 @@ class HermesScheduleTests(unittest.TestCase):
                     "• *Verification:* Staging run flow-123 passed on revision abc123 with "
                     "evidence artifact art-1.\n"
                     "• *Workspace:* <conductor://remediation-1|Open in Conductor>\n"
-                    "• *Approve production:* Reply in this thread with "
-                    "`approve prod B0349`.",
-                    thread_ts="parent",
+                    "• *Approve production:* Reply in this issue's thread, tag @Hermes, "
+                    "and clearly approve in your own words — for example, “@Hermes I "
+                    "approve this for production.”",
                 ),
                 mock.call(
                     "token",
@@ -1798,9 +1880,28 @@ class HermesScheduleTests(unittest.TestCase):
                     "• *Verification:* Staging run flow-456 passed on revision def456 with "
                     "evidence artifact art-2.\n"
                     "• *Workspace:* <conductor://remediation-2|Open in Conductor>\n"
-                    "• *Approve production:* Reply in this thread with "
-                    "`approve prod B0365`.",
-                    thread_ts="parent",
+                    "• *Approve production:* Reply in this issue's thread, tag @Hermes, "
+                    "and clearly approve in your own words — for example, “@Hermes I "
+                    "approve this for production.”",
+                ),
+            ],
+        )
+        self.assertEqual(
+            register_candidate.mock_calls,
+            [
+                mock.call(
+                    jobs[0],
+                    channel="C-health",
+                    thread_ts="reply-1",
+                    staging_reply_ts="reply-1",
+                    expires_days=14,
+                ),
+                mock.call(
+                    jobs[1],
+                    channel="C-health",
+                    thread_ts="reply-2",
+                    staging_reply_ts="reply-2",
+                    expires_days=14,
                 ),
             ],
         )

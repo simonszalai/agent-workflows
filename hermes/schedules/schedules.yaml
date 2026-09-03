@@ -19,6 +19,8 @@ slack_channels:
 # deterministic checks in runner.py pass. IDs are immutable Slack member IDs.
 production_approval:
   enabled: true
+  # Mention anchor only; the generic Hermes gateway must not serve this channel.
+  hermes_slack_user_id: U0BKDG6QP17
   authorized_slack_users: [U09T4LELYES]
   expires_days: 14
   max_runtime_minutes: 480

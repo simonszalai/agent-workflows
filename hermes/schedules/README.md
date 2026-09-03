@@ -7,7 +7,7 @@ Conductor workspace per the entry, sends the referenced prompt file's contents a
 session message, polls the session with the entry's `max_runtime_minutes` cap, parses the
 `SCHEDULED_RUN_RESULT` ending, and posts the result to Slack (normally one line in the channel
 with detail in the thread; `health-6h` uses a parent bullet list, launches one cloud
-`/ticket-flow` workspace per issue, and posts one final issue/fix/verification reply per issue;
+`/ticket-flow` workspace per issue, and posts one final issue/fix/verification message per issue;
 FAIL/BLOCKED additionally routes one line to `#autodev-incidents`; NEEDS_MORE_TIME remains in the
 schedule channel for automatic/next-run continuation).
 
@@ -21,11 +21,14 @@ schedule channel for automatic/next-run continuation).
   runner then launches all per-ticket workspaces in parallel from `staging`, supervises them under
   `remediation_max_runtime_minutes`, and keeps the schedule lock until each child has produced a
   structured terminal result or been cancelled at the deadline.
-- **Production approval.** A staging-verified issue reply includes
-  `approve prod <TICKET>`. The separate approval timer reads at most one 15-message Slack thread
-  page per minute, accepts only that exact command from a manifest-authorized immutable Slack user
-  ID after the staging reply, re-checks the ticket and exact staging PASS artifact, and launches a
-  fresh `/ticket-promote` session in that issue's workspace. Promotions are globally serialized.
+- **Production approval.** Every staging-verified issue is its own top-level Slack message and
+  approval thread. The operator replies there, tags Hermes, and clearly approves in their own
+  words. The separate approval timer reads at most one 15-message Slack thread page per minute and
+  accepts only a non-negated, non-conditional approval addressed to the manifest-pinned immutable
+  Hermes user ID, written by a manifest-authorized immutable operator ID after staging verification.
+  Ticket identity comes only from that one-issue thread, never from the prose. The runner re-checks
+  the ticket and exact staging PASS artifact, then launches a fresh `/ticket-promote` session in
+  that issue's workspace. Promotions are globally serialized.
   Success is posted only after the ticket re-reads as `completed` with a new exact production PASS
   artifact recorded after the Slack approval. Failed promotions reset later queued approvals.
 - **Failure handling.** Poll timeout cancels the session and posts FAIL; an errored session
@@ -63,7 +66,8 @@ Rules:
   read-only via `TS/PROD_POSTGRES_URL_RO`; `health-6h` has one reviewed production-side exception:
   append-only `ticket:<ID>` Prefect tags on explicitly verified failed/crashed runs. Per-issue
   ticket workspaces may land and verify staging only. Production remains human-invoked: the exact
-  Slack approval is the bounded invocation transported by the deterministic approval bridge.
+  operator identity, Hermes mention, issue thread, and clear Slack approval are the bounded
+  invocation transported by the deterministic approval bridge.
 - An `enabled: false` entry is staged but not yet runnable — its `blocked_on` field says
   what must land first.
 - The full unattended contract (mutation boundary, Slack report format, terminal-result ending
@@ -74,15 +78,21 @@ Slack destinations:
 | Channel | Content |
 |---|---|
 | `#autodev-nightly` | verify/promote and dream results |
-| `#autodev-health` | 6-hourly checks; issue bullets + one reply each, or a single ✅ line when green |
+| `#autodev-health` | 6-hourly checks; issue bullets + one top-level result/approval thread per issue, or a single ✅ line when green |
 | `#autodev-incidents` | root-cause clusters needing a human decision |
 
 Default format: one-line summary in the channel, detail in the thread. Health failures use the
 issue-oriented exception defined in `skills/references/scheduled-run.md` §2. Nightly dream uses a
 count-rich parent plus one structured what/why/how reply; its raw result block is never posted.
 
-For a staging-verified issue, reply in the same health thread with the command printed in that
-issue's message, for example `approve prod B0423`. The bridge acknowledges acceptance, links the
-production Conductor session when it starts, and posts the final issue/fix/production-evidence
-reply in the same thread. A different user, ticket, thread, older message, edited prose command, or
-expired approval window cannot authorize production.
+For a staging-verified issue, reply to that issue's message, tag Hermes, and clearly approve in
+your own words—for example, “@Hermes I approve this for production” or “@Hermes looks good, ship
+it.” No ticket syntax is required because the thread itself binds the approval to exactly one
+ticket. The bridge acknowledges acceptance, links the production Conductor session when it starts,
+and posts the final issue/fix/production-evidence reply in the same thread. A different user,
+missing Hermes mention, ambiguous/negated/conditional language, different thread, older message,
+or expired approval window cannot authorize production.
+
+`#autodev-health` must remain outside the generic Hermes gateway's `SLACK_ALLOWED_CHANNELS` and
+`SLACK_FREE_RESPONSE_CHANNELS`. The bot mention is the human-facing approval affordance; this
+deterministic bridge is the only component allowed to interpret it as production authorization.

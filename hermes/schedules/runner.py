@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -65,8 +66,26 @@ SESSION_MESSAGE_PAGE_SIZE = 100
 MAX_SESSION_MESSAGE_PAGES = 500
 TERMINAL_IDLE_CONFIRMATIONS = 2
 EXECUTABLE_TICKET_ID_PATTERN = re.compile(r"^[FBR]\d{4}$")
-PRODUCTION_APPROVAL_PATTERN = re.compile(
-    r"^approve[ ]+prod[ ]+([FBR]\d{4})$", re.IGNORECASE
+SLACK_USER_ID_PATTERN = re.compile(r"^U[A-Z0-9]+$")
+PRODUCTION_APPROVAL_INTENT_PATTERN = re.compile(
+    r"(?:\b(?:i[ ]+)?(?:hereby[ ]+)?approv(?:e|ed|ing)\b)"
+    r"|(?:\bapproval[ ]+(?:is[ ]+)?(?:granted|given)\b)"
+    r"|(?:\b(?:please[ ]+)?(?:ship|deploy|promote|release)[ ]+"
+    r"(?:it|this|the[ ]+(?:fix|change)|to[ ]+(?:prod|production)|now)\b)"
+    r"|(?:\b(?:send|push|move)[ ]+(?:it|this|the[ ]+(?:fix|change))[ ]+"
+    r"to[ ]+(?:prod|production)\b)"
+    r"|(?:\b(?:go[ ]+ahead|green[ -]?light|lgtm)\b.*"
+    r"\b(?:prod|production|ship|deploy|promote|release)\b)",
+    re.IGNORECASE,
+)
+PRODUCTION_APPROVAL_REJECTION_PATTERN = re.compile(
+    r"\b(?:no|not|never|cannot|hold|wait|stop|cancel|reject|deny|decline|"
+    r"later|maybe|perhaps|if|unless|until|before|after|once|assuming|"
+    r"provided|pending|subject|contingent|except|but|however)\b"
+    r"|\b(?:do|does|did|is|are|can|could|should|would|will|won|must)n?'?t\b"
+    r"|\b(?:only[ ]+staging|staging[ ]+only|for[ ]+staging|"
+    r"approv(?:e|ed|ing)[ ]+(?:staging|dev|development|test))\b",
+    re.IGNORECASE,
 )
 SLACK_TIMESTAMP_PATTERN = re.compile(r"^\d+[.]\d{6}$")
 PRODUCTION_TERMINAL_STATUSES = {"PROD_VERIFIED", "STOPPED", "FAILED"}
@@ -123,6 +142,8 @@ class ApprovalCandidate(TypedDict):
     expires_at: str
     approval_message_ts: str | None
     approved_by: str | None
+    approval_text_sha256: str | None
+    approval_hermes_user_id: str | None
     promotion_session_id: str | None
     promotion_session_link: str | None
     deadline_at: str | None
@@ -814,8 +835,9 @@ def health_remediation_reply(job: RemediationJob, result: RemediationResult) -> 
         lines.append(f"• *Workspace:* <{job['deep_link']}|Open in Conductor>")
     if result["status"] == "STAGING_VERIFIED":
         lines.append(
-            "• *Approve production:* Reply in this thread with "
-            f"`approve prod {result['ticket_id']}`."
+            "• *Approve production:* Reply in this issue's thread, tag @Hermes, "
+            "and clearly approve in your own words — for example, “@Hermes I approve "
+            "this for production.”"
         )
     return "\n".join(lines)
 
@@ -1069,6 +1091,8 @@ def approval_connection() -> sqlite3.Connection:
             expires_at TEXT NOT NULL,
             approval_message_ts TEXT UNIQUE,
             approved_by TEXT,
+            approval_text_sha256 TEXT,
+            approval_hermes_user_id TEXT,
             promotion_session_id TEXT UNIQUE,
             promotion_session_link TEXT,
             deadline_at TEXT,
@@ -1091,10 +1115,16 @@ def approval_connection() -> sqlite3.Connection:
         cast(str, row["name"])
         for row in connection.execute("PRAGMA table_info(approval_candidates)")
     }
-    if "approval_not_before_ts" not in columns:
-        connection.execute(
-            "ALTER TABLE approval_candidates ADD COLUMN approval_not_before_ts TEXT"
-        )
+    candidate_column_migrations = {
+        "approval_not_before_ts": "TEXT",
+        "approval_text_sha256": "TEXT",
+        "approval_hermes_user_id": "TEXT",
+    }
+    for name, definition in candidate_column_migrations.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE approval_candidates ADD COLUMN {name} {definition}"
+            )
     connection.execute(
         """
         UPDATE approval_candidates
@@ -1145,6 +1175,8 @@ def approval_candidate(row: sqlite3.Row) -> ApprovalCandidate:
         "expires_at": cast(str, row["expires_at"]),
         "approval_message_ts": row["approval_message_ts"],
         "approved_by": row["approved_by"],
+        "approval_text_sha256": row["approval_text_sha256"],
+        "approval_hermes_user_id": row["approval_hermes_user_id"],
         "promotion_session_id": row["promotion_session_id"],
         "promotion_session_link": row["promotion_session_link"],
         "deadline_at": row["deadline_at"],
@@ -1187,6 +1219,8 @@ def register_production_candidate(
                 expires_at = excluded.expires_at,
                 approval_message_ts = NULL,
                 approved_by = NULL,
+                approval_text_sha256 = NULL,
+                approval_hermes_user_id = NULL,
                 promotion_session_id = NULL,
                 promotion_session_link = NULL,
                 deadline_at = NULL,
@@ -1600,6 +1634,24 @@ def slack_ts_key(value: str) -> tuple[int, int]:
     return int(seconds), int(fraction)
 
 
+def is_natural_production_approval(text: str, hermes_user_id: str) -> bool:
+    """Recognize a clear, non-conditional approval addressed to Hermes.
+
+    Ticket identity never comes from the prose: the issue-specific Slack thread
+    binds exactly one candidate. The language may vary, but negation, questions,
+    conditions, and deferred intent fail closed.
+    """
+    if len(text) > 500 or "?" in text:
+        return False
+    mention = f"<@{hermes_user_id}>"
+    if mention not in text:
+        return False
+    normalized = " ".join(text.replace("’", "'").replace(mention, " ").split())
+    if not normalized or PRODUCTION_APPROVAL_REJECTION_PATTERN.search(normalized):
+        return False
+    return PRODUCTION_APPROVAL_INTENT_PATTERN.search(normalized) is not None
+
+
 def record_processed_approval(
     *,
     channel: str,
@@ -1625,6 +1677,8 @@ def claim_approval(
     *,
     message_ts: str,
     user_id: str,
+    message_text: str,
+    hermes_user_id: str,
 ) -> bool:
     with approval_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -1648,6 +1702,7 @@ def claim_approval(
             """
             UPDATE approval_candidates
             SET state = 'queued', approval_message_ts = ?, approved_by = ?,
+                approval_text_sha256 = ?, approval_hermes_user_id = ?,
                 promotion_session_id = NULL, promotion_session_link = NULL,
                 deadline_at = NULL, start_attempts = 0,
                 terminal_idle_confirmations = 0, last_error = NULL,
@@ -1656,7 +1711,14 @@ def claim_approval(
               AND state IN ('awaiting_approval', 'stopped', 'failed', 'rejected')
               AND expires_at > ?
             """,
-            (message_ts, user_id, candidate["ticket_id"], utc_now().isoformat()),
+            (
+                message_ts,
+                user_id,
+                hashlib.sha256(message_text.encode()).hexdigest(),
+                hermes_user_id,
+                candidate["ticket_id"],
+                utc_now().isoformat(),
+            ),
         )
         if updated.rowcount != 1:
             connection.execute(
@@ -1707,6 +1769,11 @@ def scan_slack_approvals(
     ):
         raise RunnerError("production_approval.authorized_slack_users is invalid.")
     authorized_users = set(cast(list[str], raw_users))
+    hermes_user_id = settings.get("hermes_slack_user_id")
+    if not isinstance(hermes_user_id, str) or not SLACK_USER_ID_PATTERN.fullmatch(
+        hermes_user_id
+    ):
+        raise RunnerError("production_approval.hermes_slack_user_id is invalid.")
     candidates = candidates_in_states(
         "awaiting_approval", "stopped", "failed", "rejected"
     )
@@ -1740,6 +1807,11 @@ def scan_slack_approvals(
     last_seen_ts = cast(str, selected["last_seen_ts"])
     messages = slack_thread_page(token, channel, thread_ts, last_seen_ts)
     thread_candidates = by_thread[(channel, thread_ts)]
+    if len(thread_candidates) != 1:
+        raise RunnerError(
+            "A production approval thread must resolve to exactly one ticket."
+        )
+    candidate = next(iter(thread_candidates.values()))
     newest_ts = last_seen_ts
     for message in messages:
         text = message.get("text")
@@ -1751,13 +1823,9 @@ def scan_slack_approvals(
             newest_ts = message_ts
         if not all(isinstance(value, str) for value in (text, message_ts, user_id)):
             continue
-        match = PRODUCTION_APPROVAL_PATTERN.fullmatch(cast(str, text).strip())
-        if match is None:
+        if not is_natural_production_approval(cast(str, text), hermes_user_id):
             continue
-        ticket_id = match.group(1).upper()
-        candidate = thread_candidates.get(ticket_id)
-        if candidate is None:
-            continue
+        ticket_id = candidate["ticket_id"]
         if slack_ts_key(cast(str, message_ts)) <= slack_ts_key(
             candidate["approval_not_before_ts"]
         ):
@@ -1782,6 +1850,8 @@ def scan_slack_approvals(
             candidate,
             message_ts=cast(str, message_ts),
             user_id=cast(str, user_id),
+            message_text=cast(str, text),
+            hermes_user_id=hermes_user_id,
         ):
             post_message(
                 token,
@@ -1939,6 +2009,8 @@ def production_prompt(candidate: ApprovalCandidate) -> str:
             "slack_channel_id": candidate["channel"],
             "slack_thread_ts": candidate["thread_ts"],
             "slack_message_ts": candidate["approval_message_ts"],
+            "slack_message_sha256": candidate["approval_text_sha256"],
+            "hermes_user_id": candidate["approval_hermes_user_id"],
             "ticket_id": candidate["ticket_id"],
         },
         separators=(",", ":"),
@@ -1949,10 +2021,11 @@ def production_prompt(candidate: ApprovalCandidate) -> str:
 {receipt}
 
 This is a single-ticket production authorization transported by the deterministic Hermes
-approval bridge after it authenticated the Slack member, thread, ticket, and one-use message.
-Re-read the ticket and staging PASS evidence before mutation. Promote only this ticket through
-the normal `/ticket-promote` lifecycle and its production verification handoff. This approval
-does not authorize a parity bypass, scope widening, another ticket, or a new product decision.
+approval bridge after it authenticated the Slack member, pinned Hermes mention, issue thread,
+one-use message digest, and ticket. Re-read the ticket and staging PASS evidence before mutation.
+Promote only this ticket through the normal `/ticket-promote` lifecycle and its production
+verification handoff. This approval does not authorize a parity bypass, scope widening, another
+ticket, or a new product decision.
 
 End the final message with `{PRODUCTION_RESULT_MARKER}` on its own line followed by one single-line
 JSON object and nothing after it. Use exactly `status`, `ticket_id`, `issue`, `fix`, and
@@ -2063,7 +2136,7 @@ def production_result_reply(
     if result["status"] != "PROD_VERIFIED":
         lines.append(
             "• *Queue:* Later approvals were reset. After reviewing this stop, reply again "
-            f"with `approve prod {candidate['ticket_id']}`."
+            "in this issue thread, tag @Hermes, and clearly approve."
         )
     return "\n".join(lines)
 
@@ -2141,7 +2214,8 @@ def finalize_production_candidate(
                 """
                 UPDATE approval_candidates
                 SET state = 'awaiting_approval', approval_message_ts = NULL,
-                    approved_by = NULL, promotion_session_id = NULL,
+                    approved_by = NULL, approval_text_sha256 = NULL,
+                    approval_hermes_user_id = NULL, promotion_session_id = NULL,
                     promotion_session_link = NULL, deadline_at = NULL,
                     start_attempts = 0, terminal_idle_confirmations = 0,
                     last_error = 'A prior production promotion did not verify.',
@@ -2534,7 +2608,6 @@ def run_schedule(name: str) -> int:
                 slack_token,
                 channel,
                 health_remediation_reply(job, remediation),
-                thread_ts=parent_ts,
             )
             record_remediation(name, job, remediation)
             if remediation["status"] == "STAGING_VERIFIED":
@@ -2542,7 +2615,7 @@ def run_schedule(name: str) -> int:
                 register_production_candidate(
                     job,
                     channel=channel,
-                    thread_ts=parent_ts,
+                    thread_ts=remediation_reply_ts,
                     staging_reply_ts=remediation_reply_ts,
                     expires_days=positive_approval_setting(
                         approval_settings, "expires_days", 14
