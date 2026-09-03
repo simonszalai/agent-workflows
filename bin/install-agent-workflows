@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 
-MANAGED = ("agents", "commands", "skills", "hooks", "bin", "config")
+MANAGED = ("agents", "commands", "skills", "hooks", "bin", "config", "secrets")
 DESTINATIONS = (
     (".claude/agents", "agents"), (".claude/commands", "commands"),
     (".claude/skills", "skills"), (".claude/hooks", "hooks"),
@@ -193,6 +193,7 @@ def _validate_artifact(root: Path) -> None:
         root / "bin/sync-mcp",
         root / "config/mcp.json",
         root / "config/project-tools.json",
+        root / "secrets/lib/read.sh",
     )
     if not all(path.is_file() for path in required):
         raise SystemExit("install-agent-workflows: staged artifact is missing required files")
@@ -204,7 +205,7 @@ def _validate_artifact(root: Path) -> None:
     for path in (root / "hooks/autodev-memory-session-start.sh",
                  root / "hooks/autodev-memory-pre-agent.sh", root / "bin/psql-cli",
                  root / "bin/render-cli", root / "bin/resend-cli",
-                 root / "bin/setup-agent-workflows-cloud"):
+                 root / "bin/setup-agent-workflows-cloud", root / "secrets/lib/read.sh"):
         check = subprocess.run(["bash", "-n", str(path)], capture_output=True)
         if check.returncode:
             raise SystemExit(f"install-agent-workflows: shell validation failed for {path.name}")
