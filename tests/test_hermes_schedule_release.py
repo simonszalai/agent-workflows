@@ -421,6 +421,28 @@ class HermesScheduleReleaseTests(unittest.TestCase):
             environment.write_text(text)
             values = self.inputs.parse_environment(environment)
         self.assertEqual(set(values), self.inputs.EXPECTED_ENV_KEYS)
+        self.assertEqual(values["WHATSAPP_HOME_CHANNEL_THREAD_ID"], "")
+
+    def test_bootstrap_input_validation_only_allows_documented_optional_empty(self) -> None:
+        text = (HERMES / "config" / "gateway.env.example").read_text()
+        replacements = {
+            "replace-with-xapp-token": "xapp-test",
+            "replace-with-xoxb-token": "xoxb-test",
+            "replace-with-channel-allowlist": "C1",
+            "replace-with-home-channel-id": "C1",
+            "replace-with-home-channel-name": "home",
+            "replace-with-user-allowlist": "user",
+            "replace-with-home-chat": "chat",
+            "replace-with-reviewed-mode": "bot",
+        }
+        for placeholder, value in replacements.items():
+            text = text.replace(placeholder, value)
+        text = text.replace("SLACK_HOME_CHANNEL_NAME=home", "SLACK_HOME_CHANNEL_NAME=")
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "gateway.env"
+            environment.write_text(text)
+            with self.assertRaises(self.inputs.InputError):
+                self.inputs.parse_environment(environment)
 
     def test_concurrent_release_operation_fails_without_waiting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -550,6 +572,21 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("status --porcelain --untracked-files=all", installer)
         self.assertIn("archive --format=tar", installer)
         self.assertIn("systemctl disable --now", installer)
+        self.assertIn(
+            '"$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"',
+            installer,
+        )
+        self.assertNotIn('configure.py" "$HERMES_CONFIG"', installer)
+
+    def test_managed_install_method_marker_does_not_dirty_agent_checkout(self) -> None:
+        bootstrap = (HERMES / "bootstrap.sh").read_text()
+        installer = (HERMES / "install.sh").read_text()
+        verifier = (HERMES / "verify.sh").read_text()
+        for script in (bootstrap, verifier):
+            self.assertIn("':(exclude).install_method'", script)
+        self.assertIn("chmod 0644 \"$AGENT_DIR/.install_method\"", bootstrap)
+        self.assertIn("mv -Tf --", installer)
+        self.assertIn('= "hermes:hermes:644"', verifier)
 
     def test_bootstrap_pins_downloads_and_requires_external_secrets(self) -> None:
         bootstrap = (HERMES / "bootstrap.sh").read_text()

@@ -25,6 +25,20 @@ die() {
   exit 1
 }
 
+agent_checkout_is_clean() {
+  local status
+  if [ -e "$AGENT_DIR/.install_method" ]; then
+    [ -f "$AGENT_DIR/.install_method" ] && [ ! -L "$AGENT_DIR/.install_method" ] ||
+      return 1
+    [ "$(cat "$AGENT_DIR/.install_method")" = git ] || return 1
+  fi
+  status="$(
+    sudo -u hermes -H git -C "$AGENT_DIR" status \
+      --porcelain --untracked-files=all -- . ':(exclude).install_method'
+  )"
+  [ -z "$status" ]
+}
+
 cleanup() {
   if [ -n "$node_old" ] && [ ! -e "$NODE_DIR" ]; then
     mv "$node_old" "$NODE_DIR"
@@ -228,7 +242,7 @@ if [ -d "$AGENT_DIR/.git/rebase-apply" ]; then
 fi
 case "$agent_revision" in
   "$HERMES_AGENT_UPSTREAM_COMMIT")
-    [ -z "$(sudo -u hermes -H git -C "$AGENT_DIR" status --porcelain)" ] ||
+    agent_checkout_is_clean ||
       die "Hermes agent upstream checkout has local changes"
     for patch in "$ROOT"/hermes/patches/*.patch; do
       [ -f "$patch" ] || continue
@@ -237,7 +251,7 @@ case "$agent_revision" in
     done
     ;;
   "$HERMES_AGENT_PATCHED_COMMIT")
-    [ -z "$(sudo -u hermes -H git -C "$AGENT_DIR" status --porcelain)" ] ||
+    agent_checkout_is_clean ||
       die "Hermes agent patched checkout has local changes"
     ;;
   *) die "Hermes agent checkout is not at the reviewed revision" ;;
@@ -246,6 +260,7 @@ esac
   "$HERMES_AGENT_PATCHED_COMMIT" ] || die "Hermes patch stack produced an unexpected commit"
 printf '%s\n' git > "$AGENT_DIR/.install_method"
 chown hermes:hermes "$AGENT_DIR/.install_method"
+chmod 0644 "$AGENT_DIR/.install_method"
 
 sudo -u hermes -H "$UV" python install "$HERMES_PYTHON_VERSION"
 venv_valid=false

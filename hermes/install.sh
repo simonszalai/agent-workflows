@@ -56,6 +56,7 @@ read -r REMOTE_MAIN REMOTE_REF REMOTE_EXTRA <<< "$REMOTE_MAIN_LINE"
 SOURCE_ROOT="$(mktemp -d)"
 CONDUCTOR_NEW=""
 CONDUCTOR_OLD=""
+INSTALL_METHOD_TMP=""
 cleanup() {
   if [ -n "$CONDUCTOR_OLD" ] && [ ! -e /opt/hermes-conductor/venv ]; then
     mv "$CONDUCTOR_OLD" /opt/hermes-conductor/venv
@@ -65,6 +66,7 @@ cleanup() {
   rm -rf -- "$SOURCE_ROOT"
   [ -z "$CONDUCTOR_NEW" ] || rm -rf -- "$CONDUCTOR_NEW"
   [ -z "$CONDUCTOR_OLD" ] || rm -rf -- "$CONDUCTOR_OLD"
+  [ -z "$INSTALL_METHOD_TMP" ] || rm -f -- "$INSTALL_METHOD_TMP"
 }
 trap cleanup EXIT
 git -c core.fsmonitor=false -c core.hooksPath=/dev/null -C "$ROOT" \
@@ -212,6 +214,12 @@ done
 # already in the tree (by content) is skipped, a patch that no longer applies
 # fails the install so the drift is reviewed instead of silently lost.
 HERMES_AGENT_DIR="${HERMES_AGENT_DIR:-${HERMES_HOME}/hermes-agent}"
+INSTALL_METHOD_TMP="$(mktemp "$HERMES_AGENT_DIR/.install_method.tmp.XXXXXX")"
+printf '%s\n' git > "$INSTALL_METHOD_TMP"
+chown hermes:hermes "$INSTALL_METHOD_TMP"
+chmod 0644 "$INSTALL_METHOD_TMP"
+mv -Tf -- "$INSTALL_METHOD_TMP" "$HERMES_AGENT_DIR/.install_method"
+INSTALL_METHOD_TMP=""
 for patch in "$SOURCE_ROOT"/hermes/patches/*.patch; do
   [ -f "$patch" ] || continue
   if sudo -u hermes -H git -C "$HERMES_AGENT_DIR" \
@@ -224,9 +232,10 @@ for patch in "$SOURCE_ROOT"/hermes/patches/*.patch; do
   echo "hermes install: applied $(basename "$patch")"
 done
 
-"$HERMES_PYTHON" "$SOURCE_ROOT/hermes/configure.py" "$HERMES_CONFIG"
-chown hermes:hermes "$HERMES_CONFIG"
-chmod 0600 "$HERMES_CONFIG"
+# The reviewed file is the complete non-secret runtime configuration. Reconcile
+# it exactly so an existing host reaches the same state as a clean bootstrap.
+install -o hermes -g hermes -m 0600 \
+  "$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"
 
 systemctl daemon-reload
 systemctl enable --now \

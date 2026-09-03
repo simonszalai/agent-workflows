@@ -150,8 +150,10 @@ hermes/install.sh
 The installer refuses missing, symlinked, empty, non-root-owned, or incorrectly permissioned
 credentials. It also refuses any dirty checkout or a revision other than the freshly queried
 public `main`, and exports privileged inputs from that exact commit rather than the worktree. It
-installs the fixed sync machinery, seeds an immutable release from the checked-out Git commit, and
-never creates, fetches, prints, or rotates secrets.
+installs the fixed sync machinery, reconciles the complete non-secret `config.yaml`, seeds an
+immutable release from the checked-out Git commit, and never creates, fetches, prints, or rotates
+secrets. `WHATSAPP_HOME_CHANNEL_THREAD_ID` is the one optional empty gateway input when the home
+chat is not a thread.
 
 ## Automatic prompt and schedule updates
 
