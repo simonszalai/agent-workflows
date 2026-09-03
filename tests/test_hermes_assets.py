@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -297,6 +298,14 @@ class HermesScheduleTests(unittest.TestCase):
                 self.assertTrue(prompt.is_file(), entry["prompt"])
                 self.assertNotEqual(entry["prompt"], "README.md")
 
+        approval = manifest["production_approval"]
+        self.assertTrue(approval["enabled"])
+        self.assertEqual(approval["hermes_slack_user_id"], "U0BKDG6QP17")
+        self.assertEqual(approval["authorized_slack_users"], ["U09T4LELYES"])
+        self.assertGreater(approval["expires_days"], 0)
+        self.assertGreater(approval["max_runtime_minutes"], 0)
+        self.assertGreater(approval["max_start_attempts"], 0)
+
     def test_health_contract_requires_ownership_aware_persistent_orphan_evidence(self) -> None:
         contract = (ROOT / "skills" / "references" / "scheduled-run.md").read_text()
 
@@ -364,6 +373,10 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertIn("`HEALTH_REMEDIATION_RESULT`", contract)
         self.assertIn("It never promotes\n   to production", contract)
         self.assertIn("one cloud\n`/ticket-flow` workspace per issue", readme)
+        self.assertIn("its own top-level Slack message", readme)
+        self.assertIn("tags Hermes", readme)
+        self.assertIn("Ticket identity comes only from that one-issue thread", readme)
+        self.assertIn("`SLACK_ALLOWED_CHANNELS`", readme)
 
     def test_health_remediation_launches_one_workspace_per_unique_ticket(self) -> None:
         runner = load_schedule_runner()
@@ -450,6 +463,7 @@ class HermesScheduleTests(unittest.TestCase):
             "hermes-schedule@.service",
             "hermes-schedule-alert@.service",
             "hermes-schedule-watchdog.service",
+            "hermes-schedule-approval.service",
         )
         for unit in units:
             with self.subTest(unit=unit):
@@ -471,6 +485,26 @@ class HermesScheduleTests(unittest.TestCase):
             HERMES / "systemd" / "hermes-schedule-watchdog.timer"
         ).read_text()
         self.assertIn("America/Vancouver", watchdog_timer)
+        approval_timer = (
+            HERMES / "systemd" / "hermes-schedule-approval.timer"
+        ).read_text()
+        self.assertIn("OnUnitActiveSec=1m", approval_timer)
+        self.assertIn("Persistent=true", approval_timer)
+        approval_service = (
+            HERMES / "systemd" / "hermes-schedule-approval.service"
+        ).read_text()
+        self.assertIn("runner.py approvals", approval_service)
+        self.assertIn("OnFailure=hermes-schedule-alert@approval.service", approval_service)
+        self.assertNotIn("LoadCredential=op.token", approval_service)
+
+    def test_ticket_promote_accepts_only_a_bound_hermes_approval_receipt(self) -> None:
+        promote = (ROOT / "skills" / "ticket-promote" / "SKILL.md").read_text()
+
+        self.assertIn("An exact `HUMAN_PRODUCTION_APPROVAL` receipt", promote)
+        self.assertIn("immutable authorized Slack user ID", promote)
+        self.assertIn("pinned Hermes mention", promote)
+        self.assertIn("message digest", promote)
+        self.assertIn("cannot manufacture or reuse that receipt", promote)
 
     def test_installer_deploys_the_schedule_stack(self) -> None:
         installer = (HERMES / "install.sh").read_text()
@@ -825,6 +859,633 @@ class HermesScheduleTests(unittest.TestCase):
         self.assertEqual(completed[0][1]["status"], "STOPPED")
         self.assertIn("session errored", completed[0][1]["fix"])
 
+    def test_production_result_and_prompt_require_a_bound_approval_receipt(self) -> None:
+        runner = load_schedule_runner()
+        candidate = {
+            "ticket_id": "B0100",
+            "title": "Worker offline",
+            "channel": "C-health",
+            "thread_ts": "100.000001",
+            "staging_reply_ts": "100.000002",
+            "workspace_id": "workspace-1",
+            "workspace_link": "conductor://workspace-1",
+            "state": "queued",
+            "created_at": "2026-09-03T08:00:00+00:00",
+            "expires_at": "2026-09-17T08:00:00+00:00",
+            "approval_message_ts": "100.000003",
+            "approved_by": "U-SIMON",
+            "approval_text_sha256": "abc123",
+            "approval_hermes_user_id": "U0HERMES123",
+            "promotion_session_id": None,
+            "promotion_session_link": None,
+            "deadline_at": None,
+            "start_attempts": 0,
+            "terminal_idle_confirmations": 0,
+        }
+
+        prompt = runner.production_prompt(candidate)
+
+        self.assertTrue(prompt.startswith("/ticket-promote B0100\n"))
+        self.assertIn("HUMAN_PRODUCTION_APPROVAL", prompt)
+        self.assertIn('"slack_user_id":"U-SIMON"', prompt)
+        self.assertIn('"slack_message_ts":"100.000003"', prompt)
+        self.assertIn('"slack_message_sha256":"abc123"', prompt)
+        self.assertIn('"hermes_user_id":"U0HERMES123"', prompt)
+        self.assertIn("one-use message digest", prompt)
+        self.assertIn("does not authorize a parity bypass", prompt)
+        self.assertIn("HEALTH_PRODUCTION_RESULT", prompt)
+
+        transcript = (
+            "Production verification complete.\n"
+            "HEALTH_PRODUCTION_RESULT\n"
+            '{"status":"PROD_VERIFIED","ticket_id":"B0100",'
+            '"issue":"A dead worker stopped scheduled jobs.",'
+            '"fix":"The worker now recovers stale heartbeats.",'
+            '"verification":"Production run run-2 passed with artifact art-2."}'
+        )
+        self.assertEqual(
+            runner.parse_production_result(transcript),
+            {
+                "status": "PROD_VERIFIED",
+                "ticket_id": "B0100",
+                "issue": "A dead worker stopped scheduled jobs.",
+                "fix": "The worker now recovers stale heartbeats.",
+                "verification": "Production run run-2 passed with artifact art-2.",
+            },
+        )
+        self.assertIsNone(
+            runner.parse_production_result(
+                "HEALTH_PRODUCTION_RESULT\n"
+                '{"status":"STAGING_VERIFIED","ticket_id":"B0100",'
+                '"issue":"Issue.","fix":"Fix.","verification":"Evidence."}'
+            )
+        )
+        self.assertIsNone(
+            runner.parse_production_result(
+                "HEALTH_PRODUCTION_RESULT\n"
+                '{"status":"PROD_VERIFIED","ticket_id":"B0100",'
+                '"issue":"Issue.","fix":"Fix.","verification":"Evidence.",'
+                '"unexpected":"field"}'
+            )
+        )
+        self.assertIsNone(
+            runner.parse_production_result(
+                "HEALTH_PRODUCTION_RESULT\n"
+                '{"status":"PROD_VERIFIED","ticket_id":"B0100",'
+                '"issue":"Issue.","fix":"Fix.","verification":"Evidence."}'
+                "\nextra trailing text"
+            )
+        )
+
+    def test_natural_production_approval_requires_hermes_and_clear_intent(self) -> None:
+        runner = load_schedule_runner()
+
+        for text in (
+            "<@U0HERMES123> I approve this for production",
+            "Approved, <@U0HERMES123> — please proceed",
+            "<@U0HERMES123> looks good; ship it",
+            "<@U0HERMES123> go ahead and deploy this",
+            "<@U0HERMES123> green light for production",
+        ):
+            with self.subTest(accepted=text):
+                self.assertTrue(
+                    runner.is_natural_production_approval(text, "U0HERMES123")
+                )
+
+        for text in (
+            "I approve this for production",
+            "<@U0HERMES123> do not approve this",
+            "<@U0HERMES123> I cannot approve this",
+            "<@U0HERMES123> can I approve this?",
+            "<@U0HERMES123> I might approve this later",
+            "<@U0HERMES123> I approve if the final check passes",
+            "<@U0HERMES123> I approve staging only",
+            "approve prod B0100",
+        ):
+            with self.subTest(rejected=text):
+                self.assertFalse(
+                    runner.is_natural_production_approval(text, "U0HERMES123")
+                )
+
+    def test_slack_production_approval_is_thread_bound_authorized_and_single_use(
+        self,
+    ) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "proof": "No heartbeat arrived.",
+            "example": "Worker alpha missed three polls.",
+            "next_step": "Repair the worker.",
+            "ticket_id": "B0100",
+            "remediation_ready": True,
+        }
+        job = {
+            "issue": issue,
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": True,
+            "terminal_idle_confirmations": 0,
+        }
+        settings = {
+            "authorized_slack_users": ["U-SIMON"],
+            "hermes_slack_user_id": "U0HERMES123",
+        }
+        messages = [
+            {
+                "ts": "100.000003",
+                "user": "U-OTHER",
+                "text": "<@U0HERMES123> I approve this",
+            },
+            {
+                "ts": "100.000004",
+                "user": "U-SIMON",
+                "text": "<@U0HERMES123> I do not approve this",
+            },
+            {
+                "ts": "100.000005",
+                "user": "U-SIMON",
+                "text": "<@U0HERMES123> looks good — ship it",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "state_dir", return_value=Path(directory)):
+                runner.register_production_candidate(
+                    job,
+                    channel="C-health",
+                    thread_ts="100.000001",
+                    staging_reply_ts="100.000002",
+                    expires_days=14,
+                )
+                with (
+                    mock.patch.object(
+                        runner, "slack_thread_page", return_value=messages
+                    ) as page,
+                    mock.patch.object(runner, "post_message") as post,
+                ):
+                    runner.scan_slack_approvals("token", settings)
+                    runner.scan_slack_approvals("token", settings)
+
+                candidate = runner.candidates_in_states("queued")[0]
+                self.assertEqual(candidate["approval_message_ts"], "100.000005")
+                self.assertEqual(candidate["approved_by"], "U-SIMON")
+                self.assertEqual(
+                    candidate["approval_text_sha256"],
+                    hashlib.sha256(
+                        "<@U0HERMES123> looks good — ship it".encode()
+                    ).hexdigest(),
+                )
+                self.assertEqual(
+                    candidate["approval_hermes_user_id"], "U0HERMES123"
+                )
+                self.assertEqual(page.call_count, 1)
+                self.assertEqual(post.call_count, 2)
+                self.assertIn("not authorized", post.mock_calls[0].args[2])
+                self.assertIn("approval recorded", post.mock_calls[1].args[2])
+
+    def test_production_preflight_and_success_recheck_use_ticket_truth(self) -> None:
+        runner = load_schedule_runner()
+        staged = {
+            "ticket": {
+                "id": "B0100",
+                "slug": "worker-offline",
+                "repo": "ts-prefect",
+                "status": "staging_verified",
+            },
+            "artifacts": [
+                {
+                    "id": "staging-artifact-1",
+                    "artifact_type": "verification_evidence",
+                    "metadata": {"environment": "staging", "verdict": "PASS"},
+                    "created_at": "2026-09-03T07:59:00+00:00",
+                }
+            ],
+        }
+        completed = {
+            "ticket": {
+                "id": "B0100",
+                "slug": "worker-offline",
+                "repo": "ts-prefect",
+                "status": "completed",
+            },
+            "artifacts": [
+                {
+                    "id": "artifact-1",
+                    "artifact_type": "verification_evidence",
+                    "metadata": {"environment": "production", "verdict": "PASS"},
+                    "created_at": "2026-09-03T09:00:00+00:00",
+                }
+            ],
+        }
+
+        with mock.patch.object(
+            runner, "autodev_call", return_value=staged
+        ) as autodev_call:
+            self.assertEqual(
+                runner.staging_ticket_preflight("B0100"),
+                (
+                    True,
+                    "ticket is staging_verified with PASS evidence staging-artifact-1",
+                ),
+            )
+        autodev_call.assert_called_once_with(
+            "get_ticket",
+            {
+                "project": "ts",
+                "repo": "ts-prefect",
+                "ticket_id": "B0100",
+                "detail": "light",
+                "include_events": False,
+            },
+        )
+        with mock.patch.object(runner, "autodev_call", return_value=completed):
+            verified, evidence = runner.production_ticket_verified(
+                "B0100", "100.000003"
+            )
+        self.assertTrue(verified)
+        self.assertIn("artifact-1", evidence)
+
+        stale = completed | {
+            "artifacts": [
+                completed["artifacts"][0]
+                | {"created_at": "1970-01-01T00:01:39+00:00"}
+            ]
+        }
+        with mock.patch.object(runner, "autodev_call", return_value=stale):
+            verified, evidence = runner.production_ticket_verified(
+                "B0100", "100.000003"
+            )
+        self.assertFalse(verified)
+        self.assertIn("recorded after approval", evidence)
+
+        not_staged = staged | {"ticket": staged["ticket"] | {"status": "planned"}}
+        with mock.patch.object(runner, "autodev_call", return_value=not_staged):
+            ready, reason = runner.staging_ticket_preflight("B0100")
+        self.assertFalse(ready)
+        self.assertIn("not 'staging_verified'", reason)
+
+    def test_production_queue_starts_only_one_ticket(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Issue",
+            "proof": "Proof.",
+            "example": "Example.",
+            "next_step": "Fix.",
+            "ticket_id": "B0100",
+            "remediation_ready": True,
+        }
+        jobs = []
+        for ticket_id in ("B0100", "B0101"):
+            jobs.append(
+                {
+                    "issue": issue | {"ticket_id": ticket_id, "title": ticket_id},
+                    "workspace_id": f"workspace-{ticket_id}",
+                    "session_id": f"session-{ticket_id}",
+                    "deep_link": f"conductor://workspace-{ticket_id}",
+                    "launch_error": None,
+                    "saw_working": True,
+                    "terminal_idle_confirmations": 0,
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "state_dir", return_value=Path(directory)):
+                for index, job in enumerate(jobs, start=1):
+                    runner.register_production_candidate(
+                        job,
+                        channel="C-health",
+                        thread_ts="100.000001",
+                        staging_reply_ts=f"100.00000{index + 1}",
+                        expires_days=14,
+                    )
+                with runner.approval_connection() as connection:
+                    connection.execute(
+                        """
+                        UPDATE approval_candidates
+                        SET state = 'queued', approval_message_ts = '100.000010',
+                            approved_by = 'U-SIMON'
+                        WHERE ticket_id = 'B0100'
+                        """
+                    )
+                    connection.execute(
+                        """
+                        UPDATE approval_candidates
+                        SET state = 'queued', approval_message_ts = '100.000011',
+                            approved_by = 'U-SIMON'
+                        WHERE ticket_id = 'B0101'
+                        """
+                    )
+                with (
+                    mock.patch.object(
+                        runner, "staging_ticket_preflight", return_value=(True, "ready")
+                    ),
+                    mock.patch.object(
+                        runner,
+                        "ensure_promotion_session",
+                        return_value=("promotion-1", "conductor://promotion-1"),
+                    ) as ensure,
+                    mock.patch.object(runner, "post_message"),
+                ):
+                    self.assertTrue(
+                        runner.start_next_production(
+                            "token",
+                            {"max_runtime_minutes": 480},
+                            {"agent": "codex", "model": "gpt-5.6-sol"},
+                        )
+                    )
+
+                ensure.assert_called_once()
+                self.assertEqual(len(runner.candidates_in_states("launching")), 1)
+                self.assertEqual(len(runner.candidates_in_states("queued")), 1)
+
+    def test_production_start_failures_stop_after_the_reviewed_retry_budget(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "proof": "No heartbeat arrived.",
+            "example": "Worker alpha missed three polls.",
+            "next_step": "Repair the worker.",
+            "ticket_id": "B0100",
+            "remediation_ready": True,
+        }
+        job = {
+            "issue": issue,
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": True,
+            "terminal_idle_confirmations": 0,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "state_dir", return_value=Path(directory)):
+                runner.register_production_candidate(
+                    job,
+                    channel="C-health",
+                    thread_ts="100.000001",
+                    staging_reply_ts="100.000002",
+                    expires_days=14,
+                )
+                with runner.approval_connection() as connection:
+                    connection.execute(
+                        """
+                        UPDATE approval_candidates
+                        SET state = 'queued', approval_message_ts = '100.000003',
+                            approved_by = 'U-SIMON'
+                        WHERE ticket_id = 'B0100'
+                        """
+                    )
+                with mock.patch.object(
+                    runner,
+                    "staging_ticket_preflight",
+                    side_effect=runner.RunnerError("Autodev unavailable"),
+                ):
+                    self.assertFalse(
+                        runner.start_next_production(
+                            "token", {"max_start_attempts": 2}, {"agent": "codex"}
+                        )
+                    )
+                    self.assertEqual(
+                        runner.candidates_in_states("queued")[0]["start_attempts"], 1
+                    )
+                    self.assertFalse(
+                        runner.start_next_production(
+                            "token", {"max_start_attempts": 2}, {"agent": "codex"}
+                        )
+                    )
+
+                stopped = runner.candidates_in_states("stopped")[0]
+                self.assertEqual(stopped["ticket_id"], "B0100")
+                with runner.approval_connection() as connection:
+                    terminal_result = connection.execute(
+                        "SELECT terminal_result_json FROM approval_candidates "
+                        "WHERE ticket_id = 'B0100'"
+                    ).fetchone()[0]
+                self.assertIn("startup could not complete after 2 attempts", terminal_result)
+
+    def test_production_result_is_durable_and_retried_to_slack(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "proof": "No heartbeat arrived.",
+            "example": "Worker alpha missed three polls.",
+            "next_step": "Repair the worker.",
+            "ticket_id": "B0100",
+            "remediation_ready": True,
+        }
+        job = {
+            "issue": issue,
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": True,
+            "terminal_idle_confirmations": 0,
+        }
+        result = {
+            "status": "PROD_VERIFIED",
+            "ticket_id": "B0100",
+            "issue": "A dead worker stopped scheduled jobs.",
+            "fix": "The worker now recovers stale heartbeats.",
+            "verification": "Production run run-2 passed with artifact art-2.",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "state_dir", return_value=Path(directory)):
+                runner.register_production_candidate(
+                    job,
+                    channel="C-health",
+                    thread_ts="100.000001",
+                    staging_reply_ts="100.000002",
+                    expires_days=14,
+                )
+                with runner.approval_connection() as connection:
+                    connection.execute(
+                        """
+                        UPDATE approval_candidates
+                        SET state = 'running', approval_message_ts = '100.000003',
+                            approved_by = 'U-SIMON',
+                            promotion_session_link = 'conductor://promotion-1'
+                        WHERE ticket_id = 'B0100'
+                        """
+                    )
+                candidate = runner.candidates_in_states("running")[0]
+                with mock.patch.object(
+                    runner,
+                    "production_ticket_verified",
+                    return_value=(True, "production PASS evidence artifact art-2"),
+                ) as verified:
+                    runner.finalize_production_candidate(candidate, result)
+                verified.assert_called_once_with("B0100", "100.000003")
+
+                with runner.approval_connection() as connection:
+                    persisted = connection.execute(
+                        "SELECT state, terminal_result_json, result_posted_at "
+                        "FROM approval_candidates WHERE ticket_id = 'B0100'"
+                    ).fetchone()
+                self.assertEqual(persisted["state"], "prod_verified")
+                self.assertIsNotNone(persisted["terminal_result_json"])
+                self.assertIsNone(persisted["result_posted_at"])
+
+                with mock.patch.object(
+                    runner,
+                    "post_message",
+                    side_effect=[runner.RunnerError("Slack unavailable"), "100.000004"],
+                ) as post:
+                    with self.assertRaises(runner.RunnerError):
+                        runner.post_pending_production_results("token")
+                    runner.post_pending_production_results("token")
+
+                self.assertEqual(post.call_count, 2)
+                self.assertEqual(
+                    post.mock_calls[0].kwargs["client_msg_id"],
+                    post.mock_calls[1].kwargs["client_msg_id"],
+                )
+                self.assertIn(
+                    "B0100 — production verified", post.mock_calls[1].args[2]
+                )
+                with runner.approval_connection() as connection:
+                    posted_at = connection.execute(
+                        "SELECT result_posted_at FROM approval_candidates "
+                        "WHERE ticket_id = 'B0100'"
+                    ).fetchone()[0]
+                self.assertIsNotNone(posted_at)
+
+    def test_failed_production_requires_an_approval_after_the_failure_reply(self) -> None:
+        runner = load_schedule_runner()
+        job = {
+            "issue": {
+                "title": "Worker offline",
+                "proof": "No heartbeat arrived.",
+                "example": "Worker alpha missed three polls.",
+                "next_step": "Repair the worker.",
+                "ticket_id": "B0100",
+                "remediation_ready": True,
+            },
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": True,
+            "terminal_idle_confirmations": 0,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "state_dir", return_value=Path(directory)):
+                runner.register_production_candidate(
+                    job,
+                    channel="C-health",
+                    thread_ts="100.000001",
+                    staging_reply_ts="100.000002",
+                    expires_days=14,
+                )
+                with runner.approval_connection() as connection:
+                    connection.execute(
+                        """
+                        UPDATE approval_candidates
+                        SET state = 'running', approval_message_ts = '100.000003',
+                            approved_by = 'U-SIMON'
+                        WHERE ticket_id = 'B0100'
+                        """
+                    )
+                candidate = runner.candidates_in_states("running")[0]
+                runner.finalize_production_candidate(
+                    candidate,
+                    runner.stopped_production(candidate, "the session failed"),
+                )
+                with mock.patch.object(
+                    runner, "post_message", return_value="100.000010"
+                ):
+                    runner.post_pending_production_results("token")
+
+                messages = [
+                    {
+                        "ts": "100.000009",
+                        "user": "U-SIMON",
+                        "text": "<@U0HERMES123> I approve this",
+                    },
+                    {
+                        "ts": "100.000011",
+                        "user": "U-SIMON",
+                        "text": "<@U0HERMES123> I approve this",
+                    },
+                ]
+                with (
+                    mock.patch.object(
+                        runner, "slack_thread_page", return_value=messages
+                    ),
+                    mock.patch.object(runner, "post_message"),
+                ):
+                    runner.scan_slack_approvals(
+                        "token",
+                        {
+                            "authorized_slack_users": ["U-SIMON"],
+                            "hermes_slack_user_id": "U0HERMES123",
+                        },
+                    )
+
+                queued = runner.candidates_in_states("queued")[0]
+                self.assertEqual(queued["approval_not_before_ts"], "100.000010")
+                self.assertEqual(queued["approval_message_ts"], "100.000011")
+
+    def test_retention_preserves_workspaces_with_open_production_approval(self) -> None:
+        runner = load_schedule_runner()
+        issue = {
+            "title": "Worker offline",
+            "proof": "No heartbeat arrived.",
+            "example": "Worker alpha missed three polls.",
+            "next_step": "Repair the worker.",
+            "ticket_id": "B0100",
+            "remediation_ready": True,
+        }
+        job = {
+            "issue": issue,
+            "workspace_id": "workspace-1",
+            "session_id": "session-1",
+            "deep_link": "conductor://workspace-1",
+            "launch_error": None,
+            "saw_working": True,
+            "terminal_idle_confirmations": 0,
+        }
+        manifest = {
+            "runner": {"retention_days_pass": 3, "retention_days_fail": 14},
+            "schedules": [{"name": "health-6h"}],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "state_dir", return_value=Path(directory)):
+                Path(directory, "health-6h.history.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "completed_at": "2026-01-01T00:00:00+00:00",
+                            "status": "AWAITING_PROD_APPROVAL",
+                            "workspace_id": "workspace-1",
+                            "archived": False,
+                        }
+                    )
+                    + "\n"
+                )
+                runner.register_production_candidate(
+                    job,
+                    channel="C-health",
+                    thread_ts="100.000001",
+                    staging_reply_ts="100.000002",
+                    expires_days=14,
+                )
+                with mock.patch.object(runner, "conductor_call") as conductor_call:
+                    runner.apply_retention(manifest)
+                conductor_call.assert_not_called()
+
+                runner.set_candidate_state("B0100", "expired")
+                with mock.patch.object(runner, "conductor_call") as conductor_call:
+                    runner.apply_retention(manifest)
+                conductor_call.assert_called_once_with(
+                    "archive_workspace", {"workspace_id": "workspace-1"}
+                )
+
     def test_dream_result_block_and_noop_report_are_structured(self) -> None:
         runner = load_schedule_runner()
         message = (
@@ -1016,13 +1677,19 @@ class HermesScheduleTests(unittest.TestCase):
             ],
         )
 
-    def test_health_schedule_posts_exactly_one_reply_per_issue(self) -> None:
+    def test_health_schedule_posts_one_top_level_message_per_issue(self) -> None:
         runner = load_schedule_runner()
         manifest = {
             "runner": {"poll_seconds": 1},
             "slack_channels": {
                 "#autodev-health": "C-health",
                 "#autodev-incidents": "C-incidents",
+            },
+            "production_approval": {
+                "enabled": True,
+                "hermes_slack_user_id": "U0HERMES123",
+                "authorized_slack_users": ["U-SIMON"],
+                "expires_days": 14,
             },
             "schedules": [
                 {
@@ -1149,6 +1816,9 @@ class HermesScheduleTests(unittest.TestCase):
                     "message_permalink",
                     return_value="https://slack.example/thread",
                 ),
+                mock.patch.object(
+                    runner, "register_production_candidate"
+                ) as register_candidate,
                 mock.patch.object(runner, "record_run"),
             ):
                 exit_code = runner.run_schedule("health-6h")
@@ -1194,8 +1864,10 @@ class HermesScheduleTests(unittest.TestCase):
                     "polling.\n"
                     "• *Verification:* Staging run flow-123 passed on revision abc123 with "
                     "evidence artifact art-1.\n"
-                    "• *Workspace:* <conductor://remediation-1|Open in Conductor>",
-                    thread_ts="parent",
+                    "• *Workspace:* <conductor://remediation-1|Open in Conductor>\n"
+                    "• *Approve production:* Reply in this issue's thread, tag @Hermes, "
+                    "and clearly approve in your own words — for example, “@Hermes I "
+                    "approve this for production.”",
                 ),
                 mock.call(
                     "token",
@@ -1207,8 +1879,29 @@ class HermesScheduleTests(unittest.TestCase):
                     "ownership.\n"
                     "• *Verification:* Staging run flow-456 passed on revision def456 with "
                     "evidence artifact art-2.\n"
-                    "• *Workspace:* <conductor://remediation-2|Open in Conductor>",
-                    thread_ts="parent",
+                    "• *Workspace:* <conductor://remediation-2|Open in Conductor>\n"
+                    "• *Approve production:* Reply in this issue's thread, tag @Hermes, "
+                    "and clearly approve in your own words — for example, “@Hermes I "
+                    "approve this for production.”",
+                ),
+            ],
+        )
+        self.assertEqual(
+            register_candidate.mock_calls,
+            [
+                mock.call(
+                    jobs[0],
+                    channel="C-health",
+                    thread_ts="reply-1",
+                    staging_reply_ts="reply-1",
+                    expires_days=14,
+                ),
+                mock.call(
+                    jobs[1],
+                    channel="C-health",
+                    thread_ts="reply-2",
+                    staging_reply_ts="reply-2",
+                    expires_days=14,
                 ),
             ],
         )

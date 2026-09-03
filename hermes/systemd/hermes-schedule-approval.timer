@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll Slack for explicit Hermes production approvals
+
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=1m
+AccuracySec=10s
+Persistent=true
+Unit=hermes-schedule-approval.service
+
+[Install]
+WantedBy=timers.target
