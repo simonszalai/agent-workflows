@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Validate a staged Hermes schedule release without executing its runner."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+from typing import cast
+
+import yaml
+
+
+SUPPORTED_CONTRACT_VERSION = 1
+SCHEDULE_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+PROMPT_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*[.]md$")
+SLACK_USER_ID = re.compile(r"^U[A-Z0-9]+$")
+
+
+class ValidationError(RuntimeError):
+    """A release validation failure safe to show in deployment logs."""
+
+
+def require_mapping(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ValidationError(f"{label} must be a mapping")
+    return cast(dict[str, object], value)
+
+
+def require_string(mapping: dict[str, object], key: str, label: str) -> str:
+    value = mapping.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(f"{label}.{key} must be a non-empty string")
+    return value
+
+
+def require_positive_int(mapping: dict[str, object], key: str, label: str) -> int:
+    value = mapping.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValidationError(f"{label}.{key} must be a positive integer")
+    return value
+
+
+def cron_to_oncalendar(cron: str) -> str:
+    fields = cron.split()
+    if len(fields) != 5 or fields[2:] != ["*", "*", "*"]:
+        raise ValidationError(f"unsupported cron expression: {cron!r}")
+    minute, hour = fields[:2]
+    if not minute.isdigit() or not 0 <= int(minute) <= 59:
+        raise ValidationError(f"unsupported cron minute: {minute!r}")
+    if hour.startswith("*/"):
+        interval = hour[2:]
+        if not interval.isdigit() or not 1 <= int(interval) <= 23:
+            raise ValidationError(f"unsupported cron hour interval: {hour!r}")
+        return f"*-*-* 00/{int(interval)}:{int(minute):02d}:00"
+    if not hour.isdigit() or not 0 <= int(hour) <= 23:
+        raise ValidationError(f"unsupported cron hour: {hour!r}")
+    return f"*-*-* {int(hour):02d}:{int(minute):02d}:00"
+
+
+def unit_directives(path: Path, section_name: str) -> dict[str, list[str]]:
+    if not path.is_file() or path.is_symlink():
+        raise ValidationError(f"missing regular systemd unit: {path.name}")
+    section = ""
+    directives: dict[str, list[str]] = {}
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        if section == section_name and "=" in line:
+            key, value = line.split("=", 1)
+            directives.setdefault(key.strip(), []).append(value.strip())
+    return directives
+
+
+def validate_timer_inventory(
+    expected: dict[str, str],
+    timer_directory: Path,
+) -> None:
+    if not timer_directory.is_dir():
+        raise ValidationError(f"timer directory is missing: {timer_directory}")
+    timer_paths = list(timer_directory.glob("hermes-schedule@*.timer"))
+    invalid = [path.name for path in timer_paths if path.is_symlink() or not path.is_file()]
+    if invalid:
+        raise ValidationError(f"schedule timer inventory has non-regular units: {invalid}")
+    drop_ins = list(timer_directory.glob("hermes-schedule@*.timer.d"))
+    if drop_ins:
+        raise ValidationError(
+            f"schedule timer drop-ins are not supported: {[path.name for path in drop_ins]}"
+        )
+    actual = {
+        path.name.removeprefix("hermes-schedule@").removesuffix(".timer")
+        for path in timer_paths
+    }
+    if actual != set(expected):
+        raise ValidationError(
+            "schedule timer inventory differs from the manifest; "
+            "install reviewed systemd changes manually"
+        )
+    for name, on_calendar in expected.items():
+        timer = timer_directory / f"hermes-schedule@{name}.timer"
+        directives = unit_directives(timer, "Timer")
+        if directives.get("OnCalendar") != [f"{on_calendar} America/Vancouver"]:
+            raise ValidationError(f"timer calendar does not match manifest: {timer.name}")
+        if directives.get("Persistent") != ["true"]:
+            raise ValidationError(f"timer is not persistent: {timer.name}")
+
+
+def validate_production_approval(
+    manifest: dict[str, object], timer_directory: Path
+) -> None:
+    approval = require_mapping(manifest.get("production_approval"), "production_approval")
+    if not isinstance(approval.get("enabled"), bool):
+        raise ValidationError("production_approval.enabled must be a boolean")
+    hermes_user = require_string(
+        approval, "hermes_slack_user_id", "production_approval"
+    )
+    if not SLACK_USER_ID.fullmatch(hermes_user):
+        raise ValidationError("production_approval.hermes_slack_user_id is invalid")
+    users = approval.get("authorized_slack_users")
+    if (
+        not isinstance(users, list)
+        or not users
+        or not all(isinstance(user, str) and SLACK_USER_ID.fullmatch(user) for user in users)
+        or len(set(users)) != len(users)
+    ):
+        raise ValidationError("production_approval.authorized_slack_users is invalid")
+    for key in ("expires_days", "max_runtime_minutes", "max_start_attempts"):
+        require_positive_int(approval, key, "production_approval")
+    if cast(int, approval["max_runtime_minutes"]) > 600:
+        raise ValidationError("production_approval exceeds the 10-hour runtime cap")
+
+    service = timer_directory / "hermes-schedule-approval.service"
+    timer = timer_directory / "hermes-schedule-approval.timer"
+    for unit in (service, timer):
+        if (timer_directory / f"{unit.name}.d").exists():
+            raise ValidationError(f"systemd drop-ins are not supported: {unit.name}.d")
+    service_values = unit_directives(service, "Service")
+    if service_values.get("ExecStart") != [
+        "/opt/hermes-schedules/bin/run-schedule-release approvals"
+    ]:
+        raise ValidationError("production approval service does not use the stable launcher")
+    if service_values.get("User") != ["hermes-schedules"]:
+        raise ValidationError("production approval service has the wrong account")
+    timer_values = unit_directives(timer, "Timer")
+    required_timer_values = {
+        "OnBootSec": ["1m"],
+        "OnUnitActiveSec": ["1m"],
+        "Persistent": ["true"],
+        "Unit": ["hermes-schedule-approval.service"],
+    }
+    if any(timer_values.get(key) != value for key, value in required_timer_values.items()):
+        raise ValidationError("production approval timer differs from the deployment contract")
+
+
+def validate_release(release: Path, timer_directory: Path) -> None:
+    if not release.is_dir() or release.is_symlink():
+        raise ValidationError("release must be a real directory")
+    required = ("runner.py", "schedules.yaml", "requirements.txt")
+    for name in required:
+        path = release / name
+        if not path.is_file() or path.is_symlink():
+            raise ValidationError(f"missing regular release asset: {name}")
+
+    try:
+        compile((release / "runner.py").read_text(), "runner.py", "exec")
+    except (SyntaxError, UnicodeError) as error:
+        raise ValidationError(f"runner.py does not compile: {error}") from error
+
+    try:
+        document = yaml.safe_load((release / "schedules.yaml").read_text())
+    except yaml.YAMLError as error:
+        raise ValidationError(f"schedules.yaml is invalid YAML: {error}") from error
+    manifest = require_mapping(document, "schedules.yaml")
+    if manifest.get("deployment_contract_version") != SUPPORTED_CONTRACT_VERSION:
+        raise ValidationError(
+            "unsupported deployment_contract_version; update the host bootstrap manually"
+        )
+    runner = require_mapping(manifest.get("runner"), "runner")
+    for key in ("poll_seconds", "retention_days_pass", "retention_days_fail"):
+        require_positive_int(runner, key, "runner")
+    archive_statuses = runner.get("archive_on_complete")
+    if not isinstance(archive_statuses, list) or not all(
+        isinstance(status, str) and status in {"PASS", "FAIL", "BLOCKED"}
+        for status in archive_statuses
+    ):
+        raise ValidationError("runner.archive_on_complete has invalid statuses")
+    channels = require_mapping(manifest.get("slack_channels"), "slack_channels")
+    if "#autodev-incidents" not in channels:
+        raise ValidationError("slack_channels must include #autodev-incidents")
+    if not all(isinstance(value, str) and value for value in channels.values()):
+        raise ValidationError("every Slack channel ID must be a non-empty string")
+    validate_production_approval(manifest, timer_directory)
+
+    schedule_rows = manifest.get("schedules")
+    if not isinstance(schedule_rows, list) or not schedule_rows:
+        raise ValidationError("schedules must be a non-empty list")
+    names: set[str] = set()
+    timers: dict[str, str] = {}
+    for index, value in enumerate(schedule_rows):
+        label = f"schedules[{index}]"
+        entry = require_mapping(value, label)
+        name = require_string(entry, "name", label)
+        if (
+            not SCHEDULE_NAME.fullmatch(name)
+            or name in {"approval", "sync", "watchdog"}
+            or name in names
+        ):
+            raise ValidationError(f"{label}.name is invalid or duplicated")
+        names.add(name)
+        cron = require_string(entry, "cron", label)
+        timers[name] = cron_to_oncalendar(cron)
+        prompt_name = require_string(entry, "prompt", label)
+        if (
+            not PROMPT_NAME.fullmatch(prompt_name)
+            or prompt_name == "README.md"
+            or Path(prompt_name).name != prompt_name
+        ):
+            raise ValidationError(f"{label}.prompt must be a safe Markdown basename")
+        prompt = release / prompt_name
+        if not prompt.is_file() or prompt.is_symlink():
+            raise ValidationError(f"{label}.prompt is missing: {prompt_name}")
+        if not prompt.read_text().strip():
+            raise ValidationError(f"{label}.prompt is empty: {prompt_name}")
+        slack_channel = require_string(entry, "slack_channel", label)
+        if slack_channel not in channels:
+            raise ValidationError(f"{label}.slack_channel is not declared")
+        enabled = entry.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValidationError(f"{label}.enabled must be a boolean")
+        max_runtime = require_positive_int(entry, "max_runtime_minutes", label)
+        remediation_runtime = 0
+        if "remediation_max_runtime_minutes" in entry:
+            remediation_runtime = require_positive_int(
+                entry, "remediation_max_runtime_minutes", label
+            )
+        if max_runtime + remediation_runtime > 600:
+            raise ValidationError(f"{label} exceeds the systemd 10-hour runtime cap")
+        workspace = require_mapping(entry.get("workspace"), f"{label}.workspace")
+        for key in ("repo", "repo_url", "branch", "agent", "model"):
+            require_string(workspace, key, f"{label}.workspace")
+
+    if "health-6h" in names:
+        remediation_prompt = release / "health-remediation.md"
+        if not remediation_prompt.is_file() or remediation_prompt.is_symlink():
+            raise ValidationError("health-6h requires health-remediation.md")
+
+    validate_timer_inventory(timers, timer_directory)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("release", type=Path)
+    parser.add_argument("timer_directory", type=Path)
+    arguments = parser.parse_args(argv[1:])
+    try:
+        validate_release(arguments.release.resolve(), arguments.timer_directory.resolve())
+    except (OSError, ValidationError) as error:
+        print(f"schedule release validation failed: {error}", file=sys.stderr)
+        return 1
+    print("schedule release validation passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

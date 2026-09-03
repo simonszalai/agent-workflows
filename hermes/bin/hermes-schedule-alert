@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Post Hermes unit failures without depending on a candidate schedule release."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+
+SLACK_API = "https://slack.com/api/chat.postMessage"
+INCIDENTS_CHANNEL = "C0BM7CUHGAV"
+SLACK_MENTION = "<@U09T4LELYES>"
+SYNC_STATE = Path("/var/lib/hermes-schedule-sync")
+COOLDOWN_SECONDS = 24 * 60 * 60
+FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+SUFFIX = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+class AlertError(RuntimeError):
+    """An alert failure safe to emit to the journal."""
+
+
+def slack_token() -> str:
+    credentials = os.environ.get("CREDENTIALS_DIRECTORY")
+    if not credentials:
+        raise AlertError("CREDENTIALS_DIRECTORY is not set")
+    token = (Path(credentials) / "slack.token").read_text().strip()
+    if not token.startswith(("xoxb-", "xoxp-")):
+        raise AlertError("Slack credential has an unexpected format")
+    return token
+
+
+def post(text: str) -> None:
+    body = urllib.parse.urlencode(
+        {"channel": INCIDENTS_CHANNEL, "text": text, "unfurl_links": "false"}
+    ).encode()
+    request = urllib.request.Request(
+        SLACK_API,
+        data=body,
+        headers={"Authorization": f"Bearer {slack_token()}"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode())
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        reason = payload.get("error") if isinstance(payload, dict) else "bad response"
+        raise AlertError(f"Slack chat.postMessage failed: {reason}")
+
+
+def atomic_json(path: Path, value: dict[str, object]) -> None:
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            json.dump(value, handle, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_object(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise AlertError(f"invalid alert state: {path.name}") from error
+    if not isinstance(value, dict):
+        raise AlertError(f"invalid alert state: {path.name}")
+    return value
+
+
+def alert_sync() -> str:
+    try:
+        pending = read_object(SYNC_STATE / "pending-failure.json")
+        fingerprint = pending.get("fingerprint")
+        phase = pending.get("phase")
+        detail = pending.get("detail")
+        if (
+            not isinstance(fingerprint, str)
+            or not FINGERPRINT.fullmatch(fingerprint)
+            or not isinstance(phase, str)
+            or not phase
+            or not isinstance(detail, str)
+            or not detail
+        ):
+            raise AlertError("pending sync failure has invalid fields")
+    except AlertError:
+        # OnFailure must still report an unexpected updater crash that occurred
+        # before the updater could persist a structured failure.
+        phase = "runtime"
+        detail = "systemd reported failure before structured sync details were recorded"
+        fingerprint = hashlib.sha256(f"{phase}\0{detail}".encode()).hexdigest()
+
+    now = int(time.time())
+    alerted_path = SYNC_STATE / "last-alerted-failure.json"
+    try:
+        previous = read_object(alerted_path)
+    except AlertError:
+        previous = {}
+    if (
+        previous.get("fingerprint") == fingerprint
+        and isinstance(previous.get("alerted_at"), int)
+        and now - int(previous["alerted_at"]) < COOLDOWN_SECONDS
+    ):
+        return f"sync alert deduplicated: {fingerprint}"
+
+    post(
+        f"❌ *Hermes schedule sync failed* {SLACK_MENTION}\n"
+        f"• *Phase:* `{phase}`\n"
+        f"• *Proof:* `{detail[:500]}`\n"
+        "• *Current:* The prior reviewed release remains active.\n"
+        "• *Next:* `journalctl -u hermes-schedule-sync.service` on Hermes."
+    )
+    # Mark the fingerprint only after Slack acknowledges the post. If Slack is
+    # unavailable, the next failed sync retries instead of losing the alert.
+    atomic_json(alerted_path, {"fingerprint": fingerprint, "alerted_at": now})
+    return f"sync alert posted: {fingerprint}"
+
+
+def alert_unit(suffix: str) -> str:
+    if not SUFFIX.fullmatch(suffix) or suffix in {"sync", "watchdog"}:
+        raise AlertError("invalid schedule unit suffix")
+    unit = (
+        "hermes-schedule-approval.service"
+        if suffix == "approval"
+        else f"hermes-schedule@{suffix}.service"
+    )
+    post(
+        f"❌ *{suffix} scheduler service failed* {SLACK_MENTION}\n"
+        f"• *Proof:* systemd marked `{unit}` as failed.\n"
+        f"• *Example:* `journalctl -u {unit}` shows the traceback.\n"
+        "• *Next:* Inspect the traceback, fix the service, then restart the unit."
+    )
+    return f"unit alert posted: {suffix}"
+
+
+def alert_watchdog() -> str:
+    unit = "hermes-schedule-watchdog.service"
+    post(
+        f"❌ *watchdog scheduler service failed* {SLACK_MENTION}\n"
+        f"• *Proof:* systemd marked `{unit}` as failed.\n"
+        f"• *Example:* `journalctl -u {unit}` shows the traceback.\n"
+        "• *Next:* Inspect the traceback, fix the service, then restart the unit."
+    )
+    return "watchdog alert posted"
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("kind", choices=("schedule", "sync", "watchdog"))
+    parser.add_argument("suffix", nargs="?")
+    arguments = parser.parse_args(argv[1:])
+    try:
+        if arguments.kind == "sync":
+            if arguments.suffix is not None:
+                raise AlertError("sync alert takes no suffix")
+            message = alert_sync()
+        elif arguments.kind == "watchdog":
+            if arguments.suffix is not None:
+                raise AlertError("watchdog alert takes no suffix")
+            message = alert_watchdog()
+        else:
+            if arguments.suffix is None:
+                raise AlertError("schedule alert requires a suffix")
+            message = alert_unit(arguments.suffix)
+    except (AlertError, OSError, ValueError) as error:
+        print(f"Hermes schedule alert failed: {error}", file=sys.stderr)
+        return 1
+    print(message)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

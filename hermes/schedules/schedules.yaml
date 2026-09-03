@@ -2,6 +2,9 @@
 # Times are America/Vancouver.
 # Every schedule inherits the unattended contract in skills/references/scheduled-run.md.
 
+# A bump requires a reviewed manual host install before automatic sync resumes.
+deployment_contract_version: 1
+
 # Runner behavior (hermes/schedules/runner.py, deployed to /opt/hermes-schedules).
 runner:
   poll_seconds: 60

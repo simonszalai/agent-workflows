@@ -1,0 +1,817 @@
+#!/usr/bin/env python3
+"""Install, sync, inspect, and roll back immutable Hermes schedule releases."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import io
+import json
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
+from typing import NamedTuple, TextIO, cast
+
+
+REMOTE_URL = "https://github.com/simonszalai/agent-workflows.git"
+REMOTE_BRANCH = "main"
+RUNTIME_ROOT = Path("/opt/hermes-schedules")
+STATE_ROOT = Path("/var/lib/hermes-schedule-sync")
+SYSTEMD_ROOT = Path("/etc/systemd/system")
+VALIDATOR = RUNTIME_ROOT / "bin" / "validate-schedule-release"
+BUILD_USER = "hermes-schedule-builder"
+HOST_PYTHON = "/usr/bin/python3"
+SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+PIN_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+==[^\s]+$")
+HASH_PATTERN = re.compile(r"^--hash=sha256:[0-9a-f]{64}$")
+MAX_ARCHIVE_BYTES = 8 * 1024 * 1024
+PHASE_TIMEOUT_SECONDS = {
+    "dependencies": 900,
+    "fetch": 180,
+    "validation": 120,
+    "venv": 300,
+}
+
+
+class ReleaseError(RuntimeError):
+    """A release operation failure safe to write to system logs."""
+
+    def __init__(self, phase: str, detail: str) -> None:
+        super().__init__(detail)
+        self.phase = phase
+        self.detail = detail
+
+
+class Bundle(NamedTuple):
+    revision: str
+    git_tree: str
+    bundle_hash: str
+    files: dict[str, bytes]
+
+
+class ReleaseMetadata(NamedTuple):
+    revision: str
+    git_tree: str
+    bundle_hash: str
+    files: dict[str, str]
+
+
+def command_environment() -> dict[str, str]:
+    return {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    }
+
+
+def run_text(command: list[str], phase: str, cwd: Path | None = None) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=command_environment(),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=PHASE_TIMEOUT_SECONDS.get(phase, 120),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ReleaseError(phase, "command timed out") from error
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()[-1:] or ["command failed"]
+        raise ReleaseError(phase, detail[0][:500])
+    return result.stdout.strip()
+
+
+def run_bytes(command: list[str], phase: str, cwd: Path | None = None) -> bytes:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=command_environment(),
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=PHASE_TIMEOUT_SECONDS.get(phase, 120),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ReleaseError(phase, "command timed out") from error
+    if result.returncode:
+        detail = result.stderr.decode(errors="replace").strip().splitlines()
+        raise ReleaseError(phase, (detail[-1] if detail else "command failed")[:500])
+    return result.stdout
+
+
+def git_command(repository: Path, arguments: list[str]) -> list[str]:
+    return [
+        "git",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-C",
+        str(repository),
+        *arguments,
+    ]
+
+
+def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def hash_files(files: dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        encoded = name.encode()
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+        digest.update(len(files[name]).to_bytes(8, "big"))
+        digest.update(files[name])
+    return digest.hexdigest()
+
+
+def validate_requirements(content: bytes) -> None:
+    try:
+        text = content.decode()
+    except UnicodeDecodeError as error:
+        raise ReleaseError("requirements", "requirements.txt must be UTF-8") from error
+    logical_lines: list[str] = []
+    current = ""
+    for raw_line in text.splitlines():
+        stripped = raw_line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if stripped.endswith("\\"):
+            current += stripped[:-1].strip() + " "
+            continue
+        logical_lines.append((current + stripped).strip())
+        current = ""
+    if current:
+        raise ReleaseError("requirements", "requirements.txt has an unfinished continuation")
+    if not logical_lines:
+        raise ReleaseError("requirements", "requirements.txt is empty")
+    for line in logical_lines:
+        parts = line.split()
+        if not PIN_PATTERN.fullmatch(parts[0]):
+            raise ReleaseError("requirements", "every dependency must use an exact == pin")
+        if len(parts) < 2 or not all(HASH_PATTERN.fullmatch(part) for part in parts[1:]):
+            raise ReleaseError(
+                "requirements",
+                "every dependency must include one or more sha256 hashes",
+            )
+
+
+def archive_bundle(repository: Path, revision: str) -> Bundle:
+    if not SHA_PATTERN.fullmatch(revision):
+        raise ReleaseError("archive", "revision must be a full lowercase Git SHA")
+    resolved_revision = run_text(
+        git_command(repository, ["rev-parse", f"{revision}^{{commit}}"]),
+        "archive",
+    )
+    if resolved_revision != revision:
+        raise ReleaseError("archive", "revision did not resolve to the requested commit")
+    git_tree = run_text(
+        git_command(repository, ["rev-parse", f"{revision}:hermes/schedules"]),
+        "archive",
+    )
+    archive = run_bytes(
+        git_command(
+            repository,
+            ["archive", "--format=tar", revision, "hermes/schedules"],
+        ),
+        "archive",
+    )
+    if len(archive) > MAX_ARCHIVE_BYTES:
+        raise ReleaseError("archive", "schedule archive exceeds the size limit")
+    files: dict[str, bytes] = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+            for member in bundle.getmembers():
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or ".." in path.parts:
+                    raise ReleaseError("archive", "schedule archive contains an unsafe path")
+                if member.isdir():
+                    continue
+                if not member.isfile() or member.issym() or member.islnk():
+                    raise ReleaseError("archive", "schedule archive contains a non-regular file")
+                if path.parts[:2] != ("hermes", "schedules") or len(path.parts) != 3:
+                    raise ReleaseError("archive", "schedule runtime assets must be top-level files")
+                name = path.name
+                if name == "README.md":
+                    continue
+                if name not in {"runner.py", "schedules.yaml", "requirements.txt"} and not (
+                    name.endswith(".md") and re.fullmatch(r"[a-z0-9-]+[.]md", name)
+                ):
+                    raise ReleaseError("archive", f"unexpected schedule runtime asset: {name}")
+                extracted = bundle.extractfile(member)
+                if extracted is None:
+                    raise ReleaseError("archive", f"could not read schedule asset: {name}")
+                if name in files:
+                    raise ReleaseError("archive", f"duplicate schedule runtime asset: {name}")
+                files[name] = extracted.read()
+    except tarfile.TarError as error:
+        raise ReleaseError("archive", "Git produced an invalid schedule archive") from error
+    for required in ("runner.py", "schedules.yaml", "requirements.txt"):
+        if required not in files:
+            raise ReleaseError("archive", f"schedule archive is missing {required}")
+    validate_requirements(files["requirements.txt"])
+    return Bundle(revision, git_tree, hash_files(files), files)
+
+
+def metadata_for(bundle: Bundle) -> ReleaseMetadata:
+    return ReleaseMetadata(
+        revision=bundle.revision,
+        git_tree=bundle.git_tree,
+        bundle_hash=bundle.bundle_hash,
+        files={
+            name: hashlib.sha256(content).hexdigest()
+            for name, content in sorted(bundle.files.items())
+        },
+    )
+
+
+def metadata_json(metadata: ReleaseMetadata) -> str:
+    return json.dumps(
+        {
+            "revision": metadata.revision,
+            "git_tree": metadata.git_tree,
+            "bundle_hash": metadata.bundle_hash,
+            "files": metadata.files,
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+
+
+def read_metadata(release: Path) -> ReleaseMetadata:
+    try:
+        value = json.loads((release / "release.json").read_text())
+        revision = value["revision"]
+        git_tree = value["git_tree"]
+        bundle_hash = value["bundle_hash"]
+        files = value["files"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ReleaseError("integrity", f"release metadata is invalid: {release.name}") from error
+    if not all(
+        isinstance(item, str) for item in (revision, git_tree, bundle_hash)
+    ) or not isinstance(files, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in files.items()
+    ):
+        raise ReleaseError("integrity", f"release metadata has invalid types: {release.name}")
+    required = {"runner.py", "schedules.yaml", "requirements.txt"}
+    if (
+        not SHA_PATTERN.fullmatch(cast(str, revision))
+        or not SHA_PATTERN.fullmatch(cast(str, git_tree))
+        or not re.fullmatch(r"[0-9a-f]{64}", cast(str, bundle_hash))
+        or not required.issubset(files)
+        or any(
+            Path(name).name != name or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for name, digest in files.items()
+        )
+    ):
+        raise ReleaseError(
+            "integrity", f"release metadata has an invalid asset list: {release.name}"
+        )
+    return ReleaseMetadata(
+        cast(str, revision),
+        cast(str, git_tree),
+        cast(str, bundle_hash),
+        cast(dict[str, str], files),
+    )
+
+
+def verify_release(release: Path, expected: Bundle | None = None) -> ReleaseMetadata:
+    if not release.is_dir() or release.is_symlink():
+        raise ReleaseError("integrity", f"release is not a real directory: {release.name}")
+    metadata = read_metadata(release)
+    if metadata.revision != release.name:
+        raise ReleaseError("integrity", "release directory and metadata revision differ")
+    if expected is not None and (
+        metadata.revision != expected.revision
+        or metadata.git_tree != expected.git_tree
+        or metadata.bundle_hash != expected.bundle_hash
+        or metadata.files != metadata_for(expected).files
+    ):
+        raise ReleaseError("integrity", f"existing release does not match {expected.revision}")
+    allowed_names = {"runner.py", "schedules.yaml", "requirements.txt"}
+    allowed_names.update(
+        name
+        for name in metadata.files
+        if name.endswith(".md") and re.fullmatch(r"[a-z0-9-]+[.]md", name)
+    )
+    if set(metadata.files) != allowed_names:
+        raise ReleaseError("integrity", "release metadata contains unexpected assets")
+    top_level = {path.name for path in release.iterdir()}
+    if top_level != set(metadata.files) | {"release.json", "venv"}:
+        raise ReleaseError("integrity", "release directory contains unexpected assets")
+    actual_files: dict[str, bytes] = {}
+    for name, expected_hash in metadata.files.items():
+        path = release / name
+        if not path.is_file() or path.is_symlink():
+            raise ReleaseError("integrity", f"release asset is not a regular file: {name}")
+        content = path.read_bytes()
+        actual_files[name] = content
+        if hashlib.sha256(content).hexdigest() != expected_hash:
+            raise ReleaseError("integrity", f"release asset checksum failed: {name}")
+    if hash_files(actual_files) != metadata.bundle_hash:
+        raise ReleaseError("integrity", "release bundle checksum failed")
+    venv = release / "venv"
+    if venv.is_symlink() or not (venv / "bin" / "python").is_file():
+        raise ReleaseError("integrity", "release virtual environment is incomplete")
+    return metadata
+
+
+def change_owner(root: Path, user: str) -> None:
+    try:
+        account = pwd.getpwnam(user)
+    except KeyError as error:
+        raise ReleaseError("permissions", f"service account is missing: {user}") from error
+    for directory, names, files in os.walk(root):
+        os.chown(directory, account.pw_uid, account.pw_gid)
+        for name in [*names, *files]:
+            path = Path(directory) / name
+            if not path.is_symlink():
+                os.chown(path, account.pw_uid, account.pw_gid)
+
+
+def lock_down(root: Path) -> None:
+    for directory, _, files in os.walk(root):
+        path = Path(directory)
+        os.chown(path, 0, 0)
+        os.chmod(path, 0o755)
+        for name in files:
+            child = path / name
+            if child.is_symlink():
+                continue
+            os.chown(child, 0, 0)
+            os.chmod(child, child.stat().st_mode & ~(stat.S_IWGRP | stat.S_IWOTH))
+
+
+def run_as_build_user(command: list[str], phase: str) -> None:
+    full_command = [
+        "/usr/sbin/runuser",
+        "--user",
+        BUILD_USER,
+        "--",
+        "/usr/bin/env",
+        "-i",
+        "HOME=/nonexistent",
+        "LANG=C.UTF-8",
+        "PATH=/usr/bin:/bin",
+        "PIP_CONFIG_FILE=/dev/null",
+        "PIP_DISABLE_PIP_VERSION_CHECK=1",
+        "PIP_NO_INPUT=1",
+        *command,
+    ]
+    run_text(full_command, phase)
+
+
+def validate_release_contract(release: Path, timer_directory: Path) -> None:
+    run_as_build_user(
+        [
+            str(release / "venv" / "bin" / "python"),
+            str(VALIDATOR),
+            str(release),
+            str(timer_directory),
+        ],
+        "validation",
+    )
+
+
+def build_release(bundle: Bundle, releases: Path, timer_directory: Path) -> Path:
+    release = releases / bundle.revision
+    if release.exists():
+        verify_release(release, bundle)
+        return release
+    temporary = Path(tempfile.mkdtemp(prefix=f".{bundle.revision[:12]}.", dir=releases))
+    try:
+        for name, content in bundle.files.items():
+            path = temporary / name
+            path.write_bytes(content)
+            path.chmod(0o755 if name == "runner.py" else 0o644)
+        (temporary / "release.json").write_text(metadata_json(metadata_for(bundle)))
+        change_owner(temporary, BUILD_USER)
+        run_as_build_user([HOST_PYTHON, "-m", "venv", str(temporary / "venv")], "venv")
+        run_as_build_user(
+            [
+                str(temporary / "venv" / "bin" / "python"),
+                "-m",
+                "pip",
+                "install",
+                "--isolated",
+                "--no-cache-dir",
+                "--require-hashes",
+                "--only-binary=:all:",
+                "--requirement",
+                str(temporary / "requirements.txt"),
+            ],
+            "dependencies",
+        )
+        run_as_build_user(
+            [str(temporary / "venv" / "bin" / "python"), "-m", "pip", "check"],
+            "dependencies",
+        )
+        validate_release_contract(temporary, timer_directory)
+        lock_down(temporary)
+        verify_release(temporary, bundle)
+        try:
+            os.rename(temporary, release)
+            fsync_directory(releases)
+        except FileExistsError:
+            verify_release(release, bundle)
+        return release
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+
+
+def resolved_link(link: Path, releases: Path, required: bool = True) -> Path | None:
+    if not link.is_symlink():
+        if required:
+            raise ReleaseError("links", f"release link is missing: {link.name}")
+        return None
+    try:
+        target = link.resolve(strict=True)
+        target.relative_to(releases.resolve(strict=True))
+    except (OSError, ValueError) as error:
+        raise ReleaseError(
+            "links", f"release link escapes the release root: {link.name}"
+        ) from error
+    if target.parent != releases.resolve(strict=True) or not SHA_PATTERN.fullmatch(target.name):
+        raise ReleaseError("links", f"release link has an invalid target: {link.name}")
+    return target
+
+
+def replace_link(link: Path, target: Path) -> None:
+    temporary = link.parent / f".{link.name}.{os.getpid()}"
+    temporary.unlink(missing_ok=True)
+    os.symlink(os.path.relpath(target.resolve(strict=True), link.parent.resolve()), temporary)
+    os.replace(temporary, link)
+    fsync_directory(link.parent)
+
+
+def activate_release(release: Path, runtime: Path) -> None:
+    releases = runtime / "releases"
+    current = resolved_link(runtime / "current", releases, required=False)
+    if current == release:
+        return
+    if current is not None:
+        replace_link(runtime / "previous", current)
+    replace_link(runtime / "current", release)
+
+
+def is_quarantined(state: Path, bundle_hash: str) -> bool:
+    return (state / "quarantine" / bundle_hash).is_file()
+
+
+def quarantine(state: Path, metadata: ReleaseMetadata) -> None:
+    path = state / "quarantine" / metadata.bundle_hash
+    atomic_write(path, f"{metadata.revision}\n")
+
+
+def prepare_directories(runtime: Path, state: Path) -> Path:
+    if runtime.is_symlink() or state.is_symlink():
+        raise ReleaseError("setup", "runtime and state roots must not be symlinks")
+    releases = runtime / "releases"
+    (runtime / "bin").mkdir(parents=True, exist_ok=True)
+    releases.mkdir(parents=True, exist_ok=True)
+    (state / "quarantine").mkdir(parents=True, exist_ok=True)
+    if releases.is_symlink() or (state / "quarantine").is_symlink():
+        raise ReleaseError("setup", "release and quarantine roots must not be symlinks")
+    os.chmod(runtime, 0o755)
+    os.chmod(runtime / "bin", 0o755)
+    os.chmod(releases, 0o755)
+    os.chmod(state, 0o700)
+    os.chmod(state / "quarantine", 0o700)
+    return releases
+
+
+def locked(state: Path) -> TextIO:
+    handle = (state / "sync.lock").open("a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise ReleaseError("lock", "another schedule release operation is running") from error
+    return handle
+
+
+def ensure_mirror(state: Path) -> Path:
+    mirror = state / "mirror.git"
+    if not mirror.exists():
+        run_text(["git", "init", "--bare", str(mirror)], "fetch")
+        run_text(git_command(mirror, ["remote", "add", "origin", REMOTE_URL]), "fetch")
+    if not (mirror / "HEAD").is_file() or mirror.is_symlink():
+        raise ReleaseError("fetch", "schedule mirror is not a regular bare Git repository")
+    origin = run_text(git_command(mirror, ["remote", "get-url", "origin"]), "fetch")
+    if origin != REMOTE_URL:
+        raise ReleaseError("fetch", "schedule mirror origin differs from the pinned public URL")
+    return mirror
+
+
+def read_last_seen(mirror: Path) -> str | None:
+    revision = run_text(
+        git_command(
+            mirror,
+            [
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/hermes-sync/last-seen",
+            ],
+        ),
+        "state",
+    )
+    if not revision:
+        return None
+    if not SHA_PATTERN.fullmatch(revision):
+        raise ReleaseError("state", "last-seen main revision is invalid")
+    return revision
+
+
+def fetch_main(mirror: Path) -> str:
+    last_seen = read_last_seen(mirror)
+    run_text(
+        git_command(
+            mirror,
+            [
+                "fetch",
+                "--force",
+                "--no-tags",
+                "origin",
+                f"refs/heads/{REMOTE_BRANCH}",
+            ],
+        ),
+        "fetch",
+    )
+    candidate = run_text(
+        git_command(mirror, ["rev-parse", "FETCH_HEAD^{commit}"]),
+        "fetch",
+    )
+    if not SHA_PATTERN.fullmatch(candidate):
+        raise ReleaseError("fetch", "remote main did not resolve to a commit")
+    if last_seen is not None and candidate != last_seen:
+        try:
+            result = subprocess.run(
+                git_command(mirror, ["merge-base", "--is-ancestor", last_seen, candidate]),
+                env=command_environment(),
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ReleaseError("fast-forward", "Git ancestry check timed out") from error
+        if result.returncode != 0:
+            raise ReleaseError("fast-forward", "remote main is not a descendant of last-seen main")
+    # Record every observed, ancestry-approved main before candidate validation.
+    # Otherwise A->B (invalid), followed by a force rewrite A->C, would evade
+    # the non-fast-forward check because B was never deployed.
+    run_text(
+        git_command(mirror, ["update-ref", "refs/hermes-sync/last-seen", candidate]),
+        "state",
+    )
+    return candidate
+
+
+def install_bundle(
+    bundle: Bundle,
+    runtime: Path,
+    state: Path,
+    timer_directory: Path,
+) -> str:
+    releases = prepare_directories(runtime, state)
+    current = resolved_link(runtime / "current", releases, required=False)
+    current_metadata = verify_release(current) if current is not None else None
+    if is_quarantined(state, bundle.bundle_hash):
+        if current_metadata is None:
+            raise ReleaseError("quarantine", "no healthy current release exists")
+        if current_metadata.bundle_hash == bundle.bundle_hash:
+            raise ReleaseError("quarantine", "the current release is quarantined")
+        return f"quarantined schedule bundle unchanged: {bundle.bundle_hash}"
+    if current_metadata is not None:
+        if current_metadata.bundle_hash == bundle.bundle_hash:
+            validate_release_contract(cast(Path, current), timer_directory)
+            return f"schedule bundle unchanged at {current_metadata.revision}"
+    release = build_release(bundle, releases, timer_directory)
+    # Existing immutable release directories are reused by SHA; revalidate the
+    # deployment contract against today's installed timer inventory before an
+    # activation even when the release itself did not need rebuilding.
+    validate_release_contract(release, timer_directory)
+    activate_release(release, runtime)
+    return f"activated schedule release {bundle.revision}"
+
+
+def install_local(repository: Path, revision: str, timer_directory: Path) -> str:
+    prepare_directories(RUNTIME_ROOT, STATE_ROOT)
+    lock_handle = locked(STATE_ROOT)
+    try:
+        bundle = archive_bundle(repository, revision)
+        return install_bundle(
+            bundle,
+            RUNTIME_ROOT,
+            STATE_ROOT,
+            timer_directory,
+        )
+    finally:
+        lock_handle.close()
+
+
+def clear_failure(state: Path) -> None:
+    changed = False
+    for name in ("pending-failure.json", "last-alerted-failure.json"):
+        path = state / name
+        if path.exists():
+            path.unlink()
+            changed = True
+    if changed:
+        fsync_directory(state)
+
+
+def record_failure(state: Path, error: ReleaseError) -> None:
+    if state.is_symlink():
+        raise ReleaseError("setup", "sync state root must not be a symlink")
+    state.mkdir(parents=True, exist_ok=True)
+    os.chmod(state, 0o700)
+    fingerprint = hashlib.sha256(
+        f"{error.phase}\0{error.detail}".encode()
+    ).hexdigest()
+    atomic_write(
+        state / "pending-failure.json",
+        json.dumps(
+            {
+                "fingerprint": fingerprint,
+                "phase": error.phase,
+                "detail": error.detail[:500],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+    )
+
+
+def sync() -> str:
+    prepare_directories(RUNTIME_ROOT, STATE_ROOT)
+    lock_handle = locked(STATE_ROOT)
+    try:
+        mirror = ensure_mirror(STATE_ROOT)
+        revision = fetch_main(mirror)
+        bundle = archive_bundle(mirror, revision)
+        message = install_bundle(
+            bundle,
+            RUNTIME_ROOT,
+            STATE_ROOT,
+            SYSTEMD_ROOT,
+        )
+        # Activation is the commit point. Failure-state cleanup is recoverable
+        # bookkeeping and must not report a failed deployment after `current`
+        # has already moved.
+        try:
+            clear_failure(STATE_ROOT)
+        except OSError as error:
+            print(f"warning: could not clear prior sync alert state: {error}", file=sys.stderr)
+        return message
+    finally:
+        lock_handle.close()
+
+
+def rollback() -> str:
+    releases = prepare_directories(RUNTIME_ROOT, STATE_ROOT)
+    lock_handle = locked(STATE_ROOT)
+    try:
+        current = cast(Path, resolved_link(RUNTIME_ROOT / "current", releases))
+        previous = cast(Path, resolved_link(RUNTIME_ROOT / "previous", releases))
+        if current == previous:
+            raise ReleaseError("rollback", "current and previous point to the same release")
+        metadata = verify_release(current)
+        previous_metadata = verify_release(previous)
+        if is_quarantined(STATE_ROOT, previous_metadata.bundle_hash):
+            raise ReleaseError("rollback", "previous release is quarantined")
+        quarantine(STATE_ROOT, metadata)
+        replace_link(RUNTIME_ROOT / "current", previous)
+        replace_link(RUNTIME_ROOT / "previous", current)
+        return f"rolled back {metadata.revision} and quarantined {metadata.bundle_hash}"
+    finally:
+        lock_handle.close()
+
+
+def unquarantine(bundle_hash: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", bundle_hash):
+        raise ReleaseError("unquarantine", "bundle hash must be 64 lowercase hex characters")
+    prepare_directories(RUNTIME_ROOT, STATE_ROOT)
+    lock_handle = locked(STATE_ROOT)
+    try:
+        path = STATE_ROOT / "quarantine" / bundle_hash
+        if not path.is_file():
+            raise ReleaseError("unquarantine", "bundle hash is not quarantined")
+        path.unlink()
+        fsync_directory(path.parent)
+        return f"unquarantined schedule bundle {bundle_hash}"
+    finally:
+        lock_handle.close()
+
+
+def status() -> str:
+    releases = prepare_directories(RUNTIME_ROOT, STATE_ROOT)
+    current = resolved_link(RUNTIME_ROOT / "current", releases, required=False)
+    previous = resolved_link(RUNTIME_ROOT / "previous", releases, required=False)
+    payload = {
+        "last_seen_main": read_last_seen(STATE_ROOT / "mirror.git")
+        if (STATE_ROOT / "mirror.git").is_dir()
+        else None,
+        "current": verify_release(current).revision if current else None,
+        "previous": verify_release(previous).revision if previous else None,
+        "quarantined_bundle_hashes": sorted(
+            path.name for path in (STATE_ROOT / "quarantine").iterdir() if path.is_file()
+        ),
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def require_root() -> None:
+    if os.geteuid() != 0:
+        raise ReleaseError("permissions", "run as root")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    local = subparsers.add_parser("install-local")
+    local.add_argument("--repository", required=True, type=Path)
+    local.add_argument("--revision", required=True)
+    local.add_argument("--timer-directory", required=True, type=Path)
+    subparsers.add_parser("sync")
+    subparsers.add_parser("rollback")
+    allow = subparsers.add_parser("unquarantine")
+    allow.add_argument("bundle_hash")
+    subparsers.add_parser("status")
+    arguments = parser.parse_args(argv[1:])
+    try:
+        require_root()
+        if arguments.command == "install-local":
+            output = install_local(
+                arguments.repository.resolve(),
+                arguments.revision,
+                arguments.timer_directory.resolve(),
+            )
+        elif arguments.command == "sync":
+            try:
+                output = sync()
+            except (OSError, ReleaseError) as caught:
+                error = (
+                    caught
+                    if isinstance(caught, ReleaseError)
+                    else ReleaseError("runtime", str(caught))
+                )
+                record_failure(STATE_ROOT, error)
+                print(
+                    f"Hermes schedule sync failed during {error.phase}: {error.detail}",
+                    file=sys.stderr,
+                )
+                return 1
+        elif arguments.command == "rollback":
+            output = rollback()
+        elif arguments.command == "unquarantine":
+            output = unquarantine(arguments.bundle_hash)
+        else:
+            output = status()
+    except (OSError, ReleaseError) as error:
+        print(f"Hermes schedule release failed: {error}", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -197,6 +197,8 @@ def load_manifest() -> JsonObject:
     data = yaml.safe_load(MANIFEST_PATH.read_text())
     if not isinstance(data, dict):
         raise RunnerError("schedules.yaml must be a YAML object.")
+    if data.get("deployment_contract_version") != 1:
+        raise RunnerError("unsupported schedule deployment contract version.")
     return cast(JsonObject, data)
 
 
