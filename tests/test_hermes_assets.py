@@ -288,7 +288,7 @@ class HermesScheduleTests(unittest.TestCase):
         runner = manifest["runner"]
         for key in ("poll_seconds", "retention_days_pass", "retention_days_fail"):
             self.assertIsInstance(runner[key], int)
-        self.assertEqual(runner["archive_on_complete"], ["PASS"])
+        self.assertEqual(runner["archive_on_complete"], ["PASS", "FAIL", "BLOCKED"])
         for entry in manifest["schedules"]:
             with self.subTest(entry=entry.get("name")):
                 self.assertIn(entry["slack_channel"], channels)
@@ -2235,15 +2235,109 @@ class HermesArchiveOnCompleteTests(unittest.TestCase):
             history = runner.history_path("health-6h").read_text().splitlines()
             self.assertTrue(json.loads(history[-1])["archived"])
 
-    def test_fail_and_needs_more_time_are_left_open_by_default(self) -> None:
+    def test_every_terminal_status_archives_by_default(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            with mock.patch.object(runner, "conductor_call", return_value={}) as call:
+                for status in ("PASS", "FAIL", "BLOCKED"):
+                    runner.record_run("x", status, f"ws-{status}")
+                    self.assertTrue(
+                        runner.archive_completed_workspace(
+                            {"runner": {}}, "x", status, f"ws-{status}"
+                        )
+                    )
+            self.assertEqual(call.call_count, 3)
+            for record in runner.read_history("x"):
+                self.assertTrue(record["archived"])
+
+    def test_needs_more_time_is_left_open(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             runner = self._runner_with_state(tmp)
             with mock.patch.object(runner, "conductor_call") as call:
-                for status in ("FAIL", "BLOCKED", "NEEDS_MORE_TIME"):
-                    self.assertFalse(
-                        runner.archive_completed_workspace({"runner": {}}, "x", status, "ws-2")
+                self.assertFalse(
+                    runner.archive_completed_workspace(
+                        {"runner": {}}, "x", "NEEDS_MORE_TIME", "ws-2"
                     )
+                )
+            call.assert_not_called()
+
+    def test_started_workspace_is_recorded_before_outcome(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            runner.record_workspace_started("x", "ws-9")
+            history = runner.read_history("x")
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["status"], runner.RUNNING_STATUS)
+            self.assertFalse(history[0]["archived"])
+            runner.record_run("x", "FAIL", "ws-9")
+            history = runner.read_history("x")
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["status"], "FAIL")
+
+    def test_retention_retries_failed_archive_and_sweeps_stale_runs(self) -> None:
+        import tempfile
+        from datetime import timedelta
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            old = (runner.utc_now() - timedelta(days=2)).isoformat()
+            runner.write_history(
+                "health-6h",
+                [
+                    {"completed_at": runner.utc_now().isoformat(), "status": "FAIL",
+                     "workspace_id": "ws-fail", "archived": False},
+                    {"completed_at": old, "status": runner.RUNNING_STATUS,
+                     "workspace_id": "ws-crashed", "archived": False},
+                    {"completed_at": runner.utc_now().isoformat(),
+                     "status": runner.RUNNING_STATUS,
+                     "workspace_id": "ws-live", "archived": False},
+                    {"completed_at": old, "status": "NEEDS_MORE_TIME",
+                     "workspace_id": "ws-wait", "archived": False},
+                ],
+            )
+            manifest = {"runner": {}, "schedules": [{"name": "health-6h"}]}
+            with (
+                mock.patch.object(runner, "conductor_call", return_value={}) as call,
+                mock.patch.object(runner, "approval_protected_workspace_ids", return_value=set()),
+            ):
+                runner.apply_retention(manifest)
+            archived = sorted(
+                c.args[1]["workspace_id"] for c in call.call_args_list
+            )
+            self.assertEqual(archived, ["ws-crashed", "ws-fail"])
+            states = {r["workspace_id"]: r["archived"] for r in runner.read_history("health-6h")}
+            self.assertEqual(
+                states,
+                {"ws-fail": True, "ws-crashed": True, "ws-live": False, "ws-wait": False},
+            )
+
+    def test_retention_skips_running_workspace_of_locked_schedule(self) -> None:
+        import fcntl
+        import tempfile
+        from datetime import timedelta
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = self._runner_with_state(tmp)
+            old = (runner.utc_now() - timedelta(days=3)).isoformat()
+            runner.write_history(
+                "nightly-dream",
+                [{"completed_at": old, "status": runner.RUNNING_STATUS,
+                  "workspace_id": "ws-slow", "archived": False}],
+            )
+            manifest = {"runner": {}, "schedules": [{"name": "nightly-dream"}]}
+            lock = (runner.state_dir() / "nightly-dream.lock").open("w")
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                with (
+                    mock.patch.object(runner, "conductor_call", return_value={}) as call,
+                    mock.patch.object(
+                        runner, "approval_protected_workspace_ids", return_value=set()
+                    ),
+                ):
+                    runner.apply_retention(manifest)
+            finally:
+                lock.close()
             call.assert_not_called()
 
     def test_archive_failure_is_best_effort(self) -> None:
