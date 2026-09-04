@@ -83,7 +83,9 @@ give `/compound` a chance to close it.
 
 **Local gate.** First commands: `ci-local --run` (or the workflow's exact `run:` steps) and
 `git status`. Do not review product source. Do not dump the full diff. The ci-local receipt's
-`tree_sha` is the tree identity. Run the **full** gate on the current tree. On failure: fix
+`tree_sha` is the tree identity. Run the **full** gate on the current tree, unless a receipt
+from this session already covers the current `tree_sha` (the `/ticket-flow` that handed off
+ran it); reuse that receipt and go straight to the push. On failure: fix
 every finding, re-run the full gate, repeat. Permit rounds only while each round makes
 concrete, stateable progress against the previous failure. Stop on no-progress or a human
 decision (product intent, secrets, infrastructure). Do not push a tree whose local gate is

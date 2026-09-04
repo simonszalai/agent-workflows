@@ -240,6 +240,18 @@ install -o hermes -g hermes -m 0600 \
   "$SOURCE_ROOT/hermes/config/config.yaml" "$HERMES_CONFIG"
 install -o hermes -g hermes -m 0600 /dev/null "$HERMES_HOME/.no-bundled-skills"
 
+# The ops skill is reviewed content too; reconcile it and its references so a
+# skill-only change reaches the host through install.sh, not only bootstrap.sh.
+install -d -o hermes -g hermes -m 0700 "$HERMES_HOME/skills/ops/autodev-ops/references"
+install -o hermes -g hermes -m 0600 \
+  "$SOURCE_ROOT/hermes/config/skills/ops/autodev-ops/SKILL.md" \
+  "$HERMES_HOME/skills/ops/autodev-ops/SKILL.md"
+for reference in health-evidence.md slack-ops-channels.md; do
+  install -o hermes -g hermes -m 0644 \
+    "$SOURCE_ROOT/hermes/config/skills/ops/autodev-ops/references/$reference" \
+    "$HERMES_HOME/skills/ops/autodev-ops/references/$reference"
+done
+
 systemctl daemon-reload
 systemctl enable --now \
   hermes-autodev-mcp.service \

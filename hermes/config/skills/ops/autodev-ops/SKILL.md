@@ -38,6 +38,26 @@ Hermes config may **allowlist** only a subset of memory tools (`get_ticket`, `se
 - Epic IDs: `E####` → **`get_epic` / `list_epics`** (not `get_ticket`; invalid format error).
 - Epic tools may be denied for restricted tokens; fall back to `search_tickets` + titles/tags mentioning `E00xx`, or member tickets if `epic_id` is populated (often null).
 
+### Creating or splitting epics
+
+Do not assemble an epic from raw `create_epic`/`create_ticket` calls. Dispatch a Conductor
+session in the owning repo's workspace with `/epic-create "<intent>"` (or `/epic-create F0331
+B0426` to absorb tickets); it creates, plans, splits, and readiness-checks the epic so
+`/epic-flow` starts building immediately. Canonical rules:
+`skills/references/epic-lifecycle.md` §Splitting rules in agent-workflows. In short:
+
+- Fewer, larger steps: bundle work that shares a primitive or cannot be tested apart; split
+  only for parallel repos/non-overlapping scopes or a real gate boundary.
+- One repo per step, literally — foreign-repo edits (e.g. a ts-dashboard slot list) are their
+  own step, never "a separate PR coordinated in this step".
+- Staging-gate criteria cite only staging-observable evidence; production-time metrics go to
+  the epic's production criteria; no human-labour criteria (hand labels, sign-off).
+- Backfills, prompt-row seeds, and enum/config inserts a gate needs are deploy rows of that
+  milestone; seed a new slot's prompt row in the milestone that adds the enum.
+- Settle model ids, config keys, column names, and cost caps in the epic plan; never
+  "confirm in the step".
+- Validation harness code lands with the behaviour change; a validation step is run-only.
+
 ### Auth failures
 - Upstream `403 Invalid bearer token` on `:8792` = proxy credential stale (`hermes-autodev-mcp.service` / `LoadCredential` token). Report blocked; do not invent ticket data.
 - When healthy: `get_security_config_summary` shows `enforcement_active` + principal count.
