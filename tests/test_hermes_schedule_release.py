@@ -663,6 +663,10 @@ class HermesScheduleReleaseTests(unittest.TestCase):
             '/dev/null "$HERMES_HOME/.no-bundled-skills"',
             installer,
         )
+        self.assertIn(
+            '"$SOURCE_ROOT/hermes/config/skills/ops/autodev-ops/SKILL.md"',
+            installer,
+        )
         self.assertNotIn('configure.py" "$HERMES_CONFIG"', installer)
 
     def test_units_that_switch_users_never_pin_user_root(self) -> None:

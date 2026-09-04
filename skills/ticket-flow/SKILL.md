@@ -66,7 +66,8 @@ secrets/schema/infrastructure/cost beyond the accepted plan.
 - Decide the delivery target (staging default; direct-production only for tiny/safe; `--no-land`
   means build/review only) and record it in the ticket.
 - **Resume from lifecycle truth**: skip phases whose artifacts and status already exist — a
-  `planned` ticket with a plan artifact enters at implementation; a built ticket with health
+  `planned` ticket with a plan artifact enters at implementation (epic steps arrive this way:
+  read the plan, do not write a second one); a built ticket with health
   evidence enters at deploy; `verify_staging_failed` resumes inside `/ticket-deploy`'s repair
   loop, not here.
 
@@ -90,7 +91,8 @@ self-review missed. Only then run the repo's
 full health gate, once, on the final tree; inventory and fix all failures, re-running the full
 gate only when the tree changed. The tree that passes the full gate is the tree you push, so
 the gate runs at most twice per landing (final tree, and once more after a rebase that changed
-files). Record deviations from the plan in the ticket.
+files). This run is `/ticket-deploy`'s local gate: keep the `ci-local` receipt (`tree_sha`)
+and hand it over so the same tree is not gated a third time. Record deviations from the plan in the ticket.
 
 Read CLAUDE.md, this skill, and the plan artifact once; after a context compaction, continue
 from the compaction summary and the plan rather than re-reading them. When you have enough

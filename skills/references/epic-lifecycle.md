@@ -49,6 +49,40 @@ For every cross-repo dependency edge, write the contract in both step tickets:
 
 Same-repo edges order the waterfall but do not need cross-repo contracts.
 
+## Splitting rules
+
+Every step costs a fixed ceremony (plan artifact, self-review, full health gate, CI, PR,
+merge) that runs strictly serially inside one repo. Split for parallelism or for a real risk
+boundary, never for tidiness. Whoever creates or reconciles an epic — a planner, `/epic-flow`,
+or an operator session calling the MCP directly — applies these rules; `/epic-flow` §2
+reconciles an existing split against them before building anything.
+
+1. **Bundle work that shares a primitive.** Two steps in the same repo stay separate only when
+   they can be built and tested in parallel with non-overlapping write scopes, or when they sit
+   on different sides of a gate. A step whose tests or staging probe cannot run until a sibling
+   lands (a retriever over a column the sibling adds) is the same step.
+2. **One repo per step, literally.** Any file in another repo is its own step in that repo,
+   with contracts in both tickets. Never "a separate PR in <repo>, coordinated in this step":
+   that hides a remote workspace and a gate dependency.
+3. **Acceptance criteria are gradable at the gate's tier.** A staging gate lists only
+   staging-observable evidence. Anything that needs production time (24h post-activation
+   metrics, cost vs a production baseline) belongs to the epic's production criteria. Nothing
+   requires a human's labour (hand-labelled samples, manual sign-off) unless a named human step
+   exists; otherwise the agent produces it and the criterion says so.
+4. **Precondition producers are deploy rows, not gate failures.** Backfills, prompt-row seeds,
+   enum additions, and config inserts a gate criterion depends on are deployment-guide rows of
+   that milestone's deploy. A prompt row for a new slot is seeded in the milestone that adds the
+   enum (a row with no reader is harmless; a reader with no row asserts).
+5. **Resolve identifiers in the epic plan.** Model ids, config keys, table and column names,
+   and cost caps are settled during planning from code and memory. "Confirm exact id in the
+   step" stalls a worker later.
+6. **Validation code ships with the behaviour change.** A replay-harness arm or scorecard
+   change lands in the step that changes the behaviour it measures; a validation step is then
+   run-only (execute, persist artifacts, write the deployment guide) and needs no PR unless it
+   commits results. Size its cost cap from prior runs recorded in memory.
+7. **The step plan is written once.** The split writes each step's `plan` artifact and sets
+   `planned`; `/ticket-flow` enters at implementation and does not write a second plan.
+
 ## Execution
 
 Epic execution works one milestone at a time:

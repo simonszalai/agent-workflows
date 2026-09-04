@@ -131,7 +131,14 @@ through the plan/split phase (§2) — building would stop at the first remote s
 
 Required when any of: no canonical epic `plan` artifact; a milestone with missing/vague
 acceptance criteria; a milestone without steps; a step ticket without its own `plan` artifact;
-a step still in `backlog` with a plan; cross-repo edges without contracts in both tickets.
+a step still in `backlog` with a plan; cross-repo edges without contracts in both tickets; or
+the existing split violates `epic-lifecycle.md` §Splitting rules (steps that share a primitive
+and cannot be tested apart, foreign-repo work hidden inside a step, criteria a staging gate
+cannot grade, gate-critical backfills or seeds with no deploy row, unresolved identifiers).
+Epics created outside this skill (an operator or Hermes session calling the MCP directly) are
+reconciled here before any step is dispatched: merge or split steps, move criteria to the
+tier that can grade them, add missing steps and deploy rows. Record each reconciliation in
+the epic plan artifact with its reason.
 
 Planning is always deep (`epic-lifecycle.md` §Epic planning): read all epic artifacts and
 absorbed source tickets, research code and memory, consolidate contradictions by recency,
@@ -149,7 +156,11 @@ Split idempotently — reconcile, never delete/recreate:
   describing the same edges.
 - every non-completed step gets its own ticket-level `plan` artifact (goal/non-goals, approach,
   files, contracts consumed/exposed, tests, acceptance evidence, deploy/rollback notes), then
-  `update_ticket(status="planned", summary_bullets=[...])` immediately.
+  `update_ticket(status="planned", summary_bullets=[...])` immediately. This is the step's
+  only plan: the `/ticket-flow` dispatch names the artifact id and enters at implementation.
+- merging steps: when two tickets become one, keep the lower-numbered ticket, fold the other's
+  scope into its plan, set the other to `abandoned` with a note naming the survivor, and
+  rewrite `depends_on`/member deps so no edge points at the abandoned ticket.
 - for every cross-repo edge, write the contract in both step tickets (provider exposes /
   consumer reads).
 
@@ -166,7 +177,8 @@ For each milestone in order (or the single `--milestone`):
    commits is done; move on.
 2. **Build steps** — walk the step DAG in dependency waves. Each step runs as its own fresh
    `/ticket-flow <ID>` with only: epic id, milestone id, the milestone's acceptance criteria,
-   this step's contracts, and the integration target. Runner-repo steps are delegated to a
+   this step's contracts, the plan artifact id (the worker implements it, it does not re-plan),
+   and the integration target. Runner-repo steps are delegated to a
    subagent; remote-repo steps are dispatched as a session in that repo's workspace
    (§Remote repos). Parallelize a wave only when repos/write scopes don't overlap — different
    repos always qualify, since they are separate workspaces. A step is done when the ticket is
@@ -183,7 +195,9 @@ For each milestone in order (or the single `--milestone`):
 3. **Deploy** — after all steps are `merged`, deploy the integration target to staging with
    `/ticket-deploy staging` (no-ticket mode: local health + CI + project staging deploy steps)
    in every repo that has a step in this milestone, in the order the deployment guide requires
-   (schema first). Runner repo: run it here. Remote repos: one session per repo in its workspace
+   (schema first). The deploy includes every precondition row the gate depends on (backfills,
+   prompt-row seeds, config inserts) as listed in the deployment guide; do not leave them for
+   the gate to fail on. Runner repo: run it here. Remote repos: one session per repo in its workspace
    (§Remote repos), sequentially when the guide orders them, otherwise concurrently. Keep each
    repo's deploy report (repo, integration-target sha, result, session link); the gate needs all
    of them. Merged code is not deployed runtime evidence; never skip this.
