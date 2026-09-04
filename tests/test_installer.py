@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -335,6 +337,145 @@ if __name__ == "__main__":
 
 
 class SetupCloudShellTest(unittest.TestCase):
+    def test_daemon_child_cannot_inherit_setup_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = InstallerTest().source_repo(root)
+            subprocess.run(
+                [
+                    "git", "-C", str(source), "remote", "add", "origin",
+                    "https://github.com/ts-value-software/ts-prefect.git",
+                ],
+                check=True,
+            )
+            home = root / "home"
+            tools_bin = home / ".local/share/agent-workflows-tools/bin"
+            tools_bin.mkdir(parents=True)
+            report = root / "daemon-report.json"
+            stop = root / "stop-daemon"
+            daemon = root / "daemon.py"
+            daemon.write_text(
+                """\
+import fcntl
+import json
+import os
+import sys
+import time
+
+lock_path, report_path, stop_path = sys.argv[1:]
+lock_stat = os.stat(lock_path)
+inherited_lock_fds = []
+for descriptor in range(3, 256):
+    try:
+        descriptor_stat = os.fstat(descriptor)
+    except OSError:
+        continue
+    if (descriptor_stat.st_dev, descriptor_stat.st_ino) == (lock_stat.st_dev, lock_stat.st_ino):
+        inherited_lock_fds.append(descriptor)
+
+probe_fd = os.open(lock_path, os.O_WRONLY)
+try:
+    fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    lock_was_held = True
+else:
+    lock_was_held = False
+    fcntl.flock(probe_fd, fcntl.LOCK_UN)
+finally:
+    os.close(probe_fd)
+
+with open(report_path, "w", encoding="utf-8") as report_file:
+    json.dump({
+        "pid": os.getpid(),
+        "inherited_lock_fds": inherited_lock_fds,
+        "lock_was_held": lock_was_held,
+    }, report_file)
+
+while not os.path.exists(stop_path):
+    time.sleep(0.05)
+"""
+            )
+            fake_op = tools_bin / "op"
+            fake_op.write_text(
+                """#!/bin/sh
+if [ ! -e "$DAEMON_STARTED" ]; then
+  : > "$DAEMON_STARTED"
+  python3 "$DAEMON_SCRIPT" "$SETUP_LOCK" "$DAEMON_REPORT" "$DAEMON_STOP" \\
+    </dev/null >/dev/null 2>&1 &
+fi
+attempt=0
+while [ ! -s "$DAEMON_REPORT" ]; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 500 ] || exit 1
+  sleep 0.01
+done
+printf '2.30.0\\n'
+"""
+            )
+            fake_op.chmod(0o755)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            fake_jq = fake_bin / "jq"
+            fake_jq.write_text("#!/bin/sh\nprintf 'jq-1.7.1\\n'\n")
+            fake_jq.chmod(0o755)
+            lock_path = home / ".cache/agent-workflows/cloud-setup.lock"
+            environment = {
+                **os.environ,
+                "AGENT_WORKFLOWS_CLOUD_TEST": "1",
+                "DAEMON_REPORT": str(report),
+                "DAEMON_SCRIPT": str(daemon),
+                "DAEMON_STARTED": str(root / "daemon-started"),
+                "DAEMON_STOP": str(stop),
+                "HOME": str(home),
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "SETUP_LOCK": str(lock_path),
+            }
+            daemon_pid: int | None = None
+            try:
+                result = subprocess.run(
+                    [
+                        str(source / "bin/setup-agent-workflows-cloud"),
+                        "--cwd", str(source),
+                        "--home", str(home),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=environment,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                deadline = time.monotonic() + 5
+                while not report.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(report.exists(), "daemon did not report its lock descriptors")
+                daemon_report = json.loads(report.read_text())
+                daemon_pid = daemon_report["pid"]
+                os.kill(daemon_pid, 0)
+                self.assertTrue(daemon_report["lock_was_held"])
+                self.assertEqual(daemon_report["inherited_lock_fds"], [])
+
+                acquire = subprocess.run(
+                    [
+                        "python3",
+                        "-c",
+                        "import fcntl, os, sys; "
+                        "fd = os.open(sys.argv[1], os.O_WRONLY); "
+                        "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+                        str(lock_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                self.assertEqual(acquire.returncode, 0, acquire.stderr)
+            finally:
+                stop.touch()
+                if daemon_pid is not None:
+                    try:
+                        os.kill(daemon_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
     def test_download_helper_survives_set_u(self) -> None:
         """`local a=$1 b=${a}...` on one line is unbound under bash `set -u`.
 
