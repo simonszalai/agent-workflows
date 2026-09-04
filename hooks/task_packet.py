@@ -7,11 +7,17 @@ import json
 import os
 import re
 import secrets
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# This module can also be executed directly while debugging an installed snapshot.  Entrypoints
+# set the same flag before importing us; setting it here protects this module's sibling imports in
+# direct-script mode.
+sys.dont_write_bytecode = True
 
 from memory_context import (
     _append_telemetry,

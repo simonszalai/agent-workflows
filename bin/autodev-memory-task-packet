@@ -11,6 +11,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+# Keep checksum-verified installed snapshots byte-for-byte stable even when the caller can write
+# through their read-only modes (for example, a root process in a cloud workspace).
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "hooks"))
 

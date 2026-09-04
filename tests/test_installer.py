@@ -331,6 +331,102 @@ class InstallerTest(unittest.TestCase):
             unsafe = self.run_install(source, root / "other-home", "--version", "..")
             self.assertNotEqual(unsafe.returncode, 0)
 
+    def test_installed_python_entrypoints_do_not_mutate_immutable_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self.source_repo(root)
+            home = root / "home"
+            installed = self.run_install(source, home)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            version = home / f".local/share/agent-workflows/versions/{commit}"
+            manifest_before = (version / "manifest.json").read_bytes()
+            tree_before = {
+                str(path.relative_to(version)): path.read_bytes()
+                for path in version.rglob("*")
+                if path.is_file()
+            }
+
+            # Cloud workspace processes commonly run as root, which can write through the
+            # snapshot's 0555 directory modes.  Make the import directories writable here so
+            # this regression test also fails under an unprivileged local test runner.
+            for path in (version, version / "bin", version / "hooks"):
+                path.chmod(0o755)
+            environment = {**os.environ, "HOME": str(home)}
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            for command in (
+                [str(home / ".local/bin/mcp-bridge"), "--help"],
+                [str(home / ".local/bin/autodev-memory-task-packet"), "--help"],
+                [str(version / "hooks/task_packet.py")],
+            ):
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+            for hook, hook_environment in (
+                (
+                    home / ".claude/hooks/autodev-memory-session-start.sh",
+                    {**environment, "AUTODEV_MEMORY_EXPLICIT_PACKET": "1"},
+                ),
+                (home / ".claude/hooks/autodev-memory-pre-agent.sh", environment),
+            ):
+                result = subprocess.run(
+                    [str(hook)],
+                    input="{}",
+                    capture_output=True,
+                    text=True,
+                    env=hook_environment,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertEqual(list(version.rglob("__pycache__")), [])
+            self.assertEqual(list(version.rglob("*.pyc")), [])
+            self.assertEqual((version / "manifest.json").read_bytes(), manifest_before)
+            self.assertEqual(
+                {
+                    str(path.relative_to(version)): path.read_bytes()
+                    for path in version.rglob("*")
+                    if path.is_file()
+                },
+                tree_before,
+            )
+            reinstalled = self.run_install(source, home)
+            self.assertEqual(reinstalled.returncode, 0, reinstalled.stderr)
+
+            unknown = version / "hooks/unknown.py"
+            unknown.write_text("unknown\n")
+            mismatch = self.run_install(source, home)
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn("immutable version checksum mismatch", mismatch.stderr)
+            unknown.unlink()
+
+            artifact = version / "hooks/mcp_auth.py"
+            artifact.chmod(0o644)
+            artifact.write_text(artifact.read_text() + "# modified\n")
+            mismatch = self.run_install(source, home)
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn("immutable version checksum mismatch", mismatch.stderr)
+
+    def test_memory_shell_hooks_disable_bytecode_for_every_python_process(self) -> None:
+        for relative in (
+            "hooks/autodev-memory-session-start.sh",
+            "hooks/autodev-memory-pre-agent.sh",
+            "hooks/mem-lib.sh",
+        ):
+            for line in (ROOT / relative).read_text().splitlines():
+                if "python3" in line and not line.lstrip().startswith("#"):
+                    self.assertIn("python3 -B", line, f"{relative}: {line}")
+
 
 if __name__ == "__main__":
     unittest.main()

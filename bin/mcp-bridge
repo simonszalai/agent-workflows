@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import BinaryIO
 
 
+# Installed version trees are checksum-verified immutable snapshots.  Cloud agents may run as
+# root, so directory modes alone cannot prevent imports from adding __pycache__ files.
+sys.dont_write_bytecode = True
+
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hooks"))
 

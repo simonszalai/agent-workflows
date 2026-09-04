@@ -43,10 +43,10 @@ mem_log INFO "TRIGGER source=$_SS_SOURCE session_present=$([[ $_SS_SESSION == no
 _CACHE_DIR="$HOME/.cache/autodev-memory/v2"
 _TELEMETRY_FILE="$HOME/.cache/autodev-memory/telemetry.jsonl"
 _PACKET_HELPER="$HOOK_DIR/memory_context.py"
-_REQUEST_EPOCH=$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || echo 0)
+_REQUEST_EPOCH=$(python3 -B -c 'import time; print(time.time_ns())' 2>/dev/null || echo 0)
 invalidate_cache() {
   [[ -n "$_SS_SESSION" && "$_SS_SESSION" != "no-sid" ]] || return 0
-  python3 "$_PACKET_HELPER" invalidate --session-id "$_SS_SESSION" --cache-dir "$_CACHE_DIR" \
+  python3 -B "$_PACKET_HELPER" invalidate --session-id "$_SS_SESSION" --cache-dir "$_CACHE_DIR" \
     --request-epoch "$_REQUEST_EPOCH" \
     >/dev/null 2>&1 || true
 }
@@ -98,7 +98,7 @@ fi
 _SID="$_SS_SESSION"
 [[ "$_SID" != "no-sid" ]] || _SID=""
 set +e
-OUTPUT=$(printf '%s' "$INIT_RESULT" | python3 "$_PACKET_HELPER" render-session \
+OUTPUT=$(printf '%s' "$INIT_RESULT" | python3 -B "$_PACKET_HELPER" render-session \
   --project "$MEM_PROJECT" \
   --repo "$MEM_REPO" \
   --session-id "$_SID" \
@@ -120,13 +120,13 @@ if [[ $_RENDER_RC -ne 0 ]]; then
 fi
 if printf '%s\n' "$OUTPUT"; then
   mem_log_output "$OUTPUT"
-  _PROVIDER=$(python3 -c '
+  _PROVIDER=$(python3 -B -c '
 import sys
 sys.path.insert(0, sys.argv[1])
 from memory_context import detect_provider
 print(detect_provider())
 ' "$HOOK_DIR" 2>/dev/null || echo unknown)
-  printf '%s' "$OUTPUT" | python3 "$_PACKET_HELPER" confirm-parent \
+  printf '%s' "$OUTPUT" | python3 -B "$_PACKET_HELPER" confirm-parent \
     --provider "$_PROVIDER" --mechanism session_start \
     --confirmation-stage session_start_output_emitted \
     --telemetry-file "$_TELEMETRY_FILE" --session-id "$_SID" \

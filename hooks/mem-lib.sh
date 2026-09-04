@@ -31,7 +31,7 @@ _MEM_LOG_FILE="$_MEM_LOG_DIR/hooks.log"
 _MEM_LOG_MAX_BYTES=1048576  # 1MB
 _MEM_LOG_HOOK_NAME=$(basename "${0:-unknown}" .sh)
 _MEM_LOG_CWD=""
-_MEM_LIB_REALPATH=$(python3 -c '
+_MEM_LIB_REALPATH=$(python3 -B -c '
 from pathlib import Path
 import sys
 print(Path(sys.argv[1]).resolve())
@@ -149,7 +149,7 @@ _mem_parse_env() {
   profile=$(PROJECT_TOOLS_CONFIG="${PROJECT_TOOLS_CONFIG:-$_MEM_AGENT_ROOT/config/project-tools.json}" \
     "$_MEM_AGENT_ROOT/bin/project-context" --cwd "$_CWD" \
     --project "$profile_project" --tool autodev_memory) || return 1
-  fields=$(PROFILE="$profile" python3 - <<'PY'
+  fields=$(PROFILE="$profile" python3 -B - <<'PY'
 import json, os
 profile = json.loads(os.environ["PROFILE"])
 memory = profile["tools"]["autodev_memory"]
@@ -171,7 +171,7 @@ PY
   local registered_env
   while IFS= read -r registered_env; do
     [[ -n "$registered_env" ]] && unset "$registered_env"
-  done < <(python3 - "${PROJECT_TOOLS_CONFIG:-$_MEM_AGENT_ROOT/config/project-tools.json}" <<'PY'
+  done < <(python3 -B - "${PROJECT_TOOLS_CONFIG:-$_MEM_AGENT_ROOT/config/project-tools.json}" <<'PY'
 import json, sys
 for value in json.load(open(sys.argv[1], encoding="utf-8"))["projects"].values():
     print(value["service_account"]["token_env"])
