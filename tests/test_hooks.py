@@ -269,6 +269,7 @@ class HookContractTest(unittest.TestCase):
             python = fake_bin / "python3"
             python.write_text(
                 "#!/bin/sh\n"
+                "[ \"$1\" = \"-B\" ] && shift\n"
                 "if [ \"$1\" = \"-c\" ]; then exit 9; fi\n"
                 f'exec "{sys.executable}" "$@"\n'
             )

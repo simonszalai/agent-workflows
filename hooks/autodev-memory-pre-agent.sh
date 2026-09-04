@@ -30,7 +30,7 @@ AGENT_TYPE=$(jq -r '.tool_input.subagent_type // "generic"' <<<"$INPUT" 2>/dev/n
 
 SCRIPT_PATH="$0"
 if [[ -L "$0" ]]; then
-  _RESOLVED_SCRIPT=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null) \
+  _RESOLVED_SCRIPT=$(python3 -B -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0" 2>/dev/null) \
     || { _log SKIP 'helper=unresolved-hook-symlink'; emit_empty; }
   [[ -n "$_RESOLVED_SCRIPT" && "$_RESOLVED_SCRIPT" != "$0" ]] \
     || { _log SKIP 'helper=unresolved-hook-symlink'; emit_empty; }
@@ -53,7 +53,7 @@ NEW_PROMPT="$PROMPT
 
 $PACKET"
 OUTPUT=$(
-  printf '%s\0%s' "$INPUT" "$NEW_PROMPT" | python3 -c '
+  printf '%s\0%s' "$INPUT" "$NEW_PROMPT" | python3 -B -c '
 import json, sys
 raw = sys.stdin.buffer.read()
 source, prompt = raw.split(b"\0", 1)
@@ -69,7 +69,7 @@ print(json.dumps({"hookSpecificOutput": {
 
 if printf '%s\n' "$OUTPUT"; then
   _log INFO "status=delivered provider=claude mechanism=prompt_rewrite chars=${#PACKET}"
-  printf '%s' "$PACKET" | python3 "$HOOK_DIR/memory_context.py" confirm-child \
+  printf '%s' "$PACKET" | python3 -B "$HOOK_DIR/memory_context.py" confirm-child \
     --provider claude --mechanism prompt_rewrite \
     --confirmation-stage pretool_output_emitted \
     --telemetry-file "$_TELEMETRY_FILE" --session-id "$SESSION_ID" \
