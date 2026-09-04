@@ -376,7 +376,16 @@ def lock_down(root: Path) -> None:
             if child.is_symlink():
                 continue
             os.chown(child, 0, 0)
-            os.chmod(child, child.stat().st_mode & ~(stat.S_IWGRP | stat.S_IWOTH))
+            mode = stat.S_IMODE(child.stat().st_mode)
+            # hermes-schedule-sync.service runs with UMask=0077, so files the
+            # unprivileged builder creates inside the venv (notably
+            # pyvenv.cfg) otherwise remain 0600 after they become root-owned.
+            # The validator and schedule service then cannot even start the
+            # release's Python interpreter. Keep releases root-writable only,
+            # but make every regular file readable and every executable
+            # traversable by the fixed validation/runtime service accounts.
+            locked_mode = 0o755 if mode & stat.S_IXUSR else 0o644
+            os.chmod(child, locked_mode)
 
 
 def run_as_build_user(command: list[str], phase: str) -> None:

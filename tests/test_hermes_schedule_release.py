@@ -593,6 +593,24 @@ class HermesScheduleReleaseTests(unittest.TestCase):
         self.assertIn("--no-new-privs", command)
         self.assertNotIn("/usr/sbin/runuser", command)
 
+    def test_lock_down_makes_restrictive_umask_venv_readable_by_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory) / ("a" * 40)
+            (release / "venv" / "bin").mkdir(parents=True)
+            pyvenv = release / "venv" / "pyvenv.cfg"
+            python = release / "venv" / "bin" / "python"
+            pyvenv.write_text("home = /usr/bin\n")
+            python.write_text("#!/bin/sh\n")
+            pyvenv.chmod(0o600)
+            python.chmod(0o700)
+
+            with mock.patch.object(self.release.os, "chown"):
+                self.release.lock_down(release)
+
+            self.assertEqual(pyvenv.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(python.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((release / "venv").stat().st_mode & 0o777, 0o755)
+
     def test_moved_virtual_environment_uses_release_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
