@@ -62,6 +62,12 @@ Project configs include the global servers so a fresh cloud workspace is self-co
   The WAF base64 transform applies only to autodev-memory writes; Conductor bodies pass
   through untouched.
 
+Codex clears the environment of stdio MCP children, so its generated TOML also contains an
+explicit `env_vars` allowlist for each authenticated bridge. The list persists variable names only;
+Codex forwards their values from its parent environment at launch. This field is Codex-specific and
+is not rendered into Claude, Cursor, or Grok configuration. Local bridge credential resolution can
+still fall back to the Mac Keychain.
+
 The bridge resolves the exact Git origin through `config/project-tools.json`, accepts only the
 matching project identity, reads only that project's restricted bearer from 1Password, and holds it
 in memory. Local sessions get the project service-account token from the exact Mac Keychain item;

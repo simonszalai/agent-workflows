@@ -24,6 +24,7 @@ TOML_HEADER = re.compile(r"^\s*\[([^]]+)]\s*(?:#.*)?$")
 SERVER_TABLE = re.compile(r'^mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))(?:\..*)?$')
 BIOME_INDENT_STYLE = re.compile(r'"indentStyle"\s*:\s*"(tab|space)"')
 BIOME_INDENT_WIDTH = re.compile(r'"indentWidth"\s*:\s*([1-9][0-9]*)')
+ENV_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class Server(NamedTuple):
@@ -31,6 +32,7 @@ class Server(NamedTuple):
     transport: str
     url: str = ""
     profile: str = ""
+    env_vars: tuple[str, ...] = ()
 
 
 def fail(message: str, status: int = 2) -> None:
@@ -89,8 +91,22 @@ def project_context(cwd: Path) -> tuple[str, Path]:
 def parse_server(name: str, raw: object) -> Server:
     if not isinstance(raw, dict):
         fail(f"MCP server {name!r} must be an object")
+    raw_env_vars = raw.get("env_vars", [])
+    if not isinstance(raw_env_vars, list):
+        fail(f"MCP server {name!r} env_vars must be an array of strings")
+    if not all(isinstance(variable, str) for variable in raw_env_vars):
+        fail(f"MCP server {name!r} env_vars must be an array of strings")
+    env_vars = tuple(raw_env_vars)
+    invalid = next((variable for variable in env_vars
+                    if not ENV_VAR_NAME.fullmatch(variable)), None)
+    if invalid is not None:
+        fail(f"MCP server {name!r} has invalid environment variable name {invalid!r}")
+    if len(set(env_vars)) != len(env_vars):
+        fail(f"MCP server {name!r} env_vars contains duplicate names")
     transport = raw.get("transport")
     if transport == "http":
+        if "env_vars" in raw:
+            fail(f"HTTP MCP server {name!r} cannot declare env_vars")
         url = raw.get("url")
         auth = raw.get("auth")
         if not isinstance(url, str) or not url.startswith("https://"):
@@ -102,7 +118,7 @@ def parse_server(name: str, raw: object) -> Server:
         profile = raw.get("profile")
         if not isinstance(profile, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", profile):
             fail(f"stdio MCP server {name!r} has an invalid profile")
-        return Server(name=name, transport=transport, profile=profile)
+        return Server(name=name, transport=transport, profile=profile, env_vars=env_vars)
     fail(f"MCP server {name!r} has unsupported transport {transport!r}")
 
 
@@ -156,6 +172,13 @@ def toml_entry(server: Server, project: str | None, *, grok: bool) -> list[str]:
         lines.append(f"command = {toml_string(command)}")
         rendered = ", ".join(toml_string(arg) for arg in args)
         lines.append(f"args = [{rendered}]")
+        if server.env_vars and not grok:
+            if len(server.env_vars) == 1:
+                lines.append(f"env_vars = [{toml_string(server.env_vars[0])}]")
+            else:
+                lines.append("env_vars = [")
+                lines.extend(f"  {toml_string(variable)}," for variable in server.env_vars)
+                lines.append("]")
     if grok:
         lines.append("enabled = true")
         if server.transport == "stdio-bridge":
