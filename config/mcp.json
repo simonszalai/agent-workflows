@@ -3,7 +3,12 @@
   "global_servers": {
     "conductor": {
       "transport": "stdio-bridge",
-      "profile": "conductor"
+      "profile": "conductor",
+      "env_vars": [
+        "CONDUCTOR_API_TOKEN",
+        "CONDUCTOR_API_KEY",
+        "CONDUCTOR_API_URL"
+      ]
     },
     "context7": {
       "transport": "http",
@@ -15,7 +20,10 @@
     "*": {
       "autodev-memory": {
         "transport": "stdio-bridge",
-        "profile": "autodev_memory"
+        "profile": "autodev_memory",
+        "env_vars": [
+          "TS_OP_SERVICE_ACCOUNT_TOKEN"
+        ]
       }
     },
     "amaru": {
