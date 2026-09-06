@@ -64,7 +64,7 @@ def manifest(path: Path) -> dict[str, object]:
     return value
 
 
-def project_context(cwd: Path) -> tuple[str, Path]:
+def project_context(cwd: Path) -> tuple[str, Path, str]:
     result = subprocess.run(
         [str(PROJECT_CONTEXT), "--cwd", str(cwd)],
         capture_output=True,
@@ -81,11 +81,14 @@ def project_context(cwd: Path) -> tuple[str, Path]:
         value = json.loads(result.stdout)
         project = value["project"]
         repo_root = value["repo_root"]
+        token_env = value["service_account"]["token_env"]
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         fail(f"project-context returned invalid output: {error}")
     if not isinstance(project, str) or not isinstance(repo_root, str):
         fail("project-context returned an incomplete repository profile")
-    return project, Path(repo_root)
+    if not isinstance(token_env, str) or not ENV_VAR_NAME.fullmatch(token_env):
+        fail("project-context returned an invalid credential variable")
+    return project, Path(repo_root), token_env
 
 
 def parse_server(name: str, raw: object) -> Server:
@@ -124,6 +127,7 @@ def parse_server(name: str, raw: object) -> Server:
 
 def servers_for(
     config: dict[str, object], project: str | None, *, global_only: bool,
+    token_env: str | None = None,
 ) -> list[Server]:
     merged: dict[str, object] = dict(config["global_servers"])
     if not global_only:
@@ -134,7 +138,15 @@ def servers_for(
             if not isinstance(extra, dict):
                 fail(f"project_servers.{project} must be an object")
             merged.update(extra)
-    return [parse_server(name, merged[name]) for name in sorted(merged)]
+    servers = [parse_server(name, merged[name]) for name in sorted(merged)]
+    for index, server in enumerate(servers):
+        if server.profile == "autodev_memory":
+            if not project or not token_env:
+                fail("project credential profile is required for autodev-memory")
+            # Registry identity and credential come from the same resolver invocation.
+            # Replace even stale manifest allowlists; never union project credentials.
+            servers[index] = server._replace(env_vars=(token_env,))
+    return servers
 
 
 def bridge_args(server: Server, project: str | None) -> tuple[str, list[str]]:
@@ -416,12 +428,15 @@ def main() -> None:
     managed = set(config["managed_server_names"])
     project = None
     repo_root = None
+    token_env = None
     if args.project or args.include_project:
-        project, repo_root = project_context(args.cwd)
+        project, repo_root, token_env = project_context(args.cwd)
 
     changed = False
     if args.user:
-        user_servers = servers_for(config, project, global_only=not args.include_project)
+        user_servers = servers_for(
+            config, project, global_only=not args.include_project, token_env=token_env,
+        )
         changed |= sync_scope(
             args.home.expanduser(), user_servers,
             project if args.include_project else None,
@@ -429,7 +444,7 @@ def main() -> None:
         )
     if args.project:
         assert project is not None and repo_root is not None
-        project_servers = servers_for(config, project, global_only=False)
+        project_servers = servers_for(config, project, global_only=False, token_env=token_env)
         changed |= sync_scope(
             repo_root, project_servers, project, managed,
             user=False, check=args.check,
