@@ -35,7 +35,7 @@ names, naming conventions, or a central registry. Every capability is delivered 
 | Lock-guarded clone of the checkout inside every hook and MCP command | Best-effort fast-forward pull in the setup script, then render |
 | Separate shim and launcher | The launcher itself on PATH |
 | Sensitive notifier daemon | A one-line notification call inside the launcher |
-| Project-level `secrets.yaml` rotation manifest | `[secrets.*]` sections in the same descriptor |
+| Project-level `secrets.yaml` rotation manifest | `[rotation.*]` sections in the same descriptor, only for secrets the repo owns |
 | Fly hosting entries | Deprecated; removed with amaruplatform-website |
 | Amaru OAuth MCP in developer config | Not a developer tool; coaches only |
 
@@ -65,60 +65,35 @@ account = "fulcrumtechnologies.1password.com"
 service_account_token_env = "AMARU_OP_SERVICE_ACCOUNT_TOKEN"
 service_account_keychain_item = "op-amaru-token"
 
-[secrets.autodev-token]
-ref = "op://AMARU/Autodev/api_token"
-provider = "self_minted"
-routes = [
-  { kind = "render", dest = "srv-xxxxxxxxxxxxxxxxxxxx", env = "AUTODEV_API_TOKEN" },
-]
-
-[secrets.render-api-key]
-ref = "op://AMARU/Render/api_key"
-provider = "manual"
-routes = []
-
-[secrets.postgres-staging-ro]
-ref = "op://AMARU/Postgres staging/ro"
-provider = "postgres"
-routes = []
-
-[secrets.postgres-prod-app]
-ref = "op://AMARU-sensitive/Postgres prod/amaru_web"
-provider = "postgres"
-sensitive = true
-routes = [
-  { kind = "render", dest = "srv-d508pta4d50c738fubl0", env = "DATABASE_URL" },
-]
-
-[secrets.website-api-dev-token]
-ref = "op://AMARU/Website API/dev_token"
-provider = "self_minted"
-routes = []
-
 [tools.autodev-mcp]
 exec = "mcp-remote"
 args = ["https://autodev-amaru.onrender.com/mcp", "--header", "Authorization: Bearer ${AUTODEV_TOKEN}"]
-env = { AUTODEV_TOKEN = "secrets.autodev-token" }
+env = { AUTODEV_TOKEN = "op://AMARU/Autodev/api_token" }
 
 [tools.render]
 exec = "render"
 args = ["--output", "json"]
-env = { RENDER_API_KEY = "secrets.render-api-key" }
+env = { RENDER_API_KEY = "op://AMARU/Render/api_key" }
 
 [tools.postgres-staging]
 exec = "psql"
 args = ["--set", "ON_ERROR_STOP=1"]
-env = { PGCONNECT = "secrets.postgres-staging-ro" }
+env = { PGCONNECT = "op://AMARU/Postgres staging/ro" }
 
 [tools.postgres-prod-write]
 exec = "psql"
 sensitive = true
-env = { PGCONNECT = "secrets.postgres-prod-app" }
+env = { PGCONNECT = "op://AMARU-sensitive/Postgres prod/amaru_web" }
 
 [tools.dev]
 exec = "bun"
 args = ["run", "dev"]
-env = { AMARU_API_URL = "http://localhost:3000", WEBSITE_API_TOKEN = "secrets.website-api-dev-token" }
+env = { AMARU_API_URL = "http://localhost:3000", WEBSITE_API_TOKEN = "op://AMARU/Website API/dev_token" }
+
+[rotation.website-api-dev-token]
+ref = "op://AMARU/Website API/dev_token"
+provider = "self_minted"
+routes = []
 ```
 
 ### Schema
@@ -133,40 +108,39 @@ env = { AMARU_API_URL = "http://localhost:3000", WEBSITE_API_TOKEN = "secrets.we
 | `service_account_token_env` | string | Environment variable holding the service-account token in cloud |
 | `service_account_keychain_item` | string | Mac Keychain service name holding the same token locally |
 
-`[secrets.<name>]` (zero or more). One entry per 1Password field this repository owns or reads:
-
-| Key | Type | Meaning |
-| --- | --- | --- |
-| `ref` | string | `op://Vault/Item/field`. Written exactly once in the file |
-| `provider` | string | Rotation provider name, or `manual` |
-| `sensitive` | bool, default false | Read through the human path, never the service account |
-| `routes` | array of tables | Where rotation pushes the new value. Empty when this repo only reads |
-
-Route table: `kind` (`render`, `github`, `prefect`), `dest` (service or repository id), `env`
-(destination variable name). Additional rotation keys (`mode`, `playbook`, `verify`, `health`)
-carry over from the current manifest unchanged.
-
 `[tools.<name>]` (one or more). The name is what agents type after `aw`:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `exec` | string | Binary to execute, resolved on PATH |
 | `args` | array of strings, default empty | Prepended to the agent's arguments verbatim |
-| `env` | table of string to string | Child environment. A value of the form `secrets.<name>` resolves to that secret's field value. Any other string is a literal |
-| `sensitive` | bool, default false | Required true when any referenced secret is sensitive |
+| `env` | table of string to string | Child environment. A value starting with `op://` is read from 1Password. Any other string is a literal |
+| `sensitive` | bool, default false | Required true when any `env` value references a `-sensitive` vault |
 
 Values in `args` may contain `${VAR}` where `VAR` is a key in the tool's `env`; the launcher
 substitutes it after resolution. Nothing else is interpolated.
+
+`[rotation.<name>]` (zero or more). One entry per 1Password field this repository owns and
+rotates. A repository that only consumes secrets has no rotation section:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `ref` | string | `op://Vault/Item/field` of the owned field |
+| `provider` | string | Rotation provider name, or `manual` |
+| `routes` | array of tables | Where rotation pushes the new value |
+
+Route table: `kind` (`render`, `github`, `prefect`), `dest` (service or repository id), `env`
+(destination variable name). Additional rotation keys (`mode`, `playbook`, `verify`, `health`)
+carry over from the current manifest unchanged. A ref that is both rotated and consumed by a tool
+appears twice in the file. That duplication is accepted; refs are stable across rotation.
 
 ### Validation
 
 The launcher rejects the file when:
 
 - `schema` is not `1`.
-- Any `secrets.<name>` referenced from a tool does not exist.
-- A tool references a sensitive secret without `sensitive = true`.
-- A `ref` does not match `op://<vault>/<item>/<field>`.
-- The same `ref` string appears in two `[secrets.*]` entries.
+- Any `op://` value does not match `op://<vault>/<item>/<field>`.
+- A tool's `env` references a vault ending in `-sensitive` without `sensitive = true`.
 
 No other validation. No vault allowlist, no exec allowlist, no command allowlist.
 
@@ -189,9 +163,10 @@ Behaviour, in order:
    item, else fail naming both. Sensitive tools: require `--reason`, post a macOS notification with
    the reason and tool name, then read through the human account with `op --account`. In cloud the
    human path fails with "human-only".
-5. Read each referenced secret's field with `op read`. Values enter memory only.
+5. Read each `op://` value in the tool's `env` with `op read`. Values enter memory only.
 6. Build the child environment: the parent environment, minus every variable ending in
-   `_OP_SERVICE_ACCOUNT_TOKEN`, plus the tool's `env` table with secrets substituted.
+   `_OP_SERVICE_ACCOUNT_TOKEN`, plus the tool's `env` table with `op://` values replaced by
+   their field values.
 7. Substitute `${VAR}` in `args`.
 8. `exec` the binary with `args` followed by the agent's arguments. The launcher process is
    replaced; nothing is logged, cached, or written.
@@ -259,12 +234,11 @@ Methodology skills are unchanged. Skills are linked, never copied.
 
 ## Rotation
 
-Rotation runs per repository against the same descriptor. `rotate-secret` reads `[secrets.*]`,
+Rotation runs per repository against the same descriptor. `rotate-secret` reads `[rotation.*]`,
 rotates through the named provider, writes the vault in place, and fans out along `routes`.
-A secret consumed by several repositories is owned by exactly one descriptor, which carries its
-routes; other repositories reference the same `ref` string in their own `[secrets.*]` entry with
-`provider = "manual"` and empty routes. The rotation engine reads TOML instead of YAML; its
-providers and writers are unchanged.
+A secret is owned by exactly one descriptor, which carries its routes. Other repositories that
+consume it simply reference the `op://` ref from a tool and declare nothing about rotation. The
+rotation engine reads TOML instead of YAML; its providers and writers are unchanged.
 
 ## Application dev secrets
 
@@ -277,7 +251,7 @@ the complete statement of what the app needs to run.
 - Rendered harness configs contain no values, only commands and variable names.
 - A resolved secret exists only in the exec'd child's environment.
 - No descriptor above the working directory fails every command.
-- A tool referencing an undeclared secret fails validation.
+- A tool reading a `-sensitive` vault without `sensitive = true` fails validation.
 - A sensitive tool without `--reason` fails before any 1Password call.
 - The launcher's environment scrub removes every `*_OP_SERVICE_ACCOUNT_TOKEN` from the child.
 
@@ -285,8 +259,8 @@ the complete statement of what the app needs to run.
 
 1. Land `bin/aw`, `render-harness-config`, and the tests in agent-workflows.
 2. Write `agent-workflows.toml` for amaru-websites, then amaru-web, amaru-mcp, amaru-website,
-   amaru-mobile. Migrate each repository's rotation entries from the shared manifest into its own
-   `[secrets.*]` sections.
+   amaru-mobile. Migrate the rotation entries each repository owns from the shared manifest into
+   its own `[rotation.*]` sections.
 3. Rewrite tool skills to the `aw <tool>` form.
 4. Delete: `hooks/`, `config/project-tools.json`, `config/mcp.json`, the five wrappers,
    `bin/mcp-bridge`, `bin/sync-mcp`, `bin/project-context`, `mcp-proxies/`, per-repo `.mcp.json`,
