@@ -526,6 +526,11 @@ printf '2.30.0\\n'
                 "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
                 "SETUP_LOCK": str(lock_path),
             }
+            for name in list(environment):
+                if name.endswith("_OP_SERVICE_ACCOUNT_TOKEN") or name in {
+                    "CONDUCTOR_API_TOKEN", "CONDUCTOR_API_KEY",
+                }:
+                    environment.pop(name)
             daemon_pid: int | None = None
             try:
                 result = subprocess.run(
@@ -540,6 +545,11 @@ printf '2.30.0\\n'
                     env=environment,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("tool installation complete", result.stdout)
+                self.assertIn("authentication NOT READY for autodev-memory (ts)", result.stdout)
+                self.assertIn("provision TS_OP_SERVICE_ACCOUNT_TOKEN", result.stdout)
+                self.assertIn("restart the agent session", result.stdout)
+                self.assertTrue((home / ".local/bin/mcp-bridge").exists())
                 deadline = time.monotonic() + 5
                 while not report.exists() and time.monotonic() < deadline:
                     time.sleep(0.05)
@@ -571,6 +581,42 @@ printf '2.30.0\\n'
                         os.kill(daemon_pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
+
+    def test_auth_readiness_uses_only_selected_project_without_resolving_secrets(self) -> None:
+        registry = json.loads((ROOT / "config/project-tools.json").read_text())["projects"]
+        for project, profile in registry.items():
+            for present in (False, True):
+                with self.subTest(project=project, present=present):
+                    with tempfile.TemporaryDirectory() as directory:
+                        repo = Path(directory)
+                        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                                        "https://" + profile["repo_remotes"][0]], check=True)
+                        environment = {
+                            key: value for key, value in os.environ.items()
+                            if not key.endswith("_OP_SERVICE_ACCOUNT_TOKEN")
+                            and key not in {"CONDUCTOR_API_TOKEN", "CONDUCTOR_API_KEY"}
+                        }
+                        name = profile["service_account"]["token_env"]
+                        for other in registry.values():
+                            token = other["service_account"]["token_env"]
+                            if token != name or present:
+                                environment[token] = "secret-sentinel"
+                        environment["CONDUCTOR_API_KEY"] = "conductor-sentinel"
+                        result = subprocess.run(
+                            ["bash", "-c", 'source "$1"; CWD="$2"; report_auth_readiness',
+                             "bash", str(ROOT / "bin/setup-agent-workflows-cloud"), str(repo)],
+                            capture_output=True, text=True, env=environment,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn(name, result.stdout)
+                        self.assertIn(project, result.stdout)
+                        self.assertEqual("authentication NOT READY" in result.stdout,
+                                         not present)
+                        self.assertIn("Conductor: API credential present", result.stdout)
+                        self.assertNotIn("sentinel", result.stdout + result.stderr)
+                        if present:
+                            self.assertIn("not verified", result.stdout)
 
     def test_download_helper_survives_set_u(self) -> None:
         """`local a=$1 b=${a}...` on one line is unbound under bash `set -u`.

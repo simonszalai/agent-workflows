@@ -63,7 +63,10 @@ Project configs include the global servers so a fresh cloud workspace is self-co
   through untouched.
 
 Codex clears the environment of stdio MCP children, so its generated TOML also contains an
-explicit `env_vars` allowlist for each authenticated bridge. The list persists variable names only;
+explicit `env_vars` allowlist for each authenticated bridge. Autodev-memory derives its sole
+credential variable from the selected project's `service_account.token_env` in
+`config/project-tools.json`, together with the canonical `--project` argument.
+The list persists variable names only;
 Codex forwards their values from its parent environment at launch. This field is Codex-specific and
 is not rendered into Claude, Cursor, or Grok configuration. Local bridge credential resolution can
 still fall back to the Mac Keychain.
@@ -88,6 +91,46 @@ global and project servers at user scope as well as using the checked-in project
 cloud registration intentionally avoids Codex/Grok folder-trust timing races; it contains the same
 values-free commands and endpoints. Remaining OAuth servers (Amaru) require each client's normal
 one-time browser login.
+
+### Cloud credentials and existing-workspace repair
+
+Installation success is not authentication readiness. Setup installs tools even without credentials,
+then reports whether the selected project's credential is present. Presence does not verify token
+validity, vault permissions, or upstream connectivity. Provision the variable in the **agent session
+environment**, not only a setup shell:
+
+| Project | Required autodev-memory service-account variable |
+| --- | --- |
+| TS (`ts`) | `TS_OP_SERVICE_ACCOUNT_TOKEN` |
+| Amaru (`amaru`) | `AMARU_OP_SERVICE_ACCOUNT_TOKEN` |
+| Autodev (`autodev`) | `AUTODEV_OP_SERVICE_ACCOUNT_TOKEN` |
+| Workflow Pro (`workflow-pro`) | `WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN` |
+
+The registry is authoritative for new projects. Each token must access that project's configured
+non-sensitive autodev-memory bearer reference. Neither another project's token nor the generic
+`OP_SERVICE_ACCOUNT_TOKEN` is a substitute. Conductor separately needs `CONDUCTOR_API_TOKEN`
+or the injected `CONDUCTOR_API_KEY`; these do not authenticate autodev-memory. Local Mac Keychain
+authentication is unchanged. Claude, Cursor, and Grok inherit the launch environment; Codex uses
+the generated project-specific allowlist.
+
+In an existing consuming repository's cloud workspace, repair the installed tools and user config:
+
+```bash
+bash scripts/setup/cloud-agent-workflows.sh
+```
+
+Then provision the selected project's credential and restart the agent session. If checked-in
+repository MCP files still carry the old TS allowlist, regenerate them in that repository and
+commit the values-free changes:
+
+```bash
+~/.local/bin/sync-mcp --project --cwd "$PWD"
+```
+
+Cloud bootstrap fetches agent-workflows **main**. An unmerged fix branch will not repair future
+workspace setups. Merge the shared fix before rerunning bootstrap; update stale repository configs
+as well. The observed missing Amaru `mcp-bridge` was repaired by the existing setup script and was
+a separate provisioning issue; why the original setup was incomplete remains unconfirmed.
 
 Autodev-memory hooks use the same exact-origin resolver but fetch their restricted bearer inline per
 hook invocation. The extra 1Password read is deliberate: no credential-bearing background process

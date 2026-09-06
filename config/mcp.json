@@ -20,10 +20,7 @@
     "*": {
       "autodev-memory": {
         "transport": "stdio-bridge",
-        "profile": "autodev_memory",
-        "env_vars": [
-          "TS_OP_SERVICE_ACCOUNT_TOKEN"
-        ]
+        "profile": "autodev_memory"
       }
     },
     "amaru": {

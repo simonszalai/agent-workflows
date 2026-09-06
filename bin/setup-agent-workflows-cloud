@@ -89,7 +89,37 @@ run_setup_with_lock_held() {
     echo "setup-agent-workflows-cloud: sh is required by MCP stdio configs" >&2
     return 1
   }
-  log "installed ${version} with project MCP configuration"
+  log "installed ${version} with project MCP configuration (tool installation complete)"
+  report_auth_readiness
+}
+
+report_auth_readiness() {
+  # Presence only: do not read 1Password, contact services, or print secret values.
+  python3 -B - "${ROOT}/bin/project-context" "$CWD" <<'PYTHON'
+import json
+import os
+import subprocess
+import sys
+
+profile = json.loads(subprocess.check_output(
+    [sys.argv[1], "--cwd", sys.argv[2]], text=True,
+))
+project = profile["project"]
+name = profile["service_account"]["token_env"]
+prefix = "[agent-workflows-cloud]"
+if os.environ.get(name):
+    print(f"{prefix} autodev-memory ({project}): {name} present; "
+          "credential validity and service access not verified")
+else:
+    print(f"{prefix} authentication NOT READY for autodev-memory ({project}): "
+          f"provision {name} in the cloud agent environment and restart the agent session. "
+          "Tool installation succeeded; another project's token cannot substitute.")
+if os.environ.get("CONDUCTOR_API_TOKEN") or os.environ.get("CONDUCTOR_API_KEY"):
+    print(f"{prefix} Conductor: API credential present; service access not verified")
+else:
+    print(f"{prefix} Conductor authentication NOT READY: provision CONDUCTOR_API_TOKEN "
+          "or launch with injected CONDUCTOR_API_KEY, then restart the agent session.")
+PYTHON
 }
 
 run_with_setup_lock() {

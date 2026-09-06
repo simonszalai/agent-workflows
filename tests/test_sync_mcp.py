@@ -139,6 +139,12 @@ class SyncMcpTest(unittest.TestCase):
             root = Path(directory)
             repo = self.make_repo(root, "https://github.com/amaru-wellness/amaru-mcp.git")
             home = root / "home"
+            (home / ".codex").mkdir(parents=True)
+            (home / ".codex/config.toml").write_text(
+                '[mcp_servers.autodev-memory]\n'
+                'env_vars = ["TS_OP_SERVICE_ACCOUNT_TOKEN"]\n'
+                'command = "old-bridge"\n'
+            )
             result = subprocess.run(
                 [str(SYNC), "--user", "--include-project", "--cwd", str(repo),
                  "--home", str(home)],
@@ -152,7 +158,7 @@ class SyncMcpTest(unittest.TestCase):
             self.assertIn("amaru", (home / ".codex/config.toml").read_text())
             self.assertEqual(
                 self.codex_env_vars(home / ".codex/config.toml", "autodev-memory"),
-                ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
+                ["AMARU_OP_SERVICE_ACCOUNT_TOKEN"],
             )
             self.assertEqual(
                 self.codex_env_vars(home / ".codex/config.toml", "conductor"),
@@ -195,6 +201,62 @@ class SyncMcpTest(unittest.TestCase):
             )
             for value in sentinels.values():
                 self.assertNotIn(value, rendered)
+
+    def test_every_registered_remote_both_scopes_and_no_cross_project_tokens(self) -> None:
+        registry = json.loads((ROOT / "config/project-tools.json").read_text())["projects"]
+        tokens = [profile["service_account"]["token_env"] for profile in registry.values()]
+        for project, profile in registry.items():
+            # Every registered remote includes repository aliases for each project.
+            for remote in profile["repo_remotes"]:
+                with self.subTest(project=project, remote=remote):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        repo = self.make_repo(root, "https://" + remote + ".git")
+                        home = root / "home"
+                        command = [str(SYNC), "--user", "--include-project", "--project",
+                                   "--cwd", str(repo), "--home", str(home)]
+                        environment = {**os.environ, **{
+                            name: "sentinel-value-" + name for name in tokens
+                        }}
+                        result = subprocess.run(command, capture_output=True, text=True,
+                                                env=environment)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        expected = profile["service_account"]["token_env"]
+                        for scope, claude in ((repo, ".mcp.json"), (home, ".claude.json")):
+                            self.assertEqual(self.codex_env_vars(
+                                scope / ".codex/config.toml", "autodev-memory"), [expected])
+                            for relative in (claude, ".cursor/mcp.json"):
+                                entry = json.loads((scope / relative).read_text())[
+                                    "mcpServers"]["autodev-memory"]
+                                self.assertEqual(entry["args"][-1], project)
+                            for relative in (claude, ".cursor/mcp.json",
+                                             ".codex/config.toml", ".grok/config.toml"):
+                                rendered = (scope / relative).read_text()
+                                self.assertNotIn("sentinel-value-", rendered)
+                                for other in set(tokens) - {expected}:
+                                    self.assertNotIn(other, rendered)
+                        repeated = subprocess.run(command, capture_output=True, text=True,
+                                                  env=environment)
+                        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                        self.assertEqual(repeated.stdout, "")
+                        checked = subprocess.run(command + ["--check"], capture_output=True,
+                                                 text=True, env=environment)
+                        self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_unknown_repository_fails_before_writing_either_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root, "https://github.com/unknown/unregistered.git")
+            home = root / "home"
+            result = subprocess.run(
+                [str(SYNC), "--user", "--include-project", "--project",
+                 "--cwd", str(repo), "--home", str(home)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unregistered origin remote", result.stderr)
+            self.assertFalse(home.exists())
+            self.assertFalse((repo / ".mcp.json").exists())
 
     def test_manifest_rejects_malformed_or_duplicate_env_vars(self) -> None:
         invalid_values = (

@@ -124,6 +124,38 @@ class McpBridgeTest(unittest.TestCase):
             self.assertEqual(decoded, "SELECT * FROM secret_table")
             self.assertEqual(arguments["title"], "safe")
 
+    def test_workflow_alias_and_unknown_project(self) -> None:
+        registry = json.loads((ROOT / "config/project-tools.json").read_text())["projects"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "remote", "add", "origin",
+                            "https://" + registry["workflow-pro"]["repo_remotes"][0]], check=True)
+            fake_op = root / "op"
+            fake_op.write_text(
+                '#!/bin/sh\n'
+                '[ "$OP_SERVICE_ACCOUNT_TOKEN" = "workflow-sentinel" ] || exit 31\n'
+                '[ -z "${TS_OP_SERVICE_ACCOUNT_TOKEN:-}" ] || exit 32\n'
+                'printf "%s" "fake-bearer"\n'
+            )
+            fake_op.chmod(0o755)
+            environment = {
+                **os.environ,
+                "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN": "workflow-sentinel",
+                "TS_OP_SERVICE_ACCOUNT_TOKEN": "wrong-project-sentinel",
+                "OP_REAL_BIN": str(fake_op),
+            }
+            for project, expected in (("workflow_pro", 0), ("workflow-pro", 0),
+                                      ("unknown-project", 1)):
+                with self.subTest(project=project):
+                    result = subprocess.run(
+                        [str(BRIDGE), "autodev-memory", "--project", project],
+                        input="", capture_output=True, text=True, cwd=root,
+                        env=environment, timeout=30,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    self.assertNotIn("sentinel", result.stdout + result.stderr)
+
     def test_conductor_bridge_uses_env_bearer_and_skips_waf_transform(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
         RecordingHandler.requests = []
