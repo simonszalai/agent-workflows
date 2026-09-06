@@ -17,6 +17,7 @@ ROTATE = str(ROOT / "bin" / "rotate-secret")
 PG_APP_REF = "op://TESTVAULT-sensitive/Postgres prod/app"
 PG_RO_REF = "op://TESTVAULT/Postgres prod RO/canonical"
 PG_OWNER_SQLROLE_REF = "op://TESTVAULT-sensitive/Postgres prod/owner"
+PG_MIGRATOR_REF = "op://TESTVAULT-sensitive/Postgres prod/web_migrator"
 PG_ROOT_REF = "op://TESTVAULT-sensitive/Postgres prod/root"
 PG_ADMIN_OWNER_REF = "op://TESTVAULT-sensitive/Postgres prod/owner"
 ROTATOR = str(ROOT / "secrets" / "providers" / "postgres-rotate")
@@ -39,6 +40,7 @@ DB_ROLES = {
             "render_project": "testproj",
             "slug": "testproj",
             "roles": {"owner": "testproj_owner", "app": "testproj_app", "ro": "testproj_ro"},
+            "apps": {"web": {"roles": {"migrator": "testproj_web_migrator"}, "tiers": ["prod"]}},
             "tiers": {
                 "prod": {
                     "db_id": "dpg-test123-a",
@@ -96,6 +98,10 @@ elif [[ -n "${FAKE_CURL_500_URL_SUBSTR:-}" && "$url" == *"${FAKE_CURL_500_URL_SU
   status=500; printf '{"message":"boom"}'; return
 fi
 case "$method $url" in
+  "GET https://api.render.com/v1/postgres/"*"/credentials")
+    if [[ -n "${FAKE_OWNER_LOGIN:-}" ]]; then
+      printf '[{"username":"%s","default":true}]' "$FAKE_OWNER_LOGIN"
+    else printf '[]'; fi ;;
   "GET https://api.render.com/v1/postgres/"*"/connection-info")
     printf '{"internalConnectionString":"postgresql://cur_user:cur_pw@internal-host:5432/testdb","externalConnectionString":"postgresql://cur_user:cur_pw@external-host:5432/testdb"}' ;;
   "GET https://api.render.com/v1/services?limit=100"*|"GET https://api.render.com/v1/env-groups?limit=100")
@@ -150,7 +156,12 @@ for a in "$@"; do
     case "$a" in
       *"session_user, current_user, l.rolsuper"*)
         ro=off; [[ "$role" == *_ro ]] && ro=on
-        printf '%s|%s|f|f|f|f|t|%s|t|t|%s\n' "${PGUSER:-}" "$role" "${FAKE_PSQL_OWNS_ANY:-f}" "$ro" ;;
+        owns=f; ddl=f
+        case "$role" in *_migrator|*_dbuser) owns=t; ddl=t ;; esac
+        printf '%s|%s|f|f|f|f|t|%s|t|t|%s|%s|%s|%s|%s\n' \
+          "${PGUSER:-}" "$role" "${FAKE_PSQL_OWNS_ANY:-$owns}" "${FAKE_PSQL_READ_ONLY:-$ro}" \
+          "${FAKE_PSQL_LOGIN_USAGE:-t}" "${FAKE_PSQL_RUNTIME_USAGE:-t}" \
+          "${FAKE_PSQL_LOGIN_CREATE:-$ddl}" "${FAKE_PSQL_RUNTIME_CREATE:-$ddl}" ;;
       *_rotation_ro_probe*) exit 1 ;;
       *current_user*) printf '%s\n' "${FAKE_PSQL_CURRENT_USER:-$role}" ;;
       *) printf '0\n' ;;
@@ -802,6 +813,13 @@ class PostgresRotatorSourceTest(unittest.TestCase):
         self.assertIn('"${slug}_ro") SCOPE_KIND="ro"', self.SOURCE)
         self.assertIn('SET_ROLE_TARGET="$CAPABILITY"', self.SOURCE)
 
+    def test_schema_attestation_checks_both_identities_without_repairing_grants(self) -> None:
+        for identity in ("session_user", "current_user"):
+            for privilege in ("USAGE", "CREATE"):
+                self.assertIn(f"has_schema_privilege({identity}, 'public', '{privilege}')", self.SOURCE)
+        self.assertNotIn("GRANT USAGE", self.SOURCE)
+        self.assertNotIn("GRANT CREATE", self.SOURCE)
+
     def test_rotation_never_reassigns_ownership(self) -> None:
         # C4: ownership transfer is a provisioning step (per relation, datdba
         # guarded); rotation only creates/grants versioned logins.
@@ -871,6 +889,9 @@ class PostgresRotatorStagesTest(unittest.TestCase):
     )
 
     def setUp(self) -> None:
+        self.reset_sandbox()
+
+    def reset_sandbox(self) -> None:
         self.sb = SecretsSandbox()
         self.addCleanup(self.sb.close)
         for name, body in (("curl", FAKE_CURL), ("psql", FAKE_PSQL)):
@@ -937,6 +958,93 @@ class PostgresRotatorStagesTest(unittest.TestCase):
 
     def state(self, name: str) -> dict:
         return json.loads((self.state_dir / name).read_text(encoding="utf-8"))
+
+    def schema_scenario(self, scope: str, phase: str = "activated"):
+        refs = {"owner": PG_ADMIN_OWNER_REF, "migrator": PG_MIGRATOR_REF,
+                "app": PG_APP_REF, "ro": PG_RO_REF}
+        capability = "testproj_web_migrator" if scope == "migrator" else f"testproj_{scope}"
+        role = "testproj_dbuser" if scope == "owner" else capability
+        tag = "20260906t000000_abc123"
+        login = f"{capability}_login_{tag}"
+        ref = refs[scope]
+        vault, title, field = ref.removeprefix("op://").split("/")
+        candidate_ref = f"op://{vault}/{title}_CANDIDATE_{field}_{tag}/value"
+        candidate = f"postgresql://{login}:candpw@internal-host:5432/testdb?options=-c%20role%3D{role}"
+        previous = (self.ADMIN_OWNER_URL if scope == "owner" else
+                    f"postgresql://{capability}:oldpw@internal-host:5432/testdb?options=-c%20role%3D{role}")
+        self.seed_item(candidate_ref, candidate)
+        self.seed_item(ref, candidate if phase == "promoted" else previous)
+        name = f"testproj-prod-{scope}{'-web' if scope == 'migrator' else ''}.state"
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / name).write_text(json.dumps({
+            "stateVersion": 1, "entryId": f"pg-{scope}", "project": "testproj", "tier": "prod",
+            "scope": scope, "phase": phase, "versionTag": tag, "login": login,
+            "candidateRef": candidate_ref, "oldLogins": (
+                "testproj_owner_login_20260801t000000_aa11bb" if scope == "owner" else capability),
+        }), encoding="utf-8")
+        entry = self.entry(f"pg-{scope}", ref, targets=[("srv-target", "DATABASE_URL")])
+        env = {"FAKE_RENDER_ENV_FILE": str(self.item_path(candidate_ref)), "FAKE_OWNER_LOGIN": login}
+        return entry, env, name
+
+    def assert_schema_rejected(self, scope: str, flag: str, value: str,
+                               phase: str = "activated") -> None:
+        entry, env, name = self.schema_scenario(scope, phase)
+        canonical_before = self.stored_value(entry["ref"])
+        proc = self.rotator(entry, resume=True, finalize=phase == "promoted", **env, **{flag: value})
+        self.assertEqual(proc.returncode, 4, proc.stderr + proc.stdout)
+        self.assertIn("role-safety attestation", proc.stderr)
+        self.assertEqual(self.state(name)["phase"], phase)
+        self.assertEqual(self.stored_value(entry["ref"]), canonical_before)
+        joined = "\n".join(self.log())
+        for forbidden in ("CURL PUT", "/deploys", "CURL DELETE", "OP item delete",
+                          "ALTER ROLE %I NOLOGIN", "DROP ROLE"):
+            self.assertNotIn(forbidden, joined)
+        self.assertNotIn("Rotation promoted", proc.stdout)
+        self.assertNotIn("Credential rotation complete", proc.stdout)
+
+    def test_valid_schema_capabilities_allow_all_scopes(self) -> None:
+        for scope in ("owner", "migrator", "app", "ro"):
+            with self.subTest(scope=scope):
+                self.reset_sandbox()
+                entry, env, name = self.schema_scenario(scope)
+                proc = self.rotator(entry, resume=True, **env)
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertEqual(self.state(name)["phase"], "promoted")
+
+    def test_missing_schema_usage_rejects_every_identity_and_scope(self) -> None:
+        for scope in ("owner", "migrator", "app", "ro"):
+            for identity in ("LOGIN", "RUNTIME"):
+                with self.subTest(scope=scope, identity=identity):
+                    self.reset_sandbox()
+                    self.assert_schema_rejected(scope, f"FAKE_PSQL_{identity}_USAGE", "f")
+
+    def test_ddl_scopes_require_schema_create_for_both_identities(self) -> None:
+        for scope in ("owner", "migrator"):
+            for identity in ("LOGIN", "RUNTIME"):
+                with self.subTest(scope=scope, identity=identity):
+                    self.reset_sandbox()
+                    self.assert_schema_rejected(scope, f"FAKE_PSQL_{identity}_CREATE", "f")
+
+    def test_runtime_scopes_reject_schema_create_for_either_identity(self) -> None:
+        for scope in ("app", "ro"):
+            for identity in ("LOGIN", "RUNTIME"):
+                with self.subTest(scope=scope, identity=identity):
+                    self.reset_sandbox()
+                    self.assert_schema_rejected(scope, f"FAKE_PSQL_{identity}_CREATE", "t")
+
+    def test_ddl_scopes_require_writable_sessions(self) -> None:
+        for scope in ("owner", "migrator"):
+            with self.subTest(scope=scope):
+                self.reset_sandbox()
+                self.assert_schema_rejected(scope, "FAKE_PSQL_READ_ONLY", "on")
+
+    def test_prepare_resume_and_finalize_fail_before_fanout_promotion_or_retirement(self) -> None:
+        for phase in ("prepared", "activated", "promoted"):
+            for scope in ("owner", "migrator", "app", "ro"):
+                with self.subTest(phase=phase, scope=scope):
+                    self.reset_sandbox()
+                    value = "f" if scope in ("owner", "migrator") else "t"
+                    self.assert_schema_rejected(scope, "FAKE_PSQL_RUNTIME_CREATE", value, phase)
 
     # -- tests -------------------------------------------------------------------
     def test_print_lock_key_is_read_free(self) -> None:
