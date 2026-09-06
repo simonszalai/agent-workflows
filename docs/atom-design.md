@@ -32,7 +32,7 @@ names, naming conventions, or a central registry. Every capability is delivered 
 | Per-repo rendered MCP config files | One user-global stanza per harness, rendered once per machine |
 | `extends` chains between sibling checkouts | Self-contained descriptor per repo |
 | Git-remote project resolution | Nearest `agent-workflows.toml` above the working directory |
-| Fast-forward pull of the checkout at cloud setup | The Cloud Computer build's copy, refreshed by rebuild |
+| Lock-guarded clone of the checkout inside every hook and MCP command | Best-effort fast-forward pull in the setup script, then render |
 | Separate shim and launcher | The launcher itself on PATH |
 | Sensitive notifier daemon | A one-line notification call inside the launcher |
 | Project-level `secrets.yaml` rotation manifest | `[secrets.*]` sections in the same descriptor |
@@ -226,7 +226,23 @@ variable names explicitly. That file holds names only.
 Context7 stays as a user-global HTTP entry in each harness. No other MCP servers are rendered.
 
 The step is idempotent, takes under a second, performs no network access, and runs no git command.
-Cloud freshness is the Cloud Computer build; a merge reaches cloud on the next rebuild.
+
+### Cloud setup script
+
+Conductor checks out the latest of the workspace's own repository at creation. Agent-workflows is
+a different repository, cloned onto the Cloud Computer image at build time, so a new workspace sees
+the build's copy unless setup refreshes it. Every Conductor project's setup script is therefore two
+lines:
+
+```
+git -C "$AW_CHECKOUT" pull --ff-only --quiet >"$AW_CHECKOUT/.setup-pull.log" 2>&1 || true
+render-harness-config --checkout "$AW_CHECKOUT"
+```
+
+The pull is best effort. On an existing clone it is an incremental fetch of a few seconds. On
+failure the build's copy stays in place and the render step still runs. The pull outcome is written
+to a log inside the checkout so a stale checkout is visible to the agent rather than silent.
+Locally there is no pull; the checkout is the live one in the dev folder.
 
 ## Autodev
 
@@ -292,3 +308,6 @@ the complete statement of what the app needs to run.
 
 - Which harnesses to render for beyond Claude and Codex.
 - Confirm uv as the single runtime dependency on Hermes.
+- Whether the workspace VM carries a git credential for the private agent-workflows repository
+  after the build clones it. If not, the setup pull fails every time and cloud is rebuild-only.
+  Testable with one throwaway cloud workspace by reading the pull log.
