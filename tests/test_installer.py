@@ -15,6 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "bin/install-agent-workflows"
 
 
+def secrets_consumers() -> list[Path]:
+    return sorted(
+        path for path in (ROOT / "bin").iterdir()
+        if path.is_file() and os.access(path, os.X_OK)
+        and "../secrets/lib" in path.read_text(encoding="utf-8")
+    )
+
+
 class InstallerTest(unittest.TestCase):
     def source_repo(self, root: Path) -> Path:
         source = root / "source"
@@ -278,31 +286,75 @@ class InstallerTest(unittest.TestCase):
             self.assertIn("project tool registry validation failed", result.stderr)
 
     def test_installed_wrappers_resolve_secrets_includes_in_clean_home(self) -> None:
-        """B0004: installed psql-cli/slack-api must find secrets/lib/read.sh."""
+        """Every consumer reaches the physical library before any external action."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = self.source_repo(root)
+            consumers = secrets_consumers()
+            self.assertTrue(consumers)
+            for wrapper in consumers:
+                shutil.copy2(wrapper, source / "bin" / wrapper.name)
+            shutil.copy2(ROOT / "config/1p-grouping.json", source / "config/1p-grouping.json")
+            # Commit the sentinel into the synthetic version; never modify an
+            # installed immutable tree or source credentials from the real library.
+            for library in (ROOT / "secrets/lib").glob("*.sh"):
+                (source / "secrets/lib" / library.name).write_text(
+                    '#!/bin/bash\n'
+                    'printf "physical-library:%s\\n" '
+                    '"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"\n'
+                    'exit 73\n'
+                )
+            commit = self.commit(source, "sentinel library and all consumers")
             home = root / "home"
             result = self.run_install(source, home)
             self.assertEqual(result.returncode, 0, result.stderr)
-            commit = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"],
-                                    capture_output=True, text=True, check=True).stdout.strip()
             version = home / f".local/share/agent-workflows/versions/{commit}"
-            self.assertTrue((version / "secrets/lib/read.sh").is_file())
-            # slack-api needs one arg to get past its usage check and reach the include.
-            for name, args in (("psql-cli", []), ("slack-api", ["auth.test"])):
-                link = home / ".local/bin" / name
+            installed_bin = home / ".local/bin"
+            relative_bin = home / "relative bin"
+            relative_bin.mkdir()
+            directory_link = home / "directory link"
+            directory_link.symlink_to(installed_bin, target_is_directory=True)
+            fake_bin = home / "fake-bin"
+            fake_bin.mkdir()
+            jq = shutil.which("jq")
+            self.assertIsNotNone(jq, "grouping bootstrap requires jq")
+            (fake_bin / "jq").symlink_to(jq)
+            # Grouping checks for shasum before loading read.sh, but must never
+            # actually call it before the sentinel exits.
+            shasum = fake_bin / "shasum"
+            shasum.write_text('#!/bin/sh\necho unexpected-shasum >&2; exit 75\n')
+            shasum.chmod(0o755)
+            # A logical-root fallback must not satisfy the sentinel assertion.
+            decoy = home / ".local/secrets/lib"
+            decoy.mkdir(parents=True)
+            for library in (source / "secrets/lib").glob("*.sh"):
+                (decoy / library.name).write_text('echo wrong-library; exit 74\n')
+            expected = f"physical-library:{version / 'secrets/lib'}\n"
+            for wrapper in consumers:
+                link = installed_bin / wrapper.name
                 self.assertTrue(link.is_symlink())
-                run = subprocess.run([str(link), *args], capture_output=True, text=True,
-                                     env={**os.environ, "HOME": str(home)}, cwd=str(home))
-                combined = run.stdout + run.stderr
-                self.assertNotIn("read.sh", combined)
-                self.assertNotIn("No such file or directory", combined)
-            usage = subprocess.run([str(home / ".local/bin/psql-cli")],
-                                   capture_output=True, text=True,
-                                   env={**os.environ, "HOME": str(home)})
-            self.assertEqual(usage.returncode, 2)
-            self.assertIn("usage:", usage.stderr)
+                self.assertEqual(link.resolve(), version / "bin" / wrapper.name)
+                relative = relative_bin / wrapper.name
+                relative.symlink_to(os.path.relpath(link, relative_bin))
+                args = {
+                    "sync-secrets": ["--repo", str(home), "--dry-run"],
+                    "migrate-1p-grouping": ["--verify"],
+                }.get(wrapper.name, ["bootstrap-sentinel", "bootstrap-sentinel"])
+                for invocation in (link, relative, directory_link / wrapper.name):
+                    with self.subTest(wrapper=wrapper.name, invocation=invocation):
+                        run = subprocess.run(
+                            [str(invocation), *args],
+                            capture_output=True, text=True, timeout=10, cwd=home,
+                            env={"HOME": str(home), "PATH": f"{fake_bin}:/usr/bin:/bin"},
+                        )
+                        self.assertEqual(run.returncode, 73, run.stdout + run.stderr)
+                        self.assertEqual(run.stdout, expected)
+                        self.assertEqual(run.stderr, "")
+                broken = relative_bin / f"broken-{wrapper.name}"
+                broken.symlink_to("missing-wrapper")
+                with self.assertRaises(FileNotFoundError):
+                    subprocess.run([str(broken)], check=True,
+                                   env={"HOME": str(home), "PATH": "/usr/bin:/bin"})
 
     def test_staged_artifact_requires_psql_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -40,11 +40,16 @@
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"
 LOG="$LOG_DIR/op-audit.log"
 
-script_dir="${BASH_SOURCE[0]%/*}"
-[[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
-HERE="$(cd "$script_dir" && pwd)"
+# Resolve the physical script location for per-file symlink installs.
+_SELF="${BASH_SOURCE[0]}"
+while [ -L "$_SELF" ]; do
+  _TARGET="$(readlink "$_SELF")" || exit 1
+  case "$_TARGET" in /*) _SELF="$_TARGET" ;; *) _SELF="$(dirname "$_SELF")/$_TARGET" ;; esac
+done
+HERE="$(cd "$(dirname "$_SELF")" && pwd -P)" || exit 1
+unset _SELF _TARGET
 # shellcheck source=../secrets/lib/read.sh
-source "$HERE/../secrets/lib/read.sh"
+source "$HERE/../secrets/lib/read.sh" || exit 1
 
 resolve_real_op() {
   local path_entry=""

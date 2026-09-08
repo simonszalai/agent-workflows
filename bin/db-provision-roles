@@ -38,7 +38,14 @@
 case "$-" in *x*) set +x ;; esac
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the physical script location for per-file symlink installs.
+_SELF="${BASH_SOURCE[0]}"
+while [ -L "$_SELF" ]; do
+  _TARGET="$(readlink "$_SELF")" || exit 1
+  case "$_TARGET" in /*) _SELF="$_TARGET" ;; *) _SELF="$(dirname "$_SELF")/$_TARGET" ;; esac
+done
+HERE="$(cd "$(dirname "$_SELF")" && pwd -P)" || exit 1
+unset _SELF _TARGET
 CONFIG="${DB_ROLES_CONFIG:-$HERE/../config/db-roles.json}"
 OP_BIN="${OP_BIN:-$HERE/op}"
 # shellcheck source=../secrets/lib/read.sh

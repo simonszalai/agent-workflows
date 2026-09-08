@@ -24,7 +24,14 @@ API="https://api.tailscale.com/api/v2"
 [ $# -ge 2 ] || { echo "usage: tailscale-admin <METHOD> </api/v2 path> [curl args...]" >&2; exit 2; }
 METHOD="$1"; APIPATH="$2"; shift 2
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the physical script location for per-file symlink installs.
+_SELF="${BASH_SOURCE[0]}"
+while [ -L "$_SELF" ]; do
+  _TARGET="$(readlink "$_SELF")" || exit 1
+  case "$_TARGET" in /*) _SELF="$_TARGET" ;; *) _SELF="$(dirname "$_SELF")/$_TARGET" ;; esac
+done
+HERE="$(cd "$(dirname "$_SELF")" && pwd -P)" || exit 1
+unset _SELF _TARGET
 PROJECT_CONTEXT="$HERE/project-context"
 # shellcheck source=../secrets/lib/read.sh
 source "$HERE/../secrets/lib/read.sh"

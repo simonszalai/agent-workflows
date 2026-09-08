@@ -175,6 +175,9 @@ class McpBridgeTest(unittest.TestCase):
             }},
         ]
         env = os.environ.copy()
+        # Cloud sessions can supply a higher-precedence real token. Keep this
+        # key-fallback test synthetic before sending anything to its recorder.
+        env.pop("CONDUCTOR_API_TOKEN", None)
         env.update({
             "CONDUCTOR_API_URL": f"http://127.0.0.1:{server.server_port}",
             "CONDUCTOR_API_KEY": "workspace-scoped-key",

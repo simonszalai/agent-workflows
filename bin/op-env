@@ -12,9 +12,16 @@ if [[ $# -eq 0 ]]; then
 fi
 
 OP_BIN="${OP_BIN:-op}"
-_lib_dir="${BASH_SOURCE[0]%/*}"; [[ "$_lib_dir" == "${BASH_SOURCE[0]}" ]] && _lib_dir="."
+# Resolve the physical script location for per-file symlink installs.
+_SELF="${BASH_SOURCE[0]}"
+while [ -L "$_SELF" ]; do
+  _TARGET="$(readlink "$_SELF")" || exit 1
+  case "$_TARGET" in /*) _SELF="$_TARGET" ;; *) _SELF="$(dirname "$_SELF")/$_TARGET" ;; esac
+done
+HERE="$(cd "$(dirname "$_SELF")" && pwd -P)" || exit 1
+unset _SELF _TARGET
 # shellcheck source=../secrets/lib/read.sh
-source "$(cd "$_lib_dir" && pwd)/../secrets/lib/read.sh"
+source "$HERE/../secrets/lib/read.sh"
 ENV_FILE="${ENV_FILE:-.env}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -125,9 +132,6 @@ if scan_sensitive_env_file "$ENV_FILE"; then
     unset "$variable_name"
   done
 
-  script_dir="${BASH_SOURCE[0]%/*}"
-  [[ "$script_dir" == "${BASH_SOURCE[0]}" ]] && script_dir="."
-  HERE="$(cd "$script_dir" && pwd)"
   expected_op="$HERE/op"
   if [[ "$OP_BIN" != "$expected_op" || -L "$expected_op" || ! -f "$expected_op" ||
         ! -x "$expected_op" ]] ||
@@ -175,7 +179,7 @@ collect_env_file_vaults() {
 
 keychain_item_for_vaults() {
   local registry
-  registry="$(cd "${BASH_SOURCE[0]%/*}" && pwd)/../config/project-tools.json"
+  registry="$HERE/../config/project-tools.json"
 
   [[ -r "$registry" ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1

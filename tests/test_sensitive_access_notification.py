@@ -61,6 +61,7 @@ class SensitiveAccessFixture:
         self.base_env.update(
             {
                 "HOME": str(self.home),
+                "SECRETS_SA_KEYCHAIN_ACCOUNT": "fixture-account",
                 "TMPDIR": str(self.root),
                 "XDG_STATE_HOME": str(self.state_dir),
                 "PATH": f"{self.fake_path}:{self.base_env.get('PATH', '')}",
@@ -653,7 +654,8 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                 self.assertEqual(fixture.events, ["security", "real"])
                 self.assertEqual(
                     fixture.security_calls,
-                    [{"argv": ["find-generic-password", "-s", keychain_item, "-a", "simon", "-w"]}],
+                    [{"argv": ["find-generic-password", "-s", keychain_item,
+                               "-a", "fixture-account", "-w"]}],
                 )
                 self.assertEqual(
                     fixture.child_calls,
@@ -678,7 +680,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                             "-s",
                             "op-workflow-pro-token",
                             "-a",
-                            "simon",
+                            "fixture-account",
                             "-w",
                         ]
                     }
@@ -1174,6 +1176,42 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
                     ],
                 )
 
+    def test_installed_op_missing_library_fails_before_real_cli(self) -> None:
+        with SensitiveAccessFixture() as fixture:
+            installed = fixture.home / ".local/bin/op"
+            installed.parent.mkdir(parents=True)
+            installed.symlink_to(fixture.op)
+            fixture.op = installed
+            (fixture.root / "secrets/lib/read.sh").unlink()
+            result = fixture.run_op(["--version"], credentials=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(fixture.events, [])
+            self.assertEqual(fixture.child_calls, [])
+            self.assert_no_secret_sentinels(fixture, result)
+
+    def test_installed_op_env_uses_physical_sibling_and_registry(self) -> None:
+        for sensitive in (False, True):
+            with self.subTest(sensitive=sensitive), SensitiveAccessFixture() as fixture:
+                installed = fixture.home / ".local/bin/op-env"
+                installed.parent.mkdir(parents=True)
+                installed.symlink_to(fixture.op_env)
+                fixture.op_env = installed
+                result = fixture.run_op_env(
+                    fixture.make_env_file(sensitive=sensitive), credentials=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(fixture.child_calls), 1)
+                if sensitive:
+                    self.assertEqual(fixture.security_calls, [])
+                    self.assertEqual(fixture.child_calls[0]["env_present"], [])
+                    self.assertEqual(
+                        fixture.child_calls[0]["argv"][:2],
+                        ["--account", CANONICAL_ACCOUNT],
+                    )
+                else:
+                    self.assertEqual(fixture.events, ["security", "real"])
+                    self.assertEqual(len(fixture.security_calls), 1)
+                self.assert_no_secret_sentinels(fixture, result)
     def test_op_env_delegates_selector_validation_to_op_before_notification(
         self,
     ) -> None:
@@ -1230,6 +1268,10 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
         ):
             with self.subTest(state=state), SensitiveAccessFixture() as fixture:
                 env_file = fixture.make_env_file(sensitive=True)
+                installed = fixture.home / ".local/bin/op-env"
+                installed.parent.mkdir(parents=True)
+                installed.symlink_to(fixture.op_env)
+                fixture.op_env = installed
                 if state == "non-executable":
                     fixture.op.chmod(0o600)
                 elif state == "non-regular":
