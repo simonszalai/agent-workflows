@@ -113,7 +113,7 @@ The CLI has no metrics command; use the wrapper's REST passthrough:
 render-cli api GET "/v1/metrics/cpu?resource=srv-xxx"
 render-cli api GET "/v1/metrics/memory?resource=srv-xxx"
 render-cli api GET "/v1/metrics/instance-count?resource=srv-xxx"
-render-cli api GET "/v1/metrics/http-request-count?resource=srv-xxx"
+render-cli api GET "/v1/metrics/http-requests?resource=srv-xxx"
 # optional: &startTime=<RFC3339>&endTime=<RFC3339>&resolutionSeconds=300
 ```
 
