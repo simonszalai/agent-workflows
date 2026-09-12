@@ -94,6 +94,13 @@ EXPECTED_AUTODEV_MEMORY_PROFILES = {
     },
 }
 
+EXPECTED_PREDICTION_QUALITY_PROFILES = {
+    "ts": {
+        "url": "https://ts-dashboard-spd5.onrender.com/mcp",
+        "token_ref": "op://TS/TS_DASHBOARD_PROD_MCP_TOKEN/value",
+    },
+}
+
 EXPECTED_POSTGRES_REFS = {
     "amaru": {
         "dev": "op://AMARU/Postgres dev/canonical",
@@ -459,6 +466,10 @@ printf '{"ok":true}\\n'
                 EXPECTED_AUTODEV_MEMORY_PROFILES[project],
             )
             self.assertEqual(
+                projects[project].get("prediction_quality_production"),
+                EXPECTED_PREDICTION_QUALITY_PROFILES.get(project),
+            )
+            self.assertEqual(
                 projects[project].get("resend", {}).get("api_key_ref"),
                 EXPECTED_RESEND_REFS.get(project),
             )
@@ -673,7 +684,7 @@ printf '{"ok":true}\\n'
         self.assertNotEqual(duplicated.returncode, 0)
         self.assertIn("belongs to both", duplicated.stderr)
 
-    def test_postgres_and_slack_profiles_are_strictly_validated(self) -> None:
+    def test_optional_project_profiles_are_strictly_validated(self) -> None:
         def rejected(mutator) -> subprocess.CompletedProcess[str]:
             broken = self.root / "broken-tools.json"
             fixture = json.loads(self.config.read_text())
@@ -687,6 +698,37 @@ printf '{"ok":true}\\n'
             )
 
         cases = (
+            (
+                lambda value: value["projects"]["alpha"].__setitem__(
+                    "prediction_quality_production",
+                    {
+                        "url": "http://not-loopback.example.com/mcp",
+                        "token_ref": "op://ALPHA/PREDICTION/value",
+                    },
+                ),
+                "prediction_quality_production.url must use HTTPS",
+            ),
+            (
+                lambda value: value["projects"]["alpha"].__setitem__(
+                    "prediction_quality_production",
+                    {
+                        "url": "https://prediction.example.com/mcp",
+                        "token_ref": "op://ALPHA-sensitive/PREDICTION/value",
+                    },
+                ),
+                "must not reference a *-sensitive vault",
+            ),
+            (
+                lambda value: value["projects"]["alpha"].__setitem__(
+                    "prediction_quality_production",
+                    {
+                        "url": "https://prediction.example.com/mcp",
+                        "token_ref": "op://ALPHA/PREDICTION/value",
+                        "header": "Authorization",
+                    },
+                ),
+                "prediction_quality_production has unknown keys",
+            ),
             (
                 lambda value: value["projects"]["alpha"].__setitem__(
                     "postgres", None

@@ -54,7 +54,15 @@ class SyncMcpTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             claude = json.loads((repo / ".mcp.json").read_text())["mcpServers"]
             cursor = json.loads((repo / ".cursor/mcp.json").read_text())["mcpServers"]
-            self.assertEqual(set(claude), {"autodev-memory", "conductor", "context7"})
+            self.assertEqual(
+                set(claude),
+                {
+                    "autodev-memory",
+                    "conductor",
+                    "context7",
+                    "prediction-quality-production",
+                },
+            )
             self.assertEqual(
                 claude["autodev-memory"]["command"], "sh",
             )
@@ -79,12 +87,25 @@ class SyncMcpTest(unittest.TestCase):
                 self.codex_env_vars(repo / ".codex/config.toml", "conductor"),
                 ["CONDUCTOR_API_TOKEN", "CONDUCTOR_API_KEY", "CONDUCTOR_API_URL"],
             )
+            self.assertIn(
+                '"$HOME/.local/bin/mcp-bridge" prediction-quality-production',
+                claude["prediction-quality-production"]["args"][1],
+            )
+            self.assertEqual(
+                self.codex_env_vars(
+                    repo / ".codex/config.toml", "prediction-quality-production",
+                ),
+                ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
+            )
             grok = (repo / ".grok/config.toml").read_text()
             self.assertIn("enabled = true", grok)
             self.assertNotIn("env_vars", grok)
             for servers in (claude, cursor):
                 self.assertNotIn("env_vars", servers["autodev-memory"])
                 self.assertNotIn("env_vars", servers["conductor"])
+                self.assertNotIn(
+                    "env_vars", servers["prediction-quality-production"],
+                )
             self.assertTrue((repo / ".mcp.json").read_text().startswith('{\n\t"mcpServers"'))
             self.assertTrue((repo / ".cursor/mcp.json").read_text().startswith(
                 '{\n\t"mcpServers"',

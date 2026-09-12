@@ -29,6 +29,12 @@
         "url": "https://mcp.amaruplatform.com/mcp",
         "auth": "oauth"
       }
+    },
+    "ts": {
+      "prediction-quality-production": {
+        "transport": "stdio-bridge",
+        "profile": "prediction_quality_production"
+      }
     }
   },
   "managed_server_names": [
@@ -42,6 +48,7 @@
     "postgres_prod",
     "postgres_prod_prefect",
     "postgres_staging",
+    "prediction-quality-production",
     "render"
   ]
 }

@@ -210,6 +210,35 @@ def load_projects(path: Path) -> dict[str, Project]:
             f"projects.{name}.autodev_memory.token_ref",
         )
 
+        # Optional: authenticated project MCP endpoints resolve a bearer through the
+        # same project-scoped service account as the other regular-vault tools.
+        prediction_quality = tools.get("prediction_quality_production")
+        if prediction_quality is not None:
+            if not isinstance(prediction_quality, dict):
+                fail(
+                    f"projects.{name}.prediction_quality_production must be an object"
+                )
+            unknown = set(prediction_quality) - {"url", "token_ref"}
+            if unknown:
+                fail(
+                    f"projects.{name}.prediction_quality_production has unknown keys: "
+                    f"{', '.join(sorted(unknown))}"
+                )
+            endpoint = prediction_quality.get("url")
+            if not isinstance(endpoint, str) or not (
+                endpoint.startswith("https://")
+                or endpoint.startswith("http://127.0.0.1:")
+                or endpoint.startswith("http://localhost:")
+            ):
+                fail(
+                    f"projects.{name}.prediction_quality_production.url must use HTTPS "
+                    "or loopback HTTP"
+                )
+            non_sensitive_op_ref(
+                prediction_quality.get("token_ref"),
+                f"projects.{name}.prediction_quality_production.token_ref",
+            )
+
         # Optional: only projects with their own tailnet credentials declare this.
         tailscale = tools.get("tailscale")
         if tailscale is not None:

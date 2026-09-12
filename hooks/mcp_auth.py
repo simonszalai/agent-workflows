@@ -36,23 +36,24 @@ def _run(command: list[str], *, env: dict[str, str] | None = None) -> str:
     return result.stdout
 
 
-def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
-    """Return the HTTPS REST base and restricted bearer for one registered repository."""
+def _resolve_project_tool(
+    project: str, cwd: Path, tool: str,
+) -> tuple[dict[str, object], str]:
+    """Resolve one regular-vault project tool bearer without persisting it."""
     profile_project = "workflow-pro" if project == "workflow_pro" else project
     config = Path(os.environ.get("PROJECT_TOOLS_CONFIG", DEFAULT_CONFIG))
     context_env = {**os.environ, "PROJECT_TOOLS_CONFIG": str(config)}
     raw = _run([
         str(PROJECT_CONTEXT), "--cwd", str(cwd), "--project", profile_project,
-        "--tool", "autodev_memory",
+        "--tool", tool,
     ], env=context_env)
     try:
         profile = json.loads(raw)
         service = profile["service_account"]
-        memory = profile["tools"]["autodev_memory"]
+        tool_profile = profile["tools"][tool]
         token_env = service["token_env"]
         keychain_item = service.get("keychain_item", "")
-        token_ref = memory["token_ref"]
-        url = memory["url"]
+        token_ref = tool_profile["token_ref"]
         registry = json.loads(config.read_text(encoding="utf-8"))
         registered_envs = [
             value["service_account"]["token_env"]
@@ -62,14 +63,8 @@ def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
         raise McpAuthError("invalid project credential profile") from error
     if not isinstance(token_env, str) or not TOKEN_ENV.fullmatch(token_env):
         raise McpAuthError("invalid service-account environment name")
-    if not isinstance(url, str) or not (
-        url.startswith("https://")
-        or url.startswith("http://127.0.0.1:")
-        or url.startswith("http://localhost:")
-    ):
-        raise McpAuthError("invalid autodev-memory URL")
     if not isinstance(token_ref, str) or not token_ref.startswith("op://"):
-        raise McpAuthError("invalid autodev-memory credential reference")
+        raise McpAuthError(f"invalid {tool} credential reference")
 
     service_token = os.environ.get(token_env, "")
     if not service_token and sys.platform == "darwin" and keychain_item:
@@ -101,8 +96,33 @@ def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
         for name in ("OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
             os.environ.pop(name, None)
     if not bearer:
-        raise McpAuthError("1Password returned an empty autodev-memory credential")
-    return url.rstrip("/"), bearer
+        raise McpAuthError(f"1Password returned an empty {tool} credential")
+    return tool_profile, bearer
+
+
+def _validated_mcp_url(profile: dict[str, object], label: str) -> str:
+    url = profile.get("url")
+    if not isinstance(url, str) or not (
+        url.startswith("https://")
+        or url.startswith("http://127.0.0.1:")
+        or url.startswith("http://localhost:")
+    ):
+        raise McpAuthError(f"invalid {label} URL")
+    return url.rstrip("/")
+
+
+def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
+    """Return the HTTPS REST base and restricted bearer for one registered repository."""
+    profile, bearer = _resolve_project_tool(project, cwd, "autodev_memory")
+    return _validated_mcp_url(profile, "autodev-memory"), bearer
+
+
+def resolve_prediction_quality_production(project: str, cwd: Path) -> tuple[str, str]:
+    """Return the production prediction-quality MCP endpoint and read-only bearer."""
+    profile, bearer = _resolve_project_tool(
+        project, cwd, "prediction_quality_production",
+    )
+    return _validated_mcp_url(profile, "prediction-quality-production"), bearer
 
 
 def resolve_conductor() -> tuple[str, str]:

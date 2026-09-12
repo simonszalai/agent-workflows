@@ -140,9 +140,9 @@ def servers_for(
             merged.update(extra)
     servers = [parse_server(name, merged[name]) for name in sorted(merged)]
     for index, server in enumerate(servers):
-        if server.profile == "autodev_memory":
+        if server.profile in {"autodev_memory", "prediction_quality_production"}:
             if not project or not token_env:
-                fail("project credential profile is required for autodev-memory")
+                fail(f"project credential profile is required for {server.name}")
             # Registry identity and credential come from the same resolver invocation.
             # Replace even stale manifest allowlists; never union project credentials.
             servers[index] = server._replace(env_vars=(token_env,))
@@ -161,6 +161,16 @@ def bridge_args(server: Server, project: str | None) -> tuple[str, list[str]]:
         ]
     if server.profile == "conductor":
         return "sh", ["-lc", 'exec "$HOME/.local/bin/mcp-bridge" conductor']
+    if server.profile == "prediction_quality_production":
+        if not project:
+            fail(f"project is required for {server.name}")
+        return "sh", [
+            "-lc",
+            'exec "$HOME/.local/bin/mcp-bridge" prediction-quality-production '
+            '--project "$1"',
+            "mcp-bridge",
+            project,
+        ]
     fail(f"no bridge implementation for profile {server.profile!r}")
 
 

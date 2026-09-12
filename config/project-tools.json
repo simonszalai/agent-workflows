@@ -102,6 +102,10 @@
         "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://TS/Autodev memory restricted/api_token"
       },
+      "prediction_quality_production": {
+        "url": "https://ts-dashboard-spd5.onrender.com/mcp",
+        "token_ref": "op://TS/TS_DASHBOARD_PROD_MCP_TOKEN/value"
+      },
       "render": {
         "api_key_ref": "op://TS/Render/api_key",
         "workspace": {
