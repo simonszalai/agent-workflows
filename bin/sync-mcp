@@ -269,8 +269,60 @@ def render_json(
         merged[server.name] = json_entry(server, project)
     value = dict(current)
     value["mcpServers"] = {name: merged[name] for name in sorted(merged)}
-    rendered = json.dumps(value, indent=indent, ensure_ascii=False)
+    rendered = compact_scalar_arrays(
+        json.dumps(value, indent=indent, ensure_ascii=False),
+    )
     return rendered + ("\n" if trailing_newline else "")
+
+
+def compact_scalar_arrays(text: str, *, line_width: int = 100) -> str:
+    """Match Biome's compact form for scalar arrays that fit on one line."""
+    lines = text.splitlines()
+    compacted: list[str] = []
+    index = 0
+    while index < len(lines):
+        opening = lines[index]
+        if not opening.rstrip().endswith("["):
+            compacted.append(opening)
+            index += 1
+            continue
+
+        values: list[str] = []
+        cursor = index + 1
+        closing_suffix: str | None = None
+        while cursor < len(lines):
+            stripped = lines[cursor].strip()
+            if stripped in {"]", "],"}:
+                closing_suffix = "," if stripped.endswith(",") else ""
+                break
+            raw_value = stripped.removesuffix(",")
+            try:
+                parsed = json.loads(raw_value)
+            except json.JSONDecodeError:
+                values = []
+                break
+            if isinstance(parsed, (dict, list)):
+                values = []
+                break
+            values.append(raw_value)
+            cursor += 1
+
+        if values and closing_suffix is not None:
+            candidate = (
+                opening.rstrip()[:-1]
+                + "["
+                + ", ".join(values)
+                + "]"
+                + closing_suffix
+            )
+            if len(candidate.expandtabs(2)) <= line_width:
+                compacted.append(candidate)
+                index = cursor + 1
+                continue
+
+        compacted.append(opening)
+        index += 1
+    return "\n".join(compacted)
 
 
 def json_indent(text: str) -> int | str:

@@ -74,6 +74,10 @@ class SyncMcpTest(unittest.TestCase):
                 '"$HOME/.local/bin/mcp-bridge" conductor',
                 claude["conductor"]["args"][1],
             )
+            self.assertIn(
+                '\t\t\t"args": ["-lc", "exec \\"$HOME/.local/bin/mcp-bridge\\" conductor"]',
+                (repo / ".mcp.json").read_text(),
+            )
             self.assertEqual(claude["context7"]["url"], "https://mcp.context7.com/mcp")
             self.assertNotIn("render", cursor)
             self.assertIn("team-owned", cursor)
