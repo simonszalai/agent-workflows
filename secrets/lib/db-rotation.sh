@@ -34,8 +34,13 @@ rotation_probe_all_services() {
 }
 
 # One fail-closed application health attempt. Redirects are not followed and
-# are not accepted; HTTP 200 is necessary but insufficient. The endpoint must
-# also attest that the process started with a safe database role.
+# are not accepted; HTTP 200 is required. Same contract as health_gate in
+# deploy-wait.sh: an endpoint that attests its database role (a JSON object
+# carrying `databaseRoleSafe`, e.g. the dashboards' /resources/healthcheck)
+# must report {status:"ok", databaseRoleSafe:true}; a liveness-only endpoint
+# (any other 200 body, e.g. Prefect's /api/health which returns `true`) passes
+# on 200 alone — the deploy reaching live plus the rotator's own DB proofs are
+# the gate there.
 rotation_probe_health_once() { # url
 	local url="$1" body_file status
 	body_file="$(mktemp "${TMPDIR:-/tmp}/db-rotation-health.XXXXXX")" || return $?
@@ -44,10 +49,12 @@ rotation_probe_health_once() { # url
 		rm -f "$body_file"
 		return 1
 	}
-	if [[ "$status" != "200" ]] || ! jq -e '
-		type == "object"
-		and .status == "ok"
-		and .databaseRoleSafe == true' "$body_file" >/dev/null 2>&1; then
+	if [[ "$status" != "200" ]]; then
+		rm -f "$body_file"
+		return 1
+	fi
+	if jq -e 'type == "object" and has("databaseRoleSafe")' "$body_file" >/dev/null 2>&1 \
+		&& ! jq -e '.status == "ok" and .databaseRoleSafe == true' "$body_file" >/dev/null 2>&1; then
 		rm -f "$body_file"
 		return 1
 	fi
