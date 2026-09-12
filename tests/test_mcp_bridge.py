@@ -156,6 +156,97 @@ class McpBridgeTest(unittest.TestCase):
                     self.assertEqual(result.returncode, expected, result.stderr)
                     self.assertNotIn("sentinel", result.stdout + result.stderr)
 
+    def test_prediction_quality_bridge_resolves_project_token_without_waf_transform(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
+            RecordingHandler.requests = []
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+            config = root / "project-tools.json"
+            config.write_text(json.dumps({
+                "schema_version": 1,
+                "projects": {
+                    "testproj": {
+                        "repo_remotes": ["github.com/acme/test-repo"],
+                        "service_account": {
+                            "token_env": "TESTPROJ_OP_SERVICE_ACCOUNT_TOKEN",
+                            "keychain_item": "op-testproj-token",
+                            "vaults": ["TESTVAULT"],
+                        },
+                        "autodev_memory": {
+                            "url": "https://autodev-memory.example.com",
+                            "token_ref": "op://TESTVAULT/Autodev memory/api_token",
+                        },
+                        "prediction_quality_production": {
+                            "url": f"http://127.0.0.1:{server.server_port}",
+                            "token_ref": "op://TESTVAULT/Prediction quality/value",
+                        },
+                        "render": {
+                            "api_key_ref": "op://TESTVAULT/Render/api_key",
+                            "workspace": {"id": "tea-test"},
+                        },
+                    }
+                },
+            }))
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run([
+                "git", "-C", str(repo), "remote", "add", "origin",
+                "https://github.com/acme/test-repo.git",
+            ], check=True)
+            fake_op = root / "op"
+            fake_op.write_text(
+                '#!/bin/sh\n'
+                '[ "$OP_SERVICE_ACCOUNT_TOKEN" = "service-account" ] || exit 31\n'
+                '[ "$3" = "op://TESTVAULT/Prediction quality/value" ] || exit 32\n'
+                'printf "%s" "prediction-quality-bearer"\n'
+            )
+            fake_op.chmod(0o755)
+            message = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_reliability",
+                    "arguments": {"description": "SELECT stays unchanged"},
+                },
+            }
+            result = subprocess.run(
+                [
+                    str(BRIDGE), "prediction-quality-production",
+                    "--project", "testproj",
+                ],
+                input=json.dumps(message) + "\n",
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "PROJECT_TOOLS_CONFIG": str(config),
+                    "TESTPROJ_OP_SERVICE_ACCOUNT_TOKEN": "service-account",
+                    "OP_REAL_BIN": str(fake_op),
+                    "HOME": str(root / "home"),
+                },
+                cwd=repo,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                RecordingHandler.requests[0]["authorization"],
+                "Bearer prediction-quality-bearer",
+            )
+            arguments = RecordingHandler.requests[0]["body"]["params"]["arguments"]
+            self.assertEqual(arguments["description"], "SELECT stays unchanged")
+            self.assertNotIn(
+                "prediction-quality-bearer", result.stdout + result.stderr,
+            )
+
     def test_conductor_bridge_uses_env_bearer_and_skips_waf_transform(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
         RecordingHandler.requests = []

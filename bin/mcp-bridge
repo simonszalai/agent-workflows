@@ -23,7 +23,12 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hooks"))
 
-from mcp_auth import McpAuthError, resolve_autodev_memory, resolve_conductor  # noqa: E402
+from mcp_auth import (  # noqa: E402
+    McpAuthError,
+    resolve_autodev_memory,
+    resolve_conductor,
+    resolve_prediction_quality_production,
+)
 
 
 WAF_SENTINEL = "@@B64@@"
@@ -179,7 +184,10 @@ class Bridge:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="mcp-bridge")
-    parser.add_argument("server", choices=("autodev-memory", "conductor"))
+    parser.add_argument(
+        "server",
+        choices=("autodev-memory", "conductor", "prediction-quality-production"),
+    )
     parser.add_argument("--project")
     parser.add_argument("--cwd", type=Path, default=default_working_directory())
     args = parser.parse_args()
@@ -189,10 +197,16 @@ def main() -> None:
                 fail("--project is required for autodev-memory")
             rest_url, bearer = resolve_autodev_memory(args.project, args.cwd.resolve())
             url = rest_url + "/mcp"
-        else:
+        elif args.server == "conductor":
             if args.project:
                 fail("--project is not accepted for conductor")
             url, bearer = resolve_conductor()
+        else:
+            if not args.project:
+                fail("--project is required for prediction-quality-production")
+            url, bearer = resolve_prediction_quality_production(
+                args.project, args.cwd.resolve(),
+            )
     except McpAuthError as error:
         fail(str(error))
 
