@@ -94,10 +94,17 @@ EXPECTED_AUTODEV_MEMORY_PROFILES = {
     },
 }
 
-EXPECTED_PREDICTION_QUALITY_PROFILES = {
+EXPECTED_TS_DASHBOARD_PROFILES = {
     "ts": {
         "url": "https://ts-dashboard-spd5.onrender.com/mcp",
         "token_ref": "op://TS/TS_DASHBOARD_PROD_MCP_TOKEN/value",
+    },
+}
+
+EXPECTED_TS_DASHBOARD_STAGING_PROFILES = {
+    "ts": {
+        "url": "https://ts-dashboard-staging.onrender.com/mcp",
+        "token_ref": "op://TS/TS_DASHBOARD_STAGING_MCP_TOKEN/value",
     },
 }
 
@@ -466,8 +473,12 @@ printf '{"ok":true}\\n'
                 EXPECTED_AUTODEV_MEMORY_PROFILES[project],
             )
             self.assertEqual(
-                projects[project].get("prediction_quality_production"),
-                EXPECTED_PREDICTION_QUALITY_PROFILES.get(project),
+                projects[project].get("ts_dashboard"),
+                EXPECTED_TS_DASHBOARD_PROFILES.get(project),
+            )
+            self.assertEqual(
+                projects[project].get("ts_dashboard_staging"),
+                EXPECTED_TS_DASHBOARD_STAGING_PROFILES.get(project),
             )
             self.assertEqual(
                 projects[project].get("resend", {}).get("api_key_ref"),
@@ -700,17 +711,17 @@ printf '{"ok":true}\\n'
         cases = (
             (
                 lambda value: value["projects"]["alpha"].__setitem__(
-                    "prediction_quality_production",
+                    "ts_dashboard",
                     {
                         "url": "http://not-loopback.example.com/mcp",
                         "token_ref": "op://ALPHA/PREDICTION/value",
                     },
                 ),
-                "prediction_quality_production.url must use HTTPS",
+                "ts_dashboard.url must use HTTPS",
             ),
             (
                 lambda value: value["projects"]["alpha"].__setitem__(
-                    "prediction_quality_production",
+                    "ts_dashboard",
                     {
                         "url": "https://prediction.example.com/mcp",
                         "token_ref": "op://ALPHA-sensitive/PREDICTION/value",
@@ -720,14 +731,24 @@ printf '{"ok":true}\\n'
             ),
             (
                 lambda value: value["projects"]["alpha"].__setitem__(
-                    "prediction_quality_production",
+                    "ts_dashboard",
                     {
                         "url": "https://prediction.example.com/mcp",
                         "token_ref": "op://ALPHA/PREDICTION/value",
                         "header": "Authorization",
                     },
                 ),
-                "prediction_quality_production has unknown keys",
+                "ts_dashboard has unknown keys",
+            ),
+            (
+                lambda value: value["projects"]["alpha"].__setitem__(
+                    "ts_dashboard_staging",
+                    {
+                        "url": "http://not-loopback.example.com/mcp",
+                        "token_ref": "op://ALPHA/PREDICTION/value",
+                    },
+                ),
+                "ts_dashboard_staging.url must use HTTPS",
             ),
             (
                 lambda value: value["projects"]["alpha"].__setitem__(

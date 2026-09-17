@@ -54,16 +54,19 @@ Project configs include the global servers so a fresh cloud workspace is self-co
 
 - Context7 uses its native unauthenticated HTTPS endpoint.
 - Amaru repositories add Amaru's native HTTPS/OAuth endpoint.
-- Autodev-memory, Conductor, and TS production prediction-quality run through
-  `bin/mcp-bridge`, one stdio child per client session.
+- Autodev-memory, Conductor, and the TS dashboard (`ts-dashboard` for production,
+  `ts-dashboard-staging` for staging) run through `bin/mcp-bridge`, one stdio child per
+  client session.
   Conductor's bearer comes from `CONDUCTOR_API_TOKEN`, else the workspace-scoped
   `CONDUCTOR_API_KEY` Conductor injects into machine-launched cloud workspaces, else the Mac
   Keychain entry written by a one-time `conductor auth login` (service `com.conductor.cli`).
   No browser OAuth is involved, so the same config works in every client, local and cloud.
   The WAF base64 transform applies only to autodev-memory writes; Conductor bodies pass
-  through untouched. Prediction-quality resolves its read-only bearer from
-  `op://TS/TS_DASHBOARD_PROD_MCP_TOKEN/value` through the TS service account and also passes
-  bodies through untouched.
+  through untouched. ts-dashboard resolves its read-only bearer from
+  `op://TS/TS_DASHBOARD_PROD_MCP_TOKEN/value` (staging:
+  `op://TS/TS_DASHBOARD_STAGING_MCP_TOKEN/value`) through the TS service account and also
+  passes bodies through untouched. Staging tokens are minted on the staging dashboard's
+  `/settings/mcp-tokens` page.
 
 Codex clears the environment of stdio MCP children, so its generated TOML also contains an
 explicit `env_vars` allowlist for each authenticated bridge. Project bridges derive their sole

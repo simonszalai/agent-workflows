@@ -156,9 +156,15 @@ class McpBridgeTest(unittest.TestCase):
                     self.assertEqual(result.returncode, expected, result.stderr)
                     self.assertNotIn("sentinel", result.stdout + result.stderr)
 
-    def test_prediction_quality_bridge_resolves_project_token_without_waf_transform(
+    def test_ts_dashboard_bridge_resolves_project_token_without_waf_transform(
         self,
     ) -> None:
+        self._assert_dashboard_bridge("ts-dashboard", "ts_dashboard")
+
+    def test_ts_dashboard_staging_bridge_resolves_its_own_profile(self) -> None:
+        self._assert_dashboard_bridge("ts-dashboard-staging", "ts_dashboard_staging")
+
+    def _assert_dashboard_bridge(self, server_name: str, tool: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
@@ -183,7 +189,15 @@ class McpBridgeTest(unittest.TestCase):
                             "url": "https://autodev-memory.example.com",
                             "token_ref": "op://TESTVAULT/Autodev memory/api_token",
                         },
-                        "prediction_quality_production": {
+                        "ts_dashboard": {
+                            "url": "http://127.0.0.1:9",
+                            "token_ref": "op://TESTVAULT/Wrong profile/value",
+                        },
+                        "ts_dashboard_staging": {
+                            "url": "http://127.0.0.1:9",
+                            "token_ref": "op://TESTVAULT/Wrong profile/value",
+                        },
+                        tool: {
                             "url": f"http://127.0.0.1:{server.server_port}",
                             "token_ref": "op://TESTVAULT/Prediction quality/value",
                         },
@@ -220,7 +234,7 @@ class McpBridgeTest(unittest.TestCase):
             }
             result = subprocess.run(
                 [
-                    str(BRIDGE), "prediction-quality-production",
+                    str(BRIDGE), server_name,
                     "--project", "testproj",
                 ],
                 input=json.dumps(message) + "\n",
