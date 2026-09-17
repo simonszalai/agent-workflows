@@ -44,11 +44,14 @@ A regular-vault read that prompts has one of two causes, and neither is fixed by
 
 Before accessing any `op://*-sensitive/...` reference, classify the operation:
 
-1. **Read-only:** stop before resolving the sensitive reference. Production read-only database
-   work MUST use the service-account-readable RO credential/profile, never the write-capable
-   sensitive credential. If no RO route is documented, report that missing route as the blocker;
-   do not fall back to Touch ID. Commands described as verify, inspect, report, list, diff, schema
-   check, or diagnostics are read-only unless their documented behavior explicitly writes.
+1. **Read-only:** stop before resolving the sensitive reference. When the project has a
+   service-account-readable RO credential/profile (`psql-cli context <tier>` or the
+   `<PROJECT>` regular vault's `Postgres prod RO` item), production read-only database work MUST
+   use it, never the write-capable sensitive credential. The RO route is mandatory only where it
+   exists: if no RO route exists for the project/tier, continue through step 2 with the sensitive
+   credential, and say in the reason that no RO route exists so one can be added afterwards.
+   Commands described as verify, inspect, report, list, diff, schema check, or diagnostics are
+   read-only unless their documented behavior explicitly writes.
 2. **Mutating:** only after confirming the command genuinely requires write capability, state the
    concrete purpose in one concise sentence. Include the ticket/milestone or operation when known;
    never include secret values.
@@ -100,7 +103,7 @@ that regular-vault operation as sensitive or showing a sensitive-access notifica
 Never bypass this contract with `/opt/homebrew/bin/op`, an alternate wrapper, or an `OP_BIN` that
 does not name the canonical shim in the consumer/provider's reviewed root. Never print or log
 resolved values. Never request Touch ID or use a `*-sensitive` profile merely to complete a
-read-only check.
+read-only check that an existing RO route can serve.
 
 ## Session reuse
 

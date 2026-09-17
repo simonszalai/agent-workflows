@@ -73,8 +73,11 @@ If `psql` is missing, install the PostgreSQL client (`brew install libpq` on mac
 platform's PostgreSQL client package on Linux).
 
 **CRITICAL:** Pass the requested tier exactly. Never substitute `prod` for staging/dev or another
-available tier for one that is unavailable. Direct SQL is unavailable when the registry has no
-Postgres profile; use the project's supported application/API interface instead.
+available tier for one that is unavailable. The read-only `psql-cli` profile is mandatory only
+where it exists: when the registry has no Postgres RO profile for the requested tier, use the
+project's supported application/API interface, or — for production — the sensitive write
+credential through the reviewed `SENSITIVE_ACCESS_REASON` path in
+`../sensitive-vault-access/SKILL.md`, noting in the reason that no RO route exists.
 
 ## Failure discipline
 
