@@ -31,9 +31,13 @@
       }
     },
     "ts": {
-      "prediction-quality-production": {
+      "ts-dashboard": {
         "transport": "stdio-bridge",
-        "profile": "prediction_quality_production"
+        "profile": "ts_dashboard"
+      },
+      "ts-dashboard-staging": {
+        "transport": "stdio-bridge",
+        "profile": "ts_dashboard_staging"
       }
     }
   },
@@ -49,6 +53,8 @@
     "postgres_prod_prefect",
     "postgres_staging",
     "prediction-quality-production",
-    "render"
+    "render",
+    "ts-dashboard",
+    "ts-dashboard-staging"
   ]
 }

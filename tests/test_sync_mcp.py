@@ -60,7 +60,8 @@ class SyncMcpTest(unittest.TestCase):
                     "autodev-memory",
                     "conductor",
                     "context7",
-                    "prediction-quality-production",
+                    "ts-dashboard",
+                    "ts-dashboard-staging",
                 },
             )
             self.assertEqual(
@@ -92,12 +93,22 @@ class SyncMcpTest(unittest.TestCase):
                 ["CONDUCTOR_API_TOKEN", "CONDUCTOR_API_KEY", "CONDUCTOR_API_URL"],
             )
             self.assertIn(
-                '"$HOME/.local/bin/mcp-bridge" prediction-quality-production',
-                claude["prediction-quality-production"]["args"][1],
+                '"$HOME/.local/bin/mcp-bridge" ts-dashboard',
+                claude["ts-dashboard"]["args"][1],
+            )
+            self.assertIn(
+                '"$HOME/.local/bin/mcp-bridge" ts-dashboard-staging',
+                claude["ts-dashboard-staging"]["args"][1],
             )
             self.assertEqual(
                 self.codex_env_vars(
-                    repo / ".codex/config.toml", "prediction-quality-production",
+                    repo / ".codex/config.toml", "ts-dashboard-staging",
+                ),
+                ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
+            )
+            self.assertEqual(
+                self.codex_env_vars(
+                    repo / ".codex/config.toml", "ts-dashboard",
                 ),
                 ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
             )
@@ -108,7 +119,7 @@ class SyncMcpTest(unittest.TestCase):
                 self.assertNotIn("env_vars", servers["autodev-memory"])
                 self.assertNotIn("env_vars", servers["conductor"])
                 self.assertNotIn(
-                    "env_vars", servers["prediction-quality-production"],
+                    "env_vars", servers["ts-dashboard"],
                 )
             self.assertTrue((repo / ".mcp.json").read_text().startswith('{\n\t"mcpServers"'))
             self.assertTrue((repo / ".cursor/mcp.json").read_text().startswith(

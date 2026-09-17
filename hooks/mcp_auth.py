@@ -117,12 +117,22 @@ def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
     return _validated_mcp_url(profile, "autodev-memory"), bearer
 
 
-def resolve_prediction_quality_production(project: str, cwd: Path) -> tuple[str, str]:
-    """Return the production prediction-quality MCP endpoint and read-only bearer."""
-    profile, bearer = _resolve_project_tool(
-        project, cwd, "prediction_quality_production",
-    )
-    return _validated_mcp_url(profile, "prediction-quality-production"), bearer
+TS_DASHBOARD_PROFILES = {
+    "ts-dashboard": "ts_dashboard",
+    "ts-dashboard-staging": "ts_dashboard_staging",
+}
+
+
+def resolve_ts_dashboard(
+    project: str, cwd: Path, server: str = "ts-dashboard",
+) -> tuple[str, str]:
+    """Return one ts-dashboard MCP endpoint (production or staging) and its read-only bearer."""
+    try:
+        tool = TS_DASHBOARD_PROFILES[server]
+    except KeyError as error:
+        raise McpAuthError(f"unknown ts-dashboard server {server!r}") from error
+    profile, bearer = _resolve_project_tool(project, cwd, tool)
+    return _validated_mcp_url(profile, server), bearer
 
 
 def resolve_conductor() -> tuple[str, str]:

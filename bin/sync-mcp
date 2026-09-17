@@ -140,7 +140,7 @@ def servers_for(
             merged.update(extra)
     servers = [parse_server(name, merged[name]) for name in sorted(merged)]
     for index, server in enumerate(servers):
-        if server.profile in {"autodev_memory", "prediction_quality_production"}:
+        if server.profile in {"autodev_memory", "ts_dashboard", "ts_dashboard_staging"}:
             if not project or not token_env:
                 fail(f"project credential profile is required for {server.name}")
             # Registry identity and credential come from the same resolver invocation.
@@ -161,12 +161,13 @@ def bridge_args(server: Server, project: str | None) -> tuple[str, list[str]]:
         ]
     if server.profile == "conductor":
         return "sh", ["-lc", 'exec "$HOME/.local/bin/mcp-bridge" conductor']
-    if server.profile == "prediction_quality_production":
+    if server.profile in {"ts_dashboard", "ts_dashboard_staging"}:
         if not project:
             fail(f"project is required for {server.name}")
+        target = "ts-dashboard" if server.profile == "ts_dashboard" else "ts-dashboard-staging"
         return "sh", [
             "-lc",
-            'exec "$HOME/.local/bin/mcp-bridge" prediction-quality-production '
+            f'exec "$HOME/.local/bin/mcp-bridge" {target} '
             '--project "$1"',
             "mcp-bridge",
             project,
