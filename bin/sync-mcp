@@ -64,7 +64,7 @@ def manifest(path: Path) -> dict[str, object]:
     return value
 
 
-def project_context(cwd: Path) -> tuple[str, Path, str]:
+def project_context(cwd: Path) -> tuple[str, Path, str, frozenset[str]]:
     result = subprocess.run(
         [str(PROJECT_CONTEXT), "--cwd", str(cwd)],
         capture_output=True,
@@ -82,13 +82,16 @@ def project_context(cwd: Path) -> tuple[str, Path, str]:
         project = value["project"]
         repo_root = value["repo_root"]
         token_env = value["service_account"]["token_env"]
+        tools = value["tools"]
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         fail(f"project-context returned invalid output: {error}")
     if not isinstance(project, str) or not isinstance(repo_root, str):
         fail("project-context returned an incomplete repository profile")
     if not isinstance(token_env, str) or not ENV_VAR_NAME.fullmatch(token_env):
         fail("project-context returned an invalid credential variable")
-    return project, Path(repo_root), token_env
+    if not isinstance(tools, dict):
+        fail("project-context returned invalid tool profiles")
+    return project, Path(repo_root), token_env, frozenset(tools)
 
 
 def parse_server(name: str, raw: object) -> Server:
@@ -125,9 +128,12 @@ def parse_server(name: str, raw: object) -> Server:
     fail(f"MCP server {name!r} has unsupported transport {transport!r}")
 
 
+CREDENTIAL_PROFILES = frozenset({"autodev_memory", "ts_dashboard", "ts_dashboard_staging"})
+
+
 def servers_for(
     config: dict[str, object], project: str | None, *, global_only: bool,
-    token_env: str | None = None,
+    token_env: str | None = None, tools: frozenset[str] = frozenset(),
 ) -> list[Server]:
     merged: dict[str, object] = dict(config["global_servers"])
     if not global_only:
@@ -139,8 +145,14 @@ def servers_for(
                 fail(f"project_servers.{project} must be an object")
             merged.update(extra)
     servers = [parse_server(name, merged[name]) for name in sorted(merged)]
+    # A project-credential server is rendered only when the project registers the
+    # matching tool profile; e.g. a project without autodev_memory gets no memory server.
+    servers = [
+        server for server in servers
+        if server.profile not in CREDENTIAL_PROFILES or server.profile in tools
+    ]
     for index, server in enumerate(servers):
-        if server.profile in {"autodev_memory", "ts_dashboard", "ts_dashboard_staging"}:
+        if server.profile in CREDENTIAL_PROFILES:
             if not project or not token_env:
                 fail(f"project credential profile is required for {server.name}")
             # Registry identity and credential come from the same resolver invocation.
@@ -492,13 +504,15 @@ def main() -> None:
     project = None
     repo_root = None
     token_env = None
+    tools: frozenset[str] = frozenset()
     if args.project or args.include_project:
-        project, repo_root, token_env = project_context(args.cwd)
+        project, repo_root, token_env, tools = project_context(args.cwd)
 
     changed = False
     if args.user:
         user_servers = servers_for(
             config, project, global_only=not args.include_project, token_env=token_env,
+            tools=tools,
         )
         changed |= sync_scope(
             args.home.expanduser(), user_servers,
@@ -507,7 +521,9 @@ def main() -> None:
         )
     if args.project:
         assert project is not None and repo_root is not None
-        project_servers = servers_for(config, project, global_only=False, token_env=token_env)
+        project_servers = servers_for(
+            config, project, global_only=False, token_env=token_env, tools=tools,
+        )
         changed |= sync_scope(
             repo_root, project_servers, project, managed,
             user=False, check=args.check,

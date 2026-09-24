@@ -34,7 +34,7 @@ class SyncMcpTest(unittest.TestCase):
     def test_project_render_is_idempotent_for_all_four_clients(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = self.make_repo(
-                Path(directory), "https://github.com/TS-Value-Software/ts-api.git",
+                Path(directory), "https://github.com/amaru-wellness/amaru-mcp.git",
             )
             (repo / "biome.json").write_text(
                 '{"formatter":{"indentStyle":"tab"}}\n',
@@ -55,14 +55,7 @@ class SyncMcpTest(unittest.TestCase):
             claude = json.loads((repo / ".mcp.json").read_text())["mcpServers"]
             cursor = json.loads((repo / ".cursor/mcp.json").read_text())["mcpServers"]
             self.assertEqual(
-                set(claude),
-                {
-                    "autodev-memory",
-                    "conductor",
-                    "context7",
-                    "ts-dashboard",
-                    "ts-dashboard-staging",
-                },
+                set(claude), {"amaru", "autodev-memory", "conductor", "context7"},
             )
             self.assertEqual(
                 claude["autodev-memory"]["command"], "sh",
@@ -86,31 +79,11 @@ class SyncMcpTest(unittest.TestCase):
                           (repo / ".codex/config.toml").read_text())
             self.assertEqual(
                 self.codex_env_vars(repo / ".codex/config.toml", "autodev-memory"),
-                ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
+                ["AMARU_OP_SERVICE_ACCOUNT_TOKEN"],
             )
             self.assertEqual(
                 self.codex_env_vars(repo / ".codex/config.toml", "conductor"),
                 ["CONDUCTOR_API_TOKEN", "CONDUCTOR_API_KEY", "CONDUCTOR_API_URL"],
-            )
-            self.assertIn(
-                '"$HOME/.local/bin/mcp-bridge" ts-dashboard',
-                claude["ts-dashboard"]["args"][1],
-            )
-            self.assertIn(
-                '"$HOME/.local/bin/mcp-bridge" ts-dashboard-staging',
-                claude["ts-dashboard-staging"]["args"][1],
-            )
-            self.assertEqual(
-                self.codex_env_vars(
-                    repo / ".codex/config.toml", "ts-dashboard-staging",
-                ),
-                ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
-            )
-            self.assertEqual(
-                self.codex_env_vars(
-                    repo / ".codex/config.toml", "ts-dashboard",
-                ),
-                ["TS_OP_SERVICE_ACCOUNT_TOKEN"],
             )
             grok = (repo / ".grok/config.toml").read_text()
             self.assertIn("enabled = true", grok)
@@ -118,9 +91,6 @@ class SyncMcpTest(unittest.TestCase):
             for servers in (claude, cursor):
                 self.assertNotIn("env_vars", servers["autodev-memory"])
                 self.assertNotIn("env_vars", servers["conductor"])
-                self.assertNotIn(
-                    "env_vars", servers["ts-dashboard"],
-                )
             self.assertTrue((repo / ".mcp.json").read_text().startswith('{\n\t"mcpServers"'))
             self.assertTrue((repo / ".cursor/mcp.json").read_text().startswith(
                 '{\n\t"mcpServers"',
@@ -131,6 +101,37 @@ class SyncMcpTest(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_project_without_memory_profile_gets_no_project_servers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root, "https://github.com/TS-Value-Software/ts-prefect.git")
+            home = root / "home"
+            (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {
+                "autodev-memory": {"command": "old-bridge"},
+                "ts-dashboard": {"command": "old-bridge"},
+                "ts-dashboard-staging": {"command": "old-bridge"},
+                "team-owned": {"command": "team-server"},
+            }}))
+            result = subprocess.run(
+                [str(SYNC), "--user", "--include-project", "--project",
+                 "--cwd", str(repo), "--home", str(home)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for scope, claude in ((repo, ".mcp.json"), (home, ".claude.json")):
+                for relative in (claude, ".cursor/mcp.json"):
+                    servers = json.loads((scope / relative).read_text())["mcpServers"]
+                    self.assertEqual(
+                        set(servers) - {"team-owned"}, {"conductor", "context7"},
+                    )
+                for relative in (".codex/config.toml", ".grok/config.toml"):
+                    rendered = (scope / relative).read_text()
+                    self.assertNotIn("autodev-memory", rendered)
+                    self.assertNotIn("ts-dashboard", rendered)
+                    self.assertNotIn("TS_OP_SERVICE_ACCOUNT_TOKEN", rendered)
+            self.assertIn("team-owned", json.loads((repo / ".mcp.json").read_text())[
+                "mcpServers"])
 
     def test_user_sync_preserves_unmanaged_entries_and_removes_project_only_amaru(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -258,13 +259,20 @@ class SyncMcpTest(unittest.TestCase):
                                                 env=environment)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         expected = profile["service_account"]["token_env"]
+                        has_memory = "autodev_memory" in profile
                         for scope, claude in ((repo, ".mcp.json"), (home, ".claude.json")):
-                            self.assertEqual(self.codex_env_vars(
-                                scope / ".codex/config.toml", "autodev-memory"), [expected])
+                            if has_memory:
+                                self.assertEqual(self.codex_env_vars(
+                                    scope / ".codex/config.toml", "autodev-memory"), [expected])
                             for relative in (claude, ".cursor/mcp.json"):
-                                entry = json.loads((scope / relative).read_text())[
-                                    "mcpServers"]["autodev-memory"]
-                                self.assertEqual(entry["args"][-1], project)
+                                servers = json.loads((scope / relative).read_text())[
+                                    "mcpServers"]
+                                if has_memory:
+                                    self.assertEqual(
+                                        servers["autodev-memory"]["args"][-1], project,
+                                    )
+                                else:
+                                    self.assertNotIn("autodev-memory", servers)
                             for relative in (claude, ".cursor/mcp.json",
                                              ".codex/config.toml", ".grok/config.toml"):
                                 rendered = (scope / relative).read_text()

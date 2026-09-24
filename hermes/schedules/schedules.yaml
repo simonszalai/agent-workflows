@@ -45,7 +45,7 @@ schedules:
       model: gpt-5.6-sol
     slack_channel: "#autodev-nightly"
     max_runtime_minutes: 180
-    enabled: true
+    enabled: false
     # VERIFY-ONLY (E0029 locked decision): merging to main is a de-facto prod
     # deploy for ts-prefect (git_clone at runtime), so scheduled runs never merge.
 
@@ -60,7 +60,7 @@ schedules:
       model: gpt-5.6-sol
     slack_channel: "#autodev-nightly"
     max_runtime_minutes: 150
-    enabled: true
+    enabled: false
 
   - name: health-6h
     cron: "0 */6 * * *"
@@ -76,4 +76,4 @@ schedules:
     # After triage, runner.py launches all issue workspaces in parallel and supervises them
     # through `/ticket-flow <ID>` staging verification under this shared wall-clock cap.
     remediation_max_runtime_minutes: 420
-    enabled: true
+    enabled: false

@@ -148,7 +148,16 @@ _mem_parse_env() {
   [[ "$profile_project" == "workflow_pro" ]] && profile_project="workflow-pro"
   profile=$(PROJECT_TOOLS_CONFIG="${PROJECT_TOOLS_CONFIG:-$_MEM_AGENT_ROOT/config/project-tools.json}" \
     "$_MEM_AGENT_ROOT/bin/project-context" --cwd "$_CWD" \
-    --project "$profile_project" --tool autodev_memory) || return 1
+    --project "$profile_project") || return 1
+  # A registered project without an autodev_memory tool profile has opted out of this
+  # memory stack (e.g. it moved to another one): skip silently instead of reporting
+  # the memory context as unavailable.
+  if ! PROFILE="$profile" python3 -B -c '
+import json, os, sys
+sys.exit(0 if "autodev_memory" in json.loads(os.environ["PROFILE"])["tools"] else 1)
+'; then
+    _MEM_ENV_SKIP=1; return 0
+  fi
   fields=$(PROFILE="$profile" python3 -B - <<'PY'
 import json, os
 profile = json.loads(os.environ["PROFILE"])

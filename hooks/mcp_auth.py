@@ -111,6 +111,22 @@ def _validated_mcp_url(profile: dict[str, object], label: str) -> str:
     return url.rstrip("/")
 
 
+def project_opted_out_of_tool(project: str, tool: str) -> bool:
+    """True when a registered project exists but registers no profile for ``tool``.
+
+    Unknown projects and unreadable registries return False so the normal resolver
+    still reports them as errors.
+    """
+    profile_project = "workflow-pro" if project == "workflow_pro" else project
+    config = Path(os.environ.get("PROJECT_TOOLS_CONFIG", DEFAULT_CONFIG))
+    try:
+        projects = json.loads(config.read_text(encoding="utf-8"))["projects"]
+        entry = projects[profile_project]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(entry, dict) and tool not in entry
+
+
 def resolve_autodev_memory(project: str, cwd: Path) -> tuple[str, str]:
     """Return the HTTPS REST base and restricted bearer for one registered repository."""
     profile, bearer = _resolve_project_tool(project, cwd, "autodev_memory")

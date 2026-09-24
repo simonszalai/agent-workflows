@@ -98,10 +98,6 @@
           "TS"
         ]
       },
-      "autodev_memory": {
-        "url": "https://autodev-memory.onrender.com",
-        "token_ref": "op://TS/Autodev memory restricted/api_token"
-      },
       "ts_dashboard": {
         "url": "https://ts-dashboard-spd5.onrender.com/mcp",
         "token_ref": "op://TS/TS_DASHBOARD_PROD_MCP_TOKEN/value"

@@ -186,29 +186,32 @@ def load_projects(path: Path) -> dict[str, Project]:
                 f"projects.{name}.render.workspace.discover_service_names",
             )
 
+        # Optional: a project without autodev_memory does not use the autodev-memory
+        # stack; its hooks skip and sync-mcp renders no memory server for it.
         autodev_memory = tools.get("autodev_memory")
-        if not isinstance(autodev_memory, dict):
-            fail(f"projects.{name}.autodev_memory must be an object")
-        unknown = set(autodev_memory) - {"url", "token_ref"}
-        if unknown:
-            fail(
-                f"projects.{name}.autodev_memory has unknown keys: "
-                f"{', '.join(sorted(unknown))}"
+        if autodev_memory is not None:
+            if not isinstance(autodev_memory, dict):
+                fail(f"projects.{name}.autodev_memory must be an object")
+            unknown = set(autodev_memory) - {"url", "token_ref"}
+            if unknown:
+                fail(
+                    f"projects.{name}.autodev_memory has unknown keys: "
+                    f"{', '.join(sorted(unknown))}"
+                )
+            url = autodev_memory.get("url")
+            if not isinstance(url, str) or not (
+                url.startswith("https://")
+                or url.startswith("http://127.0.0.1:")
+                or url.startswith("http://localhost:")
+            ):
+                fail(
+                    f"projects.{name}.autodev_memory.url must use HTTPS "
+                    "or loopback HTTP"
+                )
+            non_sensitive_op_ref(
+                autodev_memory.get("token_ref"),
+                f"projects.{name}.autodev_memory.token_ref",
             )
-        url = autodev_memory.get("url")
-        if not isinstance(url, str) or not (
-            url.startswith("https://")
-            or url.startswith("http://127.0.0.1:")
-            or url.startswith("http://localhost:")
-        ):
-            fail(
-                f"projects.{name}.autodev_memory.url must use HTTPS "
-                "or loopback HTTP"
-            )
-        non_sensitive_op_ref(
-            autodev_memory.get("token_ref"),
-            f"projects.{name}.autodev_memory.token_ref",
-        )
 
         # Optional: authenticated project MCP endpoints resolve a bearer through the
         # same project-scoped service account as the other regular-vault tools.
