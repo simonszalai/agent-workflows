@@ -84,10 +84,7 @@ EXPECTED_AUTODEV_MEMORY_PROFILES = {
         "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://AUTODEV/Autodev memory/api_token",
     },
-    "ts": {
-        "url": "https://autodev-memory.onrender.com",
-        "token_ref": "op://TS/Autodev memory restricted/api_token",
-    },
+    # ts moved off this memory stack: no autodev_memory profile.
     "workflow-pro": {
         "url": "https://autodev-memory.onrender.com",
         "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token",
@@ -469,8 +466,8 @@ printf '{"ok":true}\\n'
                 EXPECTED_SERVICE_ACCOUNT_VAULTS[project],
             )
             self.assertEqual(
-                projects[project]["autodev_memory"],
-                EXPECTED_AUTODEV_MEMORY_PROFILES[project],
+                projects[project].get("autodev_memory"),
+                EXPECTED_AUTODEV_MEMORY_PROFILES.get(project),
             )
             self.assertEqual(
                 projects[project].get("ts_dashboard"),

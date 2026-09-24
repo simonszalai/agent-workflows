@@ -111,6 +111,37 @@ class HookContractTest(unittest.TestCase):
             self.assertIn('status="delivered"', context)
             self.assertNotIn('status="unavailable"', context)
 
+    def test_project_without_memory_profile_is_skipped_silently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env, payload = self._session_env(directory)
+            repo = Path(str(payload["cwd"]))
+            args = Path(directory) / "curl-args"
+            env["FAKE_CURL_ARGS"] = str(args)
+            config = json.loads((ROOT / "config/project-tools.json").read_text())
+            del config["projects"]["autodev"]["autodev_memory"]
+            registry = Path(directory) / "project-tools.json"
+            registry.write_text(json.dumps(config))
+            env["PROJECT_TOOLS_CONFIG"] = str(registry)
+
+            session = subprocess.run(
+                [str(ROOT / "hooks/autodev-memory-session-start.sh")],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(session.returncode, 0, session.stderr)
+            self.assertEqual(json.loads(session.stdout), {})
+            self.assertFalse(args.exists())
+
+            packet = subprocess.run(
+                [str(ROOT / "bin/autodev-memory-task-packet"), "--cwd", str(repo),
+                 "--agent-type", "generic", "--session-id", "parent-session",
+                 "--provider", "claude", "--mechanism", "prompt_rewrite",
+                 "--allow-unavailable"],
+                input="", capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(packet.returncode, 0, packet.stderr)
+            self.assertEqual(packet.stdout, "")
+            self.assertFalse(args.exists())
+
     def test_external_explicit_packet_suppresses_ambient_session_start(self) -> None:
         env = os.environ.copy()
         env["AUTODEV_MEMORY_EXPLICIT_PACKET"] = "1"

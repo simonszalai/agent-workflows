@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "hooks"))
 
 from task_packet import build_task_packet  # noqa: E402
 from memory_context import _append_telemetry  # noqa: E402
+from mcp_auth import project_opted_out_of_tool  # noqa: E402
 
 
 def project_repo(cwd: Path) -> tuple[str, str]:
@@ -88,6 +89,10 @@ def main() -> int:
     task_prompt = sys.stdin.read() if args.task_prompt_stdin else ""
     detected_project, detected_repo = project_repo(args.cwd.resolve())
     project, repo = args.project or detected_project, args.repo or detected_repo
+    if project and project_opted_out_of_tool(project, "autodev_memory"):
+        # The project registers no autodev_memory profile: it does not use this memory
+        # stack, so print nothing rather than an "unavailable" packet.
+        return 0
     if not project or not repo or not args.session_id:
         return emit_unavailable(args) if args.allow_unavailable else 2
     try:

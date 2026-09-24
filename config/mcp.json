@@ -29,16 +29,6 @@
         "url": "https://mcp.amaruplatform.com/mcp",
         "auth": "oauth"
       }
-    },
-    "ts": {
-      "ts-dashboard": {
-        "transport": "stdio-bridge",
-        "profile": "ts_dashboard"
-      },
-      "ts-dashboard-staging": {
-        "transport": "stdio-bridge",
-        "profile": "ts_dashboard_staging"
-      }
     }
   },
   "managed_server_names": [
