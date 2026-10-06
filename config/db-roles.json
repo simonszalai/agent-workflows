@@ -144,9 +144,9 @@
       }
     },
     "workflow-pro": {
-      "vault": "WORKFLOW_PRO",
-      "vault_sensitive": "WORKFLOW_PRO-sensitive",
-      "render_key_ref": "op://WORKFLOW_PRO/Render/api_key",
+      "vault": "WORKFLOW",
+      "vault_sensitive": "WORKFLOW-sensitive",
+      "render_key_ref": "op://WORKFLOW/Render/api_key",
       "render_project": "workflow-pro",
       "slug": "workflow",
       "roles": {
@@ -190,19 +190,19 @@
       },
       "admin_refs": {
         "prod": {
-          "root": "op://WORKFLOW_PRO-sensitive/Postgres prod/root",
-          "owner": "op://WORKFLOW_PRO-sensitive/Postgres prod/owner"
+          "root": "op://WORKFLOW-sensitive/Postgres prod/root",
+          "owner": "op://WORKFLOW-sensitive/Postgres prod/owner"
         },
         "staging": {
-          "root": "op://WORKFLOW_PRO/Postgres staging/root",
-          "owner": "op://WORKFLOW_PRO/Postgres staging/owner"
+          "root": "op://WORKFLOW/Postgres staging/root",
+          "owner": "op://WORKFLOW/Postgres staging/owner"
         }
       }
     },
     "autodev": {
       "vault": "AUTODEV",
       "vault_sensitive": "AUTODEV-sensitive",
-      "render_key_ref": "op://WORKFLOW_PRO/Render/api_key",
+      "render_key_ref": "op://WORKFLOW/Render/api_key",
       "render_project": "workflow-pro",
       "slug": "autodev",
       "owner_kind": "sql_role",

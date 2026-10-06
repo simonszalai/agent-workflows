@@ -642,7 +642,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
             "AMARU": "op-amaru-token",
             "AUTODEV": "op-autodev-token",
             "TS": "op-ts-token",
-            "WORKFLOW_PRO": "op-workflow-pro-token",
+            "WORKFLOW": "op-workflow-pro-token",
         }
         for vault, keychain_item in expected_items.items():
             with self.subTest(vault=vault), SensitiveAccessFixture() as fixture:
@@ -665,7 +665,7 @@ class SensitiveAccessNotificationTest(unittest.TestCase):
 
     def test_vault_operation_flag_resolves_the_same_owning_project_token(self) -> None:
         with SensitiveAccessFixture() as fixture:
-            args = ["item", "list", "--vault", "WORKFLOW_PRO"]
+            args = ["item", "list", "--vault", "WORKFLOW"]
             result = fixture.run_op(args, reason=None, credentials=False)
 
             self.assertEqual(result.returncode, 0, result.stderr)
