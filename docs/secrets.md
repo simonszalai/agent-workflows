@@ -349,9 +349,12 @@ boxes via `admin_via`) and driven by the registry entry's consumer list
   drain → retirement. Any incomplete proof keeps the predecessor (exit 5,
   `--resume`).
 - **Health URLs are a fail-closed registry**: `health_urls` in
-  the project `secrets.yaml` `health:` section maps service id → endpoint returning HTTP 200
-  with `{status:"ok", databaseRoleSafe:true}`. An unregistered target service
-  refuses rotation before any mutation.
+  the project `secrets.yaml` `health:` section maps service id → endpoint returning HTTP 200.
+  An endpoint that attests its database role (JSON object carrying
+  `databaseRoleSafe`) must return `{status:"ok", databaseRoleSafe:true}`; a
+  liveness-only endpoint (any other 200 body, e.g. Prefect's `/api/health`)
+  passes on 200 alone. `deploy-only` marks a service with no HTTP surface.
+  An unregistered target service refuses rotation before any mutation.
 - After promotion the normal rotate-secret fan-out runs with
   `sync-secrets --skip-db-rows` (the rotator already activated the declared
   Render rows; the fan-out covers github rows and derived consumers).

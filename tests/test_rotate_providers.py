@@ -116,6 +116,10 @@ case "$method $url" in
     fi ;;
   "GET https://health.test/ok")
     printf '{"status":"ok","databaseRoleSafe":true}' ;;
+  "GET https://health.test/liveness")
+    printf 'true' ;;
+  "GET https://health.test/unsafe-role")
+    printf '{"status":"ok","databaseRoleSafe":false}' ;;
   "GET "*"/api-keys")
     printf '{"data":[{"id":"old-key-1","name":"testkey 20260101T000000Z"},{"id":"old-key-2","name":"testkey 20260301T120000Z"},{"id":"prefix-key","name":"testkey primary"},{"id":"longer-name-key","name":"testkeyfoo 20260101T000000Z"},{"id":"other-key","name":"unrelated"}]}' ;;
   "POST "*"/api-keys")
@@ -930,10 +934,10 @@ class PostgresRotatorStagesTest(unittest.TestCase):
         }
 
     def rotator(self, entry: dict, *args: str, resume: bool = False, finalize: bool = False,
-                **extra: str):
+                health_url: str = "https://health.test/ok", **extra: str):
         self.registry_path.write_text(json.dumps({
             "schema_version": 1,
-            "health_urls": {"srv-target": "https://health.test/ok"},
+            "health_urls": {"srv-target": health_url},
             "secrets": [entry],
         }), encoding="utf-8")
         env = self.sb.env(
@@ -1173,6 +1177,46 @@ class PostgresRotatorStagesTest(unittest.TestCase):
         self.assertIn("CURL GET https://api.render.com/v1/services/srv-target/env-vars/DATABASE_URL", joined)
         self.assertEqual(self.state("testproj-prod-app.state")["phase"], "promoted")
         self.assertEqual(self.stored_value(PG_APP_REF), candidate)
+
+    def _activated_state(self) -> tuple[dict, str, str]:
+        tag = "20260822t000000_abc123"
+        login = f"testproj_app_login_{tag}"
+        candidate_ref = f"op://TESTVAULT-sensitive/Postgres prod_CANDIDATE_app_{tag}/value"
+        candidate = f"postgresql://{login}:candpw@internal-host:5432/testdb?options=-c%20role%3Dtestproj_app"
+        self.seed_item(candidate_ref, candidate)
+        self.seed_item(PG_APP_REF, "postgresql://testproj_app:oldpw@internal-host:5432/testdb?options=-c%20role%3Dtestproj_app")
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "testproj-prod-app.state").write_text(json.dumps({
+            "stateVersion": 1, "entryId": "pg-app", "project": "testproj", "tier": "prod",
+            "scope": "app", "phase": "activated", "versionTag": tag, "login": login,
+            "candidateRef": candidate_ref, "oldLogins": "testproj_app",
+        }), encoding="utf-8")
+        entry = self.entry("pg-app", PG_APP_REF, targets=[("srv-target", "DATABASE_URL")])
+        return entry, candidate_ref, candidate
+
+    def test_liveness_only_health_endpoint_passes_on_200(self) -> None:
+        # Prefect's /api/health returns a bare `true`: no role attestation body.
+        # 200 alone is the gate (same contract as health_gate in deploy-wait.sh).
+        entry, candidate_ref, candidate = self._activated_state()
+        proc = self.rotator(entry, resume=True, health_url="https://health.test/liveness",
+                            FAKE_RENDER_ENV_FILE=str(self.item_path(candidate_ref)))
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("public health passed", proc.stdout)
+        self.assertIn("CURL GET https://health.test/liveness", "\n".join(self.log()))
+        self.assertEqual(self.state("testproj-prod-app.state")["phase"], "promoted")
+        self.assertEqual(self.stored_value(PG_APP_REF), candidate)
+
+    def test_attesting_health_endpoint_with_unsafe_role_fails_closed(self) -> None:
+        entry, candidate_ref, _ = self._activated_state()
+        old_value = self.stored_value(PG_APP_REF)
+        proc = self.rotator(entry, resume=True, health_url="https://health.test/unsafe-role",
+                            ROTATION_HEALTH_TIMEOUT_SECONDS="1", ROTATION_HEALTH_POLL_SECONDS="0",
+                            FAKE_RENDER_ENV_FILE=str(self.item_path(candidate_ref)))
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("is unhealthy", proc.stderr)
+        self.assertNotIn("public health passed", proc.stdout)
+        self.assertEqual(self.state("testproj-prod-app.state")["phase"], "activated")
+        self.assertEqual(self.stored_value(PG_APP_REF), old_value)
 
     def test_lock_connection_failure_exits_2(self) -> None:
         self.seed_item(PG_RO_REF, "postgresql://testproj_ro:oldpw@external-host:5432/testdb")
