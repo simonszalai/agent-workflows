@@ -65,14 +65,14 @@ EXPECTED_SERVICE_ACCOUNT_VAULTS = {
     "amaru": ["AMARU"],
     "autodev": ["AUTODEV"],
     "ts": ["TS"],
-    "workflow-pro": ["WORKFLOW_PRO"],
+    "workflow-pro": ["WORKFLOW"],
 }
 
 EXPECTED_RENDER_REFS = {
     "amaru": "op://AMARU/Render/api_key",
     "autodev": "op://AUTODEV-sensitive/Render/api_key",
     "ts": "op://TS/Render/api_key",
-    "workflow-pro": "op://WORKFLOW_PRO/Render/api_key",
+    "workflow-pro": "op://WORKFLOW/Render/api_key",
 }
 
 EXPECTED_AUTODEV_MEMORY_PROFILES = {
@@ -87,7 +87,7 @@ EXPECTED_AUTODEV_MEMORY_PROFILES = {
     # ts moved off this memory stack: no autodev_memory profile.
     "workflow-pro": {
         "url": "https://autodev-memory.onrender.com",
-        "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token",
+        "token_ref": "op://WORKFLOW/Autodev memory/api_token",
     },
 }
 
@@ -120,15 +120,15 @@ EXPECTED_POSTGRES_REFS = {
         "prod": "op://TS/Postgres prod RO/canonical",
     },
     "workflow-pro": {
-        "dev": "op://WORKFLOW_PRO/Postgres dev/canonical",
-        "staging": "op://WORKFLOW_PRO/Postgres staging/ro",
-        "prod": "op://WORKFLOW_PRO/Postgres prod RO/canonical",
+        "dev": "op://WORKFLOW/Postgres dev/canonical",
+        "staging": "op://WORKFLOW/Postgres staging/ro",
+        "prod": "op://WORKFLOW/Postgres prod RO/canonical",
     },
 }
 
 EXPECTED_RESEND_REFS = {
     "amaru": "op://AMARU/Resend/api_key",
-    "workflow-pro": "op://WORKFLOW_PRO/Resend/api_key",
+    "workflow-pro": "op://WORKFLOW/Resend/api_key",
 }
 
 EXPECTED_RESEND_CANARY_DOMAINS = {

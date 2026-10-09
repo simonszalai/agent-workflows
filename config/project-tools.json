@@ -143,15 +143,15 @@
         "token_env": "WORKFLOW_PRO_OP_SERVICE_ACCOUNT_TOKEN",
         "keychain_item": "op-workflow-pro-token",
         "vaults": [
-          "WORKFLOW_PRO"
+          "WORKFLOW"
         ]
       },
       "autodev_memory": {
         "url": "https://autodev-memory.onrender.com",
-        "token_ref": "op://WORKFLOW_PRO/Autodev memory/api_token"
+        "token_ref": "op://WORKFLOW/Autodev memory/api_token"
       },
       "render": {
-        "api_key_ref": "op://WORKFLOW_PRO/Render/api_key",
+        "api_key_ref": "op://WORKFLOW/Render/api_key",
         "workspace": {
           "discover_service_names": [
             "gmail-rfq-sync",
@@ -163,18 +163,18 @@
       "postgres": {
         "tiers": {
           "dev": {
-            "dsn_ref": "op://WORKFLOW_PRO/Postgres dev/canonical"
+            "dsn_ref": "op://WORKFLOW/Postgres dev/canonical"
           },
           "staging": {
-            "dsn_ref": "op://WORKFLOW_PRO/Postgres staging/ro"
+            "dsn_ref": "op://WORKFLOW/Postgres staging/ro"
           },
           "prod": {
-            "dsn_ref": "op://WORKFLOW_PRO/Postgres prod RO/canonical"
+            "dsn_ref": "op://WORKFLOW/Postgres prod RO/canonical"
           }
         }
       },
       "resend": {
-        "api_key_ref": "op://WORKFLOW_PRO/Resend/api_key",
+        "api_key_ref": "op://WORKFLOW/Resend/api_key",
         "canary_domain": "workflowtech.hu"
       }
     }

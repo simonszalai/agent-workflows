@@ -873,7 +873,7 @@ jq -r --arg repo "autodev-dashboard" '
         admin = json.loads((ROOT / "config" / "db-roles.json").read_text())["projects"][
             "autodev"
         ]["render_key_ref"]
-        self.assertEqual(admin, "op://WORKFLOW_PRO/Render/api_key")
+        self.assertEqual(admin, "op://WORKFLOW/Render/api_key")
         self.assertNotEqual(key, admin)
 
 
